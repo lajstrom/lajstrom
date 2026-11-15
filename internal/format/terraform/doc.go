@@ -13,5 +13,13 @@
 // archive whole (ReadArchive): a gzip stream of a tar whose entries stay inside it. A publish
 // streams into the registry (ADR 0014), the archive read by the inspector on its way.
 //
-// The plugin registers itself with format.Register when the package is imported.
+// The routes serve what Terraform asks: the service discovery of a repo host (the main host's is
+// WellKnown, which the server mounts at /.well-known/terraform.json), the versions document of a
+// module from index_cache, rendered by RenderIndex, and the download, 204 with X-Terraform-Get,
+// the path of the archive route, which serves the archive as a blob of the facade. The reads have
+// a second form whose first segment is the repo's name again: a module address on a repo host
+// keeps the repo as its namespace. PUT publishes one archive under a version of the path.
+//
+// The plugin registers itself with format.Register when the package is imported; the binary
+// imports it in cmd/lajstrom/formats.go.
 package terraform

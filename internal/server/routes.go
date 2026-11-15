@@ -28,7 +28,8 @@ func (s *Server) routes() {
 }
 
 // mountFormats mounts each plugin's Routes below /<name>/ through format.NewRouter, which
-// resolves {repo} once per request. Every plugin gets Options.Deps with a logger that carries
+// resolves {repo} once per request, and the documents of /.well-known/ of a plugin that has
+// some (wellKnown). Every plugin gets Options.Deps with a logger that carries
 // format=<name>: Deps.Log, or the server's when it is nil.
 func (s *Server) mountFormats() {
 	for _, p := range s.opts.Plugins {
@@ -39,8 +40,21 @@ func (s *Server) mountFormats() {
 		}
 		deps.Log = deps.Log.With("format", name)
 		p.Routes(format.NewRouter(s.mux, name, deps), deps)
+		if wk, ok := p.(wellKnown); ok {
+			for doc, h := range wk.WellKnown() {
+				s.mux.Handle("GET /.well-known/"+doc, h)
+			}
+		}
 		s.log.Info("format mounted", "format", name, "artifactType", p.ArtifactType())
 	}
+}
+
+// wellKnown is a plugin that serves documents of the host's /.well-known/, by name: terraform's
+// terraform.json, the service discovery of the main host (docs/spec/http-routing.md §3,
+// terraform). The server mounts each as GET /.well-known/<name>; the handler authorizes what it
+// needs, the authentication middleware having refused credentials that do not verify.
+type wellKnown interface {
+	WellKnown() map[string]http.Handler
 }
 
 // healthz answers 200 while the process serves HTTP.

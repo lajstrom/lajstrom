@@ -113,7 +113,7 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** The bytes of a package file are stored in the registry and nowhere else: never in
   the database, and on a replica's disk only as a spool of one request, removed when it ends. A
-  raw, apt, Maven, PyPI, npm or rpm upload, and a proxy fetch, is not on the disk at all
+  raw, apt, Maven, PyPI, npm, rpm or terraform upload, and a proxy fetch, is not on the disk at all
   ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
 - **Scope.** Every format and kind, both write paths (a frontend upload, a `/v2` blob upload) and
   the proxy fetch. The database keeps derived copies of metadata that reindex rebuilds or a cache
@@ -123,7 +123,7 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** `/v2` uploads stream into the backend's session (`facade` uploads, the
   provider's `BlobUploader`) and take no disk, but for a chunk of unknown length that
   `uploads.spoolUnknownLength` spools (one temporary file of the chunk, unlinked when it is
-  made). A raw `PUT`, an apt, a twine, an npm and an rpm upload, a Maven file
+  made). A raw `PUT`, an apt, a twine, an npm, an rpm and a terraform upload, a Maven file
   (`ingest.Pipeline.Add`), and the file of a proxy fetch (`proxy.Core.download`, its checksum
   checked before the end of the body), stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
@@ -138,7 +138,7 @@ longer than `reconcile.graceAge` is outside them
   (ingest), `TestUploadWheelWritesNoTempFile`, `TestUploadWheelRefused` and
   `TestUploadSdistRefusedStoresNothing` (pypi), `TestPublishWritesNoTempFile` and
   `TestPublishRefusedStoresNothing` (npm), `TestUploadStreams1GiB` and `TestUploadRefuses` (rpm),
-  `TestUploadStreamRefused` (ingest), `TestFileWritesNoTempFile`, `TestFileChecksum` and
+  `TestPublishStreams` and `TestPublishRefusedStoresNothing` (terraform), `TestUploadStreamRefused` (ingest), `TestFileWritesNoTempFile`, `TestFileChecksum` and
   `TestFileCutShort` (proxy); `ha.sh` H-05 (a
   replica killed with `SIGKILL` in a 500 MiB upload: nothing left in its `/tmp`).
 - **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
@@ -803,17 +803,17 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** No package a client uploads, and no document an upstream serves, makes a parser
   allocate or work beyond the caps of threat model F-4: archive bombs, entry floods, entity
   expansion and oversized metadata are refused within seconds.
-- **Scope.** The parsers of deb, pypi, maven, npm and rpm, the profile's `Validate`, the proxy's
+- **Scope.** The parsers of deb, pypi, maven, npm, rpm and terraform, the profile's `Validate`, the proxy's
   documents.
 - **Assumes.** Any.
 - **Mechanism.** deb `capReader` and `xzReader.startBlock`, `pypi.checkZipEntries`,
-  `pypi.readTarGzFile`, `npm.ReadTarball`, the size caps of POM, `maven-metadata.xml`, wheel
+  `pypi.readTarGzFile`, `npm.ReadTarball`, `terraform.ReadArchive`, the size caps of POM, `maven-metadata.xml`, wheel
   `METADATA` and checksum files; `encoding/xml` expands no entities; rpm `MaxHeader` (32 MiB,
   refused from the intros before the bytes are read) and the budget of what one header decodes
   to (`maxDecoded`, counted before each allocation, the joined file paths among it).
 - **Tests.** `TestXZBlocks`, `TestSdistBombs`, `TestZipBombs`, `TestTarballBombs`,
   `TestParsePOMExpansionBounded`, `TestParseControlLimit`, `TestMetadataTooLarge`,
-  `TestParseHeadBound` and `TestParseDecodeBound` (rpm), and the fuzz
+  `TestParseHeadBound` and `TestParseDecodeBound` (rpm), `TestReadArchiveBounds` (terraform), and the fuzz
   targets of testing.md (`FuzzZipEntries`, `FuzzPackageJSON`, `FuzzParse`, `FuzzPOM`, …), which
   check that allocation grows with the input (`testutil.CheckAllocated`).
 - **When violated.** `400` or `413` naming the bound.
@@ -823,7 +823,7 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** Uploads and downloads stream; only bounded metadata is read into memory, so a
   replica's heap does not grow with the size of a blob or the number of bytes in flight.
-- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw, apt, maven, pypi, npm and rpm hold one
+- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw, apt, maven, pypi, npm, rpm and terraform hold one
   chunk of 8 MiB, apt the head of a `.deb` too, rpm the head of an `.rpm` (at most 32 MiB), pypi the end of a zip, npm the
   `package.json` of its tarball), the proxy fetch.
 - **Assumes.** Any.
@@ -834,7 +834,7 @@ longer than `reconcile.graceAge` is outside them
   `TestPutStreams1GiB` (1 GiB through a raw `PUT`, heap under 64 MiB), `TestUploadStreams1GiB` (deb, the
   same through an apt upload), `TestDeployStreams1GiB` (maven, a jar of 1 GiB), `TestUploadWheelStreams` and
   `TestUploadSdistStreams` (pypi, 256 MiB), `TestPublishStreams` (npm, 160 MiB), `TestUploadStreams1GiB` (rpm,
-  an `.rpm` with a payload of 1 GiB),
+  an `.rpm` with a payload of 1 GiB), `TestPublishStreams` (terraform, 256 MiB),
   `TestUploadDoesNotHoldTheFile`, `TestStream1GiB`; the load test (`make load`, acceptance.md
   N-01), nightly and not required.
 - **When violated.** Not observed.

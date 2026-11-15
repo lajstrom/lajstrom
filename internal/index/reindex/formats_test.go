@@ -28,6 +28,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format/maven"
 	"github.com/lajstrom/lajstrom/internal/format/pypi"
 	"github.com/lajstrom/lajstrom/internal/format/rpm"
+	"github.com/lajstrom/lajstrom/internal/format/terraform"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -106,9 +107,15 @@ var formatCases = map[string]formatCase{
 		listed: rpmRepodata,
 		cached: [][2]string{{"repodata", "repomd.xml"}, {"repodata", "repomd.xml.asc"}},
 	},
+	"terraform": {
+		plugin: terraform.Plugin{}, publish: publishTerraform, versions: 3,
+		docs: []string{"vpc/aws/versions", "consul/azurerm/versions", "vpc/aws/1.1.0/vpc-aws-1.1.0.tar.gz",
+			"consul/azurerm/2.0.0-rc.1/consul-azurerm-2.0.0-rc.1.tar.gz"},
+		cached: [][2]string{{"vpc/aws", "versions"}, {"consul/azurerm", "versions"}},
+	},
 }
 
-// TestRebuildFormats is I-01 for apt, pypi, maven and rpm on the fake registry: a representative set
+// TestRebuildFormats is I-01 for apt, pypi, maven, rpm and terraform on the fake registry: a representative set
 // of each format published through its frontend, the routes over the real ingest pipeline, and
 // one version as oras push and the facade do, a version deleted through the write path; then
 // the derived rows dropped and rebuilt by a run, equal in every column but the ids and
@@ -392,6 +399,19 @@ func publishRpm(t *testing.T, f *frontend) {
 	bonjour, info := testutil.RPM(testutil.RPMOptions{Name: "bonjour", Arch: "aarch64"})
 	f.push(t, format.Upload{Files: []format.UploadedFile{file(info.Filename, bonjour)}})
 	f.deleteVersion(t, "hello", "1.0.0-1.el9", "x86_64")
+}
+
+// publishTerraform publishes to a terraform repo vpc/aws 1.0.0, 1.1.0 and 1.2.0, pushes
+// consul/azurerm 2.0.0-rc.1 as oras push does, then deletes vpc/aws 1.0.0.
+func publishTerraform(t *testing.T, f *frontend) {
+	for i, v := range []string{"1.0.0", "1.1.0", "1.2.0"} {
+		b, _ := testutil.TerraformModule(testutil.TerraformOptions{Files: map[string]string{"main.tf": fmt.Sprintf("# %d\n", i)}})
+		f.do(t, http.MethodPut, "vpc/aws/"+v, b, http.StatusCreated)
+	}
+	consul, _ := testutil.TerraformModule(testutil.TerraformOptions{})
+	f.push(t, format.Upload{Files: []format.UploadedFile{file("consul.tar.gz", consul)},
+		Params: map[string]string{terraform.ParamName: "consul/azurerm", terraform.ParamVersion: "2.0.0-rc.1"}})
+	f.deleteVersion(t, "vpc/aws", "1.0.0", "")
 }
 
 // rpmRepodata returns the repodata/repomd.xml of the repo and the documents it lists.
