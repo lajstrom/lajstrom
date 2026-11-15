@@ -47,7 +47,10 @@ const (
 //	GET /{repo}/dists/{suite}/{component}/by-hash/SHA256/{hash}      a Contents of the component by its hash
 //
 // The documents come from index_cache through format.CachedDocument and are served with
-// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
+// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). A group of hosted apt repos
+// has the same routes (docs/spec/proxy-and-group.md §8.6): its documents are rendered from its
+// members' versions (RenderGroupIndex) and signed with its own keys, a pool file is the first
+// member's that has it, and an upload goes to its one member (format.WriteTarget). deps.Signer signs; when it
 // is nil (the server has no master key) InRelease, Release.gpg and key.asc are 404 and clients
 // take the unsigned Release from a source marked [trusted=yes]. A package reaches an apt repo
 // through the upload route or by oras push through the facade, whose hook runs Validate; ingest
@@ -84,22 +87,37 @@ type handlers struct {
 // start returns the repo of the request once the principal may read it; otherwise it answers
 // the error and ok is false.
 func (h *handlers) start(w http.ResponseWriter, r *http.Request) (repo index.Repo, ok bool) {
-	return h.startAs(w, r, auth.ActionRead)
-}
-
-// startAs returns the repo of the request once the principal may perform a on it; otherwise it
-// answers the error and ok is false.
-func (h *handlers) startAs(w http.ResponseWriter, r *http.Request, a auth.Action) (repo index.Repo, ok bool) {
 	repo, ok = format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("deb: the route has no repo"))
 		return index.Repo{}, false
 	}
-	if err := format.Authorize(r.Context(), h.deps, a, repo); err != nil {
+	if err := format.Authorize(r.Context(), h.deps, auth.ActionRead, repo); err != nil {
 		h.fail(w, r, err)
 		return index.Repo{}, false
 	}
 	return repo, true
+}
+
+// startWrite returns the repo that takes a write sent to the repo of the request
+// (format.WriteTarget: the repo itself; the one member of a group, 405 for a group of several,
+// docs/spec/proxy-and-group.md §8.4) and the request with the context to serve it with, once the
+// principal may write there; otherwise it answers the error and ok is false.
+func (h *handlers) startWrite(w http.ResponseWriter, r *http.Request) (*http.Request, index.Repo, bool) {
+	repo, ok := format.RepoFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errors.New("deb: the route has no repo"))
+		return r, index.Repo{}, false
+	}
+	ctx, target, err := format.WriteTarget(r.Context(), h.deps, repo)
+	if err == nil {
+		err = format.Authorize(ctx, h.deps, auth.ActionWrite, target)
+	}
+	if err != nil {
+		h.fail(w, r, err)
+		return r, index.Repo{}, false
+	}
+	return r.WithContext(ctx), target, true
 }
 
 // fail answers err with format.WriteError and logs it when the status is a 5xx, whose cause the
