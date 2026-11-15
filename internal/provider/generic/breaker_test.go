@@ -314,38 +314,112 @@ func TestBreakerCounts(t *testing.T) {
 	}
 }
 
-// TestBreakerOneTrial checks that a half-open breaker lets one GET through at a time, and
-// another one when the trial counted neither way.
-func TestBreakerOneTrial(t *testing.T) {
+// TestBreakerTrials checks the trials of a half-open breaker (#1116): one GET or HEAD of each
+// repository at a time, at most breakerTrials at once, and the readiness ping besides; never a
+// request with a body. A trial that counts neither way frees its place. Failed trials open the
+// breaker again only by the rule of the closed state, when they are of two repositories or one
+// of them is the registry's whatever the request; the first answer closes it. A trial of an
+// earlier opening neither frees a place nor opens the breaker again.
+func TestBreakerTrials(t *testing.T) {
 	lowerBreaker(t, 1)
+	ctx := t.Context()
 	log, _ := testLogger()
 	b := newBreaker("breaker-trial", "registry", log)
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
 	b.now = clk.now
-	get, _ := http.NewRequest(http.MethodGet, "http://registry/v2/", nil)
-	if _, err := b.allow(get); err != nil {
+	req := func(method, path string) *http.Request {
+		r, err := http.NewRequest(method, "http://registry"+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	tags := func(repo string) *http.Request { return req(http.MethodGet, "/v2/"+repo+"/tags/list") }
+	ping := req(http.MethodGet, "/v2/")
+	trial := func(what string, r *http.Request) pass {
+		t.Helper()
+		p, err := b.allow(r)
+		if err != nil || !p.trial {
+			t.Fatalf("%s: %+v, %v; want a trial", what, p, err)
+		}
+		return p
+	}
+	refused := func(what string, r *http.Request, after time.Duration) {
+		t.Helper()
+		if _, err := b.allow(r); !errors.Is(err, provider.ErrUnavailable) {
+			t.Errorf("%s: %v, want provider.ErrUnavailable", what, err)
+		} else if got, _ := provider.RetryAfter(err); got != after {
+			t.Errorf("%s: RetryAfter %v, want %v", what, got, after)
+		}
+	}
+	failed := func(p pass, r *http.Request) { b.done(ctx, p, -1, b.blame(r, nil)) }
+	wantState := func(when string, want int) {
+		t.Helper()
+		b.mu.Lock()
+		got := b.state
+		b.mu.Unlock()
+		if got != want {
+			t.Fatalf("%s: state %d, want %d", when, got, want)
+		}
+	}
+
+	p, err := b.allow(ping)
+	if err != nil {
 		t.Fatal(err)
 	}
-	b.done(t.Context(), false, -1, b.blame(get, nil)) // opens: GET /v2/ is the registry's
+	failed(p, ping) // opens: GET /v2/ is the registry's
 	clk.add(20 * time.Second)
-	if _, err := b.allow(get); !errors.Is(err, provider.ErrUnavailable) {
-		t.Fatalf("allow while open = %v", err)
-	} else if after, _ := provider.RetryAfter(err); after != 40*time.Second {
-		t.Errorf("RetryAfter 20 s into a 1 min cooldown = %v, want 40s", after)
-	}
+	refused("a ping while open", ping, 40*time.Second)
+
 	clk.add(40 * time.Second)
-	trial, err := b.allow(get)
-	if err != nil || !trial {
-		t.Fatalf("allow after the cooldown = %v, %v; want the trial", trial, err)
-	}
-	if _, err := b.allow(get); !errors.Is(err, provider.ErrUnavailable) {
-		t.Errorf("a second GET during the trial = %v, want provider.ErrUnavailable", err)
-	} else if after, _ := provider.RetryAfter(err); after != 0 {
-		t.Errorf("RetryAfter during the trial = %v, want 0", after)
-	}
-	b.done(t.Context(), true, 0, blame{}) // the trial's caller went away
-	if trial, err := b.allow(get); err != nil || !trial {
-		t.Errorf("allow after a trial that counted neither way = %v, %v; want another trial", trial, err)
+	pa := trial("a GET of a after the cooldown", tags("a"))
+	refused("a second GET of a", tags("a"), 0)
+	refused("a HEAD of a manifest of a", req(http.MethodHead, "/v2/a/manifests/v2"), 0)
+	refused("a PUT", req(http.MethodPut, "/v2/b/manifests/v1"), 0)
+	trial("a GET of b", tags("b"))
+	trial("a HEAD of c", req(http.MethodHead, "/v2/c/blobs/sha256:ab"))
+	refused("a GET of d, three trials in flight", tags("d"), 0)
+	pp := trial("the ping, three trials in flight", ping)
+	refused("a second ping", ping, 0)
+	b.done(ctx, pa, 0, blame{}) // the caller of a's trial went away: its place is free
+	pd := trial("a GET of d in its place", tags("d"))
+	refused("a GET of a, three trials in flight again", tags("a"), 0)
+	b.done(ctx, pd, 0, blame{})
+	b.done(ctx, pp, 0, blame{})
+	pa = trial("a GET of a", tags("a"))
+	failed(pa, tags("a")) // a repository the registry cannot serve
+	wantState("after one repository's trial failed", breakerHalfOpen)
+	pa = trial("a GET of a after its trial failed", tags("a"))
+	failed(pa, tags("a"))
+	wantState("after one repository's trials failed twice", breakerHalfOpen)
+	pp = trial("the ping", ping)
+	failed(pp, ping)
+	wantState("after a trial of one repository and the ping failed", breakerOpen)
+	refused("a GET of d after the trials failed", tags("d"), time.Minute)
+
+	clk.add(time.Minute)
+	pa = trial("a GET of a after the second cooldown", tags("a"))
+	stalePing, staleC := trial("the ping", ping), trial("a GET of c", tags("c"))
+	failed(pa, tags("a"))
+	wantState("after a trial of one repository failed", breakerHalfOpen)
+	pb := trial("a GET of b", tags("b"))
+	failed(pb, tags("b"))
+	wantState("after the trials of two repositories failed", breakerOpen)
+
+	clk.add(time.Minute)
+	trial("a GET of a after the third cooldown", tags("a"))
+	pb = trial("a GET of b", tags("b"))
+	trial("a GET of c", tags("c"))
+	failed(staleC, tags("c")) // a trial of the earlier opening
+	refused("a second GET of c, its trial of the earlier opening ended", tags("c"), 0)
+	refused("a GET of d, three trials in flight", tags("d"), 0)
+	failed(stalePing, ping)
+	wantState("after the ping of the earlier opening failed", breakerHalfOpen)
+	trial("the ping, none of this opening in flight", ping)
+	b.done(ctx, pb, +1, blame{}) // the registry answers b
+	wantState("after a trial was answered", breakerClosed)
+	if p, err := b.allow(tags("d")); err != nil || p.trial {
+		t.Errorf("a GET of d after the breaker closed: %+v, %v; want it through, not a trial", p, err)
 	}
 }
 
