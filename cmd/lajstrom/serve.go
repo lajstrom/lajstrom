@@ -120,7 +120,7 @@ func newServeCmd(a *app) *cobra.Command {
 			if err := serveMigrations(ctx, st, c.Database, a.log); err != nil {
 				return err
 			}
-			rep, err := startReplica(ctx, st, a.log, time.Now)
+			rep, err := startReplica(ctx, st, a.log, time.Now, c.Database.File())
 			if err != nil {
 				return err
 			}

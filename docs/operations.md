@@ -618,11 +618,15 @@ stops the process at once, without the drain.
 On SQLite, a `serve` that ends without the drain (`SIGKILL`, the OOM killer, a crash) leaves its
 row of `replicas`, and the next start on the file finds it. When the next start runs on the same
 host, boot and PID namespace and the kernel says that process is gone, it deletes the row and
-starts. Otherwise it is refused with an error that names the row, until the row is 2 minutes
-old; an orchestrator that restarts it on failure starts it then. A container that its restart
-policy restarts runs in a new PID namespace: its start deletes the row only when the kernel gave
-the new namespace the number of the old one, which is gone, and otherwise exits, and the next
-restart tries again ([index-schema.md](spec/index-schema.md#coordination)).
+starts. On Linux and macOS `serve` also holds, while it runs, the `flock(2)` lock of
+`<file>-replica.lock`, a file it makes next to the SQLite file, as SQLite makes its `-journal`
+and `-wal` files there; the kernel drops the lock when the process ends. A start of the same
+boot that takes the lock deletes the row of the process that held it and starts, whatever its
+host name and PID namespace: a container that its restart policy restarts in a new PID namespace
+starts at once. Otherwise the start is refused with an error that names the row, until the row
+is 2 minutes old; an orchestrator that restarts it on failure starts it then
+([index-schema.md](spec/index-schema.md#coordination)). Leave the lock file where it is: it is
+empty, and a start that finds it made again (another inode) waits as before.
 
 Set `server.shutdownTimeout` from the longest upload a replica should finish,
 `server.shutdownDelay` from how long the edge takes to stop sending to a stopping replica, and
