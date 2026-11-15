@@ -5,11 +5,13 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -163,6 +165,178 @@ func (c keywordCheck) valued(k, v *yaml.Node, path string) bool {
 	}
 	c.t.Errorf("openapi.yaml:%d: %s has no value", k.Line, path)
 	return false
+}
+
+// TestOpenAPIReindexRun holds the ReindexRun schema of openapi.yaml to the type the server
+// answers with (#1128), the report and the items of its lists included: a struct is an object
+// with a property per JSON key that requires the keys without omitempty, and each property has
+// the type of its field; null is in the type of a pointer without omitempty, and may be in a
+// slice's, since a nil slice is null.
+func TestOpenAPIReindexRun(t *testing.T) {
+	var doc struct {
+		Components struct {
+			Schemas map[string]map[string]any `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(openAPI, &doc); err != nil {
+		t.Fatalf("openapi.yaml: %v", err)
+	}
+	c := &typeCheck{t: t, schemas: doc.Components.Schemas, checked: map[string]bool{}}
+	c.same(doc.Components.Schemas["ReindexRun"], reflect.TypeFor[ReindexRun](), false, "ReindexRun")
+}
+
+// typeCheck walks a schema of openapi.yaml beside a Go type for TestOpenAPIReindexRun.
+type typeCheck struct {
+	t       *testing.T
+	schemas map[string]map[string]any // components.schemas
+	checked map[string]bool           // the schemas of components.schemas checked, once each
+}
+
+// same checks schema against typ, the type of a field with omitempty or without.
+func (c *typeCheck) same(schema map[string]any, typ reflect.Type, omitempty bool, path string) {
+	schema, path, ok := c.resolve(schema, path)
+	if !ok {
+		return
+	}
+	want, elem := jsonType(typ)
+	if want == "" {
+		c.t.Errorf("%s: no rule for the Go type %s", path, typ)
+		return
+	}
+	c.typed(schema, typ, omitempty, want, path)
+	if elem == reflect.TypeFor[time.Time]() && schema["format"] != "date-time" {
+		c.t.Errorf("%s: format %v, want date-time for %s", path, schema["format"], elem)
+	}
+	switch items, _ := schema["items"].(map[string]any); {
+	case want == "array" && items == nil:
+		c.t.Errorf("%s: no items", path)
+	case want == "array":
+		c.same(items, elem.Elem(), false, path+"[]")
+	case want == "object":
+		c.fields(schema, elem, path)
+	}
+}
+
+// typed checks the type of schema: want, with null for a pointer without omitempty, with or
+// without it for a slice, and without it otherwise.
+func (c *typeCheck) typed(schema map[string]any, typ reflect.Type, omitempty bool, want, path string) {
+	null := "may not be"
+	if typ.Kind() == reflect.Pointer && !omitempty {
+		null = "must be"
+	} else if typ.Kind() == reflect.Slice {
+		null = "may be"
+	}
+	types := strs(schema["type"])
+	others := slices.DeleteFunc(slices.Clone(types), func(s string) bool { return s == want || s == "null" })
+	hasNull := slices.Contains(types, "null")
+	if !slices.Contains(types, want) || len(others) > 0 || hasNull && null == "may not be" || !hasNull && null == "must be" {
+		c.t.Errorf("%s: type %v, want %s for the Go type %s; null %s in it", path, types, want, typ, null)
+	}
+}
+
+// resolve follows the $ref of schema into components.schemas; false for a schema that is not
+// there, or that was checked already.
+func (c *typeCheck) resolve(schema map[string]any, path string) (map[string]any, string, bool) {
+	ref, ok := schema["$ref"].(string)
+	if !ok {
+		return schema, path, true
+	}
+	name, local := strings.CutPrefix(ref, "#/components/schemas/")
+	if !local || c.schemas[name] == nil {
+		c.t.Errorf("%s: $ref %s is not a schema of components.schemas", path, ref)
+		return nil, "", false
+	}
+	if c.checked[name] {
+		return nil, "", false
+	}
+	c.checked[name] = true
+	return c.schemas[name], name, true
+}
+
+// fields checks the properties and required of schema against the JSON keys of the struct typ.
+func (c *typeCheck) fields(schema map[string]any, typ reflect.Type, path string) {
+	props, _ := schema["properties"].(map[string]any)
+	var keys, required []string
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		name, opts, _ := strings.Cut(f.Tag.Get("json"), ",")
+		switch {
+		case !f.IsExported() || name == "-":
+			continue
+		case f.Anonymous:
+			c.t.Errorf("%s: no rule for the embedded field %s of %s", path, f.Name, typ)
+			continue
+		case name == "":
+			name = f.Name
+		}
+		omit := slices.Contains(strings.Split(opts, ","), "omitempty")
+		keys = append(keys, name)
+		if !omit {
+			required = append(required, name)
+		}
+		if p, ok := props[name].(map[string]any); ok {
+			c.same(p, f.Type, omit, path+"."+name)
+		}
+	}
+	if missing, extra := apart(keys, slices.Collect(maps.Keys(props))); len(missing)+len(extra) > 0 {
+		c.t.Errorf("%s: no property for the JSON keys %v of %s, and properties %v that are no key of it", path, missing, typ, extra)
+	}
+	if missing, extra := apart(required, strs(schema["required"])); len(missing)+len(extra) > 0 {
+		c.t.Errorf("%s: not required %v, keys of %s without omitempty, and required %v that are not", path, missing, typ, extra)
+	}
+}
+
+// jsonType is the JSON Schema type of the values of typ, or of its element for a pointer, and
+// typ without the pointer; "" for a type it has no rule for.
+func jsonType(typ reflect.Type) (string, reflect.Type) {
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch k := typ.Kind(); {
+	case typ == reflect.TypeFor[time.Time](), k == reflect.String:
+		return "string", typ
+	case k == reflect.Struct:
+		return "object", typ
+	case k == reflect.Slice:
+		return "array", typ
+	case k == reflect.Bool:
+		return "boolean", typ
+	case k >= reflect.Int && k <= reflect.Int64:
+		return "integer", typ
+	}
+	return "", typ
+}
+
+// strs is v, a string or a list of them as yaml decodes into any, as a list.
+func strs(v any) []string {
+	switch v := v.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		var out []string
+		for _, s := range v {
+			out = append(out, fmt.Sprint(s))
+		}
+		return out
+	}
+	return nil
+}
+
+// apart returns the strings of want that got lacks and those of got that want lacks, sorted.
+func apart(want, got []string) (missing, extra []string) {
+	for _, s := range want {
+		if !slices.Contains(got, s) {
+			missing = append(missing, s)
+		}
+	}
+	for _, s := range got {
+		if !slices.Contains(want, s) {
+			extra = append(extra, s)
+		}
+	}
+	slices.Sort(missing)
+	slices.Sort(extra)
+	return missing, extra
 }
 
 // TestErrorCodes holds the codes of the envelope to each other (#579): the enum of the Error

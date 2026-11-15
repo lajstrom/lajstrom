@@ -7,9 +7,10 @@ info:
     log. docs/api.md is the guide; this document is checked against the server's routes by
     TestOpenAPIRoutes, its error codes against the server's and docs/api.md's by
     TestErrorCodes, the keys of its schemas against the keywords of JSON Schema by
-    TestOpenAPIKeywords, and the statuses of each operation against those its handler answers
-    in the tests of internal/api (statuses_test.go). Any operation may also answer 408 and 413 to
-    a body, 500 and 503, as the Errors of docs/api.md say.
+    TestOpenAPIKeywords, ReindexRun against the server's type by TestOpenAPIReindexRun, and the
+    statuses of each operation against those its handler answers in the tests of internal/api
+    (statuses_test.go). Any operation may also answer 408 and 413 to a body, 500 and 503, as
+    the Errors of docs/api.md say.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -1521,23 +1522,77 @@ components:
         report:
           description: >-
             The repo's part of the run's report; null while the run is running, and for a run of
-            every repo that stopped before it reached the repo.
+            every repo that stopped before it reached the repo. Each list holds at most 1000
+            entries, after which truncated is true; the counts stay exact. In the report of a run
+            of an earlier release, a count it did not write is 0 and a list it did not write null.
           type: [object, "null"]
+          required: [repo, ociRepositories, manifests, added, updated, unchanged, removed, pending, deletedPending, degraded, referrers, attachments, foreign, orphanReferrers, orphanJournal, drift, split, repositoryUnknown, repairedReferrers, errors, truncated]
           properties:
+            repo: {type: string, description: "The repo, <format>/<name>."}
+            ociRepositories: {type: integer, description: "The OCI repositories under the repo's path."}
+            manifests: {type: integer, description: The tags read.}
+            added: {type: integer, description: "The rows written, of versions and journal entries, that the index did not have."}
+            updated: {type: integer, description: "The rows read again, with verify or degraded, and written."}
+            unchanged: {type: integer, description: The rows seen with the digest the index has.}
+            removed: {type: integer, description: "The rows removed, their manifests gone from the registry (prune)."}
+            pending:
+              description: >-
+                The rows whose manifest the registry answered unknown (prune), kept until it answers
+                so twice at least 10 minutes apart and the row is reconcile.graceAge old
+                (docs/spec/guarantees.md, INV-5).
+              type: integer
             deletedPending:
               description: >-
                 The tags the registry still lists whose manifests were deleted through Lajstrom
                 less than reconcile.graceAge before the run, on a registry not classified strong:
-                not indexed again. Absent from the report of a run of a release before it.
+                not indexed again.
               type: integer
+            degraded: {type: integer, description: "The versions written from their annotations, their metadata layer unreadable."}
+            referrers: {type: integer, description: "The referrers listed, each digest once."}
+            attachments: {type: integer, description: The attachment rows of the versions seen or written.}
+            foreign:
+              description: "The manifests under the repo's path that are not Lajstrom's: never indexed, never served."
+              type: array
+              items: {$ref: "#/components/schemas/ReindexFinding"}
+            orphanReferrers:
+              description: The referrers whose subject no version has.
+              type: array
+              items: {$ref: "#/components/schemas/ReindexFinding"}
+            orphanJournal:
+              description: >-
+                The npm and pypi journal entries of an OCI repository without versions
+                (docs/spec/manifest-profile.md §8): not indexed, adopted by the next append to the
+                package.
+              type: [array, "null"]
+              items: {$ref: "#/components/schemas/ReindexFinding"}
+            drift:
+              description: The tags that name another digest in the registry than in the index.
+              type: array
+              items: {$ref: "#/components/schemas/ReindexDrift"}
+            split:
+              description: >-
+                The packages found at two forms of their OCI name (ADR 0017), one entry per other
+                form.
+              type: [array, "null"]
+              items: {$ref: "#/components/schemas/ReindexSplit"}
+            repositoryUnknown:
+              description: >-
+                The versions of the index whose OCI repository the registry does not know: prune
+                keeps their rows, a delete through the API removes them.
+              type: [array, "null"]
+              items: {$ref: "#/components/schemas/ReindexRepositoryUnknown"}
             repairedReferrers:
               description: >-
                 The sha256-<hex> indexes that lacked referrers the audit log has as pushed and the
                 registry still has, or were missing, and that Lajstrom pushed again with them: runs of
-                the reconcile loop and with verify, on a registry without the referrers API. null in
-                the report of a run of a release before it.
+                the reconcile loop and with verify, on a registry without the referrers API.
               type: [array, "null"]
               items: {$ref: "#/components/schemas/RepairedReferrersIndex"}
+            errors:
+              description: What the run could not read, check or write, each with its error.
+              type: array
+              items: {$ref: "#/components/schemas/ReindexFinding"}
+            truncated: {type: boolean, description: A list stopped at 1000 entries.}
     RepairedReferrersIndex:
       description: A subject's sha256-<hex> index that a reindex run pushed again with the referrers it lacked.
       type: object
@@ -1550,6 +1605,66 @@ components:
           description: The referrers it lacked, in the order of their pushes.
           type: array
           items: {type: string}
+    ReindexFinding:
+      description: A manifest, or a failure, that a reindex report lists; a key without a value is left out.
+      type: object
+      required: [repository]
+      properties:
+        repository: {type: string, description: "The OCI repository, below the repo's base; empty for a failure of the whole repo."}
+        tag: {type: string}
+        digest: {type: string}
+        mediaType: {type: string}
+        artifactType: {type: string}
+        subject: {type: string, description: The digest of a referrer's subject.}
+        error: {type: string, description: What failed (errors).}
+    ReindexDrift:
+      description: A tag that names another digest in the registry than in the index; the index keeps its digest.
+      type: object
+      required: [package, tag, index, registry]
+      properties:
+        package: {type: string}
+        tag: {type: string}
+        index: {type: string, description: The digest the index has.}
+        registry: {type: string, description: The digest the registry's tag names.}
+    ReindexSplit:
+      description: >-
+        A package whose manifests are at two forms of its OCI name (ADR 0017): the index has the
+        package at indexed; a run copies or moves nothing in the registry.
+      type: object
+      required: [package, indexed, indexedTags, other, otherTags]
+      properties:
+        package: {type: string}
+        indexed: {type: string, description: "The package's OCI name in the index, below the repo's base."}
+        indexedTags:
+          description: The tags of its versions in the index.
+          type: array
+          items: {type: string}
+        other: {type: string, description: "The other form, below the repo's base."}
+        otherTags:
+          description: The tags of the profile manifests at the other form.
+          type: array
+          items: {type: string}
+    ReindexRepositoryUnknown:
+      description: >-
+        A version of the index whose OCI repository the registry does not know: its tag does not
+        resolve, its manifest by digest and the repository's tag list are a 404 without
+        MANIFEST_UNKNOWN. The row stays until it is deleted through the API or the repository
+        comes back; a run deletes nothing in the registry.
+      type: object
+      required: [repository, package, version, tag, digest, delete]
+      properties:
+        repository: {type: string, description: "The OCI repository, below the repo's base."}
+        package: {type: string}
+        version: {type: string}
+        variant: {type: string, description: The variant of a version with variants.}
+        tag: {type: string}
+        digest: {type: string}
+        delete:
+          description: >-
+            The request that deletes the version's rows, the variant alone when it has one:
+            DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>, with
+            ?variant=<variant> for a variant, the package and the version path-escaped.
+          type: string
     Token:
       type: object
       required: [id, kind, name, scopes, expiresAt, lastUsedAt, createdAt, revokedAt, hashPrefix]
