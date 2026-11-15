@@ -9,7 +9,10 @@
   The `oci` proxy repo (#442,
   [ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)) added an upstream
   that is a registry: the actors, flow D and the rows O-8 to O-10, from the code of #442 and
-  proxy-and-group.md §11 (#871). The other rows were not checked again.
+  proxy-and-group.md §11 (#871). Updated on 2026-11-15 for node and workload identity (#1019,
+  [ADR 0025](../adr/0025-node-and-workload-identity.md)): the rows W-1 to W-9, from rbac.md §9;
+  each is `open` until the pull request of its code names the function. The other rows were not
+  checked again.
   Review it again when a surface changes: a new endpoint, a new credential, a proxy of another
   format (pypi #67, maven #68), OIDC.
 - Scope: the server of this repository. This means the OCI facade `/v2` and its token
@@ -236,6 +239,25 @@ group bindings evaluated with the groups of a user's latest login. Functions are
 | I-10 | **Secrets of the login in logs, pages or URLs.** | No code, state, verifier, cookie, ID token, access token or personal access token is logged or audited; the IdP's `error_description` is never shown or logged, only an error code that passes `errorCode`. The token is shown once on a `no-store` page. Tests: `TestCodeFlow`, `TestDeviceFlow` (the log has none of them), `TestRedeemRefusals`, e2e OI-04. | mitigated |
 | I-11 | **A token of a login used by a stolen laptop** after the person left. | The token expires after `auth.oidc.tokenLifetime` (24h by default) and is revoked like any personal access token; an OIDC user has no password, so it cannot mint long-lived tokens with the API (`auth.MayCreatePAT` needs a password or a login). | mitigated |
 
+### Node and workload identity (#1019, [rbac.md](../spec/rbac.md) §9)
+
+The flows: a client certificate on `GET /v2/token`, from Lajstrom's own TLS or from the edge's
+header, and a Kubernetes service-account token as the password of `/v2/token`, which the
+kubelet's credential provider hands containerd (KEP-4412). Both end in a bearer of §4 for a
+`cert:` or `k8s:` principal, bound directly or by a pattern.
+
+| ID | Threat | Mitigation | Status |
+| --- | --- | --- | --- |
+| W-1 | **A forged certificate header**: a client sends `X-Forwarded-Client-Cert` or the nginx header itself and becomes any node. | The header is read only when the peer is in `server.trustedProxies`, and `auth.clientCertificates.forwardedHeader` cannot be set without the list. The edge must set the header and drop the client's (§4). Lajstrom verifies the certificate again against its bundles, so a header with a made-up identity and no certificate a bundle signed grants nothing. | open (#1019) |
+| W-2 | **A certificate that should not count**: of another CA, expired or not yet valid, a CA certificate as the leaf, one for server authentication only. | Each bundle verifies the chain with its own CAs at the server's clock for `clientAuth`; a leaf that is a CA is refused. With `server.tls`, the handshake refuses a certificate no bundle's CA signed. | open (#1019) |
+| W-3 | **Identity confusion**: a SPIFFE ID of another trust domain under a bundle, a leaf with several URI SANs, a CN with `*` or `/` that a pattern then matches more widely than meant, two bundles that verify one certificate. | A `spiffe` bundle takes the leaf's one URI SAN, of its own trust domain, and one bundle per trust domain; a name with `*` or a space is refused; the bundles are tried in order and the first that verifies decides, a certificate without a name by it refused rather than tried further. | open (#1019) |
+| W-4 | **A stolen node key, or a long-lived certificate, cannot be revoked.** | Accepted: no CRL nor OCSP in the first cut (ADR 0025). A certificate counts until its `notAfter`; the operator removes the binding (from the next `/v2/token` on), rotates the bundle, keeps lifetimes short, and binds Talos nodes, whose certificates live in the machine configuration, one by one where one must be cut off early. | accepted (ADR 0025) |
+| W-5 | **The edge's own client certificate to Lajstrom taken for its client's**, when an L7 proxy re-encrypts with mTLS to `server.tls`. | The certificate of the connection counts only when the peer is not in `server.trustedProxies`; from a trusted peer only the header counts. | open (#1019) |
+| W-6 | **A forged or replayed service-account token**: `alg: none`, an HMAC, a key of another algorithm, another issuer or audience, a legacy token of a Secret without `exp`, a token whose `sub` and `kubernetes.io` claim disagree. | Asymmetric algorithms only, the key of the `kid` from the issuer's JWKS, `iss` exact and named by the discovery document, `aud` the cluster's audience, `exp` required, 60 s of leeway, `sub` equal to `system:serviceaccount:<ns>:<sa>` of the claim. A token minted for the API server's own audience is refused. | open (#1019) |
+| W-7 | **A token of a pod that is gone**, or of a service account deleted, still pulls. | Accepted: no TokenReview; the token counts until its `exp`, which the kubelet keeps short for the tokens it requests for pods. | accepted (ADR 0025) |
+| W-8 | **The issuer's discovery or JWKS as a lever**: a flood of made-up `kid`s, a slow issuer, a huge document, a redirect, a password that only looks like a token. | The cache of §8: an unknown `kid` reloads the JWKS at most every 30 s, documents through a 1 MiB limit with a 10 s timeout and no redirect, https only but with `server.insecureHTTP`. A password is taken for a token only when its unverified `iss` is a configured issuer, and `/v2/token` is rate-limited per address (A-1). | open (#1019) |
+| W-9 | **A pattern grants more than meant**: `cert:spiffe://cluster-a/*` reaches the workloads of the trust domain as well as its nodes; `k8s:prod/*` every namespace. | By design: a pattern is the operator's, and the narrowest prefix (`/node/*`, `<cluster>/<namespace>/*`) binds only what it names. No pattern can carry `admin`, and none matches across kinds. | accepted (rbac.md §9) |
+
 ### The client address ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md))
 
 | ID | Threat | Mitigation | Status |
@@ -271,6 +293,9 @@ configuration, part 1 and part 2. In terms of this document:
 - **`X-Forwarded-For` from the edge only**, and `server.trustedProxies` naming exactly the peers
   Lajstrom sees: N-1. With it empty, the per-address throttles are off (A-1), unless Lajstrom
   terminates TLS itself (`server.tls`, N-2).
+- **The client certificate header from the edge only**, when `auth.clientCertificates.forwardedHeader`
+  is set: the edge sets it from the certificate it received and drops the one a client sent
+  (Envoy's `forward_client_cert_details: SANITIZE_SET`, nginx's `proxy_set_header`): W-1.
 - **A rate limit on `/v2/token`** per address, and per-connection bandwidth if needed: A-1, T-7.
   Not a request count on the rest: a `docker pull` is tens of requests a second.
 - **Never route `server.metricsListen`**: `/metrics` and `/debug/pprof/` stay inside.

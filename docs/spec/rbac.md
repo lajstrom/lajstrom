@@ -12,6 +12,8 @@
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read` and/or `write`; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
+| client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
+| Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>`; a service-account token of a configured cluster, on `/v2/token` only (§9) | #1019 |
 | group | `group:<name>`; the groups claim of a user's latest OIDC login (§8) | M6 |
 | OIDC user | `user:<uid>`, of the user its identity, the `iss` and `sub` of its ID token, maps to; made at its first login, without a password (§8) | M6 |
 
@@ -110,11 +112,13 @@ A principal may have many bindings; the effective permission on a repo is the un
 A binding is refused with `400`, naming the field, when:
 
 - its principal is neither a live user, `user:<name>` (stored as the user's `user:<uid>`) or
-  `user:<uid>`, nor a group, `group:<name>` with a name of §8. A group need not have members:
+  `user:<uid>`, nor a group, `group:<name>` with a name of §8, nor a `cert:` or `k8s:`
+  principal or pattern of §9. A group need not have members:
   a binding may come before anyone logs in with the group, as before its repo. `anonymous`
   reads through a repo's `anonymousRead` and gets nothing else, and a deploy token
   `token:<id>` gets its repo, or the repos of its mask, and its scopes and nothing else, so
   neither has bindings;
+- its principal is a `cert:` or `k8s:` principal or pattern (§9) and its role is `admin`;
 - its role is not one of the four;
 - its mask is not two segments `<format>/<repo>`, each `*` or a name: a format of this build,
   and a repo name by manifest-profile.md §4.1. The repo need not exist: a binding may come
@@ -139,6 +143,8 @@ credential, not on the bindings, and are checked first: a PAT's scopes narrow an
 4. User → any binding of the user, or of a group the user is in now (§8), whose mask matches
    the repo and whose role includes the action. A group is not a principal of a request: it
    reaches a repo only through its members.
+   A `cert:` or `k8s:` principal (§9) → any binding of it, or of a pattern of §9 that matches
+   it, whose mask matches the repo and whose role includes the action.
 5. Otherwise, if `action == read`, the repo has `anonymousRead`, and the server-wide switch
    `auth.anonymousRead` is on → allow (also for the `anonymous` principal).
 6. Deny.
@@ -478,3 +484,134 @@ throttled per client address as the failed logins are (§1).
 tokens, anonymous read and the bearer tokens of §4 stay as they are. An OIDC user has no
 password, so it cannot create a personal access token with the API (§3); it gets its tokens by
 logging in, and may list and revoke them as any user.
+
+## 9. Node and workload identity (after the MVP, #1019)
+
+Two credentials prove who a client is without a secret of Lajstrom's: a client certificate that
+a configured CA signed, which containerd and Talos present for a node, and a Kubernetes
+service-account token for image pulls (KEP-4412), which the kubelet hands its credential
+provider for a pod ([ADR 0025](../adr/0025-node-and-workload-identity.md)). Each is a credential
+of `/v2/token` only; no other route reads it. Each gives a principal of its own:
+
+| Principal | Form |
+| --- | --- |
+| client certificate | `cert:spiffe://<trust domain>/<path>`, the SPIFFE ID of a certificate of a `spiffe` bundle; `cert:<bundle>/<name>`, of a `cn` or `dns` bundle, `<name>` the certificate's CN or first DNS SAN |
+| Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>` |
+
+A bundle's or a cluster's name is the name of its entry in the configuration (configuration.md,
+`auth`): lowercase letters and digits with single hyphens between them, at most 63 bytes, and
+never `spiffe`. Neither principal has a row, a password, a token of Lajstrom or an owner: it
+exists through its credential, as a group exists through the identities that name it. Neither is
+a user, a service account (§1) or a deploy token, and none of them maps onto another; they share
+the bindings of §3 and nothing else.
+
+**Bindings.** A `cert:` or `k8s:` principal takes the bindings of §3 with the roles `reader`,
+`writer` and `maintainer`; `admin` is `400`. A binding's principal may also be a **pattern**: a
+principal of these kinds whose last segment is `*`, which matches every principal of its kind
+that begins with the pattern without its `*` and goes on past it, at any depth.
+`cert:spiffe://cluster-a/*` matches every SPIFFE ID of the trust domain `cluster-a`,
+`cert:spiffe://cluster-a/node/*` those below `/node/`, `cert:corp/*` every certificate of the
+bundle `corp`, `k8s:prod/*` every service account of the cluster `prod`, and `k8s:prod/ci/*`
+those of its namespace `ci`. A binding's principal of these kinds is refused with `400` when it
+breaks this grammar:
+
+- `cert:spiffe://<trust domain>/<path>`: the trust domain of lowercase letters, digits, `.`, `-`
+  and `_`; the path one or more segments of letters, digits, `.`, `-` and `_`, none `.` or `..`,
+  or a last segment `*`;
+- `cert:<bundle>/<name>`: the name 1 to 255 bytes of printable ASCII without a space and without
+  `*`, or a last segment `*` after `<bundle>/` or after a `/` of the name;
+- `k8s:<cluster>/<namespace>/<service account>`: the namespace a DNS label (RFC 1123, at most 63
+  bytes), the service account a DNS subdomain (at most 253 bytes), or `k8s:<cluster>/*`, or
+  `k8s:<cluster>/<namespace>/*`.
+
+A `*` anywhere else is `400`, and the principal of a request never has one (below). A binding
+need not name a bundle or a cluster that is configured, as it need not name a repo that exists.
+
+### Client certificates
+
+**Bundles.** `auth.clientCertificates.bundles` lists the CAs Lajstrom takes client certificates
+from, each with a `name`, a `caFile` of PEM certificates, and an `identity`: `spiffe` (the
+default), with the bundle's `trustDomain`, one bundle per trust domain; `cn`; or `dns`. The files
+are read at start: a changed bundle takes a restart.
+
+**Where the certificate comes from.** From one place for a request, by its peer:
+
+- **The connection**, when Lajstrom terminates TLS (`server.tls`) and the peer is not in
+  `server.trustedProxies`. With a bundle configured, the listener asks every client for a
+  certificate, with the bundles' CAs as the acceptable ones, and verifies one that is sent: a
+  client without one goes on as before, and one whose certificate no bundle's CA signed fails the
+  handshake. The certificate of a trusted proxy, whatever it is, is never its client's.
+- **The edge's header**, `auth.clientCertificates.forwardedHeader`, when the peer is in
+  `server.trustedProxies`; from any other peer the header is not read. `X-Forwarded-Client-Cert`
+  is read as Envoy writes it: elements separated by `,`, keys and values by `;` and `=`, values
+  in `"…"` where they need it; the last element counts, and its `Cert`, a URL-escaped PEM
+  certificate, with its `Chain`, URL-escaped PEM intermediates, when present. Any other header
+  holds a URL-escaped PEM certificate followed by any intermediates (nginx's
+  `$ssl_client_escaped_cert`, ingress-nginx's `ssl-client-cert`), or base64 DER certificates
+  separated by `,` (Traefik, HAProxy). The edge must set the header itself and drop one that a
+  client sent.
+
+**Verification.** The bundles are tried in their order. The first whose CAs verify the chain,
+the leaf with the intermediates that came with it, at the server's clock, for client
+authentication (an extended key usage `clientAuth`, `any`, or none), decides; a leaf that is a
+CA is refused. The certificate's name is then:
+
+- under `spiffe`: the one URI SAN of the leaf, which must be its only URI SAN and a SPIFFE ID of
+  the bundle's trust domain with a path (X509-SVID); the principal is
+  `cert:<the SPIFFE ID>`;
+- under `cn`: the leaf's subject CN; under `dns`: its first DNS SAN; the principal is
+  `cert:<bundle>/<name>`.
+
+A name must be 1 to 255 bytes of printable ASCII without a space and without `*`. A certificate
+that a bundle verifies and that has no name by it is refused; it is not tried against the next
+bundle.
+
+**On `/v2/token`.** A `GET` without an `Authorization` header and with a certificate that
+verifies is issued the token of the certificate's principal (§4); Basic credentials, when they
+are sent, are the credential instead, and the certificate is not read. A `POST` takes the form's
+credential only. A certificate that does not verify, which only the edge's header can bring, or
+that has no name by its bundle, is `401` with the Basic challenge, logged at debug with the
+reason and the bundle, never the certificate.
+
+**Revocation.** Neither a CRL nor OCSP is read: a certificate counts until its `notAfter`. A binding
+removed counts from the next `/v2/token` on (§4); a bundle removed, at the next start.
+
+### Kubernetes service-account tokens
+
+**Clusters.** `auth.kubernetes.clusters` lists the clusters whose service-account tokens
+Lajstrom takes, each with a `name`, the `issuer` (the exact `iss` of its tokens; https, http only
+with `server.insecureHTTP`), the `audience` (by default `server.externalURL`) and a `caFile` for
+an issuer whose TLS certificate a private CA signed. No two clusters have the same issuer.
+
+**The token on `/v2/token`.** The password of Basic credentials (`GET`) or of the form (`POST`)
+is a cluster's token when it has the form of a JWT (three base64url parts separated by `.`) and
+the `iss` of its payload, read before it is verified, is that cluster's issuer; the user name is
+not read. Any other password is checked as §1 says. The token must verify:
+
+- its signature, by the key of its `kid` in the issuer's JWKS, with an algorithm of §8, never
+  `none` nor an HMAC;
+- `iss` the cluster's issuer, which its discovery document
+  (`<issuer>/.well-known/openid-configuration`) must name exactly as its `issuer`, beside the
+  `jwks_uri`;
+- `aud` containing the cluster's audience;
+- `exp` present and passed by no more than 60 s, `iat` and `nbf` not more than 60 s ahead;
+- the claim `kubernetes.io` with `namespace` and `serviceaccount.name`, a DNS label and a DNS
+  subdomain, and `sub` equal to `system:serviceaccount:<namespace>:<name>`.
+
+Its principal is `k8s:<cluster>/<namespace>/<name>`. The discovery document is read again
+hourly, and the JWKS is cached as the OIDC login's (§8): a `kid` it does not have fetches it
+again at most once every 30 s, it is fetched again hourly, and while the issuer does not answer
+the last document and set that loaded stay. Nothing is read at start. A token that does not
+verify is `401` with the Basic challenge and counts as no failed login (§1), as a token secret
+does not; an issuer whose keys never loaded is `503` with `Retry-After`. Lajstrom does not ask
+whether the pod or the service account of a token still exists: the token counts until its
+`exp`.
+
+### Tokens and audit
+
+The bearer of a `cert:` or `k8s:` principal names it as its `sub`, and is issued as any (§4):
+the bindings count when it is issued, and it is trusted for its 20 minutes. Such bearers are not
+audited (§5), and each one issued is logged at debug level with its principal and its bundle or
+cluster. The writes they allow are audit rows with the principal, which
+`lajstrom.uploaded-by` carries too, and a change of a binding of these kinds is a
+`binding.create` or `binding.delete` row as any.
