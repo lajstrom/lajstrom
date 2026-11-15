@@ -1193,8 +1193,8 @@ with its commit, or at `expiresAt`.
 
 Every token (the admin role, #959):
 `GET /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]` pages, by id, which is
-the order of their creation, every token: the personal access tokens of every user, deleted
-users' too, the deploy tokens of every repo and those over a mask, the revoked and expired ones
+the order of their creation, every token: the personal access tokens of every user, a deleted
+user's under the name it had, the deploy tokens of every repo and those over a mask, the revoked and expired ones
 included. Each is the resource of the other token lists ([api.md](../api.md#tokens)): never
 its secret, and of its hash `hashPrefix` only. `kind` keeps `pat` or `deploy`; `user` the
 personal access tokens of the live user of that name or uid; `repo`, `<format>/<repo>`, that

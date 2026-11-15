@@ -1394,7 +1394,7 @@ curl -s -u admin -X POST "$LAJSTROM/api/v1/deploy-tokens" \
 
 The admin role lists every token at once, for an access page: `{"tokens": […], "next": "…"}`,
 a page by id ([Conventions](#conventions)), which is the order of their creation, of the personal
-access tokens of every user, a deleted user's too (its `user` is then `~<uid>`), the deploy tokens
+access tokens of every user, a deleted user's too, under the name it had, the deploy tokens
 of every repo and those over a mask, the revoked and expired ones included. Each is the resource
 above, never its secret. The filters add up:
 
