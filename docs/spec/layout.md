@@ -386,8 +386,9 @@ func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) e
 // WriteTarget returns the repo that takes a write route sent to repo, and the context to serve
 // it with (proxy-and-group.md §8.4): a hosted repo and ctx unchanged; for a group, once the
 // principal may read the group (Authorize), its hosted member (deps.Index.ListGroupMembers) and
-// WithVia(ctx, repo); for a proxy, or a group without a hosted member, an error wrapping
-// ErrMethodNotAllowed once the principal may read it. The handler then authorizes the route's
+// WithVia(ctx, repo); for a proxy, or a group without a hosted member or with several (an apt
+// group, proxy-and-group.md §8.6), an error wrapping ErrMethodNotAllowed once the principal may
+// read it. The handler then authorizes the route's
 // own action on the repo returned, with the context returned, and serves the write there.
 func WriteTarget(ctx context.Context, deps Deps, repo index.Repo) (context.Context, index.Repo, error)
 // WithVia marks ctx as a request that came through group: ingest adds details.via,
@@ -423,7 +424,10 @@ func SetRetryAfter(h http.Header, err error)
 // p.RenderIndex, stores every document (SHA256, RenderedAt) and returns the one of kind; lookup,
 // render and store run in one st.Tx, and the documents are stored only while the repo's
 // IndexCacheGeneration is the one read before the render. index.ErrNotFound when no document
-// of kind is rendered.
+// of kind is rendered. Of a repo of kind group, p is an IndexGrouper (else ErrUnsupported): the
+// scope is rendered with RenderGroupIndex over the group's members (ListGroupMembers, in the
+// transaction), and kept under the group with the group's generation, which an invalidation of
+// a member's documents increments (proxy-and-group.md §8.6).
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error)
 // ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt.
 func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string)
@@ -510,7 +514,8 @@ They are checked in this order:
 What a plugin provides for proxy and group repos of its format, and what its handlers ask the
 core (proxy-and-group.md §10). A format has the kind `proxy` when its plugin implements
 `Proxier`, and the kind `group` when it implements `Grouper`; creating a repo of a kind the
-format does not have is `400`. The core, `internal/proxy`, does everything else: the allow and
+format does not have is `400`. A format whose groups render documents of their own (apt) has
+`IndexGrouper` instead of `Grouper` (below). The core, `internal/proxy`, does everything else: the allow and
 deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client, the stream and the
 checksum, the ingest call, the statuses of §6, a group's members and which of them take part. A
 handler asks the core for a document or a file of a proxy or a group alike, and for a write
@@ -631,6 +636,20 @@ type Prefetcher interface {
     // from kept as ParseMetadata kept it (npm: the targets of its dist-tags). A prefetch without
     // allVersions takes their entries. A body it cannot read wraps ErrInvalid.
     Pointed(name, kind string, kept []byte) ([]string, error)
+}
+
+// IndexGrouper is implemented by a plugin whose group repos have documents of their own,
+// rendered from the versions of their members as a hosted repo's from its own (proxy-and-group.md
+// §8.6, #68): a format has the kind group when its plugin implements Grouper or IndexGrouper.
+// The group's members are hosted repos, any number of them; its handlers serve it as a hosted
+// repo, its documents through CachedDocument, and the core (Proxy) does not serve it.
+type IndexGrouper interface {
+    // RenderGroupIndex renders every document of scope of group, as RenderIndex renders a
+    // hosted repo's, from the versions of members, the group's members in order, read through
+    // st; of the entries that several members have, the format's rules say which the
+    // documents list (apt: http-routing.md, apt, Group). index.ErrNotFound when no member has
+    // the scope.
+    RenderGroupIndex(ctx context.Context, group index.Repo, members []index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
 // Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Document and
@@ -996,7 +1015,8 @@ type Writer interface {
     // SetGroupMembers makes the group_members rows of the group exactly memberIDs, position the
     // index in it; an id that is no repo wraps ErrNotFound, an id named twice ErrConflict. The
     // caller writes the group's repos row in the same transaction (CreateRepo, UpdateRepo), so
-    // that auth_version moves with the members
+    // that auth_version moves with the members. It invalidates the group's index_cache, as
+    // InvalidateIndexCache of every scope does
     SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
     // ConvertRepo makes the proxy repo id a hosted one (proxy-and-group.md §2.6): kind hosted,
     // upstream NULL, UpdatedAt now, auth_version incremented. A repo that is not a proxy, or
@@ -1106,7 +1126,8 @@ type Writer interface {
     DeletePackage(ctx context.Context, id int64) error
     DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) // packages without versions
     // PutIndexCache stores c only while generation, read before the render, is the repo's, and
-    // says whether it did; InvalidateIndexCache increments the generation, then deletes
+    // says whether it did; InvalidateIndexCache increments the generation, then deletes, of the
+    // repo and of every group it is a member of (index-schema.md), as ResetDerived does
     PutIndexCache(ctx context.Context, c *Cache, generation int64) (bool, error)
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
@@ -2066,6 +2087,15 @@ Where the merged shapes differ from the first sketch of this section, and why:
   core through the context (`WithVia`), not as a field of `Upload`, `Deletion` and `JournalOp`:
   one marker, read where the rows are written. `Authorize` reads it too, so that a principal
   that read the group and is denied on its hosted member gets `403` naming the member.
+- **An apt group renders its own documents, through `format.IndexGrouper`** (#68), rather than
+  through `Grouper` and the core. A suite is one render whose `Release` lists the hash of every
+  index and a key signs; the merge of a Packages per request would compress and hash every index
+  of the suite, and sign, on each `GET` (a suite of 20,000 packages: about 0.8 s of CPU for its
+  Packages and Contents of one architecture, and a KMS call). And a pool file names no suite, so
+  `FileRequest` cannot name the version that holds it. `IndexGrouper` is not a `Proxier`, since
+  apt has no proxies: the core's hooks need an upstream, and a group that the core does not
+  serve needs none of them. The documents are kept under the group, and the store invalidates
+  them with a member's, so that no handler has to know the groups of a repo.
 - **The npm journal has store methods of its own** (ADR 0012, #307). `ListJournal` and
   `ListJournalState` read one package: the journal writer reads the last `seq` and the state
   under the package's journal lock, a packument reads both for its `dist-tags`, `deprecated`,
