@@ -2001,75 +2001,93 @@ type Event struct {
 ### Policy (`internal/policy`, #101)
 
 What the contract packages use of it ([policy.md](policy.md)). `format`, `ingest`, `proxy`,
-`facade` and `api` import it; it imports `index` and nothing of theirs: the order of a format's
-versions comes in as a function.
+`facade` and `api` import it; it imports `index`, `auth`, `audit`, `attest` and `config`, and
+nothing of theirs: the order of a format's versions comes in as a function.
 
 ```go
 // package policy
 type Subject struct {
-    Repo      index.Repo
-    Name      string                        // lajstrom.name
-    Version   string
+    Repo      index.Repo                    // the repo that holds it: a group's member
+    Name      string                        // lajstrom.name; an oci repo's path
+    Version   string                        // an oci repo's tag, "" for a digest
     Variant   string
     Digest    digest.Digest                 // the manifest's; "" for a coordinate the repo does not hold
-    Published time.Time                     // the quarantine's clock (policy.md §4); zero: now
+    Published time.Time                     // the quarantine's clock as the caller knows it; zero: now
 }
 type Verdict struct {                       // a decision (policy.md §3)
     Effect      string                      // EffectAllow, EffectDeny, EffectQuarantine
-    Reason      string                      // as clients see it
+    Reason      string
     Rule        int64                       // the rule that decided; 0 when none
     Attestation digest.Digest               // the referrer of the verdict that decided; "" when none
-    Source      string                      // its source
+    Source      string
+    Lifts       time.Time                   // the end of a quarantine
     Until       time.Time                   // when it may change by the clock alone; zero: never
 }
 func (v Verdict) Allowed() bool
-// DeniedError is the error of a refusal; it wraps ErrDenied, which format.StatusOf answers 403
-// and the facade DENIED.
+// DeniedError is a refusal; it wraps ErrDenied, which format.StatusOf answers 403 and the facade
+// DENIED. Refusal(s, v) is nil for an allow.
 type DeniedError struct{ Subject Subject; Verdict Verdict }
 var ErrDenied = errors.New("policy: denied")
 
+type VersionOrder func(a, b string) (int, error)
 type Options struct {
-    Index   index.Store
-    Compare func(format, a, b string) (int, bool) // a format's order of versions; false: none
-    Now     func() time.Time
-    Log     *slog.Logger
+    Index  index.Store
+    Order  func(format string) VersionOrder  // format.VersionComparer of a format; nil: none
+    Audit  audit.Writer                      // nil: Index.AppendAudit
+    Origin func(ctx context.Context) (addr, requestID string) // server.ClientAddr, server.RequestID
+    Now    func() time.Time
+    Log    *slog.Logger
 }
-func New(o Options) *Decider
-// Decide answers one subject: the rules (kept per policy_state.generation) and the verdicts of
-// its digest (verdicts_subject). Groups: a subject's repo is the member that holds it.
+func New(o Options) *Decider                // a nil *Decider allows everything
+// Decide reads the rules once per policy_state.generation, the groups of the subject's repo when
+// a mask may name one, the verdicts of its digest, and for a quarantine its policy_seen row.
 func (d *Decider) Decide(ctx context.Context, s Subject) (Verdict, error)
-// View reads the rules and the verdicts that may hold in repo once, through r, for a render.
+func (d *Decider) Check(ctx context.Context, s Subject) error // Decide as a *DeniedError
+// View reads the rules, the groups and the verdicts that may hold in repo once, through r.
 func (d *Decider) View(ctx context.Context, r index.Reader, repo index.Repo) (*View, error)
 func (v *View) Decide(s Subject) Verdict
-// Reader is r without the versions the view refuses (policy.md §6.1).
-func (v *View) Reader(r index.Reader) index.Reader
-// Until is the earliest Until of the decisions taken so far: index_cache.expires_at.
-func (v *View) Until() time.Time
-// Refuse appends the audit row policy.refuse of a refusal (policy.md §6.6).
+func (v *View) Reader(r index.Reader) index.Reader // without the versions it refuses (policy.md §6.1)
+func (v *View) Until() *time.Time                  // index_cache.expires_at; nil: none
+// Refuse appends the audit row policy.refuse of a refusal on surface (policy.md §6.6).
 func (d *Decider) Refuse(ctx context.Context, surface string, err *DeniedError, principal auth.Principal)
-// ParseRule checks a rule as policy.md §1.3 does; an error wraps format.ErrInvalid and names
-// the field.
-func ParseRule(r index.PolicyRule, compare func(format, a, b string) (int, bool)) error
+func NewContext(ctx context.Context, d *Decider) context.Context
+func FromContext(ctx context.Context) *Decider
+// ParseRule checks a rule as policy.md §1.3 does; the error is a *RuleError naming the field.
+func ParseRule(r index.PolicyRule, now time.Time, order func(format string) VersionOrder, formats func(string) bool) error
+// Invalidate invalidates the index_cache of every repo mask matches, a group's members included.
+func Invalidate(ctx context.Context, w index.Writer, mask string) error
+func Quarantine(repo index.Repo) time.Duration  // policy.quarantineNewVersions of a proxy repo
+func EnforcePull(repo index.Repo) bool          // policy.enforcePull
 ```
 
 The contract packages grow these, each nil or absent for no policy:
 
-- `format.Deps.Policy *policy.Decider`; `format.ServeBlobOptions.Subject *policy.Subject`, decided
-  first by `ServeBlob` in a function of its own (`decide`); `format.CachedDocument` renders
-  through `View.Reader` and stores `View.Until` as each document's `ExpiresAt`.
+- `format.Deps.Policy *policy.Decider`, which the repo middleware of `NewRouter` puts in the
+  request's context (`policy.NewContext`). `format.CachedDocument` renders through the View of
+  the context's Decider and stores `View.Until` as each document's `ExpiresAt`;
+  `format.ServeBlobOptions.Subject *policy.Subject` is decided first by `ServeBlob`
+  (`format.CheckVersion`, which writes the audit row of a refusal); `format.VersionSubject`
+  makes the subject of a version.
 - `format.VersionComparer`, a `Plugin` with `CompareVersions(a, b string) (int, error)` (npm,
   maven); `format.Trimmer`, a `Proxier` with `Trim` (proxy-and-group.md §10; npm);
   `format.Locator`, a `Plugin` with `DownloadPrefix(repo index.Repo, name, version string)
   (string, bool)`, the path of policy.md §8 (pypi, maven, npm).
-- `index.PolicyRule`, `index.Verdict`, `index.PolicySeen`; `Attachment.Verdict *Verdict` (a
-  verified verdict's row, written by `ReplaceAttachments` with its attachment);
-  `Cache.ExpiresAt`. The Reader: `ListPolicyRules`, `PolicyGeneration`, `ListVerdicts(repoID,
-  subject)`, `GetPolicySeen`. The Writer: `CreatePolicyRule`, `DeletePolicyRule` (both increment
-  the generation), `BumpPolicyGeneration`, `ReplaceOCIVerdicts`, `DeleteOCIVerdicts`,
-  `TouchOCIVerdicts`, `SweepOCIVerdicts`, `PutPolicySeen` (insert if absent).
-- `ingest.Options.Policy *policy.Decider`, decided in `ingest.decide` between `validate` and
-  `claimTag`; `ingest.ErrDenied` is `policy.ErrDenied`. `proxy.Options.Policy`,
-  `facade.Options.Policy`, `api.Options.Policy` the same Decider.
+- `index.PolicyRule`, `index.Verdict`, `index.VerdictFilter`, `index.PolicySeen`;
+  `Attachment.Verdict *Verdict` (a verified verdict's row, written by `ReplaceAttachments` with
+  its attachment); `Cache.ExpiresAt`. The Reader: `ListPolicyRules`, `GetPolicyRule`,
+  `PolicyGeneration`, `ListVerdicts`, `GetPolicySeen`. The Writer: `CreatePolicyRule`,
+  `DeletePolicyRule`, `ReplaceOCIVerdicts`, `DeleteOCIVerdicts`, `TouchOCIVerdicts`,
+  `SweepOCIVerdicts`, `PutPolicySeen` (insert if absent). `ControlPlane.PolicyRules`.
+- `ingest.Options.Policy`, decided in `ingest.decide` between `validate` and `claimTag`;
+  `ingest.ErrDenied` is `policy.ErrDenied`. `Pipeline.Attach` (a referrer with its blobs),
+  `AttachVerdict` and `LiftQuarantine` store the verdicts the server makes, signed by an
+  `ingest.VerdictSigner` (`Sign`, `PublicDER`: the policy key); `InspectVerdicts` reads an oci
+  repo's, which `reindex.VerdictInspector` asks for.
+- `proxy.Options.Policy` and `Options.Lifted` (the allow verdict of a quarantine over);
+  `facade.Options.Policy`; `api.Options.Policy`.
+- `keys.Service.PolicyKey(ctx, uri)` returns the `*keys.PolicyKey` (`Sign`, `PEM`, `PublicDER`,
+  `Fingerprint`); `attest.BuildVerdict` and `attest.ParseVerdict`; `webhook.Event.Mask` and
+  `webhook.Covers` for the events of a rule.
 
 ### Decisions
 

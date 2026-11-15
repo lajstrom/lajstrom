@@ -199,3 +199,9 @@ the spec. These are the choices the issue left open, each with the default the s
   install p=1.0` with "version not found", and neither shows the rule's reason: neither protocol
   has a field for it. The reason is in the `403` of a direct download, in the audit row of the
   refusal, and in the API.
+- **K. The predicate type is a URI**, `https://lajstrom.dev/verdict/v1`, where this record and the
+  issue say `dev.lajstrom.verdict/v1`: `cosign attest --type` and `cosign verify-attestation
+  --type` refuse a predicate type that is neither one of their short names nor a URI ("invalid
+  predicate type", cosign v3.1.4), and in-toto names predicate types by URI. Consequence: the
+  consumers' policies name the URI; the CloudEvents types and the media types of Lajstrom keep
+  their reverse domain names.
