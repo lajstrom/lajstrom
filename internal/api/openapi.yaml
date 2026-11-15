@@ -2676,12 +2676,22 @@ components:
           items: {$ref: "#/components/schemas/Registry"}
     Registry:
       type: object
-      required: [name, type, url, prefix, capabilities, repos, status]
+      required: [name, type, url, prefix, vendor, support, capabilities, repos, status]
       properties:
         name: {type: string}
         type: {type: string, enum: [generic, ecr]}
         url: {type: string}
         prefix: {type: string}
+        vendor:
+          type: [string, "null"]
+          description: >-
+            The product the probe detected, as lajstrom registry probe names it (distribution, zot,
+            gitlab, ghcr, harbor, nexus, gitea, forgejo, jfrog, quay, dockerhub, ecr, or unknown); null
+            before a probe of the replica got an answer.
+        support:
+          type: [string, "null"]
+          enum: [ci, manual, hosted, untested, null]
+          description: The vendor's support tier in this release (docs/registries/README.md, Support tiers); null with vendor.
         capabilities:
           anyOf:
             - {$ref: "#/components/schemas/Capabilities"}

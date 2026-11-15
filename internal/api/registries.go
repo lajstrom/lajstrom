@@ -33,6 +33,10 @@ type Registry struct {
 	Type   string `json:"type"` // generic or ecr
 	URL    string `json:"url"`
 	Prefix string `json:"prefix"`
+	// Vendor is the product the probe detected (provider.Report.Vendor), and Support its tier
+	// in this release (SupportTier); both nil before a probe of the replica got an answer.
+	Vendor  *string `json:"vendor"`
+	Support *string `json:"support"`
 	// Capabilities are those ingest and the facade go by; nil before a probe of the replica
 	// succeeded.
 	Capabilities *Capabilities `json:"capabilities"`
@@ -58,6 +62,37 @@ type Capabilities struct {
 	MaxNameLength      int    `json:"maxNameLength"`
 	TagsFoldCase       bool   `json:"tagsFoldCase"`
 	BuildRoutes        bool   `json:"buildRoutes"`
+}
+
+// supportTiers is the tier of each vendor in this release: the table Support tiers of
+// docs/registries/README.md, which TestSupportTiers holds it equal to (#953).
+var supportTiers = map[string]string{
+	"distribution": TierCI, "zot": TierCI,
+	"gitlab": TierManual, "harbor": TierManual, "nexus": TierManual, "gitea": TierManual, "forgejo": TierManual,
+	"jfrog": TierManual, "quay": TierManual,
+	"ghcr": TierHosted, "ecr": TierHosted,
+	"dockerhub": TierUntested, "unknown": TierUntested,
+}
+
+// The support tiers of docs/registries/README.md, Versions tested.
+const (
+	// TierCI: the integration job of CI runs every test against it.
+	TierCI = "ci"
+	// TierManual: a profile of the dev stack or a script, run by hand.
+	TierManual = "manual"
+	// TierHosted: a hosted service, with an account and a token, run by hand.
+	TierHosted = "hosted"
+	// TierUntested: nothing of the matrix is about it.
+	TierUntested = "untested"
+)
+
+// SupportTier returns the tier of vendor in this release, TierUntested for a vendor the table
+// does not know.
+func SupportTier(vendor string) string {
+	if tier, ok := supportTiers[vendor]; ok {
+		return tier
+	}
+	return TierUntested
 }
 
 // CapabilitiesOf returns the API form of c.
