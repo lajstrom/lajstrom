@@ -20,6 +20,10 @@ their deliveries are rows of the index that reindex neither reads nor rebuilds.
 | `version.deleted` | `dev.lajstrom.version.deleted` | a version's rows are deleted by a delete through ingest (`DELETE` of the management API, `versions:delete`, `/v2`, a format's own delete or unpublish), one event per variant, `data.action` `delete` |
 | `repo.created` | `dev.lajstrom.repo.created` | a repo is created: `POST /api/v1/repos`, `lajstrom admin repo create`, the `repos[]` bootstrap |
 | `repo.deleted` | `dev.lajstrom.repo.deleted` | a repo is deleted: `DELETE /api/v1/repos/…`, `lajstrom admin repo delete` |
+| `policy.rule.created` | `dev.lajstrom.policy.rule.created` | a policy rule is created (policy.md §7, #101), `data.action` `policy.rule.create` |
+| `policy.rule.deleted` | `dev.lajstrom.policy.rule.deleted` | a policy rule is deleted, `data.action` `policy.rule.delete` |
+| `policy.verdict.created` | `dev.lajstrom.policy.verdict.created` | ingest writes the rows of a verdict that verifies: a referrer pushed through `/v2`, the deny of the management API, a quarantine over (policy.md §2, §4, §7), `data.action` `policy.verdict.create` |
+| `policy.verdict.deleted` | `dev.lajstrom.policy.verdict.deleted` | ingest deletes the rows of a verdict with its referrer, `data.action` `policy.verdict.delete` |
 | (none) | `dev.lajstrom.webhook.ping` | only by the test of one webhook (http-routing.md §4) |
 
 Each event is the write of an audit row, and is written in that row's transaction (§4). Not
@@ -77,7 +81,7 @@ Every event:
 | Field | Value |
 | --- | --- |
 | `schema` | `1` |
-| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `webhook.test` |
+| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `policy.rule.create`, `policy.rule.delete`, `policy.verdict.create`, `policy.verdict.delete`, `webhook.test` |
 | `actor` | `{"principal", "name"}`: the principal of the write as rbac.md §1 writes it (`user:<uid>`, `token:<id>`, `anonymous`), and a user's name at the time of the event (absent for the others) |
 | `audit` | the id of the event's audit row; absent for a ping |
 | `requestId` | the request's id, when the write came from a request |
@@ -95,6 +99,15 @@ A version (`version.published`, `version.deleted`) adds:
 | `ociRepository` | `<format>/<repo>/<package path>`, below the instance prefix: `/v2/<ociRepository>/manifests/<digest>` serves the manifest |
 | `files` | `version.published` only: the file layers in manifest order, each `{"name", "mediaType", "digest", "size"}` |
 | `upstream` | `proxy.fetch` only: the name of the upstream in the configuration |
+
+A rule (`policy.rule.created`, `policy.rule.deleted`) adds `rule`: `{"id", "repoMask", "name",
+"version", "variant", "effect", "reason", "expiresAt"}`. Its event goes to the webhooks whose mask
+covers the rule's: every repo the rule's mask matches, the webhook's matches (`*/*` covers every
+mask, `pypi/*` covers `pypi/*` and `pypi/proxy-pypi`). A verdict (`policy.verdict.created`,
+`policy.verdict.deleted`) adds `repo`, `package`, `version`, `variant` and `ociRepository` as a
+version's, `digest` the judged manifest's, and `verdict`: `{"verdict", "reason", "source",
+"scope", "validUntil", "attestation"}`, `attestation` the referrer's digest; on an `oci` repo
+`package` is the path and `version` absent.
 
 A repo (`repo.created`, `repo.deleted`) adds `repo`, as above; `repo.deleted` also `versions`,
 the number of versions it had, and `force`. A ping adds `webhook`: `{"id", "mask"}`.
