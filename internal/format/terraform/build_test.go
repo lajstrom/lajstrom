@@ -196,6 +196,7 @@ func clone(m map[string]string) map[string]string {
 // registry "local", with the terraform repo infra.
 type ingestEnv struct {
 	st   *sqlite.Store
+	prov *providertest.Fake
 	pipe *ingest.Pipeline
 	repo index.Repo
 }
@@ -207,9 +208,10 @@ func newIngestEnv(t *testing.T) *ingestEnv {
 	must(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	must(t, st.Migrate(ctx))
-	e := &ingestEnv{st: st, repo: index.Repo{Format: Name, Name: "infra", Registry: "local", Prefix: "terraform/infra", Kind: "hosted"}}
+	e := &ingestEnv{st: st, prov: &providertest.Fake{RegistryName: "local"},
+		repo: index.Repo{Format: Name, Name: "infra", Registry: "local", Prefix: "terraform/infra", Kind: "hosted"}}
 	must(t, st.CreateRepo(ctx, &e.repo))
-	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": &providertest.Fake{RegistryName: "local"}}, Index: st,
+	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": e.prov}, Index: st,
 		Log: slog.New(slog.DiscardHandler), Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
 	return e
 }

@@ -22,6 +22,7 @@ import (
 	_ "github.com/lajstrom/lajstrom/internal/format/pypi"
 	_ "github.com/lajstrom/lajstrom/internal/format/raw"
 	_ "github.com/lajstrom/lajstrom/internal/format/rpm"
+	_ "github.com/lajstrom/lajstrom/internal/format/terraform"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -149,6 +150,19 @@ var denialRequests = []denialRequest{
 	{method: http.MethodGet, format: "rpm", path: "key.asc"},
 	{method: http.MethodGet, format: "rpm", path: "Packages/foo-1.0-1.x86_64.rpm"},
 	{method: http.MethodPut, format: "rpm", path: "upload", body: "not an rpm"},
+
+	{method: http.MethodGet, format: "terraform", path: ".well-known/terraform.json"},
+	{method: http.MethodGet, format: "terraform", path: "vpc/aws/versions"},
+	{method: http.MethodGet, format: "terraform", path: "v.pc/aws/versions"},
+	{method: http.MethodGet, format: "terraform", path: "vpc/aws/1.0.0/download"},
+	{method: http.MethodGet, format: "terraform", path: "vpc/aws/v1/download"},
+	{method: http.MethodGet, format: "terraform", path: "ns/vpc/aws/versions"},
+	{method: http.MethodGet, format: "terraform", path: "ns/vpc/aws/1.0.0/download"},
+	{method: http.MethodGet, format: "terraform", path: "vpc/aws/1.0.0/vpc-aws-1.0.0.tar.gz"},
+	{method: http.MethodHead, format: "terraform", path: "vpc/aws/1.0.0/vpc-aws-1.0.0.tar.gz"},
+	{method: http.MethodGet, format: "terraform", path: "vpc/aws/1.0.0/vpc-aws-1.0.0.tar.gz?token=x"},
+	{method: http.MethodPut, format: "terraform", path: "vpc/aws/1.0.0", body: "not a module"},
+	{method: http.MethodPut, format: "terraform", path: "v.pc/AWS/v1", body: "not a module"},
 
 	{method: http.MethodGet, format: "npm", path: "lodash"},
 	{method: http.MethodHead, format: "npm", path: "lodash"},
