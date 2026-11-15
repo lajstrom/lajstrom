@@ -650,6 +650,47 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/tokens:
+    get:
+      tags: [tokens]
+      operationId: listAllTokens
+      summary: A page of every token, of every user, every repo and every mask, by id (admin).
+      description: >-
+        The personal access tokens of every user, a deleted user's under the name it had, and the
+        deploy tokens of every repo and over every mask, the revoked and expired ones included; never
+        a secret. The filters add up; a user or a repo that does not exist has none.
+      parameters:
+        - name: kind
+          in: query
+          description: Only the tokens of this kind.
+          schema: {type: string, enum: [pat, deploy]}
+        - name: user
+          in: query
+          description: Only the personal access tokens of the live user of this name or uid.
+          schema: {type: string}
+        - name: repo
+          in: query
+          description: "Only the deploy tokens of this repo, <format>/<name>; not those over a mask that matches it."
+          schema: {type: string}
+        - name: repoMask
+          in: query
+          description: Only the deploy tokens over this mask, as it was written (oci/* does not list a token over */*).
+          schema: {type: string}
+        - name: live
+          in: query
+          description: true keeps the tokens neither revoked nor expired now.
+          schema: {type: boolean}
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of the tokens, in the order of their creation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenPage"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /api/v1/repos/{format}/{repo}/webhooks:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1942,6 +1983,14 @@ components:
         tokens:
           type: array
           items: {$ref: "#/components/schemas/Token"}
+    TokenPage:
+      type: object
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          items: {$ref: "#/components/schemas/Token"}
+        next: {type: string, description: The cursor of the next page; absent on the last.}
     TokenRequest:
       type: object
       required: [name]

@@ -444,32 +444,141 @@ func find(ctx context.Context, r index.Reader, id int64) (*index.Token, tokenOwn
 	if i < 0 {
 		return nil, tokenOwner{}, &authError{msg: fmt.Sprintf("token %d does not exist", id), err: index.ErrNotFound}
 	}
-	row := &rows[i]
+	own, err := tokenOwnerOf(ctx, r, &rows[i])
+	if err != nil {
+		return nil, tokenOwner{}, err
+	}
+	return &rows[i], own, nil
+}
+
+// tokenOwnerOf returns the owner of the token row: its mask, its user, by the name it had when it
+// was deleted for a deleted user, or its repo.
+func tokenOwnerOf(ctx context.Context, r index.Reader, row *index.Token) (tokenOwner, error) {
 	switch {
 	case row.RepoMask != "":
-		return row, tokenOwner{mask: row.RepoMask}, nil
+		return tokenOwner{mask: row.RepoMask}, nil
 	case row.UserID != nil:
 		u, err := r.GetUserByID(ctx, *row.UserID)
 		if err != nil && !errors.Is(err, index.ErrNotFound) {
-			return nil, tokenOwner{}, err
+			return tokenOwner{}, err
 		}
 		if err == nil {
 			name := u.Name
 			if u.DeletedAt != nil {
 				name = u.DeletedName
 			}
-			return row, tokenOwner{user: name, uid: u.UID}, nil
+			return tokenOwner{user: name, uid: u.UID}, nil
 		}
 	case row.RepoID != nil:
 		repo, err := r.GetRepoByID(ctx, *row.RepoID)
 		if err != nil && !errors.Is(err, index.ErrNotFound) {
-			return nil, tokenOwner{}, err
+			return tokenOwner{}, err
 		}
 		if err == nil {
-			return row, tokenOwner{repo: repo.Format + "/" + repo.Name}, nil
+			return tokenOwner{repo: repo.Format + "/" + repo.Name}, nil
 		}
 	}
-	return row, tokenOwner{}, nil // an owner gone takes its tokens with it; no row is left like this
+	return tokenOwner{}, nil // an owner gone takes its tokens with it; no row is left like this
+}
+
+// TokenQuery selects the tokens of Tokens.Page, every token of every owner when only Limit is
+// set: each other field narrows.
+type TokenQuery struct {
+	Kind     string // TokenPAT or TokenDeploy
+	User     string // a live user's name or uid: its personal access tokens
+	Repo     string // <format>/<name>: the deploy tokens of that repo, not those over a mask
+	RepoMask string // the deploy tokens over that mask, as it was written
+	Live     bool   // those neither revoked nor expired now
+	After    int64  // the id of the last token of the page before
+	Limit    int
+}
+
+// Page returns the tokens q keeps whose id is above q.After, by id, which is the order of their
+// creation, at most q.Limit, the revoked and expired ones included unless q.Live: personal
+// access tokens of every user, a deleted user's under the name it had, and deploy tokens of
+// every repo and over every mask (docs/api.md, Every token). A kind that is neither, a repo
+// that is not <format>/<name> and a mask that breaks the grammar of rbac.md §3 are errors
+// wrapping ErrInvalid; a user or a repo that does not exist has no token.
+func (s *Tokens) Page(ctx context.Context, q TokenQuery) ([]Token, error) {
+	f, err := s.filter(ctx, q)
+	if errors.Is(err, index.ErrNotFound) {
+		return []Token{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	rows, err := s.Index.ListTokenPage(ctx, f)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list the tokens: %w", err)
+	}
+	out := make([]Token, 0, len(rows))
+	owners := map[string]tokenOwner{} // a page reads each owner once
+	for i := range rows {
+		row := &rows[i]
+		key := "mask " + row.RepoMask
+		if row.UserID != nil {
+			key = fmt.Sprint("user ", *row.UserID)
+		} else if row.RepoID != nil {
+			key = fmt.Sprint("repo ", *row.RepoID)
+		}
+		own, ok := owners[key]
+		if !ok {
+			if own, err = tokenOwnerOf(ctx, s.Index, row); err != nil {
+				return nil, fmt.Errorf("auth: list the tokens: %w", err)
+			}
+			owners[key] = own
+		}
+		out = append(out, tokenResource(row, own))
+	}
+	return out, nil
+}
+
+// filter returns the index.TokenFilter of q, an error wrapping ErrInvalid for a field that
+// breaks its rule, or index.ErrNotFound when q names a user or a repo that does not exist.
+func (s *Tokens) filter(ctx context.Context, q TokenQuery) (index.TokenFilter, error) {
+	f := index.TokenFilter{Kind: q.Kind, RepoMask: q.RepoMask, After: q.After, Limit: q.Limit}
+	if q.Kind != "" && q.Kind != TokenPAT && q.Kind != TokenDeploy {
+		return f, invalidf("kind: %q is neither %s nor %s", q.Kind, TokenPAT, TokenDeploy)
+	}
+	if q.RepoMask != "" {
+		if err := checkMask(q.RepoMask, nil); err != nil {
+			return f, err
+		}
+	}
+	if q.Repo != "" {
+		formatName, name, err := splitRepo(q.Repo)
+		if err != nil {
+			return f, err
+		}
+		r, err := s.Index.GetRepo(ctx, formatName, name)
+		if err != nil {
+			return f, fmt.Errorf("auth: list the tokens of repo %s: %w", q.Repo, err)
+		}
+		f.RepoID = &r.ID
+	}
+	if q.User != "" {
+		u, err := liveUser(ctx, s.Index, q.User)
+		if err != nil {
+			return f, fmt.Errorf("auth: list the tokens of user %s: %w", q.User, err)
+		}
+		f.UserID = &u.ID
+	}
+	if q.Live {
+		f.LiveAt = s.now()
+	}
+	return f, nil
+}
+
+// liveUser returns the live user that s names, a name or a uid; a uid of a deleted user is
+// index.ErrNotFound, as a name that no live user has.
+func liveUser(ctx context.Context, r index.Reader, s string) (*index.User, error) {
+	if !index.IsUID(s) {
+		return r.GetUser(ctx, s)
+	}
+	u, err := r.GetUserByUID(ctx, s)
+	if err == nil && u.DeletedAt != nil {
+		return nil, fmt.Errorf("%w: user %s was deleted", index.ErrNotFound, s)
+	}
+	return u, err
 }
 
 // alive reports whether t is neither revoked nor expired at now.

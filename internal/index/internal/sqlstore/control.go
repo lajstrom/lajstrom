@@ -265,6 +265,33 @@ func (c *conn) ListTokens(ctx context.Context, userID, repoID *int64) ([]index.T
 	return getAll(ctx, c, "tokens", tokenDests, "SELECT "+tokCols+" FROM tokens"+w.clause()+" ORDER BY id", w.args...)
 }
 
+// ListTokenPage returns the tokens that f keeps whose id is above f.After, by id, at most
+// f.Limit, on the primary key.
+func (c *conn) ListTokenPage(ctx context.Context, f index.TokenFilter) ([]index.Token, error) {
+	if f.Limit < 1 {
+		return []index.Token{}, nil
+	}
+	var w where
+	w.add("id > ?", f.After)
+	if f.Kind != "" {
+		w.add("kind = ?", f.Kind)
+	}
+	if f.UserID != nil {
+		w.add("user_id = ?", *f.UserID)
+	}
+	if f.RepoID != nil {
+		w.add("repo_id = ?", *f.RepoID)
+	}
+	if f.RepoMask != "" {
+		w.add("repo_mask = ?", f.RepoMask)
+	}
+	if !f.LiveAt.IsZero() {
+		w.add("revoked_at IS NULL AND (expires_at IS NULL OR expires_at >= ?)", c.d.EncodeTime(f.LiveAt))
+	}
+	return getAll(ctx, c, "a page of tokens", tokenDests, "SELECT "+tokCols+" FROM tokens"+w.clause()+" ORDER BY id LIMIT ?",
+		append(w.args, f.Limit)...)
+}
+
 // CreateToken inserts t.
 func (c *conn) CreateToken(ctx context.Context, t *index.Token) error {
 	t.ExpiresAt, t.LastUsedAt, t.RevokedAt = stampNull(t.ExpiresAt), stampNull(t.LastUsedAt), stampNull(t.RevokedAt)

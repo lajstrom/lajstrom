@@ -553,6 +553,18 @@ type VersionKey struct {
 	Version   string
 }
 
+// TokenFilter is what Reader.ListTokenPage keeps: each field but Limit narrows when it is set.
+type TokenFilter struct {
+	Kind     string // pat or deploy
+	UserID   *int64 // the personal access tokens of the user
+	RepoID   *int64 // the deploy tokens of the repo, not those over a mask
+	RepoMask string // the deploy tokens over the mask, as it was written
+	// LiveAt keeps the tokens neither revoked nor expired at it: expires_at at or after it.
+	LiveAt time.Time
+	After  int64 // the id of the last token of the page before
+	Limit  int
+}
+
 // RepoStats are the counts of a repo's derived rows, as Reader.RepoStats returns them
 // (docs/spec/index-schema.md, A repo's stats).
 type RepoStats struct {
