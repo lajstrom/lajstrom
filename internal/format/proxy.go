@@ -107,8 +107,8 @@ type ArtifactRef struct {
 }
 
 // Grouper is implemented by a plugin whose format has group repos (ADR 0013,
-// docs/spec/proxy-and-group.md §8): a format has the kind group when its plugin implements it.
-// It is a Proxier: the core reads a group's members with Key, FileRequest and the documents of
+// docs/spec/proxy-and-group.md §8): a format has the kind group when its plugin implements it,
+// or IndexGrouper. It is a Proxier: the core reads a group's members with Key, FileRequest and the documents of
 // Proxy.Document.
 type Grouper interface {
 	Proxier
@@ -181,6 +181,21 @@ type Prefetcher interface {
 	// from kept as ParseMetadata kept it (npm: the targets of its dist-tags). A prefetch without
 	// allVersions takes their entries. A body it cannot read gives an error wrapping ErrInvalid.
 	Pointed(name, kind string, kept []byte) ([]string, error)
+}
+
+// IndexGrouper is implemented by a plugin whose group repos have documents of their own,
+// rendered from the versions of their members as a hosted repo's are from its own
+// (docs/spec/proxy-and-group.md §8.6, #68; apt, whose suite is one render that one Release lists
+// and a key signs): a format has the kind group when its plugin implements Grouper or
+// IndexGrouper. The group's members are hosted repos, any number of them; its handlers serve it
+// as a hosted repo, its documents through CachedDocument, and the core (Proxy) does not serve it.
+type IndexGrouper interface {
+	// RenderGroupIndex renders every document of scope of group, as RenderIndex renders a hosted
+	// repo's, from the versions of members, the group's members in order, read through st; of
+	// the entries that several members have, the format's rules say which the documents list
+	// (apt: docs/spec/http-routing.md, apt, Group). index.ErrNotFound when no member has the
+	// scope.
+	RenderGroupIndex(ctx context.Context, group index.Repo, members []index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
 // MemberDocument is the document of one member of a group, as the member serves it.

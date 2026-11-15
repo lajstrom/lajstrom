@@ -10,8 +10,9 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// Index is a partial index.Store for tests: GetRepo over Repos, and index_cache in memory
-// (GetIndexCache, IndexCacheGeneration, PutIndexCache, InvalidateIndexCache). Tx runs fn with
+// Index is a partial index.Store for tests: GetRepo over Repos, ListGroupMembers over Members,
+// and index_cache in memory (GetIndexCache, IndexCacheGeneration, PutIndexCache,
+// InvalidateIndexCache). Tx runs fn with
 // the Index itself, so a rollback keeps what fn wrote. Every other method panics through the nil
 // embedded Store; add methods only when a test needs them. Use it as a pointer and set the
 // fields before the first call.
@@ -25,6 +26,8 @@ type Index struct {
 	GetRepoErr error
 	// GetRepoCalls counts the calls of GetRepo, failed ones included.
 	GetRepoCalls atomic.Int64
+	// Members are the members of each group, by the group's id, in order.
+	Members map[int64][]index.Repo
 
 	mu    sync.Mutex
 	cache map[cacheKey]index.Cache
@@ -50,6 +53,11 @@ func (i *Index) GetRepo(_ context.Context, format, name string) (*index.Repo, er
 		}
 	}
 	return nil, fmt.Errorf("%w: repo %s/%s", index.ErrNotFound, format, name)
+}
+
+// ListGroupMembers returns the Members of the group, nil for a repo that has none.
+func (i *Index) ListGroupMembers(_ context.Context, groupID int64) ([]index.Repo, error) {
+	return i.Members[groupID], nil
 }
 
 // GetIndexCache returns a copy of the cached document, or an error wrapping index.ErrNotFound.

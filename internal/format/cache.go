@@ -22,6 +22,11 @@ import (
 // are stored only while it is current: a render that an invalidation overtook on Postgres (read
 // committed) is answered and not stored, so the next request renders again (INV-27). Errors of
 // the store and of RenderIndex are returned as they are.
+//
+// Of a repo of kind group, p is an IndexGrouper, else the error wraps ErrUnsupported: the scope
+// is rendered with RenderGroupIndex over the group's members (ListGroupMembers, in the same
+// transaction), and the documents are kept under the group, with the group's generation, which
+// an invalidation of a member's documents increments (docs/spec/proxy-and-group.md §8.6).
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error) {
 	var found *index.Cache
 	err := st.Tx(ctx, func(tx index.Writer) error {
@@ -37,7 +42,7 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 		if err != nil {
 			return err
 		}
-		docs, err := p.RenderIndex(ctx, repo, scope, tx)
+		docs, err := render(ctx, tx, p, repo, scope)
 		if err != nil {
 			return err
 		}
@@ -68,6 +73,22 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 		return nil, fmt.Errorf("%w: %s document of %s/%s %q", index.ErrNotFound, kind, repo.Format, repo.Name, scope)
 	}
 	return found, nil
+}
+
+// render renders scope of repo: RenderIndex, or RenderGroupIndex over the members of a group.
+func render(ctx context.Context, r index.Reader, p Plugin, repo index.Repo, scope IndexScope) ([]Document, error) {
+	if repo.Kind != index.KindGroup {
+		return p.RenderIndex(ctx, repo, scope, r)
+	}
+	g, ok := p.(IndexGrouper)
+	if !ok {
+		return nil, fmt.Errorf("%w: format %s renders no documents of a group", ErrUnsupported, repo.Format)
+	}
+	members, err := r.ListGroupMembers(ctx, repo.ID)
+	if err != nil {
+		return nil, fmt.Errorf("format: the members of %s/%s: %w", repo.Format, repo.Name, err)
+	}
+	return g.RenderGroupIndex(ctx, repo, members, scope, r)
 }
 
 // ServeDocument writes c with contentType, ETag `"<sha256>"` and Last-Modified RenderedAt through

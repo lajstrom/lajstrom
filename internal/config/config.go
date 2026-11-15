@@ -349,6 +349,10 @@ type Upstream struct {
 // the distribution API (ADR 0018), which no plugin serves.
 const FormatOCI = "oci"
 
+// FormatAPT is the format whose groups have hosted members only, any number of them: its plugin
+// renders a group's documents from their versions (docs/spec/proxy-and-group.md §8.6).
+const FormatAPT = "apt"
+
 // DockerHubHost reports whether host is Docker Hub's registry: registry-1.docker.io or
 // docker.io, the hosts of the vendor table's realm auth.docker.io.
 func DockerHubHost(host string) bool {

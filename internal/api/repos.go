@@ -173,8 +173,12 @@ type Repos struct {
 	// nil means format.Lookup and the plugin's format.Proxier.
 	Proxiers func(formatName string) (format.Proxier, bool)
 	// Groupers reports whether a format's plugin has group repos; nil means format.Lookup and
-	// the plugin's format.Grouper.
+	// the plugin's format.Grouper or format.IndexGrouper.
 	Groupers func(formatName string) bool
+	// IndexGroupers reports whether a format's groups render documents of their own from hosted
+	// members, any number of them, and take no merge pattern (docs/spec/proxy-and-group.md §8.6);
+	// nil means format.Lookup and the plugin's format.IndexGrouper.
+	IndexGroupers func(formatName string) bool
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
@@ -211,7 +215,7 @@ func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo,
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
 		var members []int64
 		if group != nil {
-			if members, err = checkMembers(ctx, w, req.Format, group.Members); err != nil {
+			if members, err = checkMembers(ctx, w, req.Format, group.Members, s.indexGrouper(req.Format)); err != nil {
 				return err
 			}
 		}
@@ -339,7 +343,7 @@ func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req
 	}
 	var members []int64
 	if req.Group != nil {
-		if members, err = applyGroup(ctx, w, row, req.Group, req.Admin, changed); err != nil {
+		if members, err = applyGroup(ctx, w, row, req.Group, req.Admin, s.indexGrouper(row.Format), changed); err != nil {
 			return nil, err
 		}
 	}

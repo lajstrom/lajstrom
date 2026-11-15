@@ -656,7 +656,7 @@ const maxMembers = 16
 // validateMembers checks the members of the group r against the repos of the configuration
 // (byID: <format>/<name> to its index): a list of 1 to 16 names, none twice, none a group and at
 // most one hosted among those the configuration declares, but in a group of oci repos, whose
-// routes say which hosted member serves a path. A member it does not declare may be in the
+// routes say which hosted member serves a path, and of apt repos, whose members are all hosted. A member it does not declare may be in the
 // control plane already: the bootstrap checks it there, as it checks merge and an oci group's
 // routes (docs/spec/proxy-and-group.md §12.1).
 func (r Repo) validateMembers(p *problems, key string, repos []Repo, byID map[string]int) {
@@ -679,7 +679,7 @@ func (r Repo) validateMembers(p *problems, key string, repos []Repo, byID map[st
 		}
 		seen[name] = i
 		if j, declared := byID[r.Format+"/"+name]; declared {
-			hosted = memberKind(p, field, name, repos[j].Kind, i, hosted, r.Format == FormatOCI)
+			hosted = memberKind(p, field, name, repos[j].Kind, i, hosted, r.Format == FormatOCI || r.Format == FormatAPT)
 		}
 	}
 }
