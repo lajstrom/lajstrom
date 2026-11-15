@@ -36,18 +36,23 @@ const maxFields = 8 << 20
 // bytes again; 400 with the reason; 409 "File already exists" for other bytes under the file
 // name's version and variant, which twine --skip-existing skips; 413 over policy.maxFileSize.
 // A wheel with a build tag that the index has under the earlier form of its variant goes to that
-// tag (ParamVariant). It needs write on the repo.
+// tag (ParamVariant). It needs write on the repo. A proxy takes no upload: 405 once the
+// principal may read it (format.WriteTarget).
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("pypi: the route has no repo"))
 		return
 	}
-	ctx := r.Context()
-	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
+	ctx, repo, err := format.WriteTarget(r.Context(), h.deps, repo)
+	if err == nil {
+		err = format.Authorize(ctx, h.deps, auth.ActionWrite, repo)
+	}
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
+	r = r.WithContext(ctx)
 	if h.deps.Ingest == nil {
 		h.fail(w, r, errors.New("pypi: no publisher in format.Deps"))
 		return
@@ -76,16 +81,10 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := auth.PrincipalFrom(ctx)
-	params := map[string]string{ParamUploadedBy: principal.String()}
-	if d.earlier != "" {
-		earlier, err := h.atEarlierVariant(ctx, repo, d, form.filename)
-		if err != nil {
-			h.fail(w, r, err)
-			return
-		}
-		if earlier {
-			params[ParamVariant] = d.earlier
-		}
+	params, err := h.uploadParams(ctx, repo, d, form.filename, principal)
+	if err != nil {
+		h.fail(w, r, err)
+		return
 	}
 	pub, err := h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: d.name,
 		File:   format.UploadedFile{Name: form.filename, Size: -1, ContentType: part.Header.Get("Content-Type")},
@@ -103,6 +102,21 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Content-Digest", pub.Digest.String())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "OK "+form.filename+" "+pub.Entry.Name+" "+pub.Entry.Version+"\n")
+}
+
+// uploadParams returns the parameters of the upload of filename, described by d, by principal:
+// its uploader, and the earlier form of the variant of a wheel with a build tag that the index has
+// under that form (ParamVariant).
+func (h *handlers) uploadParams(ctx context.Context, repo index.Repo, d dist, filename string, principal auth.Principal) (map[string]string, error) {
+	params := map[string]string{ParamUploadedBy: principal.String()}
+	if d.earlier == "" {
+		return params, nil
+	}
+	earlier, err := h.atEarlierVariant(ctx, repo, d, filename)
+	if earlier {
+		params[ParamVariant] = d.earlier
+	}
+	return params, err
 }
 
 // atEarlierVariant reports whether the index has filename, a wheel with a build tag, in the

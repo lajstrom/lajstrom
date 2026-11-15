@@ -97,7 +97,7 @@ audit alike.
 | `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1); none that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`, names that a registry's storage or routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)) | never |
 | `registry` | one of `registries[].name` of the configuration; none on a group, whose resource has no `registry` | never: the artifacts stay in the registry they were pushed to |
-| `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm, maven), or `oci`, which needs none | never |
+| `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm and maven, and pypi for a proxy), or `oci`, which needs none | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
 | `policy` | a JSON object of the keys below, or `null` for none; none on a group, whose resource has no `policy` | `PATCH`, merged |
 | `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
@@ -256,8 +256,8 @@ curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/all" \
 
 `{"kind": "hosted"}`, alone in the body, by the admin role, turns a proxy repo into a hosted one
 that keeps every version it holds ([proxy-and-group.md](spec/proxy-and-group.md) §2.6): the end of
-a move from another registry ([migrating.md](migrating.md)). npm only, until pypi and maven have
-proxies. The dist-tags and deprecations of the upstream's packuments that the proxy kept become
+a move from another registry ([migrating.md](migrating.md)). npm only: a proxy of another format
+is `400`. The dist-tags and deprecations of the upstream's packuments that the proxy kept become
 entries of the repo's journal, through the one write path, as `npm dist-tag` and `npm deprecate`
 would write them, with an audit row each by the admin: from then on they live in the registry and
 survive a reindex. A dist-tag of a version the repo does not hold is left out. The versions do not
@@ -711,7 +711,7 @@ each as a client's miss would fetch it ([proxy-and-group.md](spec/proxy-and-grou
 the upstream's document, the claim, the download, the checksum, the ingest, and an audit row
 `proxy.fetch` per version with the caller as the principal (`proxy.reject` for one refused). It
 is how packages move from another registry (#441). `manage` on the repo, checked before the body
-is read; npm, until pypi and maven have proxies (#67, #68), and `oci`, which takes images (below).
+is read; npm, and `oci`, which takes images (below); a proxy of another format is `400`.
 
 ```json
 {"names": ["@acme/widgets", "left-pad"], "allVersions": false}

@@ -35,6 +35,9 @@ const (
 	contentTypeText = "text/html; charset=utf-8"
 )
 
+// uploadTimeLayout is how a page writes upload-time (PEP 700).
+const uploadTimeLayout = "2006-01-02T15:04:05.000000Z"
+
 // apiVersion is meta.api-version of the JSON and pypi:repository-version of the HTML: 1.1 of
 // PEP 700, with versions, size and upload-time.
 const apiVersion = "1.1"
@@ -77,9 +80,9 @@ type projectFile struct {
 	RequiresPython string            `json:"requires-python,omitempty"`
 	CoreMetadata   any               `json:"core-metadata"`
 	DistInfo       any               `json:"dist-info-metadata"`
-	Size           int64             `json:"size"`
-	UploadTime     string            `json:"upload-time"`
-	Yanked         any               `json:"yanked"` // false; PEP 592: the reason, or true for a yank without one
+	Size           *int64            `json:"size,omitempty"`        // nil on a proxy's page when the upstream gave none
+	UploadTime     string            `json:"upload-time,omitempty"` // "" on a proxy's page when the upstream gave none
+	Yanked         any               `json:"yanked"`                // false; PEP 592: the reason, or true for a yank without one
 	coreSHA256     string
 	yanked         *string // the yank's reason, nil when the file is not yanked
 }
@@ -124,8 +127,8 @@ func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]pr
 		for _, f := range fs {
 			pf := projectFile{
 				Filename: f.Name, URL: fileURL(pkg.Name, v.Version, f.Name), Hashes: map[string]string{"sha256": f.Digest.Encoded()},
-				RequiresPython: md.RequiresPython, CoreMetadata: false, DistInfo: false, Size: f.Size,
-				UploadTime: v.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000Z"), Yanked: false,
+				RequiresPython: md.RequiresPython, CoreMetadata: false, DistInfo: false, Size: &f.Size,
+				UploadTime: v.CreatedAt.UTC().Format(uploadTimeLayout), Yanked: false,
 			}
 			if reason, ok := yanked[v.Version]; ok {
 				pf.yanked, pf.Yanked = &reason, true
@@ -169,8 +172,36 @@ func fileURL(project, version, filename string) string {
 
 // projectPage renders the page of a project in both kinds.
 func projectPage(project string, files []projectFile, versions []string) ([]format.Document, error) {
+	j, err := pageJSON(project, apiVersion, files, versions)
+	if err != nil {
+		return nil, err
+	}
+	return []format.Document{
+		{Kind: kindHTML, Path: "simple/" + project + "/", ContentType: contentTypeText, Content: pageHTML(project, apiVersion, files)},
+		{Kind: kindJSON, Path: "simple/" + project + "/", ContentType: contentTypeJSON, Content: j},
+	}, nil
+}
+
+// pageJSON renders the page of a project in the JSON form of PEP 691, of the API version
+// version.
+func pageJSON(project, version string, files []projectFile, versions []string) ([]byte, error) {
+	if files == nil {
+		files = []projectFile{}
+	}
+	page := struct {
+		Meta     map[string]string `json:"meta"`
+		Name     string            `json:"name"`
+		Versions []string          `json:"versions"`
+		Files    []projectFile     `json:"files"`
+	}{map[string]string{"api-version": version}, project, versions, files}
+	return marshal(page)
+}
+
+// pageHTML renders the page of a project in the HTML form of PEP 503, of the API version
+// version.
+func pageHTML(project, version string, files []projectFile) []byte {
 	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html>\n  <head>\n    <meta name=\"pypi:repository-version\" content=\"" + apiVersion + "\">\n")
+	b.WriteString("<!DOCTYPE html>\n<html>\n  <head>\n    <meta name=\"pypi:repository-version\" content=\"" + html.EscapeString(version) + "\">\n")
 	b.WriteString("    <title>Links for " + html.EscapeString(project) + "</title>\n  </head>\n  <body>\n")
 	b.WriteString("    <h1>Links for " + html.EscapeString(project) + "</h1>\n")
 	for _, f := range files {
@@ -187,23 +218,7 @@ func projectPage(project string, files []projectFile, versions []string) ([]form
 		b.WriteString(">" + html.EscapeString(f.Filename) + "</a><br/>\n")
 	}
 	b.WriteString("  </body>\n</html>\n")
-	if files == nil {
-		files = []projectFile{}
-	}
-	page := struct {
-		Meta     map[string]string `json:"meta"`
-		Name     string            `json:"name"`
-		Versions []string          `json:"versions"`
-		Files    []projectFile     `json:"files"`
-	}{map[string]string{"api-version": apiVersion}, project, versions, files}
-	j, err := marshal(page)
-	if err != nil {
-		return nil, err
-	}
-	return []format.Document{
-		{Kind: kindHTML, Path: "simple/" + project + "/", ContentType: contentTypeText, Content: []byte(b.String())},
-		{Kind: kindJSON, Path: "simple/" + project + "/", ContentType: contentTypeJSON, Content: j},
-	}, nil
+	return []byte(b.String())
 }
 
 // projectList renders the project list in both kinds.

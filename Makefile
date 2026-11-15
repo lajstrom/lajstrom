@@ -66,6 +66,7 @@ FUZZ_TARGETS ?= \
 	./internal/format/pypi:FuzzZipEntries \
 	./internal/format/pypi:FuzzSdistInspector \
 	./internal/format/pypi:FuzzZipInspector \
+	./internal/format/pypi:FuzzUpstreamPage \
 	./internal/format/maven:FuzzPOM \
 	./internal/format/npm:FuzzPackageJSON \
 	./internal/format/npm:FuzzTarballInspector \
