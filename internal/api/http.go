@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 	"github.com/lajstrom/lajstrom/internal/webhook"
 )
@@ -65,6 +66,13 @@ type Options struct {
 	// Webhooks is the service behind the webhooks of a repo and of /api/v1/webhooks
 	// (docs/spec/webhooks.md); nil answers them 501 once the request may manage them.
 	Webhooks *webhook.Service
+	// Providers reads the manifests and referrers of GET …/versions/{version}/manifest and
+	// …/referrers from the registry of a repo (docs/spec/http-routing.md §4, #951); nil answers
+	// them 501.
+	Providers provider.Set
+	// MaxManifestSize is the largest manifest GET …/versions/{version}/manifest reads, in bytes
+	// (server.maxManifestSize); zero or negative means 4 MiB.
+	MaxManifestSize int64
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
@@ -106,6 +114,10 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  one version, its variants and their files
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/attachments[?variant=&kind=&predicateType=&verified=&limit=]
 //	                                                   its signatures, SBOMs, scans and attestations with their labels
+//	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/manifest[?variant=]  its variants' manifests,
+//	                                                   read from the registry; ETag and If-None-Match for one
+//	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/referrers[?variant=&artifactType=]
+//	                                                   its variants' referrers, as the registry lists them
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=&force=]  delete a version, its referrers first;
 //	                                                   If-Match and If-Unmodified-Since make it conditional
 //	PUT    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank  yank a pypi version, {"reason"} optional
@@ -159,9 +171,12 @@ func New(o Options) http.Handler {
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
-		registries: o.Registries}
+		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
+	}
+	if h.maxManifest <= 0 {
+		h.maxManifest = defaultMaxManifestSize
 	}
 	if h.info.Formats == nil {
 		h.info.Formats = []FormatInfo{}
@@ -214,6 +229,8 @@ func (h *handler) routes() []route {
 		{"PUT /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.yankVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.unyankVersion},
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/attachments", h.listAttachments},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/manifest", h.getManifests},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/referrers", h.listReferrers},
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"POST /api/v1/repos/{format}/{repo}/prefetch", h.prefetch},
@@ -288,7 +305,11 @@ type handler struct {
 	proofs        Proofs
 	// registries is Options.Registries.
 	registries RegistryReporter
-	log        *slog.Logger
+	// providers is Options.Providers; maxManifest is Options.MaxManifestSize, 4 MiB when it was
+	// not positive.
+	providers   provider.Set
+	maxManifest int64
+	log         *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
