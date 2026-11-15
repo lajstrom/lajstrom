@@ -869,7 +869,9 @@ longer than `reconcile.graceAge` is outside them
   second live replica, and the heartbeat of `serve`, which compares the clocks); on SQLite a
   start deletes a refusing row first when its process was of the same host, boot and PID
   namespace and the kernel says it is gone (`processGone`: no process has its PID, or one that
-  started at another time; #720); the CLI's `checkClock`, before `reindex` and `admin` open the index (#563).
+  started at another time; #720), or when it was of the same boot and held the lock of the lock
+  file next to the SQLite file that the start holds now (`lockGone`, `flock(2)`; #752); the CLI's
+  `checkClock`, before `reindex` and `admin` open the index (#563).
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
   `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `PackageRace`,
   `ReferrersLock`, `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`,
@@ -887,8 +889,9 @@ longer than `reconcile.graceAge` is outside them
   `reindex` and `admin` on a host more than 60 s off refuse to run, naming the skew; a clock
   that moves away during a long run is not compared again until the next command. A second replica on one
   SQLite file is refused when it starts, unless the kernel says its process is gone; a row the
-  kernel cannot say that of (another host, a container restarted in a new PID namespace) refuses
-  starts until it is stale, 2 minutes after its last beat. A replica that stood still for 2
+  kernel cannot say that of (another host or boot, a container restarted in a new PID namespace
+  whose process held no lock of the lock file) refuses starts until it is stale, 2 minutes after
+  its last beat. A replica that stood still for 2
   minutes while another started is not ready from its next heartbeat on, and both run until the
   operator stops one.
 - **Status.** `holds`.
