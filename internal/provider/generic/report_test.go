@@ -2,6 +2,8 @@ package generic
 
 import (
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,5 +52,25 @@ func TestReport(t *testing.T) {
 	clk.add(breakerCooldown)
 	if s := p.Report().Breaker; s != provider.BreakerHalfOpen {
 		t.Errorf("breaker after the cooldown: %s, want half-open", s)
+	}
+}
+
+// TestVendorsHaveTiers: every vendor the probe can detect has a row in the table Support tiers
+// of docs/registries/README.md, which GET /api/v1/registries answers its tier from (#953).
+func TestVendorsHaveTiers(t *testing.T) {
+	md, err := os.ReadFile("../../../docs/registries/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(md), "\n## Support tiers\n")
+	if !ok {
+		t.Fatal("docs/registries/README.md has no section Support tiers")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	for _, v := range []vendor{vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorNexus, vendorGitea, vendorForgejo,
+		vendorJFrog, vendorZot, vendorDocker, vendorQuay, vendorECR, vendorDistribution} {
+		if !strings.Contains(section, "\n| `"+string(v)+"` |") {
+			t.Errorf("the vendor %s has no row in Support tiers", v)
+		}
 	}
 }

@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -30,7 +34,7 @@ func TestRegistries(t *testing.T) {
 	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Auth: auth.NewRBAC(auth.RBACOptions{Index: f.st, Log: f.repos.Log}),
 		Registries: fakeRegistries{
 			{Name: "other", Type: "generic", URL: "https://registry.example", Status: RegistryStatus{State: RegistryDown, Breaker: provider.BreakerOpen}},
-			{Name: "local", Type: "generic", URL: "http://zot:5000", Prefix: "lajstrom/", Capabilities: caps,
+			{Name: "local", Type: "generic", URL: "http://zot:5000", Prefix: "lajstrom/", Capabilities: caps, Vendor: new("zot"), Support: new(TierCI),
 				Status: RegistryStatus{State: RegistryOK, Breaker: provider.BreakerClosed}},
 			{Name: "unused", Type: "ecr", URL: "https://1.dkr.ecr.eu-west-1.amazonaws.com", Status: RegistryStatus{State: RegistryOK, Breaker: provider.BreakerClosed}},
 		}}))
@@ -38,16 +42,16 @@ func TestRegistries(t *testing.T) {
 	var got map[string]any
 	decodeJSON(t, f.doAs(http.MethodGet, "/api/v1/registries", "", root, rootPassword), http.StatusOK, &got)
 	wantJSON(t, "the registries", got, `{"replica": "lajstrom-a 7", "registries": [
-		{"name": "local", "type": "generic", "url": "http://zot:5000", "prefix": "lajstrom/",
+		{"name": "local", "type": "generic", "url": "http://zot:5000", "prefix": "lajstrom/", "vendor": "zot", "support": "ci",
 		 "capabilities": {"createOnPush": false, "referrers": true, "catalog": false, "deleteManifest": false, "immutableTags": false,
 			"blobRedirect": false, "referrersAlwaysTag": false, "maxBlobSize": 0, "consistency": "strong", "consistencyBound": "0s",
 			"maxNameDepth": 0, "maxNameLength": 246, "tagsFoldCase": false, "buildRoutes": false},
 		 "repos": ["pypi/libs", "raw/assets", "raw/scratch"],
 		 "status": {"state": "ok", "checkedAt": null, "answeredAt": null, "latencyMs": null, "message": null, "breaker": "closed"}},
-		{"name": "other", "type": "generic", "url": "https://registry.example", "prefix": "", "capabilities": null,
+		{"name": "other", "type": "generic", "url": "https://registry.example", "prefix": "", "vendor": null, "support": null, "capabilities": null,
 		 "repos": ["raw/elsewhere"],
 		 "status": {"state": "down", "checkedAt": null, "answeredAt": null, "latencyMs": null, "message": null, "breaker": "open"}},
-		{"name": "unused", "type": "ecr", "url": "https://1.dkr.ecr.eu-west-1.amazonaws.com", "prefix": "", "capabilities": null,
+		{"name": "unused", "type": "ecr", "url": "https://1.dkr.ecr.eu-west-1.amazonaws.com", "prefix": "", "vendor": null, "support": null, "capabilities": null,
 		 "repos": [],
 		 "status": {"state": "ok", "checkedAt": null, "answeredAt": null, "latencyMs": null, "message": null, "breaker": "closed"}}]}`)
 
@@ -81,5 +85,30 @@ func TestRegistriesAuthorization(t *testing.T) {
 			wantStatus(t, rr, tt.status)
 			wantChallenge(t, rr)
 		})
+	}
+}
+
+// TestSupportTiers: the server's tiers are the table Support tiers of docs/registries/README.md,
+// row for row, and a vendor that the table does not know is untested.
+func TestSupportTiers(t *testing.T) {
+	md, err := os.ReadFile("../../docs/registries/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(md), "\n## Support tiers\n")
+	if !ok {
+		t.Fatal("docs/registries/README.md has no section Support tiers")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	row := regexp.MustCompile("(?m)^\\| `([a-z]+)` \\| .* \\| `([a-z]+)` \\|$")
+	documented := map[string]string{}
+	for _, m := range row.FindAllStringSubmatch(section, -1) {
+		documented[m[1]] = m[2]
+	}
+	if fmt.Sprint(documented) != fmt.Sprint(supportTiers) {
+		t.Errorf("the table of the README = %v\nthe server's = %v", documented, supportTiers)
+	}
+	if got := SupportTier("acr"); got != TierUntested {
+		t.Errorf("SupportTier of a vendor the table does not know = %q", got)
 	}
 }

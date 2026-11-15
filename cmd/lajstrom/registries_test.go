@@ -51,8 +51,9 @@ func TestRegistryStatus(t *testing.T) {
 }
 
 // TestRegistryReport: serve reports each registry of the configuration with its provider's
-// report and its last ping, the URL and prefix but never its credentials; a provider that does
-// not report has no capabilities and a closed breaker.
+// report, the vendor's support tier, and its last ping, the URL and prefix but never its
+// credentials; a provider that does not report has no vendor, no capabilities and a closed
+// breaker.
 func TestRegistryReport(t *testing.T) {
 	caps := provider.Capabilities{Referrers: true, Catalog: true, MaxNameLength: 246}
 	zot := &reporting{pinging: pinging{Fake: &providertest.Fake{RegistryName: "zot"}},
@@ -85,14 +86,14 @@ func TestRegistryReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	const at = `"2026-11-15T10:00:00Z"`
-	want := `[{"name":"zot","type":"generic","url":"http://zot:5000","prefix":"lajstrom/",` +
+	want := `[{"name":"zot","type":"generic","url":"http://zot:5000","prefix":"lajstrom/","vendor":"zot","support":"ci",` +
 		`"capabilities":{"createOnPush":false,"referrers":true,"catalog":true,"deleteManifest":false,"immutableTags":false,` +
 		`"blobRedirect":false,"referrersAlwaysTag":false,"maxBlobSize":0,"consistency":"","consistencyBound":"0s","maxNameDepth":0,` +
 		`"maxNameLength":246,"tagsFoldCase":false,"buildRoutes":false},"repos":null,` +
 		`"status":{"state":"degraded","checkedAt":` + at + `,"answeredAt":` + at + `,"latencyMs":null,"message":null,"breaker":"half-open"}},` +
-		`{"name":"down","type":"generic","url":"https://down.example","prefix":"","capabilities":null,"repos":null,` +
+		`{"name":"down","type":"generic","url":"https://down.example","prefix":"","vendor":null,"support":null,"capabilities":null,"repos":null,` +
 		`"status":{"state":"down","checkedAt":` + at + `,"answeredAt":null,"latencyMs":null,"message":"dial tcp: connection refused","breaker":"closed"}},` +
-		`{"name":"plain","type":"generic","url":"http://plain:5000","prefix":"","capabilities":null,"repos":null,` +
+		`{"name":"plain","type":"generic","url":"http://plain:5000","prefix":"","vendor":null,"support":null,"capabilities":null,"repos":null,` +
 		`"status":{"state":"ok","checkedAt":null,"answeredAt":null,"latencyMs":null,"message":null,"breaker":"closed"}}]`
 	if string(b) != want {
 		t.Errorf("Registries =\n%s\nwant\n%s", b, want)
