@@ -1605,7 +1605,7 @@ or a digest.
 `GET /api/v1/policy/denylist` answers the deny list of policy.md §8, the entries of the repos the
 caller may read: the rules and verdicts in force that refuse, the digests and the URL paths they
 refuse. The signed form is the artifact `lajstrom/policy/denylist` in the registry, which `oras
-pull` reads through `/v2` with the admin role. `GET /api/v1/policy/key` answers the policy key's
+pull` reads from the registry with the registry's credentials, its greatest tag the newest list. `GET /api/v1/policy/key` answers the policy key's
 public key as PEM, to anyone: what `cosign verify-attestation --key` and `cosign verify-blob
 --key` take.
 

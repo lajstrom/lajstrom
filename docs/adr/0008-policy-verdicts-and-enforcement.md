@@ -170,11 +170,12 @@ the spec. These are the choices the issue left open, each with the default the s
   a component of an OCI name cannot begin with `_`, and `lajstrom` is the first segment that no
   format has and snapshots use already (manifest-profile.md §9). One JSON layer and one layer with
   its signature as `cosign sign-blob` writes it, by the server's policy key, so that `oras pull`
-  and `cosign verify-blob --key` check it with no other tool. Its tags sort by the policy
-  generation and never move; `/v2` answers `latest` as the greatest. Rejected: a moving `latest`
-  in the registry (a second exception to immutable tags), and an in-toto envelope, which `cosign
-  verify-blob` does not read without a bundle. Consequence: a consumer that pulls from the
-  registry directly lists the tags and takes the greatest.
+  and `cosign verify-blob --key` check it with no other tool. Its tags sort by the database's time
+  and the policy generation and never move. Rejected: a moving `latest` in the registry (a second
+  exception to immutable tags), and an in-toto envelope, which `cosign verify-blob` does not read
+  without a bundle. Consequence: a consumer pulls it from the registry and takes the greatest tag;
+  a read route through `/v2`, with a `latest` resolved by Lajstrom, needs a token scope outside
+  `<format>/<repo>` and is left for later.
 - **E. `DENIED` under `enforcePull`** is `403` for `GET` and `HEAD` of a manifest once its
   reference has resolved to a digest, with the reason; blobs, tag lists and referrers never.
   Rejected: `404`, which hides why and makes a client try elsewhere, and a decision before the
