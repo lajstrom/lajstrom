@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -234,7 +233,7 @@ func tagAt(d, old digest.Digest) func(answer) (monoState, string) {
 // Until every read has seen it, the reads are asked again as watch does, at most for lagLimit; a
 // read that has not seen it by then is unseen.
 func (r *run) follow(ctx context.Context, s *monoSeen, c monoChange) error {
-	at, wait := time.Now(), lagFirst
+	at, wait := lagNow(), lagFirst
 	left := map[string]int{} // reads still to make after the first that saw the change
 	for {
 		waiting, err := r.followRound(ctx, s, c, left)
@@ -246,7 +245,7 @@ func (r *run) follow(ctx context.Context, s *monoSeen, c monoChange) error {
 			return nil
 		case !waiting:
 			continue
-		case time.Since(at) >= lagLimit:
+		case lagNow().Sub(at) >= lagLimit:
 			for _, k := range readOrder {
 				if _, seen := left[k]; !seen && c.reads[k].state != nil {
 					s.unseen = append(s.unseen, c.what+", "+k)
@@ -255,10 +254,8 @@ func (r *run) follow(ctx context.Context, s *monoSeen, c monoChange) error {
 			}
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
+		if err := lagSleep(ctx, wait); err != nil {
+			return err
 		}
 		wait = min(2*wait, lagStep)
 	}

@@ -215,11 +215,33 @@ func (g *lagRegistry) delete(w http.ResponseWriter, repo, d string) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// shortLag sets lagLimit to 150ms for the test, and the clock of the lag measurements to one
+// that moves by their waits alone: a lag measured is the sum of the waits before the read that
+// saw the change, 75ms after two reads that missed it, whatever the scheduler adds (#1204).
+func shortLag(t *testing.T) {
+	t.Helper()
+	limit, now, wait := lagLimit, lagNow, lagSleep
+	t.Cleanup(func() { lagLimit, lagNow, lagSleep = limit, now, wait })
+	var mu sync.Mutex
+	at := time.Unix(0, 0)
+	lagLimit = 150 * time.Millisecond
+	lagNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return at
+	}
+	lagSleep = func(ctx context.Context, d time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		at = at.Add(d)
+		return ctx.Err()
+	}
+}
+
 // TestMeasureConsistency runs the consistency measurement against registries that see a write
 // at once, after a few reads, and not within the limit.
 func TestMeasureConsistency(t *testing.T) {
-	defer func(l time.Duration) { lagLimit = l }(lagLimit)
-	lagLimit = 150 * time.Millisecond
+	shortLag(t)
 	tests := []struct {
 		name      string
 		lag       int
@@ -256,8 +278,7 @@ func TestMeasureConsistency(t *testing.T) {
 // TestMeasureListCache: a registry that keeps a tag list for the next reads, as Quay does,
 // shows its lag only to a read after one before the write, which the measurement makes.
 func TestMeasureListCache(t *testing.T) {
-	defer func(l time.Duration) { lagLimit = l }(lagLimit)
-	lagLimit = 150 * time.Millisecond
+	shortLag(t)
 	g := &lagRegistry{cache: 2}
 	r := lagRun(t, g)
 	g.mu.Lock()
@@ -280,8 +301,7 @@ func TestMeasureListCache(t *testing.T) {
 // is gone; a registry that serves a manifest deleted for a while is eventual, one that refuses
 // the delete has its deletes not measured, and one that serves it past the limit ends them.
 func TestMeasureDeleteLag(t *testing.T) {
-	defer func(l time.Duration) { lagLimit = l }(lagLimit)
-	lagLimit = 150 * time.Millisecond
+	shortLag(t)
 	tests := []struct {
 		name      string
 		g         *lagRegistry
@@ -314,8 +334,7 @@ func TestMeasureDeleteLag(t *testing.T) {
 // which would wait out lagLimit each. A registry that lags after a real delete is still eventual,
 // though the read by tag right after the delete of "Delete a manifest by digest" met the lag.
 func TestDeletesThatLeaveTheTags(t *testing.T) {
-	defer func(l time.Duration) { lagLimit = l }(lagLimit)
-	lagLimit = 150 * time.Millisecond
+	shortLag(t)
 	const unjudged = `a delete by digest leaves the tags ("Delete a manifest by digest")`
 	tests := []struct {
 		name        string
