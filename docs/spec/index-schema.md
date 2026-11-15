@@ -164,7 +164,7 @@ and none needs a backup: a backup of the database holds them, and after a restor
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
-| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720) |
+| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 | `oidc_logins` | `id`, `kind` text (`code`, a login of the authorization code flow; `device`, a device request), `state` text null (sha256 of the state, hex), `binding` text null (sha256 of the browser's cookie), `nonce` text null, `verifier` text null (the PKCE verifier), `device_id` → oidc_logins null (`ON DELETE CASCADE`; the device request a code login approves), `device_code` text null (sha256 of the device code), `user_code` text null, `status` text (`pending`; a code login `used`; a device request `approved`, `denied`, `redeemed`), `user_id` → users null (the user a device request is approved for), `polled_at` ts null (a device request's latest poll), `created_at` ts, `expires_at` ts | the flows of rbac.md §8 across replicas (0021): unique `oidc_logins_state` on `(state)`, `oidc_logins_device_code` on `(device_code)` and `oidc_logins_user_code` on `(user_code)`, each where not null; index `oidc_logins_expires` on `(expires_at)`. A change of `status` is a compare-and-set on the status it read, so that a state, an approval and a device code are each used once. A row lives 10 minutes; the start of a login deletes the rows that expired an hour ago or more. Written by the OIDC routes only; never backed up, never rebuilt |
 
@@ -241,9 +241,16 @@ stale. A process that crashed or was killed leaves its row. When the row is of t
 process's host and of its scope, the boot and the PID namespace in `process` (Linux: the
 `boot_id` and the PID and time namespaces; macOS: `kern.bootsessionuuid`), and its PID names no
 process or one that started at another time (Linux), the process is gone: the start deletes the
-row and goes on. Otherwise (another host, a container restarted in a new PID namespace, a row
-with no `process`) `serve` on the file is refused until the row is stale, 2 minutes after its
-last beat at most; an orchestrator that restarts it on failure starts it then. A replica that
+row and goes on. On Linux and macOS `serve` also takes, before it writes its row, the
+`flock(2)` lock of `<file>-replica.lock`, a file it creates next to the SQLite file, and holds it
+until it stops; its row's `flock` names that file when it took the lock (another process holds
+it, or the file system takes no lock: `''`). The kernel drops the lock when the process ends, so
+a start that took it and finds a row of its boot (the `boot=` field of `process`) whose `flock`
+names the same file knows the row's process gone, whatever its host name and PID namespace: the
+start deletes the row and goes on. Otherwise (another host or boot, a container restarted in a
+new PID namespace whose row held no lock or another file's, a row with no `process`) `serve` on
+the file is refused until the row is stale, 2 minutes after its last beat at most; an
+orchestrator that restarts it on failure starts it then. A replica that
 stood still for that long finds its row deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
 that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
 replica coexist. At its start and at every beat a replica also compares its clock with the
@@ -607,8 +614,9 @@ the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, an
 `identities`, `identity_groups` and `oidc_logins` (#69), `0022_attachments.sql` the table
 `attachments` (#89), `0023_tokens_repo_mask.sql` the column `tokens.repo_mask` (#911),
 `0024_webhooks.sql` the tables `webhooks` and `webhook_deliveries` (#77),
-`0025_versions_oci_repo.sql` the column `versions.oci_repo` (#642), and
-`0026_users_owner.sql` the column `users.owner` (#1020); the others are named with
+`0025_versions_oci_repo.sql` the column `versions.oci_repo` (#642),
+`0026_users_owner.sql` the column `users.owner` (#1020), and
+`0027_replicas_flock.sql` the column `replicas.flock` (#752); the others are named with
 their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -711,7 +719,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0026, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0027, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
