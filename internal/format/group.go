@@ -30,8 +30,9 @@ func ViaFrom(ctx context.Context) (group index.Repo, ok bool) {
 // WriteTarget returns the repo that takes a write route of a format sent to repo, and the
 // context to serve it with (docs/spec/proxy-and-group.md §8.4): a hosted repo and ctx as they
 // are; for a group, once the principal may read the group (Authorize), its hosted member and
-// WithVia(ctx, repo); for a proxy, or a group without a hosted member, an error wrapping
-// ErrMethodNotAllowed once the principal may read it, and the denial of Authorize before that.
+// WithVia(ctx, repo); for a proxy, or a group without a hosted member or with several (an apt
+// group, docs/spec/proxy-and-group.md §8.6), an error wrapping ErrMethodNotAllowed once the
+// principal may read it, and the denial of Authorize before that.
 // The handler then authorizes the route's own action on the repo returned, with the context
 // returned, and serves the write there.
 func WriteTarget(ctx context.Context, deps Deps, repo index.Repo) (context.Context, index.Repo, error) {
@@ -49,10 +50,18 @@ func WriteTarget(ctx context.Context, deps Deps, repo index.Repo) (context.Conte
 	if err != nil {
 		return ctx, repo, fmt.Errorf("format: the members of %s: %w", id, err)
 	}
+	var hosted []index.Repo
 	for _, m := range members {
 		if m.Kind == index.KindHosted {
-			return WithVia(ctx, repo), m, nil
+			hosted = append(hosted, m)
 		}
 	}
-	return ctx, repo, fmt.Errorf("%w: the group %s has no hosted member to take writes", ErrMethodNotAllowed, id)
+	switch len(hosted) {
+	case 0:
+		return ctx, repo, fmt.Errorf("%w: the group %s has no hosted member to take writes", ErrMethodNotAllowed, id)
+	case 1:
+		return WithVia(ctx, repo), hosted[0], nil
+	}
+	return ctx, repo, fmt.Errorf("%w: the group %s has %d hosted members and takes no writes; write to one of them",
+		ErrMethodNotAllowed, id, len(hosted))
 }

@@ -167,3 +167,50 @@ func TestServeDocument(t *testing.T) {
 		})
 	}
 }
+
+// indexGrouper is a Fake that renders a group's documents (format.IndexGrouper) from the names
+// of its members, and records the members it was given.
+type indexGrouper struct {
+	formattest.Fake
+	members *[]string
+}
+
+func (g indexGrouper) RenderGroupIndex(_ context.Context, group index.Repo, members []index.Repo, scope format.IndexScope, _ index.Reader) ([]format.Document, error) {
+	content := group.Name + " " + string(scope) + ":"
+	for _, m := range members {
+		*g.members = append(*g.members, m.Name)
+		content += " " + m.Name
+	}
+	return []format.Document{{Kind: "Release", Content: []byte(content)}}, nil
+}
+
+// TestCachedDocumentGroup: a group's scope is rendered by the plugin's RenderGroupIndex over the
+// group's members, in order, and kept under the group; a plugin that is no IndexGrouper renders
+// no document of a group (docs/spec/proxy-and-group.md §8.6).
+func TestCachedDocumentGroup(t *testing.T) {
+	ctx := context.Background()
+	group := index.Repo{ID: 9, Format: "fake", Name: "all", Kind: index.KindGroup}
+	idx := &formattest.Index{Members: map[int64][]index.Repo{9: {{ID: 2, Name: "b"}, {ID: 1, Name: "a"}}}}
+	var members []string
+	p := indexGrouper{Fake: formattest.Fake{Render: func(context.Context, index.Repo, format.IndexScope) ([]format.Document, error) {
+		t.Error("RenderIndex was called for a group")
+		return nil, nil
+	}}, members: &members}
+	for range 2 {
+		c, err := format.CachedDocument(ctx, idx, p, group, "jammy", "Release")
+		if err != nil || string(c.Content) != "all jammy: b a" || c.RepoID != group.ID {
+			t.Fatalf("CachedDocument of a group = %+v, %v", c, err)
+		}
+	}
+	if len(members) != 2 || members[0] != "b" || members[1] != "a" {
+		t.Errorf("RenderGroupIndex got the members %v, once, want [b a]", members)
+	}
+	if _, err := idx.GetIndexCache(ctx, group.ID, "jammy", "Release"); err != nil {
+		t.Errorf("the group's document is not kept under the group: %v", err)
+	}
+
+	r := &renderer{docs: []format.Document{simple}}
+	if c, err := format.CachedDocument(ctx, &formattest.Index{}, r.plugin(), group, "jammy", "Release"); !errors.Is(err, format.ErrUnsupported) || r.calls != 0 {
+		t.Errorf("CachedDocument of a group of a plugin that is no IndexGrouper = %+v, %v, %d renders; want ErrUnsupported", c, err, r.calls)
+	}
+}

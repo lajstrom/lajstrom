@@ -278,3 +278,27 @@ func TestGroupResourceKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestIndexGroup: a group of a format whose groups render their own documents (apt) takes any
+// number of hosted members and no merge pattern, on a create and on a PATCH
+// (docs/spec/proxy-and-group.md §2.3, §2.5, §8.6).
+func TestIndexGroup(t *testing.T) {
+	f := newGroupFixture(t)
+	f.repos.Formats = oneOf("raw", "pypi", "npm", "apt")
+	f.repos.Groupers, f.repos.IndexGroupers = oneOf("npm", "apt"), oneOf("apt")
+	for _, name := range []string{"a", "b", "c"} {
+		f.create(t, "apt", name)
+	}
+	var got map[string]any
+	decodeJSON(t, f.do(http.MethodPost, "/api/v1/repos",
+		`{"format": "apt", "name": "all", "kind": "group", "group": {"members": ["b", "a"]}}`, admin), http.StatusCreated, &got)
+	wantJSON(t, "the group of two hosted members", got, `{"format": "apt", "name": "all", "kind": "group", "anonymousRead": false,
+		"group": {"members": ["b", "a"], "merge": []}, "createdAt": "2026-01-02T12:00:00Z", "updatedAt": "2026-01-02T12:00:00Z"}`)
+	wantStatus(t, f.do(http.MethodPatch, "/api/v1/repos/apt/all", `{"group": {"members": ["c", "b", "a"]}}`, admin), http.StatusOK)
+	wantError(t, f.do(http.MethodPost, "/api/v1/repos",
+		`{"format": "apt", "name": "merged", "kind": "group", "group": {"members": ["a"], "merge": ["x*"]}}`, admin),
+		http.StatusBadRequest, codeInvalid, "group.merge: a group of apt repos has hosted members only")
+	wantError(t, f.do(http.MethodPatch, "/api/v1/repos/apt/all", `{"group": {"merge": ["x*"]}}`, admin),
+		http.StatusBadRequest, codeInvalid, "group.merge: a group of apt repos has hosted members only")
+	wantStatus(t, f.do(http.MethodPatch, "/api/v1/repos/apt/all", `{"group": {"merge": []}}`, admin), http.StatusOK)
+}

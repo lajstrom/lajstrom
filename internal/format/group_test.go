@@ -16,8 +16,8 @@ import (
 // TestWriteTarget: a write sent to a hosted repo stays there; one sent to a group goes to its
 // hosted member once the principal may read the group, marked WithVia, and the member decides
 // the write, a principal that cannot read the member getting 403 naming it rather than 404; a
-// proxy, and a group without a hosted member, are 405 to a reader and denied to anyone else
-// (docs/spec/proxy-and-group.md §8.4, rbac.md §7).
+// proxy, a group without a hosted member and one with several (an apt group, §8.6), are 405 to
+// a reader and denied to anyone else (docs/spec/proxy-and-group.md §8.4, rbac.md §7).
 func TestWriteTarget(t *testing.T) {
 	ctx := context.Background()
 	st, err := sqlite.Open(ctx, fmt.Sprintf("file:write-target-%d?mode=memory&cache=shared", rbacDBs.Add(1)))
@@ -27,9 +27,11 @@ func TestWriteTarget(t *testing.T) {
 	repos := map[string]index.Repo{}
 	for _, r := range []index.Repo{
 		{Name: "internal", Registry: "local", Kind: index.KindHosted},
+		{Name: "other", Registry: "local", Kind: index.KindHosted},
 		{Name: "npmjs", Registry: "local", Kind: index.KindProxy},
 		{Name: "all", Kind: index.KindGroup},
 		{Name: "proxies", Kind: index.KindGroup},
+		{Name: "hosted", Kind: index.KindGroup},
 	} {
 		r.Format, r.Prefix = "npm", "npm/"+r.Name
 		must(t, st.CreateRepo(ctx, &r))
@@ -37,9 +39,11 @@ func TestWriteTarget(t *testing.T) {
 	}
 	must(t, st.SetGroupMembers(ctx, repos["all"].ID, []int64{repos["npmjs"].ID, repos["internal"].ID}))
 	must(t, st.SetGroupMembers(ctx, repos["proxies"].ID, []int64{repos["npmjs"].ID}))
+	must(t, st.SetGroupMembers(ctx, repos["hosted"].ID, []int64{repos["internal"].ID, repos["other"].ID}))
 	for _, b := range [][3]string{
 		{"user:writer", "reader", "npm/all"}, {"user:writer", "writer", "npm/internal"},
 		{"user:reader", "reader", "npm/all"}, {"user:reader", "reader", "npm/proxies"}, {"user:reader", "reader", "npm/npmjs"},
+		{"user:writer", "reader", "npm/hosted"},
 		{"user:peer", "reader", "npm/all"}, {"user:peer", "reader", "npm/internal"},
 	} {
 		must(t, st.CreateBinding(ctx, &index.Binding{Principal: b[0], Role: b[1], RepoMask: b[2]}))
@@ -62,6 +66,8 @@ func TestWriteTarget(t *testing.T) {
 		{user: "reader", repo: "npmjs", want: format.ErrMethodNotAllowed},
 		{user: "writer", repo: "npmjs", want: index.ErrNotFound},
 		{user: "reader", repo: "proxies", want: format.ErrMethodNotAllowed},
+		{user: "writer", repo: "hosted", want: format.ErrMethodNotAllowed},
+		{user: "reader", repo: "hosted", want: index.ErrNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.user+" "+tt.repo, func(t *testing.T) {
