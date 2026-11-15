@@ -157,13 +157,19 @@ December 2025 nothing created one on push.
   On Forgejo 17.0.1 `a--b`, `a---b` and `a__b` are 400 `NAME_INVALID` (measured on 2026-11-12,
   [forgejo.md](forgejo.md#what-the-provider-must-do-differently), item 4), and on Gitea 1.27.3
   and 28.3.0 too (measured on 2026-11-13; [go-gitea/gitea#40360](https://github.com/go-gitea/gitea/issues/40360),
-  [forgejo#15260](https://codeberg.org/forgejo/forgejo/issues/15260)).
+  [forgejo#15260](https://codeberg.org/forgejo/forgejo/issues/15260)). Gitea's main takes them
+  since 2026-11-14, in no release yet: [go-gitea/gitea#40363](https://github.com/go-gitea/gitea/pull/40363)
+  changed the pattern to 1.1.1's, and go-gitea/gitea#40369 backports it to `release/v28` for
+  the next 28.x (measured on the nightly of 2026-11-15,
+  [gitea.md](gitea.md#the-name-grammar-2026-11-15)). Lajstrom needs no change: the names it
+  writes since ADR 0017 have neither `__` nor a run of `-`.
 - **Nexus.** A `docker` or `oci` hosted repository answers `/v2/` on a connector port, on a
   subdomain (Pro), or since 3.83.0 on a path, `host/<repository>/<image>`
   ([routing](https://help.sonatype.com/en/ssl-and-repository-connector-configuration.html));
   inside it, any name at any depth (measured, [nexus.md](nexus.md#connectors-and-create-on-push)).
-  The `oci` format checks the 1.0 grammar, as Gitea: `a--b` and `a__b` are 400 `NAME_INVALID`
-  (measured on 2026-11-12, [nexus.md](nexus.md#again-after-352)); the `docker` format takes them.
+  The `oci` format checks the 1.0 grammar, as Gitea's releases: `a--b` and `a__b` are 400
+  `NAME_INVALID` (measured on 2026-11-12, [nexus.md](nexus.md#again-after-352)); the `docker`
+  format takes them.
 - **JFrog.** The first component is the repository key, which must exist (404 "Repository 'raw'
   not found"); below it, any depth; an image is a folder, each tag a folder in it with a
   `manifest.json` (measured, [jfrog-jcr.md](jfrog-jcr.md#the-repository-model-and-lajstroms-prefix);
