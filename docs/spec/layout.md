@@ -119,7 +119,8 @@ type Plugin interface {
 
 // Streamer is a Plugin whose frontend uploads stream into the registry (ADR 0014): the frontend
 // calls Publisher.UploadStream, Build takes the file without Open. raw, apt, pypi and npm are
-// Streamers; maven's files stream through Sessions.Add instead.
+// Streamers; maven's deploys stream through Sessions.Add instead, and maven is a Streamer for
+// the one file a proxy fetches.
 type Streamer interface {
     Plugin
     // the checksums Build needs besides sha256, and the inspector the bytes pass through

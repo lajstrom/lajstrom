@@ -25,7 +25,8 @@
 The kind is set when the repo is created; the one change is a proxy that becomes a hosted repo
 (§2.6), once and one way. A repo of any kind has the routes
 of its format: a client cannot tell a proxy or a group from a hosted repo. A format has the
-kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm.
+kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm; maven
+has both since #67 and #68.
 `oci` repos, which have no plugin, are `hosted`, `proxy` (§11) or `group` (§12): the facade
 serves their `/v2`.
 
@@ -284,7 +285,9 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    will be asked (#101), before step 4, for a held version and a fetch alike.
 4. Offline (§4.4): `404`.
 5. The name's document (§4.2) lists the version and the file: their URL and the upstream's
-   checksums. A version it does not list, or a name it does not have, is `404`.
+   checksums. A version it does not list, or a name it does not have, is `404`. A format whose
+   upstream lists no files may have a document per file: maven's is the upstream's `.sha1` of
+   the file (http-routing.md, maven, **Proxy**).
 6. **The claim.** On one replica, concurrent misses of one artifact share one fetch. Across
    replicas, the fetch takes a `fetch_claims` row keyed by repo, package path and tag (the
    plugin's `EscapeName` and the profile's `Tag`). A fresh claim of another replica: the request
@@ -296,7 +299,8 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    the depth or the length of its OCI repository; and `CheckNew` for a package the index does
    not have: Quay's `…/build`, #662) stops the fetch before any request (`403` naming the limit,
    §6; an audit row `proxy.reject`, #599): ingest would not publish it, and the upstream is not
-   at fault. The file the entry lists (npm: the tarball; an entry lists one) is
+   at fault. The file the entry lists (npm: the tarball; maven: the file asked,
+   a version of its own, manifest-profile.md §4.2; an entry lists one) is
    requested from the upstream (§9.2), and its body streams into an upload session of the
    registry through the one write path, as a client's upload does (`Publisher.UploadStream`,
    [ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)): ingest computes sha256 and the
@@ -442,8 +446,8 @@ member has the name or not.
 The plugin merges the documents of the members that take part, in member order
 (§10, `MergeGroup`): the union of their versions, and for a version that several members have,
 the first member's entry; format-level fields (npm's `dist-tags`) by the format's rules (npm:
-[http-routing.md](http-routing.md), npm, **Group**). Every link names the group. A name that no
-member has is `404`. The hosted member's document is the one its own URL serves, from its
+[http-routing.md](http-routing.md), npm, **Group**; maven: http-routing.md, maven, **Group**).
+Every link names the group. A name that no member has is `404`. The hosted member's document is the one its own URL serves, from its
 `index_cache`; a proxy member's is the one of §7.
 
 A file of `N` is served by the first member taking part that holds it, or, for a proxy member
