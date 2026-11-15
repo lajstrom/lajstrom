@@ -373,8 +373,8 @@ func (k Keys) validate(p *problems) {
 
 func (r Registry) validate(p *problems, key string) {
 	validName(p, key+".name", r.Name)
-	if r.Type != "generic" && r.Type != "ecr" {
-		p.add(key+".type", "%q is not generic or ecr", r.Type)
+	if r.Type != "generic" && r.Type != "ecr" && r.Type != "harbor" {
+		p.add(key+".type", "%q is not generic, ecr or harbor", r.Type)
 	}
 	r.validateURL(p, key)
 	if !validPrefix(r.Prefix) {
@@ -404,6 +404,7 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	r.validateTokenRealmHosts(p, key)
 	r.validateECR(p, key)
+	r.validateHarbor(p, key)
 }
 
 // validateURL checks url: the registry's base URL, http(s)://<host>[:port] (a trailing / is
@@ -553,6 +554,19 @@ func (r Registry) validateECR(p *problems, key string) {
 		r.ECR.validate(p, key+".ecr")
 	case !r.ECR.IsZero():
 		p.add(key+".ecr", "is only for type ecr")
+	}
+}
+
+// validateHarbor checks the keys of type harbor: a prefix, whose first component is the project.
+// The grammar of the prefix (validatePrefixGrammar) is that of a Harbor project name.
+func (r Registry) validateHarbor(p *problems, key string) {
+	switch {
+	case r.Type == "harbor":
+		if r.Prefix == "" {
+			p.add(key+".prefix", "must be set for type harbor: its first component is the Harbor project, e.g. \"lajstrom/\"")
+		}
+	case !r.Harbor.IsZero():
+		p.add(key+".harbor", "is only for type harbor")
 	}
 }
 
