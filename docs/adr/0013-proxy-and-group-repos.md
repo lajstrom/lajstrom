@@ -3,7 +3,8 @@
 - Status: accepted; "`oci` repos stay hosted" (point 1), and point 3 for `oci` repos, superseded by
   [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md); for groups of `oci` repos, the
   plugin's hooks of point 1 and points 6 and 7, but for the read on the group, superseded by
-  [0019](0019-oci-groups-one-member-per-repository-path.md)
+  [0019](0019-oci-groups-one-member-per-repository-path.md); amended for maven by #1152 (below,
+  Amendment)
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -162,3 +163,21 @@ and the annotations in [manifest-profile.md](../spec/manifest-profile.md) §3.1.
   time where the format has one, for quarantine.
 - Follow-up issues: the contract step for the hooks and the index methods; the npm proxy and
   group issues of M4; #67 and #68 for pypi and maven.
+
+## Amendment: a maven proxy fetches file by file (#1152, 2026-11-15)
+
+The Consequences left to #67 whether a maven proxy fetches every file of a version on its first
+miss. That needs the list of the version's files, and a Maven 2 repository has none:
+`maven-metadata.xml` lists versions, and a directory listing is a convenience of some hosts
+(Maven Central, Artifactory) that others do not serve (Google's Maven repository, GitHub
+Packages, Nexus 3's repository paths, Lajstrom's own frontend). A list guessed from the POM (the
+packaging's jar, sources, javadoc, Gradle's module) misses the classifier files many builds ask
+for (`protoc:exe:linux-x86_64`, JavaFX's per-platform jars), and once a version is held under its
+tag, a file outside its manifest could never be added.
+
+Decision: a maven proxy fetches the file a client asks for, alone, and keeps it as a version of
+that one file with a variant, its extension and classifier (manifest-profile.md §4.2). The
+document that lists a file is the upstream's `.sha1` of it, cached as any document is, and its
+sha1 is what the fetcher checks. A hosted maven repo keeps a version as one manifest; a group
+serves a file from the first member that holds it, either way. The cost: a proxy's versions have
+one manifest per file, and a signature whose upstream publishes no checksum is not served.

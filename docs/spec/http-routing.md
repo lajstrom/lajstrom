@@ -337,6 +337,63 @@ which would publish what had arrived, a version missing files (decided on #53). 
 `<repository>` with `<url>https://host/maven/<repo></url>` and a `<server>` entry with
 user/token in `settings.xml`.
 
+**Proxy** (ADR 0013, [proxy-and-group.md](proxy-and-group.md), #67). A proxy repo of maven
+mirrors a Maven 2 repository, its upstream's URL the root of the layout
+(`https://repo.maven.apache.org/maven2/`), and has the `GET` routes above:
+
+- A `maven-metadata.xml`, of an artifact (`proxy_meta` kind `maven-metadata`) or of a SNAPSHOT
+  version (kind `maven-metadata:<base>-SNAPSHOT`), is the upstream's at the same path, kept and
+  asked again as proxy-and-group.md §4 says, and served as Lajstrom writes the Maven metadata
+  model: `groupId`, `artifactId`, `version`, `versioning` (`latest`, `release`, `versions`,
+  `lastUpdated`, `snapshot`, `snapshotVersions`) and `plugins`, each when the upstream's has it.
+  So the plugin prefixes of a group, which have the path of an artifact's document
+  (`org/apache/maven/plugins/maven-metadata.xml`), pass through. The versions the repo's
+  `policy.maven.versionPolicy` does not take are left out (a release repo lists no SNAPSHOT
+  version, a snapshot repo no release), and `latest` and `release` are the upstream's while they
+  are listed, else chosen among the versions listed as a hosted repo chooses them. A SNAPSHOT
+  version's document in a release repo is `404`, and so is a file of a version of the kind the
+  repo's policy does not take: nothing is asked of the upstream for them. Without a document
+  (proxy-and-group.md §7) it is what the repo holds, rendered as a hosted repo's. Its `.md5`,
+  `.sha1`, `.sha256` and `.sha512` are of the bytes served.
+- A file of a version is fetched on its first request (proxy-and-group.md §5). The document that
+  lists it is the upstream's `.sha1` of the file (kind `file:<version directory>/<file name>`,
+  `file:1.2.0/lib-core-1.2.0.jar`), the lowercase hex of its first word; a `404` there is the
+  file's `404` and a negative row. Its sha1 is the checksum the fetcher verifies. A file whose
+  `.sha1` the upstream does not have is `404`, a signature published without checksums among
+  them. Each file fetched is a version of its own, of that one file, whose variant is its
+  extension and classifier (manifest-profile.md §4.2): the repo holds the files that clients
+  asked for, not every file of the version.
+- A checksum file of a file (`.md5`, `.sha1`, `.sha256`, `.sha512`) is served from the metadata
+  layer of the file the repo holds, as on a hosted repo; a file it does not hold is fetched
+  first.
+- The non-unique name of a SNAPSHOT version is the file of the build that the SNAPSHOT
+  version's document names for that classifier and extension (`snapshotVersions`, else
+  `snapshot`'s timestamp and build number), fetched as that build's file. `404` when it names
+  none.
+- A `PUT` is `405` with `Allow: GET, HEAD`.
+
+**Group** (ADR 0013, proxy-and-group.md §8, #68). A group has the routes above:
+
+- The `maven-metadata.xml` of an artifact merges the members' documents that take part (§8.1,
+  §8.2), in member order: `versions` their union in Maven's version order, `latest` the greatest
+  of the members' `latest` in that order, `release` likewise of their `release`, `lastUpdated`
+  the latest, the plugins their union by prefix, a prefix the first member's; `groupId` and
+  `artifactId` the first member's. A SNAPSHOT version's document takes `snapshot` and
+  `lastUpdated` from the member whose latest build is the newest (its timestamp, then its build
+  number), and `snapshotVersions` is their union by classifier and extension, each the one with
+  the newest `updated`, the first member's on a tie. A hosted member's documents are rendered
+  from its index as for its own URL. The checksum files of a document are of the merged bytes.
+- A file comes from the first member taking part that holds it (a hosted member's version holds
+  it without a variant) or, for a proxy member, that fetches it (§8.3); its checksum files from
+  the metadata layer of the version that member holds. The non-unique name of a SNAPSHOT version
+  is resolved through the merged document. A proxy member does not have a SNAPSHOT version's
+  document that its policy does not take; one asked for a file of a version its policy does not
+  take refuses it at the ingest (proxy-and-group.md §5, step 9), and the group answers from the
+  other members.
+- A `PUT`, a file, a checksum or a `maven-metadata.xml`, is the hosted member's, with `read` on
+  the group and `write` on the member (rbac.md §7), in the member's publication sessions; `405`
+  without a hosted member.
+
 ### npm (M4, ADR 0012)
 
 The npm registry API as npm 10 and 11, pnpm 9 and 10 and yarn 4 use it (the survey of ADR
@@ -778,8 +835,8 @@ inside the network. Issue #23.
 
 A proxy or a group repo ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
 [proxy-and-group.md](proxy-and-group.md)) is `/<format>/<repo>/` like a hosted one, with the
-routes of its format: a client sees no difference, and the npm routes (ADR 0012) serve all three
-kinds. What changes is who answers and what a write does.
+routes of its format: a client sees no difference, and the npm routes (ADR 0012) and the maven
+routes serve all three kinds. What changes is who answers and what a write does.
 
 | Request | proxy | group |
 | --- | --- | --- |
