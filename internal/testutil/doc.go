@@ -5,6 +5,9 @@
 // names, repository paths, file lists, checksums), so that a plugin test compares what it
 // parsed with them.
 //
+// NewCA makes certificate authorities and the certificates they issue, in memory, for the
+// tests of client certificates: no private key is written to the repository.
+//
 // The same options give the same bytes: archive members carry a fixed time and owner. The
 // compressed bytes are those of the Go release's compress/flate, so a test compares with what
 // the builder returns, not with a digest written into the test.
