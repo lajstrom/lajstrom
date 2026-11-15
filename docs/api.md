@@ -94,7 +94,7 @@ audit alike.
 
 | Field | Rule | Changes |
 | --- | --- | --- |
-| `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
+| `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`, `rpm`, `terraform`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1); none that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`, names that a registry's storage or routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)) | never |
 | `registry` | one of `registries[].name` of the configuration; none on a group, whose resource has no `registry` | never: the artifacts stay in the registry they were pushed to |
 | `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm, maven, pypi; apt a group only), or `oci`, which needs none | never |
