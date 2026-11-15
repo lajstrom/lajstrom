@@ -824,6 +824,23 @@ type Pinger interface {
     Ping(ctx context.Context) error
 }
 
+// Reporter is optional: what a Provider knows of its registry without a request, for the admin's
+// GET /api/v1/registries (http-routing.md §4). The generic and ecr providers have it.
+type Reporter interface {
+    Report() Report
+}
+type Report struct {
+    Vendor       string                     // the vendor its probe detected (docs/registries/README.md, Support tiers); "" before a probe answered
+    Capabilities *Capabilities              // as Capabilities answers them; nil before a probe succeeded
+    Breaker      BreakerState               // its registry's circuit breaker
+}
+type BreakerState string
+const (
+    BreakerClosed   BreakerState = "closed"
+    BreakerOpen     BreakerState = "open"
+    BreakerHalfOpen BreakerState = "half-open"
+)
+
 type Set interface {
     Provider(name string) (Provider, bool)
 }
@@ -951,6 +968,9 @@ type Reader interface {
     ListUsers(ctx context.Context) ([]User, error)
     GetTokenByHash(ctx context.Context, hash string) (*Token, error)
     ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
+    // ListTokenPage: the tokens the filter keeps, by id, above f.After, at most f.Limit
+    // (index-schema.md, Pages of tokens and of open sessions)
+    ListTokenPage(ctx context.Context, f TokenFilter) ([]Token, error)
     GetBootstrapToken(ctx context.Context) (*BootstrapToken, error) // used and expired too; the caller checks
     ListBindings(ctx context.Context, principal string) ([]Binding, error)
     // AuthVersion: the counter of auth_version, which every write of bindings and repos
@@ -965,6 +985,9 @@ type Reader interface {
     ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
     GetSessionByID(ctx context.Context, id int64) (*Session, error)
+    // ListOpenSessions: the repo's open publication sessions that expire after at, by id, above
+    // after, at most limit; no blob upload of the facade
+    ListOpenSessions(ctx context.Context, repoID int64, at time.Time, after int64, limit int) ([]Session, error)
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
     // webhooks (webhooks.md, index-schema.md, Webhooks): ListWebhooks by id; the delivery log
     // of a webhook newest first, the ids below before (0: from the newest), at most limit
@@ -1034,6 +1057,9 @@ type Reader interface {
     // attachments (#89, index-schema.md, Attachments): the rows of the versions ids, newest
     // first (CreatedAt descending, those without one last), then by Digest and Layer
     ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
+    // RepoStats: the counts of the derived tables of each repo of repoIDs that has a package, in
+    // no order; a repo without one has none (index-schema.md, A repo's stats)
+    RepoStats(ctx context.Context, repoIDs []int64) ([]RepoStats, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -1219,8 +1245,8 @@ type Writer interface {
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
 // PackageFacts, PackageQuery, PackageSort, PackageKey, PackagePlace, AttrValue, SearchQuery,
 // SearchRank, SearchKey, SearchHit (index-schema.md, The package list, one package and search),
-// IdentityGroup (a row of identity_groups with its identity's UserID and GroupsExpireAt and its
-// user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers,
+// TokenFilter, RepoStats, IdentityGroup (a row of identity_groups with its identity's UserID and
+// GroupsExpireAt and its user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers,
 // but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
@@ -1246,6 +1272,25 @@ type VersionKey struct {
 // LatestFunc picks the latest version of a package for ListPackageFacts among versions, its
 // distinct versions newest first by VersionKey, with state, its journal state; "" for none.
 type LatestFunc func(packageID int64, versions []string, state []JournalState) string
+
+// What ListTokenPage keeps: each field but Limit narrows when it is set; a Limit below 1 keeps none.
+type TokenFilter struct {
+    Kind     string                         // pat or deploy
+    UserID   *int64                         // the personal access tokens of the user
+    RepoID   *int64                         // the deploy tokens of the repo, not those over a mask
+    RepoMask string                         // the deploy tokens over the mask, as written
+    LiveAt   time.Time                      // those neither revoked nor expired then
+    After    int64                          // the id of the page before's last token
+    Limit    int
+}
+
+// The counts of a repo's derived rows (index-schema.md, A repo's stats).
+type RepoStats struct {
+    RepoID                                  int64
+    Packages, Versions, Manifests, Files    int64 // Versions: distinct (package, version); Manifests: rows of versions
+    Size                                    int64 // the sum of files.size
+    LastPublishedAt                         *time.Time // the newest versions.created_at
+}
 
 // Repo, for ADR 0013 (repos.upstream, repos.group):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
@@ -2163,6 +2208,12 @@ Where the merged shapes differ from the first sketch of this section, and why:
   pass as "none" is churn for nothing. A version page returns rows, as `ListVersions` does, and
   not versions grouped: the API groups them, with their pointers, as before. Its key is a
   `VersionKey` and not the API's cursor text, which stays the API's.
+- **The admin's lists and the repo's counts are methods of their own** (#957, #959, #960).
+  `ListTokenPage` comes beside `ListTokens`, whose callers want one owner's tokens whole, and
+  `ListOpenSessions` beside `GetSession`; `RepoStats` takes the ids of every repo of a list, so
+  that the list costs a fixed number of statements, not one per repo. `provider.Reporter` is
+  optional, as `Pinger` is: the API answers a provider without it with no vendor and no
+  capabilities, and a closed breaker.
 
 ## 3. Approved dependencies
 
