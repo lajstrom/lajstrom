@@ -32,28 +32,31 @@ type fakeHarbor struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	calls    map[string]int
-	uris     []string            // the request URIs of the REST API, in order
-	projects map[string]bool     // the projects that exist
-	repos    map[string][]string // project → its repositories, with the project
-	rules    map[string][]rule   // project → its immutability rules
-	fail     map[string][]int    // route → statuses of its next answers
+	mu        sync.Mutex
+	calls     map[string]int
+	uris      []string            // the request URIs of the REST API, in order
+	projects  map[string]bool     // the projects that exist
+	repos     map[string][]string // project → its repositories, with the project
+	rules     map[string][]rule   // project → its immutability rules
+	immutable map[string]bool     // full repository names that hold an immutable tag
+	fail      map[string][]int    // route → statuses of its next answers
 
 	mayCreate    bool // a system robot with project:create
 	mayList      bool // repository:list
 	mayReadRules bool // immutable-tag:list
+	mayDelete    bool // repository:delete
 }
 
 func newFakeHarbor(t *testing.T) *fakeHarbor {
 	f := &fakeHarbor{
-		t:        t,
-		calls:    map[string]int{},
-		projects: map[string]bool{"lajstrom": true},
-		repos:    map[string][]string{},
-		rules:    map[string][]rule{},
-		fail:     map[string][]int{},
-		mayList:  true, mayReadRules: true,
+		t:         t,
+		calls:     map[string]int{},
+		projects:  map[string]bool{"lajstrom": true},
+		repos:     map[string][]string{},
+		rules:     map[string][]rule{},
+		immutable: map[string]bool{},
+		fail:      map[string][]int{},
+		mayList:   true, mayReadRules: true, mayDelete: true,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v2/{$}", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, map[string]any{}) })
@@ -61,6 +64,7 @@ func newFakeHarbor(t *testing.T) *fakeHarbor {
 	mux.HandleFunc("HEAD /api/v2.0/projects", f.headProject)
 	mux.HandleFunc("POST /api/v2.0/projects", f.createProject)
 	mux.HandleFunc("GET /api/v2.0/projects/{project}/repositories", f.listRepositories)
+	mux.HandleFunc("DELETE /api/v2.0/projects/{project}/repositories/{repo}", f.deleteRepository)
 	mux.HandleFunc("GET /api/v2.0/projects/{project}/immutabletagrules", f.listRules)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if u, p, ok := r.BasicAuth(); !ok || u != robotName || p != robotSecret {
@@ -230,6 +234,32 @@ func (f *fakeHarbor) listRepositories(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{"name": names[i], "artifact_count": 1})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// deleteRepository takes the repository name below the project with its slashes escaped twice:
+// once escaped by the mux, it must hold %2F and no /.
+func (f *fakeHarbor) deleteRepository(w http.ResponseWriter, r *http.Request) {
+	project, escaped := r.PathValue("project"), r.PathValue("repo")
+	name, err := url.PathUnescape(escaped)
+	if err != nil || strings.Contains(escaped, "/") {
+		writeErr(w, http.StatusBadRequest, "BAD_REQUEST", "the repository name must be escaped twice")
+		return
+	}
+	full := project + "/" + name
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.Index(f.repos[project], full)
+	switch {
+	case !f.mayDelete:
+		writeErr(w, http.StatusForbidden, "FORBIDDEN", "forbidden")
+	case i < 0:
+		writeErr(w, http.StatusNotFound, "NOT_FOUND", "repository "+full+" not found")
+	case f.immutable[full]:
+		writeErr(w, http.StatusPreconditionFailed, "PRECONDITION", "the tag v1 configured as immutable, cannot be deleted")
+	default:
+		f.repos[project] = slices.Delete(f.repos[project], i, i+1)
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (f *fakeHarbor) listRules(w http.ResponseWriter, r *http.Request) {

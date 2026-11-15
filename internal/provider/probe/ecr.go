@@ -13,6 +13,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/ecr"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
+	"github.com/lajstrom/lajstrom/internal/provider/harbor"
 )
 
 // The probe of an ECR registry (#19). /v2 is the same API as any other registry's, answered
@@ -38,14 +39,22 @@ type backend struct {
 	cred auth.CredentialFunc
 	// repos creates and deletes repositories; nil for a registry without such an API.
 	repos repoAPI
+	// ownListing: the provider lists repositories with the registry's own API, as with repos
+	// (ECR's DescribeRepositories) and for type harbor (Harbor's REST API).
+	ownListing bool
 }
 
-// backendOf returns the backend of cfg: the generic provider, or for type ecr the ECR provider,
-// its token and its repository API. The ECR provider deletes a repository with the images in
-// it (ecr.forceDelete): the run deletes only those it created itself, in a scratch prefix that
+// backendOf returns the backend of cfg: the generic provider, for type harbor the Harbor
+// provider, whose /v2 is the generic provider's, or for type ecr the ECR provider, its token and
+// its repository API. The ECR provider deletes a repository with the images in it
+// (ecr.forceDelete): the run deletes only those it created itself, in a scratch prefix that
 // held nothing.
 func backendOf(cfg config.Registry, log *slog.Logger) (backend, error) {
-	if cfg.Type != ecr.Type {
+	switch cfg.Type {
+	case harbor.Type:
+		return backend{provider: func(log *slog.Logger) (provider.Provider, error) { return harbor.New(cfg, log) }, ownListing: true}, nil
+	case ecr.Type:
+	default:
 		return backend{provider: func(log *slog.Logger) (provider.Provider, error) { return generic.New(cfg, log) }}, nil
 	}
 	cfg.ECR.ForceDelete = true
@@ -54,9 +63,10 @@ func backendOf(cfg config.Registry, log *slog.Logger) (backend, error) {
 		return backend{}, fmt.Errorf("probe: %w", err)
 	}
 	return backend{
-		provider: func(log *slog.Logger) (provider.Provider, error) { return ecr.New(cfg, log) },
-		cred:     p.Credential,
-		repos:    p,
+		provider:   func(log *slog.Logger) (provider.Provider, error) { return ecr.New(cfg, log) },
+		cred:       p.Credential,
+		repos:      p,
+		ownListing: true,
 	}, nil
 }
 

@@ -106,7 +106,7 @@ func TestRunRefuses(t *testing.T) {
 		o    Options
 		want string
 	}{
-		{"another type", config.Registry{Name: "r", Type: "gar", URL: srv.URL}, Options{}, "only types generic and ecr"},
+		{"another type", config.Registry{Name: "r", Type: "gar", URL: srv.URL}, Options{}, "only types generic, ecr and harbor"},
 		{"ecr without a region", config.Registry{Name: "r", Type: "ecr", URL: srv.URL}, Options{}, "no AWS region"},
 		{"scratch outside the grammar", config.Registry{Name: "r", URL: srv.URL}, Options{Scratch: "Upper"}, "not a repository name"},
 		{"url with a path", config.Registry{Name: "r", URL: "ftp://x"}, Options{}, "absolute http(s) URL"},
