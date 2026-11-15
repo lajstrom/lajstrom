@@ -223,6 +223,7 @@ type Replica struct {
 	Host        string // host name
 	PID         int
 	Process     string // its boot, PID namespace and start as the OS tells them (cmd/lajstrom); "" unknown
+	Flock       string // the device and inode of the lock file next to the SQLite file it holds (cmd/lajstrom); "" none
 	Version     string // the binary's version
 	StartedAt   time.Time
 	HeartbeatAt time.Time // stale 2 minutes after the last beat

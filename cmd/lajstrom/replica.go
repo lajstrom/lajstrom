@@ -39,6 +39,7 @@ type replica struct {
 	now   func() time.Time
 	every time.Duration
 	row   index.Replica
+	lock  *os.File // the lock file of the SQLite file while this process holds its lock (Flock), nil otherwise
 
 	mu   sync.Mutex
 	lost error         // set while another replica holds the database (SQLite)
@@ -46,9 +47,11 @@ type replica struct {
 }
 
 // startReplica writes the row of this process and compares its clock with the database's. On
-// SQLite, which serves one replica, a row of another replica with a fresh heartbeat is an error
-// that names it, unless its process is known to be gone (start).
-func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time) (*replica, error) {
+// SQLite, which serves one replica, it first takes the lock of the lock file next to the SQLite
+// file, file (lockFile; file is "" for postgres and an in-memory database), and a row of another
+// replica with a fresh heartbeat is an error that names it, unless its process is known to be
+// gone (start).
+func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time, file string) (*replica, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown"
@@ -56,7 +59,11 @@ func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now fun
 	at := now()
 	r := &replica{st: st, log: log, now: now, every: replicaBeatEvery, row: index.Replica{ID: index.NewUID(at), Host: host,
 		PID: os.Getpid(), Process: thisProcess(), Version: version.Get().Version, StartedAt: at}}
+	if file != "" {
+		r.takeLock(ctx, file+lockSuffix)
+	}
 	if err := r.start(ctx, at); err != nil {
+		r.unlock()
 		return nil, held(err)
 	}
 	log.Info("replica registered in the index", "replica", r.row.ID, "host", host, "pid", r.row.PID)
@@ -64,16 +71,41 @@ func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now fun
 	return r, nil
 }
 
+// takeLock takes the lock of the lock file name for this process, and its row says so: Flock is
+// the file's identity. A lock that another process holds, or that cannot be taken, is logged,
+// and the row says none: a start after this process crashed knows it gone by its PID only, or
+// once its row is stale.
+func (r *replica) takeLock(ctx context.Context, name string) {
+	f, id, err := lockFile(name)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+	case err != nil:
+		r.log.WarnContext(ctx, "the lock file of the SQLite database not locked", "file", name, "error", err.Error())
+	case f == nil:
+		r.log.WarnContext(ctx, "another process of this host holds the lock file of the SQLite database", "file", name)
+	}
+	r.lock, r.row.Flock = f, id
+}
+
+// unlock closes the lock file, which drops its lock.
+func (r *replica) unlock() {
+	if r.lock != nil {
+		_ = r.lock.Close()
+		r.lock = nil
+	}
+}
+
 // start writes the row of this process, deleting the rows whose heartbeat is stale at at
 // (Store.StartReplica). On SQLite a fresh row of another replica refuses it; when that row's
-// process is known to be gone (processGone: a process of this host that crashed or was killed),
-// start deletes the row and tries again, up to 8 times.
+// process is known to be gone (processGone: a process of this host that crashed or was killed;
+// lockGone: a process of this boot that held the lock this process holds now), start deletes
+// the row and tries again, up to 8 times.
 func (r *replica) start(ctx context.Context, at time.Time) error {
 	var err error
 	for range 8 {
 		err = r.st.StartReplica(ctx, &r.row, at.Add(-replicaStaleAfter))
 		var c *index.ReplicaConflictError
-		if !errors.As(err, &c) || !processGone(c.Live, r.row.Host, r.row.Process) {
+		if !errors.As(err, &c) || !processGone(c.Live, r.row.Host, r.row.Process) && !lockGone(c.Live, r.row) {
 			return err
 		}
 		r.log.WarnContext(ctx, "deleting the row of a replica whose process is gone", "replica", c.Live.ID,
@@ -214,9 +246,10 @@ func (r *replica) Err() error {
 }
 
 // Stop deletes the row of this process, so that a replica started after it need not wait for
-// the row to go stale.
+// the row to go stale, then drops the lock of the lock file.
 func (r *replica) Stop(ctx context.Context) {
 	if err := r.st.StopReplica(ctx, r.row.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
 		r.log.WarnContext(ctx, "the row of this replica not deleted; it goes stale", "replica", r.row.ID, "error", err.Error())
 	}
+	r.unlock()
 }
