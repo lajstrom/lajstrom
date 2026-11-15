@@ -39,6 +39,7 @@ const (
 	routePost  = "POST /api/v2.0/projects"
 	routeList  = "GET /api/v2.0/projects/{project}/repositories"
 	routeRules = "GET /api/v2.0/projects/{project}/immutabletagrules"
+	routeDel   = "DELETE /api/v2.0/projects/{project}/repositories/{repo}"
 )
 
 func TestNew(t *testing.T) {

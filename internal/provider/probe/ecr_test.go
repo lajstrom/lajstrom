@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider/harbor"
 )
 
 // apiRepos is a registry, as ECR without a creation template, that takes writes only into the
@@ -183,5 +185,26 @@ func TestManifestsECRTakes(t *testing.T) {
 		if len(got.Layers) == 0 {
 			t.Errorf("%s: no layer", name)
 		}
+	}
+}
+
+// TestBackendOfHarbor: type harbor is probed through the Harbor provider, which lists with
+// Harbor's REST API, so that the catalog's 401 asks for no override.
+func TestBackendOfHarbor(t *testing.T) {
+	cfg := config.Registry{Name: "h", Type: harbor.Type, URL: "http://localhost:5005", Prefix: "lajstrom/"}
+	b, err := backendOf(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := b.provider(slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.(*harbor.Provider); !ok || !b.ownListing || b.repos != nil || b.cred != nil {
+		t.Errorf("backendOf(harbor) = %T, ownListing %v, repos %v", p, b.ownListing, b.repos)
+	}
+	cfg.Type = ""
+	if b, err := backendOf(cfg, nil); err != nil || b.ownListing {
+		t.Errorf("backendOf(generic) ownListing %v, %v", b.ownListing, err)
 	}
 }

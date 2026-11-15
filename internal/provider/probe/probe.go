@@ -22,6 +22,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider/ecr"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
+	"github.com/lajstrom/lajstrom/internal/provider/harbor"
 )
 
 const (
@@ -101,7 +102,8 @@ type pushed struct {
 type facts struct {
 	catalog bool // _catalog answers a catalog
 	// ownListing: the provider lists repositories with the registry's own API (ECR's
-	// DescribeRepositories), so what _catalog answers does not decide registries[].capabilities.catalog.
+	// DescribeRepositories, Harbor's REST API for type harbor), so what _catalog answers does not
+	// decide registries[].capabilities.catalog.
 	ownListing     bool
 	referrersAPI   bool // the referrers API lists the referrers; meaningful when referrersKnown
 	referrersKnown bool
@@ -150,15 +152,15 @@ func (f facts) deletesUnjudged() string {
 	return ""
 }
 
-// Run measures the row of the registry cfg (registries[].type generic or ecr) and deletes what
+// Run measures the row of the registry cfg (registries[].type generic, ecr or harbor) and deletes what
 // it pushed. It fails before pushing anything when the provider's probe fails (the registry
 // does not answer, the credentials are refused, a token realm on another host) and when the
 // scratch prefix is not empty (ErrNotEmpty); a cell it could not measure says why. An ECR
 // registry is answered with its authorization token, and when it does not create a repository
 // on push, the run creates its own with the ECR API and deletes them at the end (ecr.go).
 func Run(ctx context.Context, cfg config.Registry, o Options) (*Report, error) {
-	if cfg.Type != "" && cfg.Type != generic.Type && cfg.Type != ecr.Type {
-		return nil, fmt.Errorf("probe: registry %q is of type %s: only types generic and ecr are probed", cfg.Name, cfg.Type)
+	if cfg.Type != "" && cfg.Type != generic.Type && cfg.Type != ecr.Type && cfg.Type != harbor.Type {
+		return nil, fmt.Errorf("probe: registry %q is of type %s: only types generic, ecr and harbor are probed", cfg.Name, cfg.Type)
 	}
 	if o.MaxBlobSize <= 0 {
 		o.MaxBlobSize = DefaultMaxBlobSize
@@ -225,7 +227,7 @@ func newRun(cfg config.Registry, o Options) (*run, error) {
 		rel:     name + "/",
 		id:      id,
 		based:   map[string]bool{},
-		found:   facts{ownListing: b.repos != nil},
+		found:   facts{ownListing: b.ownListing},
 	}
 	r.report.Registry, r.report.URL, r.report.Prefix = cfg.Name, base.String(), prefix
 	r.report.Scratch = r.scratch
