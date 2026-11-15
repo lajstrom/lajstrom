@@ -797,11 +797,21 @@ is refused, the host or network cannot be reached, the connect timed out. A time
 the answer, and a connection closed or reset once the request was sent, may be the request's
 doing, and are held against its repository.
 
+Five failures in a row of one repository make the breaker send a request of its own, the
+probe: one `GET /v2/`, without credentials and without retries, that waits at most
+`registries[].timeout` ([#1119](https://github.com/lajstrom/lajstrom/issues/1119)). A probe
+that gets no answer, or a `5xx` other than `501`, is a failure no request can cause, and opens
+the breaker, unless the registry answered another request while it ran. Any other answer, a
+`401` too, ends the run of failures, as any answer does. At most one probe is in flight, and at
+most one is sent a second; each is a sample of `lajstrom_provider_request_duration_seconds` with
+the operation `ping`, as the readiness ping is.
+
 So a registry that is down or cannot be reached opens the breaker after five requests, whatever
 they ask, and so does one that fails the requests of two repositories or more. One that answers
-`5xx` or hangs while a single repository is asked opens it at the next readiness ping that fails
-(every 20 s). One that still answers `GET /v2/` while every request of the one repository asked
-fails, its storage down, does not open it: from Lajstrom that looks like a broken repository.
+`5xx` or hangs while a single repository is asked opens it after five requests and the probe,
+within `registries[].timeout` of the fifth. One that still answers `GET /v2/` while every request
+of the one repository asked fails, its storage down, does not open it: from Lajstrom that looks
+like a broken repository, and on Zot and distribution `GET /v2/` does not touch the storage.
 Five failures in a row of one repository log `registry fails the requests of one repository
 only: circuit kept closed` at warn, with the repository, at most once in 30 s: a line that
 comes back names a repository to check in the registry. Every such run is counted in
@@ -827,9 +837,9 @@ on: the client gets `503` without `Retry-After` (on `/v2` with the code `UNAVAIL
 such request counts as unanswered for the breaker, which opens after five as above. When the
 name does not resolve, the connection is refused or the host cannot be reached, which no request
 can cause, that is whatever the five asked; when the registry resets or closes the connections,
-or hangs, once they are of two repositories or a readiness ping failed among them. A request
-that ends because its client went away, or because the client's body stalled or broke off, is
-not one of them: that is the client's doing. Nor does an upload that the registry dropped
+or hangs, once they are of two repositories, a readiness ping failed among them, or the probe
+failed after them. A request that ends because its client went away, or because the client's
+body stalled or broke off, is not one of them: that is the client's doing. Nor does an upload that the registry dropped
 while Lajstrom waited on the client's body count ([below](#requests-from-clients)), though it
 fails all the same.
 
@@ -935,9 +945,10 @@ registry's do, and its circuit breaker; they are counted in the `lajstrom_provid
 under the upstream's name. Unlike a registry's, an upstream's open breaker answers `502` at once,
 without `Retry-After`. An upstream is not pinged, and its repositories are its images: one that
 refuses connections or cannot be reached opens the breaker after five requests as a registry
-does, but one that answers `5xx` or hangs while a single image is asked of it leaves the breaker
-closed, and each request waits its timeout and retries. Its timeout bounds the wait for headers,
-not a blob whose bytes stop coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
+does; one that answers `5xx` or hangs while a single image is asked of it opens it after five
+requests and the breaker's probe, which waits at most `upstreams[].timeout`
+([#1119](https://github.com/lajstrom/lajstrom/issues/1119)). Until then each request waits its
+timeout and retries. Its timeout bounds the wait for headers, not a blob whose bytes stop coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
 [§5](quickstart/oci-proxy.md#5-a-poor-link-to-the-upstream) has what a blocked, slow, dropping
 or hanging upstream does, as measured, the hosts to allow, and what to do.
 
