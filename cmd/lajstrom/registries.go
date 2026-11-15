@@ -28,6 +28,10 @@ func (r registryReport) Registries(context.Context) (string, []api.Registry) {
 		if p, ok := r.providers[c.Name].(provider.Reporter); ok {
 			rep = p.Report()
 		}
+		if rep.Vendor != "" {
+			vendor, tier := rep.Vendor, api.SupportTier(rep.Vendor)
+			reg.Vendor, reg.Support = &vendor, &tier
+		}
 		if rep.Capabilities != nil {
 			reg.Capabilities = api.CapabilitiesOf(*rep.Capabilities)
 		}
