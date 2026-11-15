@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,7 +40,14 @@ func newKubeIssuer(t *testing.T, published ...testKey) *kubeIssuer {
 			"response_types_supported": []string{"id_token"}, "subject_types_supported": []string{"public"},
 			"id_token_signing_alg_values_supported": []string{"RS256"}})
 	})
-	mux.HandleFunc("GET /openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /openid/v1/jwks", func(w http.ResponseWriter, r *http.Request) {
+		// The API server serves its JWKS as application/jwk-set+json, and answers 406 to an
+		// Accept that does not take it (seen in the spike of #1019, Kubernetes 1.37).
+		if !strings.Contains(r.Header.Get("Accept"), "application/jwk-set+json") {
+			http.Error(w, "not acceptable", http.StatusNotAcceptable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/jwk-set+json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": k.jwks})
 	})
 	k.srv = httptest.NewServer(mux)
