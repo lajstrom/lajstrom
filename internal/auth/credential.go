@@ -35,6 +35,9 @@ const (
 	// CredCertificate is a client certificate on GET /v2/token (docs/spec/rbac.md §9): the
 	// principal is cert:<name>, and its bindings decide.
 	CredCertificate CredentialKind = "certificate"
+	// CredKubernetes is a Kubernetes service-account token on /v2/token (docs/spec/rbac.md §9):
+	// the principal is k8s:<name>, and its bindings decide.
+	CredKubernetes CredentialKind = "kubernetes"
 )
 
 // Credential is how the principal of a request authenticated, beside the principal in the
@@ -93,7 +96,7 @@ func (c Credential) Limit(a Action, repo index.Repo) error {
 			return nil
 		}
 		return fmt.Errorf("%w: the deploy token has %s", ErrScope, scopeList(c.Scopes))
-	case CredPassword, CredOIDC, CredCertificate:
+	case CredPassword, CredOIDC, CredCertificate, CredKubernetes:
 	}
 	return nil
 }

@@ -896,6 +896,35 @@ func (a Auth) validate(p *problems, s Server) {
 	}
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
+	a.Kubernetes.validate(p, s)
+}
+
+// validate checks auth.kubernetes (docs/spec/rbac.md §9): each cluster's unique name, its issuer
+// as auth.oidc.issuer's and unique, and an audience, its own or server.externalURL.
+func (k Kubernetes) validate(p *problems, s Server) {
+	names, issuers := map[string]bool{}, map[string]bool{}
+	for i, c := range k.Clusters {
+		key := fmt.Sprintf("auth.kubernetes.clusters[%d]", i)
+		if err := CheckIdentitySource(c.Name); err != nil {
+			p.add(key+".name", "%s", err)
+		} else if names[c.Name] {
+			p.add(key+".name", "%q names another cluster too", c.Name)
+		}
+		names[c.Name] = true
+		u, err := url.Parse(c.Issuer)
+		switch {
+		case err != nil || !isHTTP(u) || u.RawQuery != "" || u.Fragment != "":
+			p.add(key+".issuer", "must be an absolute http(s) URL without a query")
+		case u.Scheme != "https" && !s.InsecureHTTP:
+			p.add(key+".issuer", "must be https (http only with server.insecureHTTP)")
+		case issuers[c.Issuer]:
+			p.add(key+".issuer", "%q is another cluster's issuer", c.Issuer)
+		}
+		issuers[c.Issuer] = true
+		if c.AudienceOr(s.ExternalURL) == "" {
+			p.add(key+".audience", "must be set when server.externalURL is empty")
+		}
+	}
 }
 
 // trustDomainPattern is the rule of a SPIFFE trust domain (SPIFFE ID §2.1).

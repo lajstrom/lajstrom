@@ -99,6 +99,9 @@ type Options struct {
 	// docs/spec/rbac.md §9): with TLSCertFile, the listener asks every client for one, with its
 	// bundles' CAs as the acceptable ones. nil reads no certificate.
 	ClientCerts *clientcert.Verifier
+	// Kubernetes authenticates the service-account tokens of auth.kubernetes, as the password of
+	// Basic credentials or of the form on /v2/token (docs/spec/rbac.md §9); nil takes none.
+	Kubernetes *auth.Kubernetes
 	// ClientCertHeader is the header in which a trusted proxy forwards the client certificate
 	// (auth.clientCertificates.forwardedHeader); empty reads none. It needs ClientCerts.
 	ClientCertHeader string

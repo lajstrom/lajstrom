@@ -60,7 +60,8 @@ func (d *discovery) get(ctx context.Context) (*metadata, error) {
 }
 
 // read reads and checks the discovery document: its issuer is the configured one exactly, and
-// its endpoints are absolute URLs of the allowed schemes.
+// its endpoints are absolute URLs of the allowed schemes: jwks_uri, and for a login the
+// authorization and token endpoints.
 func (d *discovery) read(ctx context.Context) (*metadata, error) {
 	var m metadata
 	if err := d.c.getJSON(ctx, strings.TrimSuffix(d.c.cfg.Issuer, "/")+"/.well-known/openid-configuration", &m); err != nil {
@@ -69,11 +70,12 @@ func (d *discovery) read(ctx context.Context) (*metadata, error) {
 	if m.Issuer != d.c.cfg.Issuer {
 		return nil, fmt.Errorf("%w: the discovery document names the issuer %q, not %q", ErrUnavailable, m.Issuer, d.c.cfg.Issuer)
 	}
-	for _, e := range []struct{ what, u string }{
-		{"authorization_endpoint", m.AuthorizationEndpoint},
-		{"token_endpoint", m.TokenEndpoint},
-		{"jwks_uri", m.JWKSURI},
-	} {
+	endpoints := []struct{ what, u string }{{"jwks_uri", m.JWKSURI}}
+	if !d.c.keysOnly {
+		endpoints = append(endpoints, struct{ what, u string }{"authorization_endpoint", m.AuthorizationEndpoint},
+			struct{ what, u string }{"token_endpoint", m.TokenEndpoint})
+	}
+	for _, e := range endpoints {
 		if err := checkEndpoint(e.u, d.c.cfg.AllowHTTP); err != nil {
 			return nil, fmt.Errorf("%w: the discovery document's %s: %w", ErrUnavailable, e.what, err)
 		}

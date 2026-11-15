@@ -234,6 +234,7 @@ func newServeCmd(a *app) *cobra.Command {
 				MaxUploads:       c.Server.MaxConcurrentUploads,
 				TrustedProxies:   edge.proxies,
 				ClientCerts:      edge.certs,
+				Kubernetes:       edge.kubernetes,
 				ClientCertHeader: c.Auth.ClientCertificates.ForwardedHeader,
 				FQDNDomain:       c.Server.FQDN.Domain,
 			})
