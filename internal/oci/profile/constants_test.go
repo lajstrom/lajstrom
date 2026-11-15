@@ -44,11 +44,11 @@ func TestTypes(t *testing.T) {
 	var names []string
 	for _, typ := range Types() {
 		names = append(names, typ.Name)
-		if typ.MetadataRequired != (typ.Name != "raw") {
+		if typ.MetadataRequired != (typ.Name != "raw" && typ.Name != "terraform") {
 			t.Errorf("type %s: MetadataRequired = %v", typ.Name, typ.MetadataRequired)
 		}
 	}
-	if want := []string{"raw", "pypi", "deb", "maven", "npm", "rpm"}; !slices.Equal(names, want) {
+	if want := []string{"raw", "pypi", "deb", "maven", "npm", "rpm", "terraform"}; !slices.Equal(names, want) {
 		t.Errorf("Types() = %v, want %v", names, want)
 	}
 	if typ, ok := TypeByFormat("apt"); !ok || typ.Name != "deb" {

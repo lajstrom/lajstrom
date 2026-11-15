@@ -44,6 +44,9 @@ const (
 	MediaTypeNpmTarball = "application/vnd.lajstrom.npm.tarball.v1.tar+gzip"
 	// MediaTypeRpmPackage is an rpm package, <name>-<version>-<release>.<arch>.rpm.
 	MediaTypeRpmPackage = "application/vnd.lajstrom.rpm.package.v1"
+	// MediaTypeTerraformModule is a terraform module archive, a gzip-compressed tar,
+	// <name>-<system>-<version>.tar.gz (#66).
+	MediaTypeTerraformModule = "application/vnd.lajstrom.terraform.module.v1.tar+gzip"
 )
 
 // Annotation keys (docs/spec/manifest-profile.md §3). The OCI keys are used from ocispec:
@@ -198,9 +201,11 @@ var types = []Type{
 	},
 	{Name: "npm", Format: "npm", FileMediaTypes: []string{MediaTypeNpmTarball}, MetadataRequired: true},
 	{Name: "rpm", Format: "rpm", FileMediaTypes: []string{MediaTypeRpmPackage}, MetadataRequired: true},
+	// A terraform manifest has no metadata layer; the plugin refuses one (#66).
+	{Name: "terraform", Format: "terraform", FileMediaTypes: []string{MediaTypeTerraformModule}},
 }
 
-// Types returns every known type: raw, pypi, deb, maven, npm, rpm. The result is a copy.
+// Types returns every known type: raw, pypi, deb, maven, npm, rpm, terraform. The result is a copy.
 func Types() []Type {
 	out := make([]Type, len(types))
 	for i, t := range types {
