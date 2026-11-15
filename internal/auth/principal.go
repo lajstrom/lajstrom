@@ -28,15 +28,23 @@ const (
 	KindGroup Kind = "group"
 	// KindAnonymous is a caller without credentials.
 	KindAnonymous Kind = "anonymous"
+	// KindCert is a client certificate that a configured CA signed (docs/spec/rbac.md §9):
+	// cert:spiffe://<trust domain>/<path> or cert:<bundle>/<name>.
+	KindCert Kind = "cert"
+	// KindKubernetes is a Kubernetes service account, by its token (docs/spec/rbac.md §9):
+	// k8s:<cluster>/<namespace>/<service account>.
+	KindKubernetes Kind = "k8s"
 )
 
 // Principal is who performs a request. Its canonical string form, used in bindings, sessions,
-// the audit log and the sub of a bearer token, is user:<uid>, token:<id>, group:<name> or
-// anonymous (docs/spec/rbac.md §1). The zero value is not a valid principal.
+// the audit log and the sub of a bearer token, is user:<uid>, token:<id>, group:<name>,
+// anonymous (docs/spec/rbac.md §1), cert:<name> or k8s:<name> (§9). The zero value is not a
+// valid principal.
 type Principal struct {
 	Kind Kind
-	// Name is a user's uid (index.NewUID), a group's name or the decimal id of a deploy token;
-	// empty for anonymous. Where a person names a user, user:<name> parses too, with the name
+	// Name is a user's uid (index.NewUID), a group's name, the decimal id of a deploy token, or
+	// the identity of a certificate or a service account (docs/spec/rbac.md §9); empty for
+	// anonymous. Where a person names a user, user:<name> parses too, with the name
 	// here; LookupUser finds the user either way.
 	Name string
 }
@@ -97,8 +105,9 @@ func (p Principal) String() string {
 	return string(p.Kind) + ":" + p.Name
 }
 
-// ParsePrincipal parses the canonical form produced by Principal.String. Errors wrap
-// ErrInvalidPrincipal.
+// ParsePrincipal parses the canonical form produced by Principal.String; a cert: or k8s:
+// principal must keep the grammar of docs/spec/rbac.md §9, and may be a pattern
+// (Principal.IsPattern). Errors wrap ErrInvalidPrincipal.
 func ParsePrincipal(s string) (Principal, error) {
 	if s == string(KindAnonymous) {
 		return Anonymous, nil
@@ -113,6 +122,11 @@ func ParsePrincipal(s string) (Principal, error) {
 	case KindToken:
 		if strings.Trim(name, "0123456789") != "" {
 			return Principal{}, fmt.Errorf("%w: %q: token id must be decimal", ErrInvalidPrincipal, s)
+		}
+		return Principal{Kind: k, Name: name}, nil
+	case KindCert, KindKubernetes:
+		if err := checkWorkloadName(k, name); err != nil {
+			return Principal{}, fmt.Errorf("%w: %q: %w", ErrInvalidPrincipal, s, err)
 		}
 		return Principal{Kind: k, Name: name}, nil
 	case KindAnonymous:

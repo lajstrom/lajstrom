@@ -22,8 +22,8 @@ const (
 // Binding is a binding as the CLI prints it and the bindings API (#47) answers it.
 type Binding struct {
 	ID int64 `json:"id"`
-	// Principal is user:<uid> or group:<name>; Name is a user's name now (the name it had, for a
-	// user since deleted), for people, and empty for a group.
+	// Principal is user:<uid>, group:<name>, cert:<name> or k8s:<name>; Name is a user's name
+	// now (the name it had, for a user since deleted), for people, and empty for the others.
 	Principal string    `json:"principal"`
 	Name      string    `json:"name,omitempty"`
 	Role      string    `json:"role"`
@@ -57,8 +57,10 @@ type Bindings struct {
 
 // Create checks the binding (principal, role, mask) by docs/spec/rbac.md §3 and creates it,
 // with one binding.create audit event. principal is user:<name> or user:<uid> of a live user,
-// stored as its user:<uid>, or group:<name> with a name of CheckGroupName, which need not have
-// members (docs/spec/rbac.md §8). It counts from the next request on, on every replica.
+// stored as its user:<uid>; group:<name> with a name of CheckGroupName, which need not have
+// members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern (§9), which need not
+// name a bundle or a cluster of the configuration. It counts from the next request on, on every
+// replica.
 func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o Origin) (*Binding, error) {
 	p, err := s.check(principal, role, mask)
 	if err != nil {
@@ -222,6 +224,9 @@ func (s *Bindings) check(principal, role, mask string) (Principal, error) {
 	if role == RoleAdmin && mask != MaskAll {
 		return Principal{}, invalidf("repoMask: an admin binding is on %s: the admin role is every repo and the system", MaskAll)
 	}
+	if role == RoleAdmin && (p.Kind == KindCert || p.Kind == KindKubernetes) {
+		return Principal{}, invalidf("role: the admin role is not for %s: principals (docs/spec/rbac.md §9)", p.Kind)
+	}
 	return p, nil
 }
 
@@ -243,22 +248,23 @@ func checkMask(mask string, formats func(string) bool) error {
 	return nil
 }
 
-// bindable returns the principal of a binding, user:<name>, user:<uid> or group:<name> with a
-// name of CheckGroupName, or an error wrapping ErrInvalid that names the field.
+// bindable returns the principal of a binding, user:<name>, user:<uid>, group:<name> with a
+// name of CheckGroupName, or a cert: or k8s: principal or pattern (ParsePrincipal checks their
+// grammar), or an error wrapping ErrInvalid that names the field.
 func bindable(principal string) (Principal, error) {
 	p, err := ParsePrincipal(principal)
 	if err != nil {
 		return Principal{}, invalidf("principal: %s", err.Error())
 	}
 	switch p.Kind {
-	case KindUser:
+	case KindUser, KindCert, KindKubernetes:
 	case KindGroup:
 		if err := CheckGroupName(p.Name); err != nil {
 			return Principal{}, invalidf("principal: %s", err.Error())
 		}
 	case KindToken, KindAnonymous:
-		return Principal{}, invalidf("principal: %s cannot be bound: a binding is for user:<name> or group:<name>; "+
-			"anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes", principal)
+		return Principal{}, invalidf("principal: %s cannot be bound: a binding is for user:<name>, group:<name>, cert:<name> "+
+			"or k8s:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes", principal)
 	}
 	return p, nil
 }

@@ -178,6 +178,16 @@ func TestIssueVerify(t *testing.T) {
 			if payload["jti"] == jti || payload["sub"] != "anonymous" || fmt.Sprint(payload["access"]) != "[]" {
 				t.Errorf("an anonymous token without access: %v", payload)
 			}
+			for _, p := range []auth.Principal{ // node and workload identity (rbac.md §9)
+				{Kind: auth.KindCert, Name: "spiffe://cluster-a/node/w1"},
+				{Kind: auth.KindKubernetes, Name: "prod/ci/builder"},
+			} {
+				tok, err := issuer.Issue(t.Context(), p, service, nil)
+				must(t, err)
+				if g, err := verifier.Verify(t.Context(), tok.Raw, service); err != nil || g.Principal != p {
+					t.Errorf("the token of %s: %+v, %v", p, g, err)
+				}
+			}
 		})
 	}
 }

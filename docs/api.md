@@ -1362,5 +1362,6 @@ curl -s -u alice "$LAJSTROM/api/v1/whoami"
 ```
 
 A user of an OIDC login also has `groups`, its groups that count now, those of its latest login
-([auth.md](auth.md#groups-and-group-bindings)). A binding's `principal` may be `group:<name>`; its
+([auth.md](auth.md#groups-and-group-bindings)). A binding's `principal` may be `group:<name>`, or a
+`cert:` or `k8s:` principal or pattern ([auth.md](auth.md#node-and-workload-identity)); its
 `name` is then absent.
