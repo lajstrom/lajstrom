@@ -482,8 +482,8 @@ a group. `<package>` is one path segment, as for the delete below.
 ### List versions: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions`
 
 A page of the package's versions, newest first, with what a retention job decides on and what
-a conditional delete compares: each version's variants with their manifest digests, its
-publish times, and the pointers that name it. It needs `read`; `404` when the repo or the
+a conditional delete compares: each version's variants with their manifest digests and facts,
+its publish times, and the pointers that name it. It needs `read`; `404` when the repo or the
 package does not exist. `<package>` is one path segment, as for the delete below.
 
 ```json
@@ -493,7 +493,14 @@ package does not exist. `<package>` is one path segment, as for the delete below
       "version": "2.1.0",
       "publishedAt": "2026-11-02T09:00:00Z",
       "lastModified": "2026-11-02T09:00:00Z",
-      "variants": [{"variant": "", "tag": "2.1.0", "digest": "sha256:…", "publishedAt": "2026-11-02T09:00:00Z"}],
+      "variants": [
+        {
+          "variant": "", "tag": "2.1.0", "digest": "sha256:…", "publishedAt": "2026-11-02T09:00:00Z",
+          "artifactType": "application/vnd.lajstrom.npm.v1", "attrs": {}, "degraded": false,
+          "size": 18321, "fileCount": 1,
+          "attachments": {"signature": 1, "sbom": 1, "scan": 0, "provenance": 1, "attestation": 0, "other": 0}
+        }
+      ],
       "pointers": [{"kind": "dist-tag", "name": "latest"}]
     }
   ],
@@ -530,12 +537,22 @@ package does not exist. `<package>` is one path segment, as for the delete below
 curl -s -u "$USER:$TOKEN" "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions?without=sbom" |
   jq -r '.versions[] | .version as $v | .variants[] | "\($v) \(.variant) \(.digest)"'
 ```
+- **A variant's facts** are the index's, so reindex rebuilds them, and a page reads them in one
+  statement, not one per row: `artifactType`, `attrs` (the manifest's `lajstrom.*` annotations
+  by their full key) and `degraded` (its metadata layer could not be read) as
+  [Get a version](#get-a-version-get-apiv1reposformatnamepackagespackageversionsversion) has
+  them; `size`, the sizes of its file layers added up, and `fileCount`, their number; and
+  `attachments`, its
+  [attachments](#attachments-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionattachments)
+  counted by kind, each of the six kinds there with `0`, so that `attachments.sbom` is the
+  length of `…/attachments?variant=<variant>&kind=sbom` (when it is at most `limit`). A
+  degraded variant has them all: they come from its manifest, not from its metadata layer.
 
 ### Get a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 
-One version as the page of a web UI shows it: its row of the list above, the OCI repository
-that holds it, and for each variant what the index has of its manifest: the artifact type, the
-`lajstrom.*` annotations, the metadata layer and the files. `?variant=` keeps one variant (`""`,
+One version as the page of a web UI shows it: its row of the list above, its variants' facts
+included, the OCI repository that holds it, and for each variant the rest of what the index has
+of its manifest: the metadata layer and the files. `?variant=` keeps one variant (`""`,
 the empty value, is the variant of a format that has none); `publishedAt`, `lastModified` and
 `pointers` stay the version's, of all its variants. It needs `read`; `404` when the
 repo, the package, the version or the variant does not exist, and on a group, which has no
@@ -558,8 +575,11 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
       "publishedAt": "2026-11-02T09:00:00Z",
       "artifactType": "application/vnd.lajstrom.pypi.v1",
       "attrs": {},
-      "metadata": {"name": "requests", "version": "2.32.3", "summary": "Python HTTP for Humans."},
       "degraded": false,
+      "size": 64928,
+      "fileCount": 1,
+      "attachments": {"signature": 0, "sbom": 0, "scan": 0, "provenance": 0, "attestation": 0, "other": 0},
+      "metadata": {"name": "requests", "version": "2.32.3", "summary": "Python HTTP for Humans."},
       "indexedAt": "2026-11-02T09:00:01Z",
       "files": [
         {"name": "requests-2.32.3-py3-none-any.whl", "mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip",
@@ -585,9 +605,12 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
   forms of its OCI name (#642, [index-schema.md](spec/index-schema.md#invariants-and-rules)):
   a variant that reindex found at the other form is at that form.
 - **Not in it:** the manifest itself and its referrers (signatures, SBOMs, attestations), which
-  are live reads of the registry (#951); the index's labelled list of the referrers is
+  are live reads of the registry:
+  [the manifests](#the-manifests-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionmanifest)
+  and [the referrers](#the-referrers-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionreferrers)
+  of the version (#951); the index's labelled list of the referrers is
   [the attachments of the version](#attachments-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionattachments)
-  (#89). Both are on `/v2` under the variant's `ociRepository`:
+  (#89). Both are on `/v2` under the variant's `ociRepository` too:
   `/v2/<ociRepository>/manifests/<digest>` and `/v2/<ociRepository>/referrers/<digest>`. A
   file's download URL is not in it either: it is the format's own, as in the
   [quick starts](quickstart/).
@@ -666,6 +689,83 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3/
   next reindex of the repo labels every attachment again. A referrer pushed straight to the
   registry, past Lajstrom, is listed after the next reindex. The referrers themselves stay on
   `/v2/<ociRepository>/referrers/<digest>`.
+
+### The manifests of a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>/manifest`
+
+The manifest of each variant of a version (#951), read from the registry: the index names the
+digest and the OCI repository, and the manifest is fetched by that digest and checked against
+it. `?variant=` keeps one variant (`""` for a format without variants). It needs `read`; `404`
+as for the version, and when the registry does not have a variant's manifest.
+
+```sh
+curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3/manifest?variant=py3-none-any"
+```
+
+```json
+{
+  "manifests": [
+    {
+      "variant": "py3-none-any",
+      "digest": "sha256:5c11…",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "size": 1268,
+      "manifest": {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "artifactType": "application/vnd.lajstrom.pypi.v1",
+        "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": "sha256:44136f…", "size": 2},
+        "layers": [{"mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip", "digest": "sha256:…", "size": 64928,
+                    "annotations": {"org.opencontainers.image.title": "requests-2.32.3-py3-none-any.whl"}}],
+        "annotations": {"lajstrom.version": "2.32.3", "lajstrom.variant": "py3-none-any", "org.opencontainers.image.created": "2026-11-02T09:00:00Z"}
+      }
+    }
+  ]
+}
+```
+
+- **One manifest per variant**, in variant order; `manifest` is the manifest as JSON, whose
+  `annotations` are the manifest's own. Its exact bytes, which have the digest, are
+  `/v2/<ociRepository>/manifests/<digest>`.
+- **Caching.** A manifest never changes, but the version can: a delete and a new publish give
+  it another digest. The answer has `Cache-Control: no-cache`, and an answer of one variant has
+  `ETag: "<digest>"`: a client that sends it back in `If-None-Match` gets `304 Not Modified`,
+  decided from the index without a registry read. An answer of several variants has no `ETag`;
+  ask for one variant to have it.
+- **The registry** is read once per variant (two requests: the digest resolved, the manifest
+  fetched), at most `server.maxManifestSize` bytes each. `503 UNAVAILABLE` when it does not
+  answer or its circuit breaker is open, as everywhere.
+
+### The referrers of a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>/referrers`
+
+The manifests whose `subject` is a variant's manifest (#951), as the registry lists them now:
+the backend's referrers API, or the `sha256-<hex>` tag schema where it has none, or both with
+`referrers.alwaysTag` ([manifest-profile.md](spec/manifest-profile.md) §6). `?variant=` keeps
+one variant, `?artifactType=` the referrers of that type. It needs `read`; `404` as for the
+version.
+
+```json
+{
+  "referrers": [
+    {
+      "variant": "py3-none-any",
+      "subject": "sha256:5c11…",
+      "digest": "sha256:d06d…",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+      "size": 787,
+      "annotations": {"dev.sigstore.bundle.predicateType": "https://cyclonedx.org/bom"}
+    }
+  ]
+}
+```
+
+- **Live, one entry per referrer manifest**, per variant in variant order and in the registry's
+  order within one. A referrer pushed past Lajstrom is here at once, and in
+  [the attachments](#attachments-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionattachments)
+  after the next reindex; the attachments are per layer, labelled with their verification, and
+  read without the registry.
+- A variant whose OCI repository the registry does not have has no referrers. `503
+  UNAVAILABLE` when the registry does not answer.
 
 ### Delete a version: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 

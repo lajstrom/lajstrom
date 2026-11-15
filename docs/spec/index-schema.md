@@ -404,6 +404,12 @@ that need every row: the renderers, reindex, ingest.
   of each; a version's rows are together, ordered by variant. The database groups the
   package's rows by version (`MIN(created_at)`, over the unique index `(package_id, version,
   variant)`) and answers only the page's rows.
+- **`ListVersionFacts(versionIDs)`** answers what the list of versions shows of each variant
+  beyond its row (#1132): of each of the given `versions` rows, its `files` rows counted and
+  their sizes added up, and its `attachments` rows counted by `kind`. One statement for up to
+  500 ids, the two groupings joined by `UNION ALL`, over the indexes `files (version_id, name)`
+  and the unique `attachments (version_id, digest, layer)`: a page costs one statement, not one
+  per row.
 - **The order is byte order.** Names and version strings compare as bytes: every text column is
   `COLLATE "C"` on Postgres (and on YugabyteDB, which runs its migrations), has no collation on
   CockroachDB, which compares strings by their bytes by default, and is `BINARY` on SQLite,

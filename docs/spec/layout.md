@@ -1060,6 +1060,10 @@ type Reader interface {
     // RepoStats: the counts of the derived tables of each repo of repoIDs that has a package, in
     // no order; a repo without one has none (index-schema.md, A repo's stats)
     RepoStats(ctx context.Context, repoIDs []int64) ([]RepoStats, error)
+    // ListVersionFacts (#1132, index-schema.md, Pages of packages and versions): of each of the
+    // versions ids, in their order, its files counted and their sizes added up, and its
+    // attachments counted by kind
+    ListVersionFacts(ctx context.Context, versionIDs []int64) ([]VersionFacts, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -1351,6 +1355,11 @@ type Attachment struct {                    // a row of attachments: one layer o
     Trust          string                    // attest.Trust.Hash of the trust that labelled it
     CreatedAt      *time.Time                // the manifest's org.opencontainers.image.created
     IndexedAt      time.Time                 // when ingest or reindex last wrote or saw the row
+}
+type VersionFacts struct {                  // what ListVersionFacts answers of a versions row
+    VersionID      int64
+    Files, Size    int64                     // its files rows, and their sizes added up
+    Attachments    map[string]int64          // its attachments rows by Kind; a kind without rows is absent
 }
 type JournalState struct {                  // a row of journal_state: the fold of a package's entries
     PackageID  int64
