@@ -439,7 +439,8 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
       "files": [
         {"name": "requests-2.32.3-py3-none-any.whl", "mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip",
          "digest": "sha256:…", "size": 64928, "attrs": {"org.opencontainers.image.title": "requests-2.32.3-py3-none-any.whl"}}
-      ]
+      ],
+      "ociRepository": "pypi/internal/requests"
     }
   ],
   "pointers": [],
@@ -453,10 +454,15 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
   `degraded` says the metadata layer could not be read and the row came from the annotations
   alone. `indexedAt` is when ingest or reindex last wrote or saw the row. A file's `attrs` are
   its layer's annotations, and the files are in the manifest's order.
+- **`ociRepository`** is `<format>/<name>/<package path>`, the repository of a manifest on
+  `/v2`: a variant's is that of its manifest, and the version's that of its first variant (the
+  variants are in the order of their names). They differ only in a package split across two
+  forms of its OCI name (#642, [index-schema.md](spec/index-schema.md#invariants-and-rules)):
+  a variant that reindex found at the other form is at that form.
 - **Not in it:** the manifest itself and its referrers (signatures, SBOMs, attestations), which
   are live reads of the registry (#951); the index's labelled list of the referrers is
   [the attachments of the version](#attachments-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionattachments)
-  (#89). Both are on `/v2` under `ociRepository`:
+  (#89). Both are on `/v2` under the variant's `ociRepository`:
   `/v2/<ociRepository>/manifests/<digest>` and `/v2/<ociRepository>/referrers/<digest>`. A
   file's download URL is not in it either: it is the format's own, as in the
   [quick starts](quickstart/).
