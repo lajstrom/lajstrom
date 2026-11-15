@@ -60,6 +60,7 @@ with the real clients (`test/e2e/`):
 | [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; SNAPSHOT builds in a repo of their own |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
 | [rpm](docs/quickstart/rpm.md) | `curl -T` an `.rpm`, `oras push` | `dnf`, `yum`, `zypper` | GPG-signed `repomd.xml`, binary and source packages, every arch in one repodata |
+| [terraform](docs/quickstart/terraform.md) | `curl -T` a module's `.tar.gz` | `terraform init`, `tofu init` | the module registry protocol, the repo as the namespace, a `credentials` block and nothing else |
 | [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers; cosign is run by [test/e2e/cosign.sh](test/e2e/cosign.sh), not by the quick start |
 | [docker images](docs/quickstart/docker.md) | `docker push`, `docker buildx build --push`, `crane index append`, `cosign sign` | `docker pull`, `crane`, `cosign verify` | `oci` repos pass images through, multi-arch indexes included; roles and the audit of pushes; run by [test/e2e/docker.sh](test/e2e/docker.sh) |
 
@@ -109,6 +110,7 @@ best part of it:
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata; a proxy of pypi.org, a group of both |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
 | [Quick start: rpm](docs/quickstart/rpm.md) | an `.rpm` in with `curl -T` or `oras push`, out with `dnf install` or `zypper install` from a GPG-checked repo |
+| [Quick start: terraform](docs/quickstart/terraform.md) | a module's `.tar.gz` in with `curl -T`, out with `terraform init` or `tofu init`; OpenTofu's `oci://` instead |
 | [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
 | [Quick start: a pull-through cache of Docker Hub](docs/quickstart/oci-proxy.md) | `docker pull`, `crane pull` and containerd through an `oci` proxy repo of Docker Hub, ghcr.io, quay.io; Talos mirrors |
 | [Talos Linux from Lajstrom](docs/guides/talos.md) | installer and extension images, nodes pulling through `oci` proxy repos with a token, boot assets for ISO and iPXE in `raw` repos, upgrades, Image Factory; what is missing |
