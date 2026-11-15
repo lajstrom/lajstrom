@@ -51,6 +51,8 @@ type Provider struct {
 	data          *generic.Provider
 	now           func() time.Time
 	log           *slog.Logger
+	pageSize      int // of the repository listing; a field so that tests can lower it
+	maxPages      int
 
 	// mu guards projectUntil, the time until which EnsureRepository believes that the project
 	// exists without asking; missedAt, when a missing project was last logged; and facts, what
@@ -108,6 +110,8 @@ func newProvider(cfg config.Registry, log *slog.Logger, now func() time.Time) (*
 		data:          g,
 		now:           now,
 		log:           log.With("registry", cfg.Name),
+		pageSize:      pageSize,
+		maxPages:      maxPages,
 	}, nil
 }
 

@@ -14,9 +14,10 @@
 // system robot's or an administrator's); without, a missing project is a *RejectedError
 // whose hint names the key. The first answer of Capabilities, the probe at start, also checks
 // the project, whether the account may list its repositories (Capabilities.Catalog), and its
-// immutability rules (Capabilities.ImmutableTags). A manifest's delete stays the data path's,
-// DELETE of /v2 by digest. Harbor's garbage collector, which frees the space, is the Harbor
-// administrator's to run.
+// immutability rules (Capabilities.ImmutableTags). ListRepositories reads the project's
+// repositories from the REST API, every page; DeleteRepository deletes one there, with its
+// artifacts. A manifest's delete stays the data path's, DELETE of /v2 by digest. Harbor's
+// garbage collector, which frees the space, is the Harbor administrator's to run.
 //
 // Errors of /v2 are the generic provider's: a project's quota is provider.ErrLimit, a tag an
 // immutability rule holds provider.ErrConflict (#357, docs/registries/harbor.md). Errors of
