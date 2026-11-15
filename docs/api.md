@@ -31,7 +31,7 @@ The OpenAPI 3.1 document of these endpoints is
   bindings need the `admin` role, and the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
   denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
   credentials, `404` for one without any access to the repo, `403` for one that can read it but
-  lacks the action. The list leaves out the repos the caller may not read.
+  lacks the action. The list and the search leave out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
   principal, the action (`repo.create`, `repo.update`, `repo.delete`, `repo.reindex`,
   `repo.cache.purge`, `delete` for each manifest of a version delete, `pypi.yank` for a yank
@@ -353,17 +353,87 @@ curl -s "$LAJSTROM/api/v1/repos/raw/assets/reindex" | jq '.state, .report.remove
 
 ### List packages: `GET /api/v1/repos/<format>/<name>/packages`
 
-A page of the repo's packages, ordered by name (`?limit=`, `?cursor=` as in
-[Conventions](#conventions)); `?prefix=` keeps those whose name starts with it. It needs `read`
-on the repo. The cursor holds the place of the page's last package, its name, not a position:
-packages published or deleted while a client pages neither repeat nor skip the others.
+A page of the repo's packages, ordered by name unless `?sort=` says otherwise (`?limit=`,
+`?cursor=` as in [Conventions](#conventions)), each with what a list of packages shows. It needs
+`read` on the repo. The cursor holds the place of the page's last package, its name, or the
+value of the sort and its name, not a position: packages published or deleted while a client
+pages neither repeat nor skip the others.
 
-```json
-{"packages": [{"name": "@acme/widgets", "createdAt": "2026-03-02T10:00:00Z"}], "next": "…"}
+```sh
+curl -s "$LAJSTROM/api/v1/repos/apt/ubuntu-internal/packages?attr=lajstrom.deb.suite:jammy&sort=updated&facet=lajstrom.deb.arch"
 ```
 
-`createdAt` is the publish time of the package's first version. A group has no packages: the
-list is empty.
+```json
+{
+  "packages": [
+    {
+      "name": "acme-agent",
+      "nameOci": "acme-agent",
+      "createdAt": "2026-03-02T10:00:00Z",
+      "updatedAt": "2026-11-02T09:00:00Z",
+      "latestVersion": "2.5.0",
+      "latestVariants": ["jammy/main/amd64", "jammy/main/arm64"],
+      "versions": 14,
+      "manifests": 28,
+      "size": 48213004,
+      "summary": "Acme monitoring agent",
+      "attrs": {"lajstrom.deb.arch": "amd64", "lajstrom.deb.component": "main", "lajstrom.deb.suite": "jammy"}
+    }
+  ],
+  "facets": {"lajstrom.deb.arch": [{"value": "amd64", "count": 41}, {"value": "arm64", "count": 17}]},
+  "next": "…"
+}
+```
+
+| Parameter | Keeps or does |
+| --- | --- |
+| `prefix` | the packages whose name starts with it |
+| `q` | the packages whose name, or the summary of one of whose manifests, contains it; ASCII letters in either case |
+| `attr=<key>:<value>` | repeatable: the packages with a manifest that has the attribute; the key is the full annotation key, as `attrs` has it. Two values of one key are alternatives; different keys hold on the same manifest |
+| `sort` | `name` (the default), `updated` (the newest manifest's publish time), `versions` (how many versions) or `size` (of all its files) |
+| `order` | `asc` or `desc`; `asc` for `name` and `desc` for the others when absent. A tie follows by name |
+| `facet=<key>` | repeatable: adds `facets`, the values of the key in the repo's manifests, each with the number of packages that have it, in byte order, at most 1000. They count the whole repo, whatever the other parameters |
+
+At most 16 `attr` and 16 `facet`; a key that is not `lajstrom.` followed by letters, digits,
+`.`, `_` and `-` is `400`, and so is an `attr` without `:`, an unknown `sort` or `order`, and a
+cursor of another sort.
+
+- **`createdAt` and `updatedAt`** are the publish times of the package's first and newest
+  manifest.
+- **`latestVersion`** is the first version of [its versions list](#list-versions-get-apiv1reposformatnamepackagespackageversions):
+  the newest by the publish time of its first variant. `latestVariants` are that version's
+  variants, `[]` for a format without them.
+- **`versions` and `manifests`** count the package's versions and its manifests, one per variant
+  of each version; **`size`** adds up the sizes of the file layers of all of them, a blob that
+  two share twice.
+- **`summary` and `attrs`** are those of the head manifest, the latest version's first variant
+  by name: `attrs` its `lajstrom.*` annotations, as a version has them; `summary` one line of
+  its metadata layer (pypi `summary`, deb `Description`, npm `description`, rpm `summary`),
+  `null` when it has none: maven and raw, or a version written before the release that added
+  it, until a reindex with `verify`.
+
+A group has no packages: the list is empty, its facets too. The sorts other than `name`, `q`,
+`attr` and `facet` read every package of the repo, and take longer on a large one.
+
+### Get a package: `GET /api/v1/repos/<format>/<name>/packages/<package>`
+
+One package as the head of its page shows it: its row of the list above, `ociRepository`, the
+OCI repository that holds it as for [a version](#get-a-version-get-apiv1reposformatnamepackagespackageversionsversion),
+and `latestMetadata`, the metadata layer of its head manifest, `null` when there is none or it
+was too large to keep. It needs `read`; `404` when the repo or the package does not exist, and on
+a group. `<package>` is one path segment, as for the delete below.
+
+```json
+{
+  "name": "requests", "nameOci": "requests",
+  "createdAt": "2026-03-02T10:00:00Z", "updatedAt": "2026-11-02T09:00:00Z",
+  "latestVersion": "2.32.3", "latestVariants": ["py3-none-any", "sdist"],
+  "versions": 12, "manifests": 24, "size": 2481034,
+  "summary": "Python HTTP for Humans.", "attrs": {},
+  "ociRepository": "pypi/internal/requests",
+  "latestMetadata": {"name": "requests", "version": "2.32.3", "summary": "Python HTTP for Humans."}
+}
+```
 
 ### List versions: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions`
 
@@ -812,6 +882,44 @@ anonymous 100 an hour.
 ```sh
 curl -s -X POST "$LAJSTROM/api/v1/repos/oci/hub/prefetch" -d '{"images": ["nginx:1.27"], "platforms": ["linux/amd64", "linux/arm64"]}'
 ```
+
+### Search: `GET /api/v1/search?q=`
+
+Packages by name and summary, and manifests and files by digest, over the repos the caller may
+read (#956): a repo it may not read adds nothing, and the answer does not tell whether one
+exists. `?format=` keeps the repos of one format; `?limit=` and `?cursor=` as in
+[Conventions](#conventions), with no total. `q` is required, at most 256 bytes. Anyone may ask;
+`anonymous` searches the repos it may read.
+
+```sh
+curl -s -u alice "$LAJSTROM/api/v1/search?q=sha256:3f2a9c1e"
+```
+
+```json
+{
+  "hits": [
+    {"kind": "version", "format": "raw", "repo": "installers", "name": "acme-agent/2.5.0/acme-agent.tar.gz",
+     "version": "3f2a9c1e0d4b7a65", "variant": "", "digest": "sha256:…", "matched": "file",
+     "file": {"name": "acme-agent/2.5.0/acme-agent.tar.gz", "digest": "sha256:3f2a9c1e…"}},
+    {"kind": "package", "format": "pypi", "repo": "internal", "name": "requests",
+     "latestVersion": "2.32.3", "summary": "Python HTTP for Humans.", "updatedAt": "2026-11-02T09:00:00Z"}
+  ],
+  "next": "…"
+}
+```
+
+The hits come in ranks, each in byte order of the repo's format and name, then the package's
+name (then the version, the variant and the file):
+
+1. when `q` is a digest's prefix, `sha256:` or not and 8 to 64 hex digits: the manifests whose
+   digest starts with it, `matched: "manifest"`, then the file layers whose digest does,
+   `matched: "file"` with the `file`: "which package is this blob from?";
+2. the packages named `q`, then those whose name starts with it, then those whose name contains
+   it, then those with a manifest whose summary contains it; ASCII letters in either case. A
+   package is in the first of these it matches, once.
+
+A group adds no hits; its members do, as repos of their own. Matching a name or a summary reads
+every package of the repos searched; a digest reads an index.
 
 ## `lajstrom admin repo`
 
