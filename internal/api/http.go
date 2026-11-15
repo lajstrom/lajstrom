@@ -80,6 +80,8 @@ type Options struct {
 	// DPoP checks the proof of POST /api/v1/login, whose key the token is bound to
 	// (docs/spec/rbac.md §10): serve's dpop.Verifier, the server's too. nil answers a sign-in 501.
 	DPoP Proofs
+	// Registries is what GET /api/v1/registries answers of the registries; nil answers none.
+	Registries RegistryReporter
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -143,6 +145,7 @@ const maxBody = 64 << 10
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
+//	GET    /api/v1/registries                          the registries, their capabilities, repos and health (admin)
 //	POST   /api/v1/bootstrap                           the first admin, for the bootstrap token; 404 once an admin exists
 //	POST   /api/v1/login                               sign in a web UI, a password or an OIDC code, and a DPoP proof: a short-lived token bound to its key
 //	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
@@ -155,7 +158,8 @@ func New(o Options) http.Handler {
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
-		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP}
+		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
+		registries: o.Registries}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -253,6 +257,7 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
 		{"GET /api/v1/search", h.search},
+		{"GET /api/v1/registries", h.listRegistries},
 		{"POST /api/v1/bootstrap", h.bootstrap},
 		{"POST /api/v1/login", h.login},
 	}
@@ -281,7 +286,9 @@ type handler struct {
 	loginLifetime time.Duration
 	handoffs      Handoffs
 	proofs        Proofs
-	log           *slog.Logger
+	// registries is Options.Registries.
+	registries RegistryReporter
+	log        *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON

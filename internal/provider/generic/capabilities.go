@@ -240,6 +240,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 	}
 	*answered = true
 	v := p.vendorOf(ctx, id)
+	p.detected.Store(&v)
 	c, err := p.probe(ctx, vendorOverrides(v, id))
 	if err != nil {
 		return provider.Capabilities{}, err
@@ -294,6 +295,23 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 	}
 	return c, nil
 }
+
+// Report implements provider.Reporter: the vendor of the last probe that got an answer, the
+// capabilities of the first probe that succeeded as Capabilities answers them, and the state of
+// the circuit breaker. It sends no request.
+func (p *Provider) Report() provider.Report {
+	r := provider.Report{Breaker: p.clients.breaker.report()}
+	if v := p.detected.Load(); v != nil {
+		r.Vendor = string(*v)
+	}
+	if c := p.probed.Load(); c != nil {
+		e := p.effective(*c)
+		r.Capabilities = &e
+	}
+	return r
+}
+
+var _ provider.Reporter = (*Provider)(nil)
 
 // Ping implements provider.Pinger: GET /v2/ answered 200, after the auth client answered a
 // challenge with the configured credentials. Errors wrap the sentinels of package provider.
