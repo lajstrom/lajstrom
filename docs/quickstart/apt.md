@@ -633,6 +633,118 @@ which `md5sums` lacks. A package uploaded before #79, or pushed with a metadata 
 `files`, is listed by the paths of its `md5sums`; `dpkg-deb --build` writes none, so such a
 package built as on this page is not listed at all until it is uploaded again.
 
+## 11. A group of two apt repos (#68)
+
+A group is one URL for several hosted apt repos, read in order
+([proxy-and-group.md](../spec/proxy-and-group.md) §8.6): its suites are those of its members, its
+`Packages`, `Sources` and `Contents` hold their packages merged, and a client's `signed-by=`
+names the group's own key. Make a second repo, `apt/team`, and the group `apt/all` of
+`apt/ubuntu` and `apt/team`, in that order:
+
+```sh
+curl -s -u "$u" -H 'Content-Type: application/json' -d '{"format": "apt", "name": "team", "registry": "local"}' http://localhost:8080/api/v1/repos
+curl -s -u "$u" -H 'Content-Type: application/json' -d '{"format": "apt", "name": "all", "kind": "group", "group": {"members": ["ubuntu", "team"]}}' http://localhost:8080/api/v1/repos
+```
+
+```json
+{"format":"apt","name":"team","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-15T20:39:37.984653Z","updatedAt":"2026-11-15T20:39:37.984653Z"}
+{"format":"apt","name":"all","kind":"group","anonymousRead":false,"group":{"members":["ubuntu","team"],"merge":[]},"createdAt":"2026-11-15T20:39:38.038396Z","updatedAt":"2026-11-15T20:39:38.038396Z"}
+```
+
+A package of the team, built as in section 2 and uploaded to `apt/team`:
+
+```sh
+mkdir -p tool/DEBIAN tool/usr/share/tool && echo 'a tool of the team' > tool/usr/share/tool/greeting
+printf 'Package: tool\nVersion: 0.3-1\nArchitecture: amd64\nMaintainer: The team <team@example.com>\nDescription: the team tool\n' > tool/DEBIAN/control
+docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w ubuntu:24.04 dpkg-deb --root-owner-group --build tool tool_0.3-1_amd64.deb
+curl -sS -u "$u" -T tool_0.3-1_amd64.deb "http://localhost:8080/apt/team/upload?suite=jammy&component=main"
+```
+
+The group's suite has the packages of both members, in a `Release` of its own:
+
+```sh
+curl -s -u "$u" http://localhost:8080/apt/all/dists/jammy/Release | head -9
+curl -s -u "$u" http://localhost:8080/apt/all/dists/jammy/main/binary-amd64/Packages | grep -E '^(Package|Version|Filename):'
+```
+
+```text
+Origin: Lajstrom
+Label: all
+Suite: jammy
+Codename: jammy
+Date: Sun, 15 Nov 2026 20:39:38 UTC
+Architectures: amd64
+Components: main
+Description: apt/all jammy
+Acquire-By-Hash: yes
+Package: hello
+Version: 1.0.0-1
+Filename: pool/main/h/hello/hello_1.0.0-1_amd64.deb
+Package: tool
+Version: 0.3-1
+Filename: pool/main/t/tool/tool_0.3-1_amd64.deb
+```
+
+When two members have the same package, version and architecture in a suite, the group lists the
+first member's; a package of a later member whose pool file name an earlier member holds with
+other bytes is left out, so that every file the group lists is the file its pool serves. A pool
+file comes from the first member that has it. The group renders a suite on the first request
+after a member's publish or delete and keeps it until the next one, as a hosted repo does.
+
+apt reads the group as any repo, with a deploy token of the group (a group's tokens read only)
+and its `key.asc`; in a fresh `ubuntu:24.04` as in section 4:
+
+```sh
+curl -s -u "$u" -H 'Content-Type: application/json' -d '{"name": "apt clients", "scopes": ["read"]}' \
+  http://localhost:8080/api/v1/repos/apt/all/deploy-tokens | jq -r .secret > all-token
+docker run --rm -it --network host --platform linux/amd64 -e APT_TOKEN="$(cat all-token)" ubuntu:24.04 bash
+```
+
+```sh
+rm /etc/apt/sources.list.d/ubuntu.sources
+printf 'machine http://localhost:8080/apt/all\nlogin deploy\npassword %s\n' "$APT_TOKEN" > /etc/apt/auth.conf.d/lajstrom.conf
+chmod 600 /etc/apt/auth.conf.d/lajstrom.conf
+install -d -m 0755 /etc/apt/keyrings
+/usr/lib/apt/apt-helper -o APT::Sandbox::User=root download-file http://localhost:8080/apt/all/key.asc /etc/apt/keyrings/all.asc
+echo "deb [signed-by=/etc/apt/keyrings/all.asc] http://localhost:8080/apt/all jammy main" > /etc/apt/sources.list.d/lajstrom.list
+apt-get update && apt-get install -y hello tool
+cat /usr/share/hello/greeting /usr/share/tool/greeting
+```
+
+```text
+Get:1 http://localhost:8080/apt/all/key.asc [754 B]
+Fetched 754 B in 0s (11.6 kB/s)
+Get:1 http://localhost:8080/apt/all jammy InRelease [1708 B]
+Get:2 http://localhost:8080/apt/all jammy/main amd64 Packages [409 B]
+Fetched 2117 B in 1s (3557 B/s)
+...
+Get:1 http://localhost:8080/apt/all jammy/main amd64 hello amd64 1.0.0-1 [542 B]
+Get:2 http://localhost:8080/apt/all jammy/main amd64 tool amd64 0.3-1 [542 B]
+...
+Setting up tool (0.3-1) ...
+Setting up hello (1.0.0-1) ...
+hello from lajstrom
+a tool of the team
+```
+
+The group's key is its own, made on its first request, and `lajstrom admin key rotate --repo
+apt/all` rotates it (section 8); a member's key signs the member alone. A group takes no upload
+when it has several members: an upload names the repo it goes to.
+
+```sh
+curl -sS -u "$u" -T tool_0.3-1_amd64.deb "http://localhost:8080/apt/all/upload?suite=jammy&component=main"
+```
+
+```text
+format: method not allowed: the group apt/all has 2 hosted members and takes no writes; write to one of them
+```
+
+That is a `405` with `Allow: GET, HEAD`. A group of one member passes its uploads to it. A member
+is deleted only once no group has it (`409`): delete the group first,
+`curl -u "$u" -X DELETE http://localhost:8080/api/v1/repos/apt/all`.
+`test/e2e/aptgroup.sh` runs this section with checks, against a server of its own with
+`make e2e E2E=aptgroup`.
+
 ## The end-to-end script
 
 `test/e2e/apt.sh` runs sections 2 to 7, 9 and 10 with checks against any Lajstrom with a writable apt repo:
@@ -704,7 +816,7 @@ Everything, the repo's keys included:
 ```sh
 make dev-down RESET=1   # the registries forget what they hold
 rm lajstrom.db          # the index, and with it the repo's keys
-rm -r hello other world world-2.0 hello_1.0.0-1_amd64.deb world_2.0-1_amd64.deb world_2.0.orig.tar.gz world_2.0-1.* metadata.json apt-token .oras-auth.json
+rm -r hello other world world-2.0 tool hello_1.0.0-1_amd64.deb world_2.0-1_amd64.deb tool_0.3-1_amd64.deb world_2.0.orig.tar.gz world_2.0-1.* metadata.json apt-token all-token .oras-auth.json
 ```
 
 The last line removes what this page made in the checkout; `deploy/compose/lajstrom.yaml` too, if
