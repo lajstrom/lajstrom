@@ -161,12 +161,17 @@ func groupETag(repo index.Repo, docs []*index.Cache) *index.Cache {
 }
 
 // memberDocument is the document of kind of name of the member m of a group: the hosted
-// member's cached document of scope key, or what Document answers for a proxy member.
+// member's cached document of scope key, or of the plugin's HostedScope of it, or what Document
+// answers for a proxy member.
 func (c *Core) memberDocument(ctx context.Context, g *grouped, m index.Repo, name, key, kind string) (*index.Cache, error) {
 	if m.Kind == index.KindProxy {
 		return c.Document(ctx, m, name, kind)
 	}
-	doc, err := format.CachedDocument(ctx, c.o.Index, g.plugin, m, format.IndexScope(key), kind)
+	scope := format.IndexScope(key)
+	if s, ok := g.hooks.(format.HostedScoper); ok {
+		scope = s.HostedScope(key)
+	}
+	doc, err := format.CachedDocument(ctx, c.o.Index, g.plugin, m, scope, kind)
 	if err != nil && !errors.Is(err, index.ErrNotFound) {
 		return nil, fmt.Errorf("proxy: the document of %q in %s/%s: %w", name, m.Format, m.Name, err)
 	}

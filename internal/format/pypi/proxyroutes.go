@@ -15,13 +15,16 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// The routes of a proxy repo of pypi are the hosted repo's (docs/spec/http-routing.md §6, pypi,
-// Proxy): a project's page and its files come from the core of proxy and group repos,
-// Deps.Proxy, which asks the upstream and fetches a file on its first request; an upload to a
-// proxy is 405 (upload.go).
+// The routes of a proxy repo and of a group of pypi are the hosted repo's (docs/spec/
+// http-routing.md §6, pypi, Proxy and Group): a project's page and its files come from the core
+// of proxy and group repos, Deps.Proxy, which asks the upstream and fetches a file on its first
+// request, and merges a group's members; an upload to a proxy is 405, to a group its hosted
+// member's (upload.go).
 
 // proxied reports whether the core of proxy and group repos serves the repo's pages and files.
-func proxied(repo index.Repo) bool { return repo.Kind == index.KindProxy }
+func proxied(repo index.Repo) bool {
+	return repo.Kind == index.KindProxy || repo.Kind == index.KindGroup
+}
 
 // proxyCore returns the core of proxy and group repos, or an error wrapping
 // format.ErrUnsupported when the server has none.
@@ -32,9 +35,9 @@ func (h *handlers) proxyCore(repo index.Repo) (format.Proxy, error) {
 	return h.deps.Proxy, nil
 }
 
-// proxyPage returns the page of a project of a proxy in kind: the JSON page as the core renders
-// and caches it, and for the HTML form that page converted, with the sha256 of its bytes for its
-// ETag.
+// proxyPage returns the page of a project of a proxy or a group in kind: the JSON page as the
+// core renders and caches it, or merges it for a group, and for the HTML form that page
+// converted, with the sha256 of its bytes for its ETag.
 func (h *handlers) proxyPage(ctx context.Context, repo index.Repo, project, kind string) (*index.Cache, error) {
 	core, err := h.proxyCore(repo)
 	if err != nil {
@@ -53,8 +56,8 @@ func (h *handlers) proxyPage(ctx context.Context, repo index.Repo, project, kind
 		RenderedAt: c.RenderedAt}, nil
 }
 
-// htmlOfJSON converts a JSON page of a project, as RenderIndex and RenderProxy write it, to the
-// HTML form of PEP 503.
+// htmlOfJSON converts a JSON page of a project, as RenderIndex, RenderProxy and MergeGroup
+// write it, to the HTML form of PEP 503.
 func htmlOfJSON(content []byte) ([]byte, error) {
 	var page struct {
 		Meta  map[string]string `json:"meta"`
@@ -79,10 +82,17 @@ func htmlOfJSON(content []byte) ([]byte, error) {
 	return pageHTML(page.Name, cmp.Or(page.Meta["api-version"], apiVersion), files), nil
 }
 
-// proxyProjects returns the project list of a proxy, the projects it holds, in kind: rendered
-// for the request and kept nowhere.
+// proxyProjects returns the project list of a proxy, the projects it holds, or of a group, those
+// of its members, in kind: rendered for the request and kept nowhere.
 func (h *handlers) proxyProjects(ctx context.Context, repo index.Repo, kind string) (*index.Cache, error) {
 	repos := []index.Repo{repo}
+	if repo.Kind == index.KindGroup {
+		members, err := h.deps.Index.ListGroupMembers(ctx, repo.ID)
+		if err != nil {
+			return nil, err
+		}
+		repos = members
+	}
 	byName := map[string]index.Package{}
 	for _, r := range repos {
 		pkgs, err := h.deps.Index.ListPackages(ctx, r.ID, "")
@@ -113,8 +123,8 @@ func (h *handlers) proxyProjects(ctx context.Context, repo index.Repo, kind stri
 	return nil, fmt.Errorf("pypi: no project list of kind %s", kind)
 }
 
-// proxyFile returns a file of a proxy, held or fetched by the core on a miss by the principal of
-// ctx, and the repo that holds it.
+// proxyFile returns a file of a proxy or a group, held or fetched by the core on a miss by the
+// principal of ctx, and the repo that holds it: the proxy, or the group's member.
 func (h *handlers) proxyFile(ctx context.Context, repo index.Repo, project, version, filename string) (*index.FileMatch, index.Repo, error) {
 	core, err := h.proxyCore(repo)
 	if err != nil {

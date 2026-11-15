@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -176,5 +177,39 @@ func TestGroupFile(t *testing.T) {
 	}
 	if _, err := c.File(asAlice(t), all, "not/a/file"); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("a path that names no file: %v", err)
+	}
+}
+
+// scopedPlugin is the plugin of these tests with a hosted repo's document of a name under the
+// scope hosted/<name> (format.HostedScoper), as pypi's simple/<project>.
+type scopedPlugin struct{ *pkgPlugin }
+
+func (scopedPlugin) HostedScope(key string) format.IndexScope {
+	return format.IndexScope("hosted/" + key)
+}
+
+// RenderIndex renders a hosted repo's document of a name under hosted/<name> only.
+func (p scopedPlugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.IndexScope, st index.Reader) ([]format.Document, error) {
+	name, ok := strings.CutPrefix(string(scope), "hosted/")
+	if !ok {
+		return nil, nil
+	}
+	return p.pkgPlugin.RenderIndex(ctx, repo, format.IndexScope(name), st)
+}
+
+// TestGroupHostedScope: a group reads its hosted member's document at the plugin's HostedScope
+// of the name's key, where the hosted repo keeps it.
+func TestGroupHostedScope(t *testing.T) {
+	ctx := t.Context()
+	e, internal, all := groupEnv(t, `{"name": "up"}`)
+	plugins := func(name string) (format.Plugin, bool) { return scopedPlugin{e.plugin}, name == "raw" }
+	c := e.core(t, "r1", proxy.Options{Plugins: plugins})
+	doc, err := c.Document(ctx, all, "acme-billing", docKind)
+	must(t, err)
+	if got := versions(t, doc); !slices.Equal(got, []string{"1.0.0 internal"}) {
+		t.Errorf("a name the hosted member holds: %v, want its versions alone", got)
+	}
+	if _, err := e.st.GetIndexCache(ctx, internal.ID, "hosted/acme-billing", docKind); err != nil {
+		t.Errorf("the hosted member's document under its scope: %v", err)
 	}
 }

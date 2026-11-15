@@ -40,8 +40,8 @@ const (
 //
 // The pages come from index_cache through format.CachedDocument, in the form the Accept header
 // asks for (PEP 691: JSON, or HTML by default), with Vary: Accept. Ingest drops the repo's
-// documents on every publish, so the next GET renders the page again. A proxy's pages and files
-// come from the core of proxy and group repos (proxyroutes.go).
+// documents on every publish, so the next GET renders the page again. A proxy's and a group's
+// pages and files come from the core of proxy and group repos (proxyroutes.go).
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
@@ -131,7 +131,7 @@ func (h *handlers) project(w http.ResponseWriter, r *http.Request) {
 }
 
 // page serves the page of project, or the project list when project is "", in the kind the
-// request accepts: a hosted repo's from index_cache, a proxy's from the core.
+// request accepts: a hosted repo's from index_cache, a proxy's and a group's from the core.
 func (h *handlers) page(w http.ResponseWriter, r *http.Request, repo index.Repo, project string) {
 	w.Header().Add("Vary", "Accept")
 	kind, contentType, ok := negotiate(r.Header.Values("Accept"))
@@ -230,7 +230,8 @@ func accepted(headers []string) []accept {
 }
 
 // file serves a distribution of a project, or with the .metadata suffix its core metadata. A
-// proxy's come from the core: held, or fetched on a miss, the metadata's with its wheel.
+// proxy's and a group's come from the core: held, or fetched on a miss, the metadata's with its
+// wheel; a group's from the member that holds it.
 func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r)
 	if !ok {
