@@ -79,6 +79,10 @@ type Reader interface {
 	// every token. The deploy tokens over a mask (Token.RepoMask) have neither, so only both
 	// filters nil returns them.
 	ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
+	// ListTokenPage returns the tokens f keeps whose id is above f.After, by id, at most f.Limit
+	// (docs/spec/index-schema.md, Pages of tokens and of open sessions); a Limit below 1 returns
+	// none.
+	ListTokenPage(ctx context.Context, f TokenFilter) ([]Token, error)
 
 	// GetBootstrapToken returns the bootstrap token, used and expired ones included; the caller
 	// checks UsedAt and ExpiresAt.
