@@ -498,7 +498,52 @@ type Auth struct {
 	Bootstrap Bootstrap `yaml:"bootstrap"`
 	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
 	OIDC OIDC `yaml:"oidc"`
+	// ClientCertificates are the CAs whose client certificates are a credential of /v2/token
+	// (docs/spec/rbac.md §9, #1019); off while it has no bundle.
+	ClientCertificates ClientCertificates `yaml:"clientCertificates"`
 }
+
+// ClientCertificates configures client certificates as a credential of /v2/token
+// (docs/spec/rbac.md §9).
+type ClientCertificates struct {
+	// Bundles are the CAs, tried in their order: the first that verifies a certificate decides.
+	// Empty reads no certificate.
+	Bundles []CertBundle `yaml:"bundles"`
+	// ForwardedHeader is the header in which the edge forwards the client certificate it
+	// received, read only when the peer is in server.trustedProxies: XForwardedClientCert as
+	// Envoy writes it, any other name a URL-escaped PEM or base64 DER. Empty reads none.
+	ForwardedHeader string `yaml:"forwardedHeader"`
+}
+
+// CertBundle is a bundle of auth.clientCertificates: CAs, and which name of a certificate they
+// verify is its principal.
+type CertBundle struct {
+	// Name is the bundle's name, in the principal cert:<name>/<CN or DNS name>
+	// (CheckIdentitySource).
+	Name string `yaml:"name"`
+	// CAFile is a PEM file of CA certificates, read by serve at start.
+	CAFile string `yaml:"caFile"`
+	// Identity is CertIdentitySPIFFE (the default, also for ""), CertIdentityCN or
+	// CertIdentityDNS.
+	Identity string `yaml:"identity"`
+	// TrustDomain is the SPIFFE trust domain of a spiffe bundle; empty for the others.
+	TrustDomain string `yaml:"trustDomain"`
+}
+
+// The identities of a bundle of auth.clientCertificates (docs/spec/rbac.md §9).
+const (
+	// CertIdentitySPIFFE takes the one URI SAN of the leaf, a SPIFFE ID of the bundle's trust
+	// domain.
+	CertIdentitySPIFFE = "spiffe"
+	// CertIdentityCN takes the leaf's subject CN.
+	CertIdentityCN = "cn"
+	// CertIdentityDNS takes the leaf's first DNS SAN.
+	CertIdentityDNS = "dns"
+)
+
+// XForwardedClientCert is the header of Envoy and Istio, read as Envoy writes it when it is
+// auth.clientCertificates.forwardedHeader.
+const XForwardedClientCert = "X-Forwarded-Client-Cert"
 
 // OIDC configures the OIDC login (docs/spec/rbac.md §8): one IdP, whose relying party Lajstrom
 // is, a confidential client with the redirect URI <server.externalURL>/-/oidc/callback.
