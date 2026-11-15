@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/clientcert"
 	"github.com/lajstrom/lajstrom/internal/auth/oidc"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -19,15 +20,28 @@ import (
 // maxClientSecret bounds the file of auth.oidc.clientSecretFile.
 const maxClientSecret = 4 << 10
 
-// edgeInputs returns what the server needs of the configuration beside the services: the
-// handler of the OIDC login (oidcLogin) and the trusted proxies.
-func edgeInputs(c *config.Config, st index.Store, log *slog.Logger) (http.Handler, []netip.Prefix, error) {
+// edge is what the server needs of the configuration beside the services.
+type edge struct {
+	// login is the handler of the OIDC login (oidcLogin), nil when it is off.
+	login http.Handler
+	// proxies are server.trustedProxies.
+	proxies []netip.Prefix
+	// certs is the verifier of auth.clientCertificates (clientCertificates), nil without bundles.
+	certs *clientcert.Verifier
+}
+
+// edgeInputs returns the edge of c.
+func edgeInputs(c *config.Config, st index.Store, log *slog.Logger) (edge, error) {
 	login, err := oidcLogin(c, st, log)
 	if err != nil {
-		return nil, nil, err
+		return edge{}, err
 	}
 	proxies, err := c.Server.TrustedPrefixes()
-	return login, proxies, err
+	if err != nil {
+		return edge{}, err
+	}
+	certs, err := clientCertificates(c, log)
+	return edge{login: login, proxies: proxies, certs: certs}, err
 }
 
 // oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), and nil

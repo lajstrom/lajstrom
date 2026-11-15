@@ -164,7 +164,7 @@ func TestParseHeader(t *testing.T) {
 			`";Subject="CN=x,O=\"a;b\"";URI=spiffe://cluster-a/node/w1`, true, []*x509.Certificate{leaf, k.issuer.Cert}},
 		{"envoy, the last element", `Hash=1;Cert="` + escaped(other) + `",By=x;Cert=` + escaped(leaf), true, []*x509.Certificate{leaf}},
 	} {
-		got, err := ParseHeader(tt.value, tt.xfcc)
+		got, err := ParseHeader(header(tt.xfcc), tt.value)
 		if err != nil || len(got) != len(tt.want) {
 			t.Errorf("%s: ParseHeader = %d certificates, %v; want %d", tt.name, len(got), err, len(tt.want))
 			continue
@@ -189,8 +189,17 @@ func TestParseHeader(t *testing.T) {
 		{"envoy, Cert in an earlier element only", `Cert="` + escaped(leaf) + `",By=x`, true},
 		{"envoy, a quote that does not end", `Cert="` + escaped(leaf), true},
 	} {
-		if got, err := ParseHeader(tt.value, tt.xfcc); !errors.Is(err, ErrRefused) {
+		if got, err := ParseHeader(header(tt.xfcc), tt.value); !errors.Is(err, ErrRefused) {
 			t.Errorf("%s: ParseHeader = %d certificates, %v; want ErrRefused", tt.name, len(got), err)
 		}
 	}
+}
+
+// header is the name of the header of a case of TestParseHeader: Envoy's in another case, or
+// nginx's.
+func header(xfcc bool) string {
+	if xfcc {
+		return "x-forwarded-client-cert"
+	}
+	return "X-SSL-Client-Cert"
 }
