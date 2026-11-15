@@ -785,7 +785,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 
 | Calls | Needs |
 | --- | --- |
-| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>` (#958), `GET …/packages/<name>/versions/<version>` (#136), `GET …/versions/<version>/attachments` (#89) | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>` (#958), `GET …/packages/<name>/versions/<version>` (#136), `GET …/versions/<version>/attachments` (#89), `GET …/versions/<version>/manifest` and `…/referrers` (#951) | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | searching: `GET /api/v1/search` (#956) | nothing; it searches the repos the caller may read, as `GET /api/v1/repos` lists them, and a repo it may not read adds no hit (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
@@ -803,7 +803,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | --- | --- |
 | info | `GET /api/v1/info` |
 | repos | `GET /api/v1/repos[?format=]`, `POST /api/v1/repos`, `GET/PATCH /api/v1/repos/<format>/<repo>`, `DELETE /api/v1/repos/<format>/<repo>[?force=true]`, `POST …/reindex`, `GET …/reindex`, `DELETE …/upstream-cache[?name=]` (§6) |
-| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&q=&attr=&facet=&sort=&order=&limit=&cursor=]`, `GET …/packages/<name>`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi) |
+| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&q=&attr=&facet=&sort=&order=&limit=&cursor=]`, `GET …/packages/<name>`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `GET …/packages/<name>/versions/<version>/manifest[?variant=]`, `GET …/packages/<name>/versions/<version>/referrers[?variant=&artifactType=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi) |
 | search | `GET /api/v1/search?q=[&format=&limit=&cursor=]` (#956) |
 | users | `GET /api/v1/users[?kind=&limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password`; a service account is a user of kind `service` (rbac.md §1) |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>` |
@@ -830,9 +830,9 @@ found the version changed) is `CONFLICT`, as `409` is. There is no eighth code.
 Lists of a repo's content (`read`): `GET …/packages` pages the packages, by name unless
 `?sort=` says otherwise (below); `GET …/packages/<name>/versions` pages the versions,
 newest first by the publish time of their first variant, each with its variants (`variant`,
-`tag`, manifest `digest`, `publishedAt`), `publishedAt` and `lastModified` (of the first and the
-newest variant), its `pointers` (npm dist-tags) and, on a yanked pypi version only, `yanked`
-(`{"reason": "…"}`, `""` without one). The publish time is
+`tag`, manifest `digest`, `publishedAt` and the facts below), `publishedAt` and `lastModified`
+(of the first and the newest variant), its `pointers` (npm dist-tags) and, on a yanked pypi
+version only, `yanked` (`{"reason": "…"}`, `""` without one). The publish time is
 `org.opencontainers.image.created`, `versions.created_at`, which reindex rebuilds. Both pages are
 `?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name, or a sort's
 value and a name; a time and a version), never an offset.
@@ -902,26 +902,35 @@ cursor of such a page is for the same filter. Another value is `400`. It is a jo
 "which versions has no scanner seen yet", answered from the derived tables: an attachment pushed
 past Lajstrom counts after the next reindex of its repo.
 
+The facts of a variant in the list of versions (#1132) are the index's, so reindex rebuilds them:
+`artifactType`, `attrs` (`versions.attrs`, by annotation key) and `degraded` of its `versions`
+row; `size`, its `files` rows' sizes added up, and `fileCount`, their number; and `attachments`,
+its rows in `attachments` (index-schema.md) counted by `kind`: `signature`, `sbom`, `scan`,
+`provenance`, `attestation` and `other` are always there, `0` without rows, and a kind a newer
+binary wrote is counted under its own name. A degraded variant has them all: they come from its
+manifest's annotations and layers, not from its metadata layer. The facts of a page are one
+statement of the index over the page's variants, never one per row.
+
 One version (`read`, #136): `GET …/packages/<name>/versions/<version>[?variant=]`, with
 `<name>` and `<version>` as the delete below has them, answers the version's row of that list
-(`version`, `publishedAt`, `lastModified`, `pointers`, `variants`, and `yanked` when it has one)
-and `ociRepository`, the OCI
+(`version`, `publishedAt`, `lastModified`, `pointers`, `variants` with their facts, and `yanked`
+when it has one) and `ociRepository`, the OCI
 repository below the instance prefix that holds the manifest of its first variant: the `<name>`
 of §2, `<format>/<repo>/<package path>`, whose package path is `index.ManifestPath` of the
 variant's row, its `oci_repo`, else the package's `name_oci`. The variants are in the order of
 their names; those of a version split across two forms of its package path (index-schema.md,
-Invariants and rules) may be at both. Each variant adds its own `ociRepository` and what the
-index has of its manifest: `artifactType`, `attrs`
-(`versions.attrs`, by annotation key), `metadata` (the metadata layer; `null` when it is absent
-or omitted for size), `degraded`, `indexedAt` and `files`, its file layers in manifest order,
-each with `name`, `mediaType`, `digest`, `size` and `attrs` (the layer's annotations).
+Invariants and rules) may be at both. Each variant adds its own `ociRepository` and the rest of
+what the index has of its manifest: `metadata` (the metadata layer; `null` when it is absent or
+omitted for size), `indexedAt` and `files`, its file layers in manifest order, each with `name`,
+`mediaType`, `digest`, `size` and `attrs` (the layer's annotations).
 `?variant=` keeps one variant (`""` is the variant of a format that has none); the version's times
 and pointers stay those of all its variants. It is all read from
 the derived tables (index-schema.md), so reindex rebuilds it. The manifest itself and its referrers
-are live registry reads and not part of it (#951); `/v2/<ociRepository>/…` of a variant serves
-both (§2). A file's protocol URL is not part of it either: the client builds it from the format, as
-for its usage snippets. The answer is `404` when the repo, the package, the version or the variant
-does not exist, and for a group, which has no versions.
+are live registry reads and not part of it: they are the two routes below (#951), and
+`/v2/<ociRepository>/…` of a variant serves both too (§2). A file's protocol URL is not part of
+it either: the client builds it from the format, as for its usage snippets. The answer is `404`
+when the repo, the package, the version or the variant does not exist, and for a group, which has
+no versions.
 
 The attachments of one version (`read`, #89):
 `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`,
@@ -939,8 +948,34 @@ trust entry of a verified row), `reason` (why it is not verified) and `createdAt
 most `?limit=` rows, 1000 by default and at most, the newest; `truncated` says that there are
 more. It is read from the derived tables, so reindex rebuilds it, and a referrer pushed past
 Lajstrom is listed after the next reindex of its repo. `404` as for the version. The referrers
-themselves stay on `/v2/<ociRepository>/referrers/<digest>` (§2); this list is their labelled
-index, without a registry read, which also gives the UI its counts (#951).
+themselves stay on `/v2/<ociRepository>/referrers/<digest>` (§2) and `…/referrers` below; this
+list is their labelled index, without a registry read, and the list of versions counts its rows
+(#1132).
+
+The manifests of one version (`read`, #951):
+`GET …/packages/<name>/versions/<version>/manifest[?variant=]`, with `<name>`, `<version>` and
+`?variant=` as the version above, answers `{"manifests": [...]}`, one entry per variant in
+variant order, each with `variant`, `digest`, `mediaType`, `size` and `manifest`, the manifest as
+JSON. The index gives each variant's digest and OCI repository; the manifest is read through the
+provider (`Repository.Resolve` and `Fetch` by that digest, at most `server.maxManifestSize`) and
+checked against the digest. Its exact bytes are `/v2/<ociRepository>/manifests/<digest>` (§2).
+An answer of one variant has `ETag`, its digest quoted, and `If-None-Match` with it is `304`
+without a registry read; an answer of several has none. Every answer has `Cache-Control:
+no-cache`. `404` as for the version, and when the registry does not have a variant's manifest,
+naming its digest; `503 UNAVAILABLE` when the registry does not answer.
+
+The referrers of one version (`read`, #951):
+`GET …/packages/<name>/versions/<version>/referrers[?variant=&artifactType=]`, with `<name>`,
+`<version>` and `?variant=` as the version above, answers `{"referrers": [...]}`: the manifests
+whose `subject` is a variant's manifest, per variant in variant order and in the provider's
+order within one, each with `variant`, `subject` (the variant's manifest digest), `digest`,
+`mediaType`, `artifactType`, `size` and `annotations` (`{}` without them), as the provider lists
+them: `Repository.Referrers`, the backend's referrers API or the `sha256-<hex>` tag schema where
+it has none (`Capabilities.Referrers`, manifest-profile.md §6), both with `referrers.alwaysTag`.
+`?artifactType=` keeps the referrers of that type. It is live, one entry per referrer manifest: a
+referrer pushed past Lajstrom, or one whose rows ingest could not write, is there before a
+reindex indexes it. A variant whose OCI repository the registry does not have has none. `404` as
+for the version; `503 UNAVAILABLE` when the registry does not answer.
 
 Search (#956): `GET /api/v1/search?q=[&format=&limit=&cursor=]` searches the repos the caller
 may read, as `GET /api/v1/repos` lists them, of `?format=` when it is given. A repo it may not
