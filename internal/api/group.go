@@ -37,10 +37,20 @@ func (s *Repos) checkGroup(req CreateRequest) (proxy.GroupSettings, error) {
 	if err != nil {
 		return proxy.GroupSettings{}, &clientError{msg: err.Error(), err: err} // the message names the field
 	}
-	return g, nil
+	return g, checkMerge(req.Format, g, s.indexGrouper(req.Format))
 }
 
-// grouper reports whether the plugin of formatName has group repos (format.Grouper).
+// checkMerge refuses a merge pattern on a group whose format's groups render documents of their
+// own (indexGrouper, apt): its members are hosted repos, and none is hidden (§8.6).
+func checkMerge(formatName string, g proxy.GroupSettings, indexGrouper bool) error {
+	if indexGrouper && len(g.Merge) > 0 {
+		return invalid("group.merge: a group of %s repos has hosted members only and hides none of them; it must be empty", formatName)
+	}
+	return nil
+}
+
+// grouper reports whether the plugin of formatName has group repos (format.Grouper or
+// format.IndexGrouper).
 func (s *Repos) grouper(formatName string) bool {
 	if s.Groupers != nil {
 		return s.Groupers(formatName)
@@ -49,14 +59,30 @@ func (s *Repos) grouper(formatName string) bool {
 	if !ok {
 		return false
 	}
-	_, ok = p.(format.Grouper)
+	_, grouper := p.(format.Grouper)
+	_, indexGrouper := p.(format.IndexGrouper)
+	return grouper || indexGrouper
+}
+
+// indexGrouper reports whether the groups of formatName render documents of their own from
+// hosted members (format.IndexGrouper, §8.6).
+func (s *Repos) indexGrouper(formatName string) bool {
+	if s.IndexGroupers != nil {
+		return s.IndexGroupers(formatName)
+	}
+	p, ok := format.Lookup(formatName)
+	if !ok {
+		return false
+	}
+	_, ok = p.(format.IndexGrouper)
 	return ok
 }
 
 // checkMembers returns the ids of the members of a group of formatName, in order: each a hosted
 // or a proxy repo of the format, at most one of them hosted but in a group of oci repos, whose
-// routes say which hosted member serves a path (§2.5, §12.1). Errors name the member.
-func checkMembers(ctx context.Context, r index.Reader, formatName string, names []string) ([]int64, error) {
+// routes say which hosted member serves a path (§2.5, §12.1), and with severalHosted, a group
+// whose format's groups render their own documents (§8.6). Errors name the member.
+func checkMembers(ctx context.Context, r index.Reader, formatName string, names []string, severalHosted bool) ([]int64, error) {
 	ids := make([]int64, len(names))
 	hosted := -1
 	for i, name := range names {
@@ -69,7 +95,7 @@ func checkMembers(ctx context.Context, r index.Reader, formatName string, names 
 			return nil, err
 		case m.Kind == index.KindGroup:
 			return nil, invalid("%s: %q is a group; a group is not a member", field, name)
-		case m.Kind == index.KindHosted && hosted >= 0 && formatName != formatOCI:
+		case m.Kind == index.KindHosted && hosted >= 0 && formatName != formatOCI && !severalHosted:
 			return nil, invalid("%s: %q is a second hosted member, after group.members[%d]; a group has at most one", field, name, hosted)
 		case m.Kind == index.KindHosted:
 			hosted = i
@@ -106,7 +132,8 @@ var (
 )
 
 // applyGroup merges patch into the settings of the group row as an RFC 7396 merge patch, each
-// list replaced whole, checks the result whole and records it in changed when it differs. It
+// list replaced whole, checks the result whole (indexGrouper: of a format whose groups render
+// their own documents, §8.6) and records it in changed when it differs. It
 // returns the ids of the members when they change, for SetGroupMembers, and nil when they do not.
 //
 // Members that differ from the row's, the same names in another order included, since a group
@@ -114,7 +141,7 @@ var (
 // set, refused before they are looked up, so that the answer does not tell which repos exist
 // (docs/spec/rbac.md §3); the members the row has, sent back, are no change (§7). The routes of a
 // group of oci repos that differ are errPaths unless admin is set, as members are (§12.1).
-func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json.RawMessage, admin bool, changed map[string]any) ([]int64, error) {
+func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json.RawMessage, admin, indexGrouper bool, changed map[string]any) ([]int64, error) {
 	if row.Kind != index.KindGroup {
 		return nil, invalid("group: only a group repo has one, not a %s repo", row.Kind)
 	}
@@ -141,7 +168,10 @@ func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json
 	if err != nil {
 		return nil, &clientError{msg: err.Error(), err: err}
 	}
-	ids, same, err := groupChange(ctx, w, row.Format, current, next, admin)
+	if err := checkMerge(row.Format, next, indexGrouper); err != nil {
+		return nil, err
+	}
+	ids, same, err := groupChange(ctx, w, row.Format, current, next, admin, indexGrouper)
 	if err != nil || same {
 		return nil, err
 	}
@@ -153,8 +183,9 @@ func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json
 // groupChange compares the settings next of a group of formatName with its current ones and
 // returns the ids of the members when they change, and whether nothing changes: errPaths for
 // other routes and errMembers for other members, unless admin is set; other members are checked
-// against the index (checkMembers).
-func groupChange(ctx context.Context, r index.Reader, formatName string, current, next proxy.GroupSettings, admin bool) ([]int64, bool, error) {
+// against the index (checkMembers, severalHosted for a format whose groups render their own
+// documents).
+func groupChange(ctx context.Context, r index.Reader, formatName string, current, next proxy.GroupSettings, admin, severalHosted bool) ([]int64, bool, error) {
 	samePaths := maps.EqualFunc(next.Paths, current.Paths, slices.Equal[[]string])
 	if !samePaths && !admin {
 		return nil, false, errPaths
@@ -165,7 +196,7 @@ func groupChange(ctx context.Context, r index.Reader, formatName string, current
 			return nil, false, errMembers
 		}
 		var err error
-		if ids, err = checkMembers(ctx, r, formatName, next.Members); err != nil {
+		if ids, err = checkMembers(ctx, r, formatName, next.Members, severalHosted); err != nil {
 			return nil, false, err
 		}
 	}

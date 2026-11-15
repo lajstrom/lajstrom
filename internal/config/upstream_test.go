@@ -235,6 +235,9 @@ repos:
   - {name: internal, format: oci, registry: local}
   - {name: team, format: oci, registry: local}
   - {name: images, format: oci, kind: group, group: {members: [internal, team], paths: {internal: ["acme/*"], team: ["*"]}}}
+  - {name: jammy, format: apt, registry: local}
+  - {name: noble, format: apt, registry: local}
+  - {name: all, format: apt, kind: group, group: {members: [jammy, noble]}}
 `,
 			want: []string{
 				`repos[0].group.members[1]: "nested" is a group`,
