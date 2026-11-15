@@ -79,7 +79,7 @@ it, as a binding does.
 
 ## 2. Verdicts
 
-A verdict is an in-toto statement of the predicate type `dev.lajstrom.verdict/v1` about one
+A verdict is an in-toto statement of the predicate type `https://lajstrom.dev/verdict/v1` about one
 artifact, signed, and stored in the registry as a referrer of the artifact's manifest
 (manifest-profile.md §6.4). Its predicate is `{verdict, reason, source, scope, validUntil}`:
 
@@ -170,7 +170,7 @@ public key as a PEM `PUBLIC KEY` to anyone: it is what `cosign verify-attestatio
 `cosign verify-blob --key` take, and what an admission controller's policy names.
 
 The policy key verifies its own verdicts: ingest and reindex trust it for
-`dev.lajstrom.verdict/v1`, with the name `lajstrom`, beside `attachments.trust` (its `trust` hash
+`https://lajstrom.dev/verdict/v1`, with the name `lajstrom`, beside `attachments.trust` (its `trust` hash
 includes it, manifest-profile.md §6.3). Without a master key and without a KMS key there is no
 policy key: rules and the verdicts of trusted producers hold, and what the server would sign is
 `501` (§7, §8). This issue does not rotate the key.
@@ -183,7 +183,8 @@ policy key: rules and the verdicts of trusted producers hold, and what the serve
 the reader that `RenderIndex` gets leaves out of `ListVersions`, `ListVersionPage`, `GetVersion`,
 `GetVersionByTag`, `GetVersionByDigest` and `FindFiles` every version whose decision is not
 `allow`, so that no renderer filters on its own. A package whose versions are all left out keeps
-its name and has no versions. npm: a dist-tag that names a version left out is left out, and
+its name and has no versions where the format lists a package without versions (the pypi project
+list, an empty project page), and has no document where it does not (npm's packument: `404`). npm: a dist-tag that names a version left out is left out, and
 `latest` then names the greatest version left that is not a prerelease, or is absent. The view
 reads the rules once and the repo's verdicts once per render.
 
@@ -331,7 +332,7 @@ Two keys of a repo's `policy` (api.md, the policy keys), read on every request:
 ## 10. Reindex
 
 `verdicts` is derived. Reindex rebuilds a managed repo's rows from its attachments: an attachment
-of predicate type `dev.lajstrom.verdict/v1` that verifies (manifest-profile.md §6.3) has a
+of predicate type `https://lajstrom.dev/verdict/v1` that verifies (manifest-profile.md §6.3) has a
 `verdicts` row, written and swept with it. An `oci` repo has no attachments: reindex lists the
 referrers of each manifest that one of its tags names, one request per distinct manifest (one
 `Resolve` per tag costs already), and writes the rows of the verdicts among them; a verdict of a

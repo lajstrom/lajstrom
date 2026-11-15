@@ -511,7 +511,7 @@ kind:
 | `sbom` | the predicate types `https://spdx.dev/Document` and `https://cyclonedx.org/bom`, and those that begin with them and a `/` (`https://cyclonedx.org/bom/v1.6`); unsigned: a layer of SPDX (`application/spdx+json`, `text/spdx`) or CycloneDX (`application/vnd.cyclonedx`, `application/vnd.cyclonedx+json`), cosign's legacy `.sbom` |
 | `scan` | the predicate type `https://cosign.sigstore.dev/attestation/vuln/v1` (trivy `--format cosign-vuln`); a CycloneDX statement whose predicate has a non-empty `vulnerabilities` (a combined document, accepted and classified as a scan) |
 | `provenance` | the predicate types that begin with `https://slsa.dev/provenance/` |
-| `attestation` | any other DSSE envelope or sigstore bundle, with its predicate type: OpenVEX, a custom predicate, the verdicts of ADR 0008 (`dev.lajstrom.verdict/v1`, section 6.4) |
+| `attestation` | any other DSSE envelope or sigstore bundle, with its predicate type: OpenVEX, a custom predicate, the verdicts of ADR 0008 (`https://lajstrom.dev/verdict/v1`, section 6.4) |
 | `other` | anything else |
 
 The predicate type is the signed statement's where Lajstrom reads one (section 6.3), else
@@ -623,7 +623,7 @@ What is checked:
   entry (`cosign attest --tlog-upload=false`), and one it has is not looked at.
 
 The server's policy key ([policy.md](policy.md) §5, #101) is trusted beside `attachments.trust`,
-for the predicate type `dev.lajstrom.verdict/v1` only, with the name `lajstrom`: a verdict the
+for the predicate type `https://lajstrom.dev/verdict/v1` only, with the name `lajstrom`: a verdict the
 server signed is `verified` with `signedBy` `lajstrom`.
 
 The label is decided when the attachment is indexed, by ingest and by reindex, against the
@@ -634,9 +634,9 @@ of its repo (index-schema.md). The layers are read through the provider, at most
 
 ### 6.4 Verdicts (#101)
 
-A verdict ([policy.md](policy.md) §2, ADR 0008) is an in-toto statement v1 whose `subject` is the
-artifact's manifest (its `sha256` digest), whose `predicateType` is `dev.lajstrom.verdict/v1`, and
-whose predicate is:
+A verdict ([policy.md](policy.md) §2, ADR 0008) is an in-toto statement whose `subject` is the
+artifact's manifest (its `sha256` digest), whose `predicateType` is
+`https://lajstrom.dev/verdict/v1` (ADR 0008, Amendment K), and whose predicate is:
 
 ```json
 {
@@ -660,11 +660,13 @@ The verdicts the server makes, by the policy key, have the form `cosign attest -
 `application/vnd.dev.sigstore.bundle.v0.3+json` with the empty config, one layer of that media
 type, a sigstore bundle v0.3 whose `dsseEnvelope` signs the statement (DSSE, payload type
 `application/vnd.in-toto+json`, one ECDSA P-256 signature over SHA-256 of the pre-authentication
-encoding) and whose `verificationMaterial` names the public key by `publicKey.hint`, the key's
-fingerprint, with no transparency log entry; and the annotations
+encoding) of the statement (`_type` `https://in-toto.io/Statement/v0.1`, as cosign writes it), and
+whose `verificationMaterial` names the public key by `publicKey.hint`, the base64 of the SHA-256 of
+its PKIX DER, with no transparency log entry; the layer titled `sha256-<hex>.sigstore.json`; and
+the annotations
 `dev.sigstore.bundle.content: dsse-envelope`, `dev.sigstore.bundle.predicateType:
-dev.lajstrom.verdict/v1` and `org.opencontainers.image.created`. `cosign verify-attestation --key
-<the policy key> --type dev.lajstrom.verdict/v1 --insecure-ignore-tlog=true` verifies it. A
+https://lajstrom.dev/verdict/v1` and `org.opencontainers.image.created`. `cosign verify-attestation --key
+<the policy key> --type https://lajstrom.dev/verdict/v1 --insecure-ignore-tlog=true` verifies it. A
 producer may sign a verdict in any form of section 6.3.
 
 ## 7. Repos of type `oci` (passthrough)
