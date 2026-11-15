@@ -788,7 +788,7 @@ repository it names (`/v2/<name>/manifests/…`, `blobs/…`, `blobs/uploads/…
 `referrers/…`; the instance prefix is part of the name), whatever its method, tag, digest or
 upload: a repository that the registry cannot serve, damaged in its storage or a name the
 registry mishandles, fails every request of it, and must not fail every other repository with
-it. Its requests keep reaching the registry and failing, however many; the others keep working.
+it. The others keep working, and that repository's own breaker caps its requests (below).
 A request of no repository is held against its path (`/v2/_catalog`), or against its host when
 that is not the registry's (a token realm, the storage a blob redirects to). The failures that
 no request can cause are those of `GET /v2/`, the readiness ping, and of a request whose
@@ -797,8 +797,24 @@ is refused, the host or network cannot be reached, the connect timed out. A time
 the answer, and a connection closed or reset once the request was sent, may be the request's
 doing, and are held against its repository.
 
-Five failures in a row of one repository make the breaker send a request of its own, the
-probe: one `GET /v2/`, without credentials and without retries, that waits at most
+Each repository has a breaker of its own under the registry's
+([#1117](https://github.com/lajstrom/lajstrom/issues/1117)), as Envoy ejects one host of a
+cluster and not the cluster. Five failures in a row of one repository, with no answer of it in
+between (another repository's answer does not count), open it: for 30 s that repository's
+requests fail at once and reach nothing. The client gets `503` with `Retry-After`, the seconds
+until the repository's trial, and the status text alone, as the registry's `500` before it
+said nothing more. Then one `GET` or `HEAD` of the repository is its trial: an answer closes its
+breaker (`registry answers the repository again`), a failure opens it for another 30 s. The
+refused requests do not count toward the registry's breaker, and when a repository's breaker
+opens, the registry's failures in a row that were all that repository's are forgotten, so that a
+failure of another repository starts from zero. The log has `registry fails the requests of one
+repository: they fail at once for a while` at warn, with the repository, at most once in 30 s. A
+failure no request can cause is not the repository's; the repositories' breakers count only while
+the registry's is closed, and are forgotten when it opens. Each registry keeps the state of 1024
+repositories at most, and forgets the one asked longest ago first.
+
+Five failures in a row of one repository also make the registry's breaker send a request of its
+own, the probe: one `GET /v2/`, without credentials and without retries, that waits at most
 `registries[].timeout` ([#1119](https://github.com/lajstrom/lajstrom/issues/1119)). A probe
 that gets no answer, or a `5xx` other than `501`, is a failure no request can cause, and opens
 the breaker, unless the registry answered another request while it ran. Any other answer, a
@@ -948,7 +964,9 @@ refuses connections or cannot be reached opens the breaker after five requests a
 does; one that answers `5xx` or hangs while a single image is asked of it opens it after five
 requests and the breaker's probe, which waits at most `upstreams[].timeout`
 ([#1119](https://github.com/lajstrom/lajstrom/issues/1119)). Until then each request waits its
-timeout and retries. Its timeout bounds the wait for headers, not a blob whose bytes stop coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
+timeout and retries. After five failures in a row of one image, that image's requests fail at
+once for 30 s whatever the probe found, as a registry's repository's do
+([#1117](https://github.com/lajstrom/lajstrom/issues/1117)). Its timeout bounds the wait for headers, not a blob whose bytes stop coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
 [§5](quickstart/oci-proxy.md#5-a-poor-link-to-the-upstream) has what a blocked, slow, dropping
 or hanging upstream does, as measured, the hosts to allow, and what to do.
 
