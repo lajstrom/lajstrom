@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"io"
@@ -71,7 +72,8 @@ const (
 // a trial: an upload would keep the breaker half-open for as long as it streams. A 4xx is an
 // answer; a 429, a request whose caller went away, one whose body failed to read, and one that
 // failed after it waited clientWait or longer on its body count neither way, and a trial that
-// counts neither way frees its place.
+// counts neither way frees its place. Under it, each repository has a breaker of its own
+// (repoState, #1117), which caps what the requests of one repository that fails cost.
 type breaker struct {
 	registry string       // the label of the metric
 	host     string       // the registry's host[:port], of its URL
@@ -94,6 +96,11 @@ type breaker struct {
 	answers  uint64    // how many answers came: a probe's failure counts when none came while it ran
 	probing  bool      // a probe is in flight
 	probed   time.Time // when the last probe was sent
+	// repoIndex and repoOrder hold the breakers of the repositories (repoState, #1117), at most
+	// repoBreakers, the one used last first.
+	repoIndex map[string]*list.Element
+	repoOrder list.List
+	ejected   time.Time // when a repository whose requests fail at once was last logged
 	// waitUntil is when the wait ends that the registry last asked for (askedToWait).
 	waitUntil time.Time
 	// probes are the probes in flight, which a test waits for.
@@ -173,11 +180,17 @@ func connectFailed(err error) bool {
 }
 
 // pass is what allow let through: a request of a closed breaker, or a trial of a half-open one,
-// of the repository key, while the breaker was in its period.
+// of the repository key, while the breaker was in its period. A request of a repository
+// (repoKey) has it in repo, the repository's state rs when it had one, and whether it is the
+// repository's trial (#1117).
 type pass struct {
 	trial  bool
 	key    string
 	period int
+
+	repo      string
+	rs        *repoState
+	repoTrial bool
 }
 
 // allow reports whether req may go to the registry, and whether it is a trial of a half-open
@@ -188,13 +201,21 @@ func (b *breaker) allow(req *http.Request) (pass, error) {
 	if b.state == breakerOpen && b.now().Sub(b.opened) >= breakerCooldown {
 		b.state = breakerHalfOpen
 	}
+	p := pass{repo: b.repoKey(req)}
 	switch b.state {
 	case breakerClosed:
-		return pass{}, nil
+		if p.repo != "" {
+			var err error
+			if p.rs, p.repoTrial, err = b.allowRepo(p.repo, req.Method); err != nil {
+				return pass{}, err
+			}
+		}
+		return p, nil
 	case breakerHalfOpen:
 		if key, ok := b.trialOf(req); ok {
 			b.trials = append(b.trials, key)
-			return pass{trial: true, key: key, period: b.period}, nil
+			p.trial, p.key, p.period = true, key, b.period
+			return p, nil
 		}
 		return pass{}, &provider.UnavailableError{} // trials are under way: the answer is near
 	}
@@ -245,8 +266,9 @@ func outcome(ctx context.Context, resp *http.Response, err error, bodyFailed boo
 }
 
 // done records the outcome of a request that allow let through with p, and for a failure what
-// it is held against. A trial that ends after the breaker closed or opened again counts as any
-// request in the state the breaker is in now.
+// it is held against, for the registry's breaker and then for the repository's (doneRepo). A
+// trial that ends after the breaker closed or opened again counts as any request in the state
+// the breaker is in now.
 func (b *breaker) done(ctx context.Context, p pass, result int, against blame) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -274,6 +296,9 @@ func (b *breaker) done(ctx context.Context, p pass, result int, against blame) {
 		default:
 			b.hold(ctx)
 		}
+	}
+	if p.repo != "" {
+		b.doneRepo(ctx, p, result, against)
 	}
 }
 
@@ -394,6 +419,7 @@ func (b *breaker) open(ctx context.Context, attrs ...any) {
 	b.state, b.opened = breakerOpen, b.now()
 	b.period++
 	b.reset()
+	b.forgetRepos()
 }
 
 // reset forgets the failures in a row, the failed trials and the trials in flight; b.mu is held.
