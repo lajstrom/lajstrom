@@ -32,6 +32,7 @@ internal/ingest/              pipeline (validate → parse → push → index), 
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
 internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories; Tokens, an oci upstream's token
+internal/provider/harbor/     Harbor adapter: the project of the prefix, the REST API's listing and repository delete, immutability rules
 internal/provider/probe/      lajstrom registry probe: measures a registry's capabilities (docs/registries)
 internal/provider/providertest/ test doubles: an in-memory Provider; imported only by tests
 internal/index/               Store interface, models, migrations (embedded SQL) and their runner
@@ -812,7 +813,7 @@ type Set interface {
 }
 type Map map[string]Provider                // implements Set
 
-// The implementations Register a Constructor per registries[].type from init (generic, ecr);
+// The implementations Register a Constructor per registries[].type from init (generic, ecr, harbor);
 // New builds the Provider of one registry with it, NewSet every registry of the configuration
 // (the errors of all, joined); Types lists the registered types, sorted.
 type Constructor func(cfg config.Registry, log *slog.Logger) (Provider, error)
@@ -2199,7 +2200,7 @@ database:
   dsn: "file:lajstrom.db"
 registries:
   - name: local
-    type: generic                           # generic | ecr
+    type: generic                           # generic | ecr | harbor
     url: "http://zot:5000"
     prefix: "art/"
     auth: { username: "lajstrom", passwordEnv: "ZOT_PASSWORD" }
