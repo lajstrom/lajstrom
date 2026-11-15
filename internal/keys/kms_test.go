@@ -146,6 +146,9 @@ func TestKMSKey(t *testing.T) {
 			kr := keyring(t, must2(e.svc.PublicKeys(ctx, e.repo)))
 			row := must2(e.st.GetKey(ctx, &e.repo.ID, KindGPG))
 			checkKMSKey(t, e, kr, *row, algo)
+			if got, want := must2(Algorithm(row.Public)), map[string]string{"rsa2048": "rsa2048", "p256": "ecdsa-p256"}[name]; got != want {
+				t.Errorf("Algorithm = %q, want %q", got, want)
+			}
 			if f.calls() != 1 {
 				t.Errorf("%d signatures for the key, want 1: its self-signature", f.calls())
 			}

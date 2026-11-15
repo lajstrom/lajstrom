@@ -45,7 +45,7 @@ func TestCreateOCIGroup(t *testing.T) {
 		"createdAt": "2026-01-02T12:00:00Z", "updatedAt": "2026-01-02T12:00:00Z"}`
 	wantJSON(t, "the created group", got, want)
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/oci/all", "", admin), http.StatusOK, &got)
-	wantJSON(t, "the group read back", got, want)
+	wantJSON(t, "the group read back", got, strings.TrimSuffix(want, "}")+`, "permissions": ["read", "manage"]}`)
 	row, err := f.st.GetRepo(context.Background(), "oci", "all")
 	must(t, err)
 	if string(row.Group) != `{"paths":{"hub":["*"],"internal":["acme/*"],"team":["team/*","acme/team/*"]}}` {
