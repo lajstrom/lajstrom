@@ -2,9 +2,11 @@ package pypi
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"slices"
 
@@ -17,9 +19,11 @@ import (
 // pass, and at Close reads the core metadata from what it held as ReadWheelMetadata, or
 // ReadSdistPKGInfo, reads it from the whole file: a read of bytes it did not hold makes it ask
 // for the file back from the registry (format.ErrReadBack), and then those reads go there and
-// must agree with what it held. Real wheels need no read-back: none of 93 inspected for the ADR
-// has data descriptors, and their directories are at most 2.9 MiB. A directory of more than
-// maxEntries headers, which the read would refuse, is refused at Close without one (#683).
+// must agree with what it held. Real wheels need no read-back: their directories are at most
+// 2.9 MiB, and the walk follows the entries whose sizes are in a data descriptor after their
+// data, as Go's zip.Writer writes them (#684), although none of 93 inspected for the ADR has
+// one. A directory of more than maxEntries headers, which the read would refuse, is refused at
+// Close without one (#683).
 
 const (
 	// heldTail is how much of the end of a zip the inspector holds: the end record and the
@@ -33,12 +37,17 @@ const (
 	maxHeldEntries = 2 * maxHeldEntry
 )
 
-// The local file header (APPNOTE.TXT 4.3.7).
+// The local file header (APPNOTE.TXT 4.3.7), and the longest data descriptor (4.3.9): its
+// signature, the CRC-32 and both sizes in 8 bytes each.
 const (
-	localHeaderSig = 0x04034b50
-	localHeaderLen = 30
-	zip64ExtraID   = 0x0001
+	localHeaderSig     = 0x04034b50
+	localHeaderLen     = 30
+	zip64ExtraID       = 0x0001
+	zip64DescriptorLen = 24
 )
+
+// descriptorSig is the signature of a data descriptor as it is in a file.
+var descriptorSig = binary.LittleEndian.AppendUint32(nil, dataDescriptorSig)
 
 // zipInspector is the inspector of a zip; Inspect makes it with newZipInspector.
 type zipInspector struct {
@@ -152,16 +161,17 @@ type segment struct {
 }
 
 // localWalk follows the local entries of a zip as its bytes pass: a header, its name and extra
-// field, then the compressed data of the size the header says, then the next header. It holds
-// the entries whose name candidate takes, header and data, up to maxHeldEntry each and
-// maxHeldEntries together, and stops at the first record that is not a local header (the
-// central directory, or an archive with something before its first entry), and at an entry
-// whose sizes follow its data (a data descriptor, flag bit 3), whose end it cannot find. What it
-// did not hold is read back. When the record it stops at is a central directory header, it
-// goes on counting the headers from there as scanZip does, up to maxEntries+1.
+// field, then the compressed data of the size the header says, then the next header. The data
+// of an entry whose sizes follow it (flag bit 3) ends at the first data descriptor that agrees
+// with it and that a local or central directory header follows (descriptor).
+// It holds the entries whose name candidate takes, header and data, and data descriptor if any,
+// up to maxHeldEntry each and maxHeldEntries together, and stops at the first record that is not
+// a local header (the central directory, or an archive with something before its first entry).
+// What it did not hold is read back. When the record it stops at is a central directory header,
+// it goes on counting the headers from there as scanZip does, up to maxEntries+1.
 type localWalk struct {
 	candidate func([]byte) bool
-	off       int64 // the offset of the next byte
+	off       int64 // the offset of the next byte, the first in pend when it holds some
 	stopped   bool
 	hdr       []byte    // the header being read
 	want      int       // the length of hdr once it is read
@@ -172,11 +182,22 @@ type localWalk struct {
 	inDir     bool  // the walk is in the central directory
 	dirAt     int64 // where its first header is, once inDir
 	dirCount  int   // the headers of the directory counted, up to maxEntries+1
+
+	// An entry whose sizes are in a data descriptor after its data.
+	desc   bool
+	dataAt int64  // where its data begins
+	stored bool   // its data is stored, not compressed
+	crc    uint32 // the CRC-32 of its data so far, when stored
+	pend   []byte // the bytes after its data so far that may begin its data descriptor
 }
 
 // write follows the entries through p.
 func (w *localWalk) write(p []byte) {
 	for len(p) > 0 && !w.stopped {
+		if w.desc {
+			p = w.scan(p)
+			continue
+		}
 		if w.left > 0 {
 			k := int(min(w.left, int64(len(p))))
 			if w.keep != nil {
@@ -224,11 +245,15 @@ func (w *localWalk) header() {
 		}
 	}
 	nameLen := int(binary.LittleEndian.Uint16(h[26:]))
+	desc := binary.LittleEndian.Uint16(h[6:])&0x8 != 0
 	size, ok := uint64(binary.LittleEndian.Uint32(h[18:])), true
-	if size == 0xffffffff {
+	switch {
+	case desc:
+		size = 0 // in the data descriptor: archive/zip does not read the sizes here
+	case size == 0xffffffff:
 		size, ok = zip64Size(h[localHeaderLen+nameLen:])
 	}
-	if binary.LittleEndian.Uint16(h[6:])&0x8 != 0 || !ok || size > 1<<62 {
+	if !ok || size > 1<<62 {
 		w.stopped = true
 		return
 	}
@@ -237,9 +262,129 @@ func (w *localWalk) header() {
 		w.keep = &segment{off: w.off - int64(len(h)), b: append(make([]byte, 0, n), h...)}
 	}
 	w.hdr, w.want, w.left = w.hdr[:0], 0, int64(size)
-	if w.left == 0 {
+	switch {
+	case desc:
+		w.desc, w.dataAt, w.stored, w.crc = true, w.off, binary.LittleEndian.Uint16(h[8:]) == 0, 0
+	case w.left == 0:
 		w.end()
 	}
+}
+
+// scan follows the data of an entry whose sizes follow it through p, and returns what of p is
+// after its data descriptor, once found: from a new array when bytes held in pend were before
+// p. A descriptor's signature is decided on with the 28 bytes from it on, the longest
+// descriptor and the signature after it; until then they wait in pend, and so do the last bytes
+// of p when they may begin a signature.
+func (w *localWalk) scan(p []byte) []byte {
+	if len(w.pend) > 0 {
+		p = append(slices.Clip(w.pend), p...)
+		w.pend = w.pend[:0]
+	}
+	for {
+		i := bytes.Index(p, descriptorSig)
+		if i < 0 {
+			i = len(p) - sigPrefix(p)
+		}
+		w.data(p[:i])
+		p = p[i:]
+		if len(p) < zip64DescriptorLen+4 {
+			w.pend = append(w.pend, p...)
+			return nil
+		}
+		if n := w.descriptor(p); n > 0 || w.stopped {
+			return p[n:]
+		}
+		w.data(p[:1]) // a signature in the data
+		p = p[1:]
+	}
+}
+
+// sigPrefix returns the length of the longest end of p that begins descriptorSig.
+func sigPrefix(p []byte) int {
+	for k := min(len(p), len(descriptorSig)-1); k > 0; k-- {
+		if bytes.HasPrefix(descriptorSig, p[len(p)-k:]) {
+			return k
+		}
+	}
+	return 0
+}
+
+// data passes d, of the data of an entry whose sizes follow it: into its CRC-32 when it is
+// stored, and into the entry held, if any.
+func (w *localWalk) data(d []byte) {
+	w.off += int64(len(d))
+	if w.stored {
+		w.crc = crc32.Update(w.crc, crc32.IEEETable, d)
+	}
+	w.hold(d)
+}
+
+// hold appends b to the entry held, which is no longer held once it is larger than
+// maxHeldEntry, or than maxHeldEntries leaves of it.
+func (w *localWalk) hold(b []byte) {
+	if w.keep == nil {
+		return
+	}
+	if n := len(w.keep.b) + len(b); n > maxHeldEntry || w.heldBytes+n > maxHeldEntries {
+		w.keep = nil
+		return
+	}
+	w.keep.b = append(w.keep.b, b...)
+}
+
+// descriptor reads p, which begins with descriptorSig and is 28 bytes or more, as the data
+// descriptor of the entry whose data passed (APPNOTE.TXT 4.3.9): the signature, the CRC-32 and
+// both sizes, in 4 bytes each, or in 8 as zip64 writes them; and ends the entry when the
+// compressed size is the length of the data, a local or central directory header follows, and
+// the CRC-32 and the uncompressed size are those of the data. It returns the length of the
+// descriptor, or 0 when the signature is in the data. The CRC-32 of stored data is computed as
+// it passes; of compressed data, only of an entry held, inflated; and when that is not it, the
+// walk stops, for the entry to be read back. A descriptor without its signature, which
+// APPNOTE.TXT allows and no writer of wheels leaves out, is not found: the walk waits for it to
+// the end of the file, and the entries after it are read back.
+func (w *localWalk) descriptor(p []byte) int {
+	n := uint64(w.off - w.dataAt) //nolint:gosec // an offset in the file, not negative
+	crc := binary.LittleEndian.Uint32(p[4:])
+	agreed := false
+	for _, d := range []struct {
+		len                      int
+		compressed, uncompressed uint64
+	}{
+		{dataDescriptorLen, uint64(binary.LittleEndian.Uint32(p[8:])), uint64(binary.LittleEndian.Uint32(p[12:]))},
+		{zip64DescriptorLen, binary.LittleEndian.Uint64(p[8:]), binary.LittleEndian.Uint64(p[16:])},
+	} {
+		if next := binary.LittleEndian.Uint32(p[d.len:]); d.compressed != n || next != localHeaderSig && next != zipHeaderSig {
+			continue
+		}
+		agreed = true
+		if w.checks(crc, d.uncompressed) {
+			w.hold(p[:d.len])
+			w.off, w.desc = w.off+int64(d.len), false
+			w.end()
+			return d.len
+		}
+	}
+	if agreed && !w.stored && w.keep != nil {
+		w.stopped = true
+	}
+	return 0
+}
+
+// checks reports whether crc and size are the CRC-32 and the length of the data of the entry
+// that passed, as far as the walk can tell: of stored data, it computed them; of compressed
+// data, it inflates that of the entry held, and takes the others on the sizes and the header
+// after them.
+func (w *localWalk) checks(crc uint32, size uint64) bool {
+	n := uint64(w.off - w.dataAt) //nolint:gosec // an offset in the file, not negative
+	switch {
+	case w.stored:
+		return crc == w.crc && size == n
+	case w.keep == nil:
+		return true
+	}
+	h := crc32.NewIEEE()
+	k, err := io.Copy(h, io.LimitReader(flate.NewReader(bytes.NewReader(w.keep.b[w.dataAt-w.keep.off:])), maxCoreMetadata+1))
+	return err == nil && h.Sum32() == crc && uint64(k) == size //nolint:gosec // a count of bytes, not negative
 }
 
 // dirHeader reads the central directory header in hdr: its name, extra field and comment are
