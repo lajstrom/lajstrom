@@ -19,6 +19,13 @@ type TokenList struct {
 	Tokens []auth.Token `json:"tokens"`
 }
 
+// TokenPage is the answer of GET /api/v1/tokens: a page of every token, by id, and in Next the
+// cursor of the page after it, absent on the last page.
+type TokenPage struct {
+	Tokens []auth.Token `json:"tokens"`
+	Next   string       `json:"next,omitempty"`
+}
+
 // TokenRequest is the body of POST /api/v1/users/{name}/tokens and of POST
 // /api/v1/repos/{format}/{repo}/deploy-tokens. ExpiresAt is RFC 3339; ExpiresIn a number of
 // days (30d) or a duration (12h); one of them at most.
@@ -229,6 +236,41 @@ func (h *handler) revokeMaskToken(_ http.ResponseWriter, r *http.Request) (int, 
 		return 0, nil, err
 	}
 	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.RepoMask != "" }, "a mask")
+}
+
+// listAllTokens answers a page of every token, by id, of the kind, user, repo and mask the query
+// names and, with ?live=true, neither revoked nor expired: ?limit of them after the token of
+// ?cursor (page). Every token is the system's (docs/spec/rbac.md §2): the admin role is asked
+// before anything else.
+func (h *handler) listAllTokens(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := h.allowAdmin(r); err != nil {
+		return 0, nil, err
+	}
+	limit, after, err := page(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var afterID int64
+	if after != "" {
+		if afterID, err = strconv.ParseInt(after, 10, 64); err != nil {
+			return 0, nil, invalid("cursor: %q is not the next of a page of this list", r.URL.Query().Get("cursor"))
+		}
+	}
+	live, err := boolParam(r, "live")
+	if err != nil {
+		return 0, nil, err
+	}
+	q := r.URL.Query()
+	list, err := h.tokens.Page(r.Context(), auth.TokenQuery{Kind: q.Get("kind"), User: q.Get("user"), Repo: q.Get("repo"),
+		RepoMask: q.Get("repoMask"), Live: live, After: afterID, Limit: limit + 1})
+	if err != nil {
+		return 0, nil, serviceError(err)
+	}
+	out := TokenPage{Tokens: list[:min(limit, len(list))]}
+	if len(list) > limit {
+		out.Next = cursor(strconv.FormatInt(out.Tokens[len(out.Tokens)-1].ID, 10))
+	}
+	return http.StatusOK, out, nil
 }
 
 // allowDeployTokens decides whether the request may list, create and revoke the deploy tokens

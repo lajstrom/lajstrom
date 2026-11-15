@@ -117,6 +117,7 @@ const maxBody = 64 << 10
 //	GET    /api/v1/deploy-tokens[?repoMask=]           the deploy tokens over a mask (admin)
 //	POST   /api/v1/deploy-tokens                       create one over the body's repoMask; the answer has its secret
 //	DELETE /api/v1/deploy-tokens/{id}                  revoke one
+//	GET    /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]  every token, a page at a time (admin)
 //	GET    /api/v1/repos/{format}/{repo}/webhooks          the webhooks whose mask is the repo
 //	POST   /api/v1/repos/{format}/{repo}/webhooks          create one; the answer has its secret
 //	GET    /api/v1/repos/{format}/{repo}/webhooks/{id}     one webhook
@@ -217,6 +218,7 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/deploy-tokens", h.listMaskTokens},
 		{"POST /api/v1/deploy-tokens", h.createMaskToken},
 		{"DELETE /api/v1/deploy-tokens/{id}", h.revokeMaskToken},
+		{"GET /api/v1/tokens", h.listAllTokens},
 		{"GET /api/v1/repos/{format}/{repo}/webhooks", h.listWebhooks},
 		{"POST /api/v1/repos/{format}/{repo}/webhooks", h.createWebhook},
 		{"GET /api/v1/repos/{format}/{repo}/webhooks/{id}", h.getWebhook},

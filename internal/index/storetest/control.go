@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -843,4 +844,71 @@ func testAuditState(t *testing.T, s index.Store) {
 		must(t, err)
 		same(t, "ListAudit of state "+tt.state, tt.want, got)
 	}
+}
+
+// testTokenPages: ListTokenPage pages the tokens by id, with each filter alone and together;
+// LiveAt keeps those neither revoked nor expired then, a token expiring at that very time
+// included, as the authenticator takes it.
+func testTokenPages(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	alice, bob := newUser(t, s, "alice"), newUser(t, s, "bob")
+	repo, other := newRepo(t, s, "raw", "scratch"), newRepo(t, s, "raw", "other")
+	var made []index.Token
+	for _, tok := range []index.Token{
+		{Kind: "pat", UserID: &alice.ID, Name: "a1", ExpiresAt: ptr(at(100))},
+		{Kind: "pat", UserID: &alice.ID, Name: "a2", ExpiresAt: ptr(at(10))}, // expired at 50
+		{Kind: "deploy", RepoID: &repo.ID, Name: "d1", Scopes: []string{"read"}},
+		{Kind: "pat", UserID: &bob.ID, Name: "b1", ExpiresAt: ptr(at(50))}, // expires at 50: live then
+		{Kind: "deploy", RepoMask: "raw/*", Name: "m1", Scopes: []string{"read"}},
+		{Kind: "deploy", RepoID: &other.ID, Name: "d2", Scopes: []string{"read"}, RevokedAt: ptr(at(5))},
+		{Kind: "deploy", RepoMask: "*/*", Name: "m2", Scopes: []string{"read"}},
+	} {
+		tok.Hash = "hash-" + tok.Name
+		must(t, s.CreateToken(ctx, &tok))
+		made = append(made, tok)
+	}
+	names := func(f index.TokenFilter) string {
+		t.Helper()
+		var out []string
+		for {
+			f.Limit = 2
+			page, err := s.ListTokenPage(ctx, f)
+			must(t, err)
+			if len(page) > 2 {
+				t.Fatalf("%+v: a page of %d", f, len(page))
+			}
+			for _, tok := range page {
+				out = append(out, tok.Name)
+			}
+			if len(page) < 2 {
+				return strings.Join(out, " ")
+			}
+			f.After = page[len(page)-1].ID
+		}
+	}
+	for _, tt := range []struct {
+		f    index.TokenFilter
+		want string
+	}{
+		{index.TokenFilter{}, "a1 a2 d1 b1 m1 d2 m2"},
+		{index.TokenFilter{Kind: "pat"}, "a1 a2 b1"},
+		{index.TokenFilter{Kind: "deploy"}, "d1 m1 d2 m2"},
+		{index.TokenFilter{UserID: &alice.ID}, "a1 a2"},
+		{index.TokenFilter{RepoID: &repo.ID}, "d1"},
+		{index.TokenFilter{RepoMask: "raw/*"}, "m1"},
+		{index.TokenFilter{LiveAt: at(50)}, "a1 d1 b1 m1 m2"},
+		{index.TokenFilter{Kind: "deploy", LiveAt: at(50)}, "d1 m1 m2"},
+		{index.TokenFilter{Kind: "deploy", UserID: &alice.ID}, ""},
+		{index.TokenFilter{After: made[3].ID}, "m1 d2 m2"},
+	} {
+		if got := names(tt.f); got != tt.want {
+			t.Errorf("ListTokenPage(%+v) = %q, want %q", tt.f, got, tt.want)
+		}
+	}
+	none, err := s.ListTokenPage(ctx, index.TokenFilter{})
+	must(t, err)
+	same(t, "a page of limit 0", []index.Token{}, none)
+	page, err := s.ListTokenPage(ctx, index.TokenFilter{UserID: &alice.ID, Limit: 1})
+	must(t, err)
+	same(t, "the first token", made[:1], page)
 }
