@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"regexp"
@@ -65,8 +66,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //   - No Authorization header: the request goes on as auth.Anonymous. What anonymous may do is
 //     the authorizers' to decide: read where anonymous read is on, nothing else (rbac.md §3).
 //   - Basic (RFC 7617; the first colon splits the user name from the secret): the credentials
-//     are authenticated (a password, user:<personal access token> or deploy:<deploy token>),
-//     and the request goes on as the user or the deploy token. Credentials that are refused,
+//     are authenticated (a password, user:<personal access token> or deploy:<deploy token>; on
+//     /v2/token also a Kubernetes service-account token, authenticateSecret), and the request
+//     goes on as the user, the deploy token or the service account. Credentials that are refused,
 //     or that do not decode, are answered at once with 401 and the Basic challenge, whatever
 //     the route, in the error format of the route's family (writeRefusal).
 //   - POST /v2/token: the credential is the username and the password of the OAuth2 form
@@ -134,7 +136,7 @@ func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Creden
 				"requestId", RequestID(r.Context()))
 			return auth.Principal{}, auth.Credential{}, true, auth.ErrBadCredentials
 		}
-		p, cred, err = s.opts.Authenticator.Authenticate(r.Context(), user, secret)
+		p, cred, err = s.authenticateSecret(r, user, secret)
 		return p, cred, true, err
 	case strings.EqualFold(scheme, "Bearer") && tokenBearer(r.URL.Path, strings.TrimSpace(value)):
 		p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), strings.TrimSpace(value))
@@ -186,8 +188,28 @@ func (s *Server) authenticateForm(w http.ResponseWriter, r *http.Request, next h
 		token.WriteFormError(w, fe)
 		return
 	}
-	p, cred, err := s.opts.Authenticator.Authenticate(r.Context(), f.Username, f.Password)
+	p, cred, err := s.authenticateSecret(r, f.Username, f.Password)
 	s.settle(w, r, next, p, cred, err)
+}
+
+// issuerRetryAfter is the Retry-After of a token of a Kubernetes cluster whose issuer does not
+// answer.
+const issuerRetryAfter = 30 * time.Second
+
+// authenticateSecret authenticates the user name and the secret of Basic credentials or of the
+// form of r. On /v2/token a secret that is a service-account token of a cluster of
+// auth.kubernetes is that token, whatever the user name (Options.Kubernetes, docs/spec/rbac.md
+// §9), and an issuer that does not answer is 503 with Retry-After (settle); any other secret is
+// the authenticator's.
+func (s *Server) authenticateSecret(r *http.Request, user, secret string) (auth.Principal, auth.Credential, error) {
+	if r.URL.Path == tokenPath && s.opts.Kubernetes != nil && s.opts.Kubernetes.Recognizes(secret) {
+		p, cred, err := s.opts.Kubernetes.Authenticate(r.Context(), secret)
+		if errors.Is(err, auth.ErrIssuerUnavailable) {
+			err = fmt.Errorf("%w: %w", &format.UnavailableError{RetryAfter: issuerRetryAfter}, err)
+		}
+		return p, cred, err
+	}
+	return s.opts.Authenticator.Authenticate(r.Context(), user, secret)
 }
 
 // oidcPrefix is the prefix of the routes of the OIDC login.
