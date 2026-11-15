@@ -260,8 +260,8 @@ paths:
       tags: [repos]
       operationId: listVersions
       summary: >-
-        A page of the package's versions, newest first (read): each with the digests of its
-        variants, its publish time and the pointers that name it.
+        A page of the package's versions, newest first (read): each with the digests and facts of
+        its variants, its publish time and the pointers that name it.
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
@@ -2381,13 +2381,38 @@ components:
           maxLength: 4096
           description: Why the version is yanked, at most 4096 bytes of UTF-8; absent, null or empty for none.
     Variant:
+      description: One manifest of a version with its facts, from the index.
       type: object
-      required: [variant, tag, digest, publishedAt]
+      required: [variant, tag, digest, publishedAt, artifactType, attrs, degraded, size, fileCount, attachments]
       properties:
         variant: {type: string, description: Empty for a format without variants.}
         tag: {type: string}
         digest: {type: string, description: "The manifest digest, the entity tag of If-Match."}
         publishedAt: {type: string, format: date-time}
+        artifactType: {type: string}
+        attrs:
+          type: object
+          description: The manifest's lajstrom.* annotations by their full key.
+          additionalProperties: {type: string}
+        degraded: {type: boolean, description: The row came from the annotations alone; its metadata layer could not be read.}
+        size: {type: integer, format: int64, description: The sizes of its file layers added up.}
+        fileCount: {type: integer, format: int64, description: The number of its file layers.}
+        attachments: {$ref: "#/components/schemas/AttachmentCounts"}
+    AttachmentCounts:
+      description: >-
+        The attachments of a variant counted by kind, as GET …/attachments?variant=&kind= lists
+        them; every kind is there, 0 without attachments, and a kind of a newer server is counted
+        under its own name.
+      type: object
+      required: [signature, sbom, scan, provenance, attestation, other]
+      properties:
+        signature: {type: integer, format: int64}
+        sbom: {type: integer, format: int64}
+        scan: {type: integer, format: int64}
+        provenance: {type: integer, format: int64}
+        attestation: {type: integer, format: int64}
+        other: {type: integer, format: int64}
+      additionalProperties: {type: integer, format: int64}
     Pointer:
       type: object
       required: [kind, name]
@@ -2470,9 +2495,9 @@ components:
         createdAt: {type: string, format: date-time, description: "The referrer's org.opencontainers.image.created, when it has one."}
         indexedAt: {type: string, format: date-time, description: When ingest or reindex last wrote or saw the row.}
     VariantDetail:
-      description: One manifest of a version, with its row of the index and its files.
+      description: One manifest of a version, with its row of the index, its facts and its files.
       type: object
-      required: [variant, tag, digest, publishedAt, artifactType, attrs, metadata, degraded, indexedAt, files, ociRepository]
+      required: [variant, tag, digest, publishedAt, artifactType, attrs, degraded, size, fileCount, attachments, metadata, indexedAt, files, ociRepository]
       properties:
         variant: {type: string, description: Empty for a format without variants.}
         tag: {type: string}
@@ -2483,10 +2508,13 @@ components:
           type: object
           description: The manifest's lajstrom.* annotations by their full key.
           additionalProperties: {type: string}
+        degraded: {type: boolean, description: The row came from the annotations alone.}
+        size: {type: integer, format: int64, description: The sizes of its file layers added up.}
+        fileCount: {type: integer, format: int64, description: The number of its file layers.}
+        attachments: {$ref: "#/components/schemas/AttachmentCounts"}
         metadata:
           description: The metadata layer; null when there is none or it was too large to keep.
           type: [object, "null"]
-        degraded: {type: boolean, description: The row came from the annotations alone.}
         indexedAt:
           type: string
           format: date-time

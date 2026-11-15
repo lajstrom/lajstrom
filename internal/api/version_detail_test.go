@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -44,6 +46,83 @@ func publishDetailed(t *testing.T, st index.Store, repoID int64) {
 	must(t, st.ReplaceJournalState(ctx, pkg.ID, []index.JournalState{{Kind: index.JournalDistTag, Key: "latest", Value: "1.0", Seq: 1}}))
 }
 
+// noAttachments are the counts of a variant without attachments.
+const noAttachments = `{"signature": 0, "sbom": 0, "scan": 0, "provenance": 0, "attestation": 0, "other": 0}`
+
+// TestVersionFacts: the list of versions and the version detail count each variant's files,
+// add up their sizes and count its attachments by kind, the degraded sdist's too; the rows an
+// attach writes (ingest.PutReferrer) add to the counts, and those the delete of a referrer
+// removes take from them, at the next request.
+func TestVersionFacts(t *testing.T) {
+	f := newFixture(t, Options{})
+	repo := f.create(t, "pypi", "libs")
+	publishDetailed(t, f.st, repo.ID)
+	ctx := context.Background()
+	pkg, err := f.st.GetPackage(ctx, repo.ID, "requests")
+	must(t, err)
+	wheel, err := f.st.GetVersion(ctx, pkg.ID, "1.0", "py3-none-any")
+	must(t, err)
+	sdist, err := f.st.GetVersion(ctx, pkg.ID, "1.0", "sdist")
+	must(t, err)
+	attach := func(v *index.Version, referrer string, kinds ...string) {
+		t.Helper()
+		rows := make([]index.Attachment, len(kinds))
+		for i, kind := range kinds {
+			rows[i] = index.Attachment{Layer: digest.FromString(referrer + kind + string(rune('a'+i))), MediaType: "application/json",
+				Kind: kind, Verification: index.AttachmentUnsigned, IndexedAt: testNow}
+		}
+		must(t, f.st.ReplaceAttachments(ctx, v.ID, digest.FromString(referrer), rows))
+	}
+	type facts struct {
+		Size, FileCount int64
+		Degraded        bool
+		Attachments     map[string]int64
+	}
+	counts := func(some map[string]int64) map[string]int64 {
+		m := map[string]int64{"signature": 0, "sbom": 0, "scan": 0, "provenance": 0, "attestation": 0, "other": 0}
+		maps.Copy(m, some)
+		return m
+	}
+	check := func(what string, want map[string]facts) {
+		t.Helper()
+		var list VersionList
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/pypi/libs/packages/requests/versions", "", admin), http.StatusOK, &list)
+		var detail VersionDetail
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/pypi/libs/packages/requests/versions/1.0", "", admin), http.StatusOK, &detail)
+		got := map[string]facts{}
+		for _, e := range list.Versions[0].Variants {
+			got[e.Variant] = facts{e.Size, e.FileCount, e.Degraded, e.Attachments}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s, the list: %+v, want %+v", what, got, want)
+		}
+		got = map[string]facts{}
+		for _, d := range detail.Variants {
+			got[d.Variant] = facts{d.Size, d.FileCount, d.Degraded, d.Attachments}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s, the detail: %+v, want %+v", what, got, want)
+		}
+	}
+	check("before any attach", map[string]facts{"py3-none-any": {65138, 2, false, counts(nil)}, "sdist": {131072, 1, true, counts(nil)}})
+
+	attach(wheel, "sig", index.AttachmentSignature)
+	attach(wheel, "bom", index.AttachmentSBOM, index.AttachmentSBOM)
+	attach(sdist, "slsa", index.AttachmentProvenance)
+	attach(sdist, "vex", "vex") // a kind of a newer binary
+	check("after the attaches", map[string]facts{
+		"py3-none-any": {65138, 2, false, counts(map[string]int64{"signature": 1, "sbom": 2})},
+		"sdist":        {131072, 1, true, counts(map[string]int64{"provenance": 1, "vex": 1})},
+	})
+
+	_, err = f.st.DeleteAttachments(ctx, repo.ID, digest.FromString("bom"))
+	must(t, err)
+	check("after the SBOM's delete", map[string]facts{
+		"py3-none-any": {65138, 2, false, counts(map[string]int64{"signature": 1})},
+		"sdist":        {131072, 1, true, counts(map[string]int64{"provenance": 1, "vex": 1})},
+	})
+}
+
 // TestGetVersion: one version with every variant by variant, each with its row of the index and
 // its files in order, and the OCI repository; ?variant= keeps one variant and leaves the
 // version's times those of all its variants.
@@ -53,15 +132,17 @@ func TestGetVersion(t *testing.T) {
 	publishDetailed(t, f.st, repo.ID)
 	dg := func(s string) string { return digest.FromString(s).String() }
 	wheel := `{"variant": "py3-none-any", "tag": "1.0__py3-none-any", "digest": "` + dg("wheel") + `", "publishedAt": "2026-01-02T12:00:00Z",
-		"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {"lajstrom.pypi.nonstandard": "true"},
-		"metadata": {"name": "Requests", "summary": "HTTP"}, "degraded": false, "indexedAt": "2026-01-02T12:00:01Z",
+		"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {"lajstrom.pypi.nonstandard": "true"}, "degraded": false,
+		"size": 65138, "fileCount": 2, "attachments": ` + noAttachments + `,
+		"metadata": {"name": "Requests", "summary": "HTTP"}, "indexedAt": "2026-01-02T12:00:01Z",
 		"files": [
 		  {"name": "requests-1.0-py3-none-any.whl", "mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip", "digest": "` + dg("whl") + `",
 		   "size": 64928, "attrs": {"org.opencontainers.image.title": "requests-1.0-py3-none-any.whl"}},
 		  {"name": "requests-1.0-py3-none-any.whl.metadata", "mediaType": "application/vnd.lajstrom.pypi.core-metadata.v1", "digest": "` + dg("md") + `",
 		   "size": 210, "attrs": {}}], "ociRepository": "pypi/libs/requests"}`
 	sdist := `{"variant": "sdist", "tag": "1.0__sdist", "digest": "` + dg("sdist") + `", "publishedAt": "2025-12-30T12:00:00Z",
-		"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {}, "metadata": null, "degraded": true, "indexedAt": "2026-01-02T12:00:00Z",
+		"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {}, "degraded": true, "size": 131072, "fileCount": 1,
+		"attachments": ` + noAttachments + `, "metadata": null, "indexedAt": "2026-01-02T12:00:00Z",
 		"files": [{"name": "requests-1.0.tar.gz", "mediaType": "application/vnd.lajstrom.pypi.sdist.v1+gzip", "digest": "` + dg("tgz") + `",
 		   "size": 131072, "attrs": {}}], "ociRepository": "pypi/libs/requests"}`
 	version := func(variants string) string {
