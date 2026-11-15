@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -55,6 +56,92 @@ func circuitGauge(t *testing.T, registry string) float64 {
 		t.Fatal(err)
 	}
 	return m.GetGauge().GetValue()
+}
+
+// circuitCount reads a counter of the breaker of the registry: lajstrom_provider_circuit_opens_total
+// or lajstrom_provider_circuit_held_total.
+func circuitCount(t *testing.T, c *prometheus.CounterVec, registry string) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.WithLabelValues(registry).Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// TestBreakerCounters counts what the breaker did (#1118): lajstrom_provider_circuit_held_total
+// counts each run of one repository's failures that reaches the threshold and leaves the
+// breaker closed, also the runs that the log, at most once a cooldown, leaves out;
+// lajstrom_provider_circuit_opens_total counts each opening from closed, and not the re-opening
+// after a failed trial.
+func TestBreakerCounters(t *testing.T) {
+	lowerBreaker(t, 3)
+	ctx := t.Context()
+	const name = "breaker-counters"
+	f := newFakeRegistry(t)
+	log, buf := testLogger()
+	p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = name, -1 })
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	p.clients.breaker.now = clk.now
+	tags := func(path string) func() error {
+		repo, err := p.Repository(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return func() error { _, err := listTags(ctx, repo); return err }
+	}
+	brokenA, brokenB, good, other := tags("raw/scratch/broken-a"), tags("raw/scratch/broken-b"), tags("raw/scratch/notes"), tags("raw/scratch/other")
+	var down atomic.Bool // the registry fails every request, not only those of the broken repositories
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		if !down.Load() && !strings.HasPrefix(r.URL.Path, "/v2/art/raw/scratch/broken-") {
+			return false
+		}
+		writeErr(w, http.StatusInternalServerError, "UNKNOWN", "x")
+		return true
+	}
+	opens0, held0 := circuitCount(t, metrics.ProviderCircuitOpens, name), circuitCount(t, metrics.ProviderCircuitHeld, name) // of an earlier -count
+	want := func(when string, opens, held float64) {
+		t.Helper()
+		o, h := circuitCount(t, metrics.ProviderCircuitOpens, name)-opens0, circuitCount(t, metrics.ProviderCircuitHeld, name)-held0
+		if o != opens || h != held {
+			t.Errorf("%s: opens_total rose by %v, held_total by %v; want %v, %v", when, o, h, opens, held)
+		}
+	}
+
+	for range breakerThreshold {
+		_ = wantCall(t, f, "tags of a broken repository", brokenA, false, 1)
+	}
+	want("after a run of one repository's failures", 0, 1)
+	_ = wantCall(t, f, "tags of a repository that works, an answer", good, false, 1)
+	for range breakerThreshold {
+		_ = wantCall(t, f, "tags of another broken repository", brokenB, false, 1)
+	}
+	want("after a second run within the cooldown", 0, 2)
+	if n := strings.Count(buf.String(), "fails the requests of one repository only"); n != 1 {
+		t.Errorf("logged %d runs of one repository's failures within a cooldown, want 1:\n%s", n, buf)
+	}
+
+	_ = wantCall(t, f, "tags of a repository that works, an answer", good, false, 1)
+	down.Store(true)
+	_ = wantCall(t, f, "tags, the registry down", other, false, 1)
+	_ = wantCall(t, f, "tags of another repository, the registry down", good, false, 1)
+	_ = wantCall(t, f, "tags, the registry down", other, false, 1)
+	_ = wantCall(t, f, "tags while open", other, true, 0)
+	want("after the breaker opened", 1, 2)
+	clk.add(time.Minute)
+	_ = wantCall(t, f, "Ping as the trial, the registry still down", func() error { return p.Ping(ctx) }, false, 1)
+	_ = wantCall(t, f, "tags after the failed trial", other, true, 0)
+	want("after the failed trial opened it again", 1, 2)
+
+	down.Store(false)
+	clk.add(time.Minute)
+	_ = wantCall(t, f, "Ping as the trial, the registry back", func() error { return p.Ping(ctx) }, false, 1)
+	down.Store(true)
+	for range breakerThreshold {
+		_ = wantCall(t, f, "tags of two repositories in turn, the registry down again", other, false, 1)
+		other, good = good, other
+	}
+	want("after the breaker closed and opened again", 2, 2)
 }
 
 // TestBreakerOpensAndCloses drives the breaker of a provider through a registry that fails,

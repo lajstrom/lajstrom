@@ -796,13 +796,20 @@ they ask, and so does one that fails the requests of two repositories or more. O
 fails, its storage down, does not open it: from Lajstrom that looks like a broken repository.
 Five failures in a row of one repository log `registry fails the requests of one repository
 only: circuit kept closed` at warn, with the repository, at most once in 30 s: a line that
-comes back names a repository to check in the registry. The `circuit open` line names up to
-five of the repositories (or paths, hosts) whose failures opened it, `repositories`, and how
-many failures were of the kind no request can cause, `registryWide`.
+comes back names a repository to check in the registry. Every such run is counted in
+`lajstrom_provider_circuit_held_total{registry}`, also those the log leaves out. The `circuit
+open` line names up to five of the repositories (or paths, hosts) whose failures opened it,
+`repositories`, and how many failures were of the kind no request can cause, `registryWide`.
 
-`lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open. The ping that it
-refuses counts as unanswered, so a breaker that stays open for a minute turns
-[`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
+`lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open, and
+`lajstrom_provider_circuit_opens_total{registry}` counts its openings from closed, not the
+re-openings after a failed trial: a breaker that opens and closes between two scrapes shows
+there, not in the gauge. No label names the repository; the log lines do. An alert on
+`increase(lajstrom_provider_circuit_held_total[1h]) > 0` says that a repository is broken in
+the registry, and the log line names it.
+
+The ping that the open breaker refuses counts as unanswered, so a breaker that stays open for
+a minute turns [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
 
 A registry whose host name does not resolve (its container stopped on a compose network, a
 DNS outage), whose host or network cannot be reached (no route), or that after the retries
@@ -1214,6 +1221,8 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_http_request_size_bytes`, `lajstrom_http_response_size_bytes` | the same | the declared request body, the bytes written back |
 | `lajstrom_provider_request_duration_seconds` | `registry`, `operation`, `method`, `status` | a request to a backend registry, each retry its own, to its response headers; `operation` is `ping`, `catalog`, `manifest`, `blob`, `upload`, `tags`, `referrers` or `other` (a token realm, a redirect to the storage); `status` is `error` without an answer |
 | `lajstrom_provider_circuit_open` | `registry` | `1` while the [circuit breaker](#requests-to-the-registries) of the registry is open, its requests failing at once; `0` otherwise |
+| `lajstrom_provider_circuit_opens_total` | `registry` | times the circuit breaker of the registry opened from closed; a re-opening after a failed trial is not counted |
+| `lajstrom_provider_circuit_held_total` | `registry` | runs of failures in a row that reached the circuit breaker's threshold from one repository only and left it closed: a repository the registry cannot serve, which the warn line `registry fails the requests of one repository only` names |
 | `lajstrom_db_query_duration_seconds` | `method`, `result` | a statement of the index database, by the store method that ran it (`GetRepo`, `UpsertVersion`, …); a missing row is `ok`, a refused or failed statement `error` |
 | `lajstrom_ingest_total` | `format`, `result` | publishes through the ingest pipeline: `published`, `existed` (an idempotent repeat), `invalid`, `conflict`, `error` |
 | `lajstrom_attachments_indexed_total` | `kind`, `verification` | attachment rows ingest wrote for the referrers it stored (#89): `kind` is `signature`, `sbom`, `scan`, `provenance`, `attestation` or `other`; `verification` is `verified`, `untrusted`, `unsigned`, `invalid` or `unsupported` |
