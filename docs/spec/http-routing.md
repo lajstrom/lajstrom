@@ -260,8 +260,10 @@ to `/v2/raw/<repo>/<escaped path>:<version>` works with the same annotations.
 ### pypi
 
 Implements PEP 503 (simple index HTML), PEP 691 (JSON simple API, content negotiation), PEP 658
-metadata files, PEP 592 yanked files (#81), and the legacy upload API that `twine` uses. PEP 694
-(the upload API 2.0) is a draft and not implemented.
+metadata files, PEP 592 yanked files (#81), and the legacy upload API that `twine` uses, for a
+hosted repo; a proxy and a group repo answer the same routes as ADR 0013 says (below), a group
+passing its uploads to its hosted member. PEP 694 (the upload API 2.0) is a draft and not
+implemented.
 
 | Method and path | Behaviour |
 | --- | --- |
@@ -280,6 +282,64 @@ warning. Every yank and unyank is an audit row of its own, action `pypi.yank`, `
 `yank` or `unyank`, with the entry's digest. A version deleted keeps its yank in the journal: the
 same version uploaded again is yanked until it is unyanked. A pypi journal manifest is never
 pushed nor deleted through `/v2`, as npm's (npm, Through `/v2`).
+
+**Proxy** (ADR 0013, proxy-and-group.md, #67). The upstream is a simple index:
+`upstreams[].url` is its root as pip's `--index-url` names it (`https://pypi.org/simple/`), and
+the key of a name is its PEP 503 normalized form.
+
+- The page of a project is asked at `<project>/` below that URL, with `Accept:
+  application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html;q=0.2,
+  text/html;q=0.01`. An answer that is a JSON object is read as the JSON form, of the project
+  (another `name` is a document that does not parse, proxy-and-group.md §6); any other as the HTML
+  form: each `<a>` with an `href`, the file name the last segment of its path, the sha256 that of
+  its fragment (`#sha256=…`), `data-requires-python`, `data-core-metadata` or else
+  `data-dist-info-metadata`, `data-yanked`; an HTML comment is not read.
+- `proxy_meta` keeps, under the one kind `simple.json`, the files the proxy serves, as a page of
+  the JSON form: a wheel or an sdist (`.tar.gz`, `.zip`) of the project whose file name the
+  upload route would take, with an `http` or `https` URL and its sha256, each file name once,
+  and one sdist per version, the first `.tar.gz`, else the first `.zip` (the variant `sdist`
+  holds one file, manifest-profile.md §4.2). Another file (`.egg`, `.exe`, one without a sha256)
+  is not listed. A URL is kept as the upstream wrote it, without its fragment; one relative to
+  the page is asked relative to the page.
+- The page lists those files in the upstream's order, each with `url`
+  `../../files/<project>/<version>/<filename>`, relative to the page as a hosted repo's, the
+  version the file name's; `hashes` its sha256; `requires-python` and `yanked` as the upstream
+  gave them; `size` and `upload-time` when it gave them; and on a wheel `core-metadata` and
+  `dist-info-metadata` with the sha256 the upstream announced, which PEP 658 makes the sha256 of
+  the `METADATA` inside the wheel. A file the repo holds has the index's sha256, size and core
+  metadata, as on a hosted repo's page, and its `created` as `upload-time` when the upstream gave
+  none. `meta.api-version` is `1.1` when every file has its size, else `1.0`; `versions` are the
+  files' versions. The HTML form is that page converted on each request, its `ETag` the sha256
+  of its bytes. Without a cached page (proxy-and-group.md §7) the page is what the repo holds, as
+  a hosted repo's.
+- A file is fetched on its first request, from its URL and checked against its sha256
+  (proxy-and-group.md §5); its `upload-time` is its version's `created`. `<filename>.metadata`
+  of a wheel is served from the index once the repo holds the wheel, which a request of it
+  fetches as a request of the wheel does; of an sdist it is `404`, and nothing is fetched. The
+  first request of a file waits for its fetch and its ingest before its first byte: pip waits
+  15 s for a byte (`--timeout`) and retries a request 5 times, each retry waiting on the same
+  fetch, and uv 30 s (`UV_HTTP_TIMEOUT`), so the first install of a larger file needs a longer
+  timeout.
+- The project list is the projects the repo holds, rendered for each request. An upload is `405`
+  (§6). The management API yanks the versions of a hosted repo only (§4): a proxy's page has the
+  upstream's yanks.
+
+**Group** (ADR 0013, proxy-and-group.md §8, #68). A group has the routes above:
+
+- The page of a project merges the JSON pages of the members that take part (§8.1, §8.2), the
+  hosted member's own page and a proxy member's of above, in member order: `files` is their union
+  by file name, a file that several members list as the first lists it; `versions` their union,
+  in order; `meta.api-version` `1.1` when every page is of `1.1`, else `1.0`. The links stay
+  relative to the page, so they name the group. The HTML form is converted from it, as a
+  proxy's. `ETag` is the group's (§8.5) for the JSON form, the sha256 of its bytes for the HTML
+  one.
+- A file, and a wheel's `.metadata`, come from the first member taking part that holds the file
+  or, for a proxy member, fetches it (§8.3), and are served from that member as from a hosted
+  repo.
+- The project list is the union of the members' (a proxy member's: the projects it holds),
+  rendered for each request.
+- An upload is the hosted member's, with `read` on the group and `write` on the member (rbac.md
+  §7); `405` without a hosted member.
 
 Client config: `pip install --index-url https://host/pypi/<repo>/simple/ …`,
 `twine upload --repository-url https://host/pypi/<repo>/ dist/*`.
@@ -839,8 +899,8 @@ inside the network. Issue #23.
 
 A proxy or a group repo ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
 [proxy-and-group.md](proxy-and-group.md)) is `/<format>/<repo>/` like a hosted one, with the
-routes of its format: a client sees no difference, and the npm routes (ADR 0012) and the maven
-routes serve all three kinds. What changes is who answers and what a write does.
+routes of its format: a client sees no difference, and the npm routes (ADR 0012), the maven
+and the pypi routes serve all three kinds. What changes is who answers and what a write does.
 
 | Request | proxy | group |
 | --- | --- | --- |
