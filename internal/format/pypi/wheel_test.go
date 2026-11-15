@@ -111,17 +111,19 @@ func filetype(filename string) string {
 
 // TestUploadWheelWritesNoTempFile: with a TMPDIR that takes no file, wheels and a .zip sdist are
 // uploaded and served: a small wheel and the sdist, held whole; a wheel of 6 MiB with its
-// METADATA first, held from its local entry as it passed, as the wheels of PyPI allow; and the
-// same with data descriptors, which the inspector cannot follow, read back from the registry by
-// range requests (ADR 0014 step 5). Nothing is spooled, no session is left open, and only the
-// last reads ranges.
+// METADATA first, held from its local entry as it passed, as the wheels of PyPI allow, and the
+// same with data descriptors, as Go's zip.Writer writes it (#684); and the same after a shebang
+// line, whose entries the inspector cannot follow, read back from the registry by range requests
+// (ADR 0014 step 5). Nothing is spooled, no session is left open, and only the last wheel reads
+// ranges.
 func TestUploadWheelWritesNoTempFile(t *testing.T) {
 	dir := formattest.NoTempDir(t)
 	e := newEnvWith(t, keepAll)
 	reg := e.prov.(*keeping)
 	small, si := testutil.Wheel(testutil.WheelOptions{Name: "tool", Version: "1.0"})
 	held, heldWheel := largeWheel(t, "2.0", "2.0", false)
-	back, backWheel := largeWheel(t, "3.0", "3.0", true)
+	descriptors, descriptorsWheel := largeWheel(t, "5.0", "5.0", true)
+	back, backWheel := largeWheel(t, "3.0", "3.0", false)
 	for _, tt := range []struct {
 		filename, version string
 		content           []byte
@@ -129,7 +131,8 @@ func TestUploadWheelWritesNoTempFile(t *testing.T) {
 	}{
 		{si.Filename, "1.0", small, false},
 		{held, "2.0", heldWheel, false},
-		{back, "3.0", backWheel, true},
+		{descriptors, "5.0", descriptorsWheel, false},
+		{back, "3.0", shebang(backWheel), true},
 		{"tool-4.0.zip", "4.0", storedZip(t, false, "tool-4.0/PKG-INFO", pkgInfo("4.0"), "tool-4.0/tool/__init__.py", "x = 1\n"), false},
 	} {
 		before := reg.rangeReads()
@@ -146,7 +149,7 @@ func TestUploadWheelWritesNoTempFile(t *testing.T) {
 			t.Errorf("GET %s = %d with %d bytes, want 200 with the %d uploaded", tt.filename, got.Code, got.Body.Len(), len(tt.content))
 		}
 	}
-	if page := e.do(http.MethodGet, "simple/tool/").Body.String(); strings.Count(page, "<a ") != 4 {
+	if page := e.do(http.MethodGet, "simple/tool/").Body.String(); strings.Count(page, "<a ") != 5 {
 		t.Errorf("the page after the uploads:\n%s", page)
 	}
 	if n := e.fake.OpenUploads(); n != 0 {
@@ -165,8 +168,9 @@ func TestUploadWheelWritesNoTempFile(t *testing.T) {
 func TestUploadWheelRefused(t *testing.T) {
 	whl, wi := testutil.Wheel(testutil.WheelOptions{Name: "tool", Version: "1.0"})
 	other, _ := testutil.Wheel(testutil.WheelOptions{Name: "tool", Version: "1.1"})
-	back, backWheel := largeWheel(t, "1.0", "1.0", true)
-	_, lying := largeWheel(t, "1.0", "1.1", true)
+	back, backWheel := largeWheel(t, "1.0", "1.0", false)
+	_, lying := largeWheel(t, "1.0", "1.1", false)
+	backWheel, lying = shebang(backWheel), shebang(lying)
 	for _, tt := range []struct {
 		name     string
 		filename string
