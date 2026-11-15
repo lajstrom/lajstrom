@@ -226,6 +226,29 @@ passthrough with what it needs beyond that (recognising images for the UI, multi
 after the MVP; in the MVP only the paths above are exercised, with `oras` and `cosign` as the
 OCI-native clients tested (`test/e2e/oras.sh`, `cosign.sh`).
 
+### 2.1 Encrypted repos (#114, ADR 0009)
+
+On a repo whose `policy.encryption.mode` is `at-rest` the facade encrypts what it stores and
+answers every client in the form the client pushed (manifest-profile.md §11): the client's
+manifest under the digest it computed, each blob by its plaintext digest, decrypted. The stored
+manifest and the ciphertext stay reachable by their own digests, for an OCI client that holds a
+recipient's key. The rows of §2 hold, with these changes:
+
+| Method and path | Behaviour on an encrypted repo |
+| --- | --- |
+| `HEAD/GET /v2/<name>/manifests/<ref>` | a tag, or a digest that `blob_map` maps at the path (`kind` `manifest`): the manifest as the client had it, the stored one with the change of manifest-profile.md §11 undone, `Docker-Content-Digest` its digest and `Content-Length` its length. The stored manifest's own digest: the stored manifest as it is. A manifest stored without the change (before the repo turned `at-rest` on, or one without layers) is answered as it is under every reference. A stored manifest that cannot be answered as the client had it, a layer whose row `blob_map` lacks, is `500` naming the layer: reindex writes the row again |
+| `PUT /v2/<name>/manifests/<ref>` | the hook of §2, on the manifest as the client sent it: every layer must have been uploaded into the OCI repository encrypted, a row of `blob_map` at the path (`400 MANIFEST_BLOB_UNKNOWN` naming the digest otherwise); the empty config is pushed in plain when the registry lacks it; ingest validates the plaintext and stores the manifest changed (manifest-profile.md §11) under the tag. The answer's `Docker-Content-Digest` and the digest of its `Location` are the client's digest, also for the idempotent repeat, whose stored manifest may differ from the one this push would store; `409 TAG_INVALID` names the client's digest of the existing manifest in `detail.existing`. A referrer (§2) is stored with its layers encrypted and its subject's stored digest, under the referrers lock of the stored subject; `OCI-Subject` is the subject as the client named it. `blob_map` gets the manifest's row in the transaction that indexes it |
+| `POST`, `PATCH`, `PUT …/blobs/uploads/…` | every byte is encrypted on its way to the backend's session (AES-256-CTR from the session's offset; a data key and a nonce per session, kept in the row, the data key sealed with the master key); `Range` counts the bytes the backend holds, as many as the client sent. The hash of the client's digest is over the plaintext, the last byte held back until it is known (§2); the backend's session is closed with the ciphertext's digest. The answer names the client's digest. The close writes the blob's row of `blob_map` (the path, both digests, the size, the wrapped private options and the public options), so that a manifest that names the blob can be stored on any replica. A blob in one request is closed with its HMAC; a session that got bytes in more than one request reads its blob back from the backend once after the close, to compute it. A row that cannot be written after the backend's close is `500` and ends the session: the client uploads again. A server without the master key cannot encrypt: the start of a session, a monolithic upload and a mount are `500` naming the missing key, and nothing is written |
+| `POST …/blobs/uploads/?mount=<digest>&from=<name>` | a `from` in the same repo, a row of `blob_map` at `from`'s path for `<digest>` as plaintext: the backend mounts its ciphertext, and the row is written at the target path. A `from` in another repo, or a digest without a row: a plain session (`202`), the client uploads and the blob is encrypted |
+| `HEAD /v2/<name>/blobs/<digest>` | a plaintext digest with a row of `blob_map` at the path: the backend's `HEAD` of the ciphertext, answered with the plaintext digest as `Docker-Content-Digest` and `ETag`, and the size. Any other digest: §2, as the registry has it |
+| `GET /v2/<name>/blobs/<digest>` | a plaintext digest with a row at the path: `format.ServeBlob` decrypts the ciphertext as it streams, never a `307`; a whole blob goes out with its last byte held back until the HMAC and the plaintext digest match, and is aborted otherwise (guarantees.md, INV-40); a `Range` reads the ciphertext from the 16-byte boundary before it and is decrypted from there, `206` with the plaintext's `Content-Range`, not authenticated, as a range of a plain blob is not hashed. Any other digest, a ciphertext's included: §2, as the registry has it, a `307` allowed |
+| `GET /v2/<name>/referrers/<digest>` | the referrers of the stored manifest that `<digest>` maps to (itself when `blob_map` has no row), each descriptor with the digest of its manifest as the client had it and the annotations of that manifest; keys referrers (manifest-profile.md §11.1) are left out |
+| `DELETE /v2/<name>/manifests/<ref>` | a digest that `blob_map` maps names the stored manifest; the rows of `blob_map` of a deleted manifest go in the transaction of its rows |
+
+An `oci` repo, which passes manifests through, and a group, which stores nothing, never encrypt:
+the API refuses `at-rest` on them ([api.md](../api.md#policy)). A blob that a group serves from an
+encrypted member is decrypted with the member's key.
+
 ## 3. Protocol frontends (MVP formats)
 
 Authentication on all frontend endpoints: HTTP Basic with a user password, a PAT or a deploy
@@ -254,6 +277,15 @@ A download of a file of a version that policy refuses, and an upload of such a v
 in the format's error answer, the message naming the version and the reason (`requests 2.32.0 is
 denied by policy: CVE-2026-1234`, `… is quarantined until 2026-11-18T10:00:00Z`), before any
 request to the registry; the version is left out of the format's indexes (policy.md §6, #101).
+
+On an encrypted repo (§2.1) every file a frontend stores is encrypted on its way into the
+registry, its metadata layer too, and every file `GET` of an encrypted layer is decrypted by
+`format.ServeBlob` as it streams: never a `307`, whatever `policy.blobRedirect` says; a whole file
+with its last byte held back until the HMAC matches; a `Range` decrypted from the 16-byte boundary
+before it. `ETag`, `Last-Modified`, `Docker-Content-Digest` and the indexes do not change: the
+indexes carry the files' own checksums (manifest-profile.md §11). A read that needs a data key
+that the repo's keys do not open is `500`; one whose key is in a KMS that does not answer is `503`
+with `Retry-After: 5`, as a signature is (ADR 0020).
 
 ### raw
 

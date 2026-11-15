@@ -450,6 +450,99 @@ aws --endpoint-url "$AWS_ENDPOINT_URL_KMS" kms create-key --key-spec RSA_4096 --
 runs the client's integration test against it. Never point that test at AWS: it makes keys,
 and a KMS key cannot be deleted at once.
 
+### Encryption at rest
+
+A repo can keep its files encrypted in the registry, so that the registry's operator and a leaked
+registry credential read none of their bytes ([ADR 0009](adr/0009-encryption-at-rest-in-the-registry.md)).
+It is off by default, and turned on per repo:
+
+```sh
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/secrets" \
+  -d '{"policy": {"encryption": {"mode": "at-rest"}}}'
+```
+
+From then on every file stored in the repo, by a frontend's upload, an `oras push` or a proxy's
+fetch, is encrypted on its way into the registry in the format of OCI encrypted layers
+([manifest-profile.md](spec/manifest-profile.md) §11), and decrypted by Lajstrom on its way to
+a client: `apt-get`, `pip`, `mvn`, `npm`, `curl` and `oras pull` see no difference. What stays in
+the clear in the registry is what the manifests say: names, versions, variants, sizes, times,
+tags and `lajstrom.*` annotations. The files the repo held before keep their form, and so do the
+encrypted ones when the mode is turned off again; every one stays readable. An `oci` repo and a
+group cannot turn it on.
+
+**The repo's key.** Each data key (one per file) is wrapped for the repo's key, made on the repo's
+first encrypted write: an RSA key of 3072 bits that Lajstrom makes and keeps sealed with the master
+key, like the signing keys, or, with `policy.encryption.key`, a key of AWS KMS or GCP Cloud KMS
+that never leaves it. A KMS key is an RSA key for decryption with OAEP and SHA-256:
+
+- AWS KMS: key usage `ENCRYPT_DECRYPT`, spec `RSA_3072` (recommended), `RSA_4096` or `RSA_2048`.
+  Lajstrom needs `kms:GetPublicKey` and `kms:DescribeKey` where a key is made (the repo's first
+  encrypted write in `serve`, and `admin key rotate`), and `kms:Decrypt` in `serve` and
+  `reindex`.
+- GCP Cloud KMS: an enabled version of `RSA_DECRYPT_OAEP_3072_SHA256` (recommended), `…_4096_…`
+  or `…_2048_…`, purpose `ASYMMETRIC_DECRYPT`. Lajstrom needs `cloudkms.cryptoKeyVersions.get`
+  and `viewPublicKey` where a key is made, and `useToDecrypt`
+  (`roles/cloudkms.cryptoKeyDecrypter`) in `serve` and `reindex`.
+
+Lajstrom wraps with the public key, which it reads once, and asks the KMS to unwrap: one request
+per file a replica reads, the data key then cached in the replica's memory for 15 minutes (4 096
+data keys at most). A KMS that does not answer is `503` with `Retry-After: 5` on the reads that
+need it, and a refusal is `500`; writes need no KMS request.
+
+**The master key is required**, as for signing: without it `at-rest` is refused, and `serve`
+refuses to start once the index holds an encryption key. **Losing the keys loses the files**: the
+master key for a key Lajstrom made, the KMS key for one in a KMS. No reindex, no snapshot and no
+support request brings a file back without them. Keep the master key apart from the database
+backups (above), and schedule no deletion of a KMS key that a repo uses or used.
+
+**Recipients: decrypting outside Lajstrom.** `policy.encryption.recipients` lists public keys
+for which every new data key is wrapped too. The holder of the private key reads the files from
+the registry with any client of OCI encrypted layers, without Lajstrom; it is also the recovery
+when Lajstrom's keys are lost:
+
+```sh
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out recovery.pem
+openssl pkey -in recovery.pem -pubout -out recovery.pub
+jq -n --rawfile k recovery.pub '{policy: {encryption: {mode: "at-rest", recipients: [$k]}}}' |
+  curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/secrets" -d @-
+# later, straight from the registry, with the registry's credentials
+skopeo copy --decryption-key recovery.pem docker://registry.example/art/raw/secrets/<path>:<tag> dir:./out
+```
+
+A recipient applies to the files stored after it is added: the earlier ones are wrapped for the
+recipients of their time.
+
+**Rotation.**
+
+```sh
+lajstrom admin key rotate --repo raw/secrets --encryption
+```
+
+makes a new key from `policy.encryption.key` as it is now (a KMS key URI, or `""` for one Lajstrom
+makes), retires the old one, and wraps the data key of every file again for the new key: one keys
+referrer per manifest ([manifest-profile.md](spec/manifest-profile.md) §11.1), pushed by
+Lajstrom. No file is uploaded again and no manifest or tag changes. It prints the new
+fingerprint and the number of manifests it wrapped again; stopped half way, it continues when run
+again. The retired key keeps decrypting meanwhile. Rotate to move a repo onto a KMS key (or off
+one) and when a policy limits a key's age. A rotation does not protect files from a key that
+leaked: the manifests keep the old wrapping, and only an upload of the files again would.
+
+**Reindex needs the keys** of an encrypted repo: it opens each layer's wrapping to rebuild the
+mapping of digests (`blob_map`) and decrypts each metadata layer. A run without them (no master
+key, a seal that does not open, a KMS that refuses) skips the repo and says why in the repo's
+report (`skipped`), leaving its rows as they are. With a KMS key, a run sends one request per
+encrypted layer.
+
+**The costs**, paid by the encrypted repos only:
+
+- no blob redirect: every byte of an encrypted file passes through Lajstrom, whatever
+  `policy.blobRedirect` says;
+- AES-256-CTR and HMAC-SHA256 over every byte read and written, in constant memory;
+- no deduplication across repos or uploads: the same file in two repos, or uploaded twice, is two
+  blobs; within one OCI repository `oras` and `docker` find a blob they pushed before;
+- a `reindex` that needs the keys, and a KMS request per layer with a KMS key;
+- a chunked upload of `/v2` that sends bytes in more than one request reads its blob back once.
+
 ### The bearer-token key
 
 The bearer tokens of `/v2` ([auth.md](auth.md#bearer-tokens-on-v2)) are signed with one server
@@ -506,13 +599,15 @@ names, or in the file of `keys.masterKeyFile`), and a migrated database; none go
 | `admin key rotate --repo apt/<repo>` | gives the repo a new key, retires the old one for `keys.retireGrace`, drops the repo's cached indexes; prints the new fingerprint. The new key is the KMS key of `keys.kms` when it is set, else one Lajstrom makes |
 | `admin key rotate --repo apt/<repo> --kms <key URI>` | the same, the new key being that KMS key, e.g. `awskms:///alias/lajstrom-apt` ([Keys in a KMS](#keys-in-a-kms)) |
 | `admin key rotate --repo apt/<repo> --local` | the same, the new key made by Lajstrom even when `keys.kms` is set |
+| `admin key rotate --repo <format>/<repo> --encryption` | gives an encrypted repo a new key from `policy.encryption.key`, retires the old one, which keeps decrypting, and wraps every data key again for the new key with a keys referrer per manifest; prints the new fingerprint and the manifests wrapped again ([Encryption at rest](#encryption-at-rest)). Run again, it continues a rotation that stopped |
 | `admin key export --token` | prints the public bearer-token key as PEM; makes the key when there is none |
 | `admin key rotate --token` | a new bearer-token key; the old one verifies for 21 minutes; prints the new fingerprint |
 | `admin key rotate --token --drop` | the same, and no old key verifies anything from then on, one still in its 21 minutes included |
 | `admin key drop --token` | retires the bearer-token key without a successor, whether it decrypts or not (the next token a replica issues, or the next start of `serve`, makes one); prints its fingerprint |
 
 `--repo` and `--token` exclude each other, and one of them is required. `--kms` and `--local` go
-with `--repo` only, and exclude each other. Without the master key
+with `--repo` only, and exclude each other; `--encryption` goes with `--repo` only, and with
+neither of them: the new key is what the repo's policy names. Without the master key
 the token commands fail and say that `serve` signs with an ephemeral key then.
 
 ## Readiness
