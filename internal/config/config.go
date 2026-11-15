@@ -132,7 +132,7 @@ type Database struct {
 type Registry struct {
 	// Name identifies the registry in repos[].registry.
 	Name string `yaml:"name"`
-	// Type is generic (distribution, Zot, Harbor, GHCR) or ecr.
+	// Type is generic (distribution, Zot, Harbor, GHCR), ecr or harbor.
 	Type string `yaml:"type"`
 	// URL is the registry's base URL, http(s)://<host>[:port], without a path, a query or a
 	// fragment: a project or an owner goes in Prefix.
@@ -165,7 +165,22 @@ type Registry struct {
 	Uploads RegistryUploads `yaml:"uploads"`
 	// ECR configures a registry of type ecr; it must stay empty for the other types.
 	ECR ECR `yaml:"ecr"`
+	// Harbor configures a registry of type harbor; it must stay empty for the other types.
+	Harbor Harbor `yaml:"harbor"`
 }
+
+// Harbor configures a registry of type harbor (internal/provider/harbor,
+// docs/registries/harbor.md). The project is the first component of Prefix, which type harbor
+// requires; the credentials are Auth's, a robot account's, for /v2 and for Harbor's REST API.
+type Harbor struct {
+	// CreateProject creates the project, private and with Harbor's default quota, when it does
+	// not exist. Harbor lets only a system robot with the permission project:create (or an
+	// administrator) create one; without it the project must exist.
+	CreateProject bool `yaml:"createProject"`
+}
+
+// IsZero reports whether h sets nothing, as for a registry of another type.
+func (h Harbor) IsZero() bool { return !h.CreateProject }
 
 // ECR configures a registry of type ecr (internal/provider/ecr, docs/registries/ecr.md): where
 // its API is and how the repositories Lajstrom creates are set up. The credentials come from
