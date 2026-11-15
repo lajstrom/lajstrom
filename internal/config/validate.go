@@ -895,6 +895,58 @@ func (a Auth) validate(p *problems, s Server) {
 		p.add("auth.bootstrap.ttl", "must be positive")
 	}
 	a.OIDC.validate(p, s)
+	a.ClientCertificates.validate(p, s)
+}
+
+// trustDomainPattern is the rule of a SPIFFE trust domain (SPIFFE ID §2.1).
+var trustDomainPattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
+
+// headerName is the rule of an HTTP field name (RFC 9110 §5.1).
+var headerName = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+// validate checks auth.clientCertificates (docs/spec/rbac.md §9): each bundle's unique name, its
+// file, its identity and, for spiffe, a trust domain no other bundle has; the forwarded header
+// a field name, with a bundle and server.trustedProxies, from which alone it is read.
+func (c ClientCertificates) validate(p *problems, s Server) {
+	names, domains := map[string]bool{}, map[string]bool{}
+	for i, b := range c.Bundles {
+		key := fmt.Sprintf("auth.clientCertificates.bundles[%d]", i)
+		if err := CheckIdentitySource(b.Name); err != nil {
+			p.add(key+".name", "%s", err)
+		} else if names[b.Name] {
+			p.add(key+".name", "%q names another bundle too", b.Name)
+		}
+		names[b.Name] = true
+		if b.CAFile == "" {
+			p.add(key+".caFile", "must be set")
+		}
+		switch b.Identity {
+		case "", CertIdentitySPIFFE:
+			switch {
+			case !trustDomainPattern.MatchString(b.TrustDomain):
+				p.add(key+".trustDomain", "must be a SPIFFE trust domain, lowercase letters, digits, ., - and _")
+			case domains[b.TrustDomain]:
+				p.add(key+".trustDomain", "%q is another bundle's: one bundle per trust domain", b.TrustDomain)
+			}
+			domains[b.TrustDomain] = true
+		case CertIdentityCN, CertIdentityDNS:
+			if b.TrustDomain != "" {
+				p.add(key+".trustDomain", "is for a spiffe bundle only")
+			}
+		default:
+			p.add(key+".identity", "%q is not spiffe, cn or dns", b.Identity)
+		}
+	}
+	if h := c.ForwardedHeader; h != "" {
+		switch {
+		case !headerName.MatchString(h):
+			p.add("auth.clientCertificates.forwardedHeader", "%q is not a header name", h)
+		case len(c.Bundles) == 0:
+			p.add("auth.clientCertificates.forwardedHeader", "needs a bundle to verify the certificate against")
+		case len(s.TrustedProxies) == 0:
+			p.add("auth.clientCertificates.forwardedHeader", "is read from server.trustedProxies only: list the edge there")
+		}
+	}
 }
 
 // validate checks auth.oidc when its issuer is set (docs/spec/rbac.md §8): an absolute issuer
