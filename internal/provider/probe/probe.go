@@ -114,12 +114,40 @@ type facts struct {
 	lag          time.Duration
 	lagged       bool
 	lagUnbounded bool
-	// notMonotonic: a read over a new connection saw a change, and a later one did not.
-	notMonotonic bool
+	// deleteLag, deleteLagged and deleteLagUnbounded are the same of the deletes of the
+	// consistency measurement, lagDeletes how many it made; lagTagGone is set when its read by
+	// tag saw each of them.
+	deleteLag          time.Duration
+	deleteLagged       bool
+	deleteLagUnbounded bool
+	lagDeletes         int
+	lagTagGone         bool
+	// notMonotonic: a read over a new connection saw a write or the tag move, and a later one
+	// did not; deleteNotMonotonic: the same of a delete.
+	notMonotonic       bool
+	deleteNotMonotonic bool
 	// buildRoutesRefused: every name of the routing words that ends in a build route was refused
 	// NAME_INVALID; buildRoutesTaken: every one was taken (provider.BuildRoute).
 	buildRoutesRefused bool
 	buildRoutesTaken   bool
+}
+
+// deletesUnjudged says why the reads after the deletes of "Read-after-write lag" and "Monotonic
+// reads" are left out of their verdicts, "" when they count (#1149). They are left out when the
+// registry refuses a delete by digest, and when one leaves the tags: the read by tag right after
+// the delete found it ("Delete a manifest by digest"), and the consistency measurement did not
+// see a tag go after its deletes, which tells a tag that stays from one that lags. Either way
+// "Overrides needed" says `deleteManifest: false`, or the provider already does, and Lajstrom
+// then does not delete there: its reads after a delete are not about the registry's consistency.
+func (f facts) deletesUnjudged() string {
+	const row = ` ("Delete a manifest by digest")`
+	switch {
+	case f.deleteRefused:
+		return "the registry refuses a delete by digest" + row
+	case f.tagsStay && !f.lagTagGone:
+		return "a delete by digest leaves the tags" + row
+	}
+	return ""
 }
 
 // Run measures the row of the registry cfg (registries[].type generic or ecr) and deletes what
@@ -229,21 +257,25 @@ func (r *run) providerProbe(ctx context.Context) error {
 	return nil
 }
 
-// measureAll measures the cells in the README's order, then cleans up. A measurement that fails
-// says why in each of its cells that it did not measure.
-func (r *run) measureAll(ctx context.Context) {
-	groups := []struct {
-		keys []string
-		fn   func(context.Context) error
-	}{
+// group is a measurement and the cells it measures, the first of which gets its exchanges.
+type group struct {
+	keys []string
+	fn   func(context.Context) error
+}
+
+// groups are the measurements in the order of a run: the README's, but for "Monotonic reads",
+// which follows the deletes, so that it makes no deletes whose reads would not count
+// (facts.deletesUnjudged).
+func (r *run) groups() []group {
+	return []group{
 		{[]string{"createOnPush", "where"}, r.measureCreate},
 		{[]string{"routingWords"}, r.measureRoutingWords},
 		{[]string{"referrers", "ociSubject"}, r.measureReferrers},
 		{[]string{"catalog"}, r.measureCatalog},
 		{[]string{"tags"}, r.measureTags},
 		{[]string{"consistency"}, r.measureConsistency},
-		{[]string{"monotonic"}, r.measureMonotonic},
 		{[]string{"deleteDigest", "deleteTag"}, r.measureDeletes},
+		{[]string{"monotonic"}, r.measureMonotonic},
 		{[]string{"immutableTags"}, r.measureImmutable},
 		{[]string{"blobRedirect", "range"}, r.measureBlobReads},
 		{[]string{"largestBlob", "chunkSize"}, r.measureBlobSizes},
@@ -251,16 +283,35 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"profile"}, r.measureProfile},
 		{[]string{"chunkOrder", "sessionStatus", "cancel", "mount", "wrongDigest", "replica"}, r.measureUploads},
 	}
-	for _, g := range groups {
-		if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
-			for _, k := range g.keys {
-				r.failed(k, err)
-			}
-		}
+}
+
+// measureAll measures the cells in the order of groups, then cleans up. A measurement that fails
+// says why in each of its cells that it did not measure.
+func (r *run) measureAll(ctx context.Context) {
+	for _, g := range r.groups() {
+		r.measure(ctx, g)
 	}
 	r.cleanup(r.in(ctx, "deleteRepository"))
 	if n := r.tape.tooMany; n > 0 {
 		r.set("rateLimits", fmt.Sprintf("**429** seen %d times during the probe", n))
+	}
+	r.judge()
+}
+
+// measure measures the cells of g, or says in each why it could not.
+func (r *run) measure(ctx context.Context, g group) {
+	if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
+		for _, k := range g.keys {
+			r.failed(k, err)
+		}
+	}
+}
+
+// judge sets "Overrides needed", after "Read-after-write lag" says when its deletes do not count:
+// it is measured before the deletes that tell.
+func (r *run) judge() {
+	if why := r.found.deletesUnjudged(); why != "" && r.found.lagDeletes > 0 {
+		r.report.Cell("consistency").Value += "; deletes not judged: " + why
 	}
 	r.set("overrides", overridesVerdict(r.report.Capabilities, r.found))
 }
@@ -286,9 +337,7 @@ func overridesVerdict(caps Capabilities, f facts) string {
 	}
 	o = append(o, buildRoutesOverride(caps, f)...)
 	o = append(o, consistencyOverrides(caps, f)...)
-	if f.notMonotonic {
-		o = append(o, "no override helps: **reads are not monotonic**; point `url` at one regional endpoint")
-	}
+	o = append(o, monotonicOverride(f)...)
 	if f.profileRefused {
 		o = append(o, "no override helps: **the registry refuses Lajstrom's manifests**")
 	}
@@ -307,6 +356,16 @@ func buildRoutesOverride(caps Capabilities, f facts) []string {
 		return []string{"`buildRoutes: true`: the registry creates no repository whose name ends in `build`"}
 	case f.buildRoutesTaken && caps.BuildRoutes:
 		return []string{"`buildRoutes: false` lets new packages end in `build`: this registry creates such names"}
+	}
+	return nil
+}
+
+// monotonicOverride is the part of "Overrides needed" for "Monotonic reads": no capability helps
+// a registry seen to undo a write or the tag move, or a delete unless facts.deletesUnjudged says
+// why that does not count.
+func monotonicOverride(f facts) []string {
+	if f.notMonotonic || f.deleteNotMonotonic && f.deletesUnjudged() == "" {
+		return []string{"no override helps: **reads are not monotonic**; point `url` at one regional endpoint"}
 	}
 	return nil
 }

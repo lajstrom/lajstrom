@@ -508,7 +508,7 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 | Gitea 1.27.3 and 28.3.0 | unknown: the vendor table's entry sets none, so a publish reads back its tag and blobs too | the probe, 2026-11-13: each write and each delete at once, the lists read before each write; monotonic reads over new connections, no change undone ([gitea.md](gitea.md#the-probe-again-2026-11-13-850)) |
 | Forgejo 17.0.1 | unknown: the vendor table's entry sets none, so a publish reads back its tag and blobs too | the probe, 2026-11-15, three runs: each write and each delete at once, the lists read before each write; monotonic reads over new connections, no change undone ([forgejo.md](forgejo.md#the-probe-again-2026-11-15-850)) |
 | Harbor v2.15.4 | unknown: the vendor table's entry sets none, so a publish reads back its tag and blobs too | the probe, 2026-11-14, as a project robot (no catalog): each write and each delete at once, the tag list read before each write; monotonic reads over new connections, no change undone ([harbor.md](harbor.md#the-probe-2026-11-14-850)) |
-| Nexus Repository 3.98.1, the `docker` and the `oci` format | unknown: the vendor table's entry sets none, so a publish reads back its tag and blobs too | the probe, 2026-11-15, three runs on each format: each write at once, the lists read before each write; on the `oci` format each delete at once too, and monotonic reads over new connections, no change undone; on the `docker` format a delete by digest leaves the tags and the digest answers 200 again within about 2 s, which the probe reads as a lag and, in two runs, as a regression; Lajstrom does not delete there (#352) ([nexus.md](nexus.md#the-probe-again-2026-11-15-850)) |
+| Nexus Repository 3.98.1, the `docker` and the `oci` format | unknown: the vendor table's entry sets none, so a publish reads back its tag and blobs too | the probe, 2026-11-15, three runs on each format: each write at once, the lists read before each write; on the `oci` format each delete at once too, and monotonic reads over new connections, no change undone; on the `docker` format a delete by digest leaves the tags and the digest answers 200 again within about 2 s, which the probe read as a lag and, in two runs, as a regression, until it stopped judging such deletes (#1149); Lajstrom does not delete there (#352) ([nexus.md](nexus.md#the-probe-again-2026-11-15-850)) |
 | Amazon ECR | eventual, no bound | 100 ms to several seconds under concurrent pushes, from reports ([ecr.md](ecr.md#capabilities)); measured 2026-11-13 without load: no lag in 40 writes and the probe's row (#19) |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
@@ -540,6 +540,17 @@ and then the same for the deletes; "Overrides needed" names `consistency: eventu
 `consistencyBound` in whole seconds above the worst lag of the writes and the deletes. Rows
 measured before 2026-11-12 had neither the reads before a write nor the deletes.
 
+The deletes are not judged where the row "Delete a manifest by digest", measured after this one,
+finds that the registry refuses a delete by digest, or that one leaves the tags, and this row's
+own read by tag did not see a tag go after its deletes (#1149). The cell then ends in
+`deletes not judged:` and why, and "Overrides needed" leaves their lag out: it names
+`deleteManifest: false`, or the provider's capabilities already say it, and Lajstrom does not
+delete there. The reads after a delete that does not delete measure the delete, not the
+registry's consistency: on Nexus's docker format the tags stay, and the digest answers 200 again
+a second or two after its 404 ([nexus.md](nexus.md#the-probe-again-2026-11-15-850)). That one
+wait of 2 minutes stays: it tells a tag that stays from a tag that lags, which the other row's
+single read right after its delete cannot.
+
 The probe's row "Monotonic reads" (#564) measures what guarantees.md calls **monotonic reads**:
 once a read saw a write, every later read sees it too. A registry behind an endpoint that picks
 a replica per connection or per DNS lookup (ACR's global endpoint with geo-replication) can
@@ -558,11 +569,15 @@ and the number of addresses the connections reached, or `**not monotonic**: …`
 regression and how many of the reads it was; "Overrides needed" then says that no capability
 helps and that `url` should name one regional endpoint. A move the registry refuses (immutable
 tags) or a delete it refuses is not measured, and a read that does not see a change within
-2 minutes ends the row. The tag list and the catalog are not read again: the visibility barrier
-and the tag check do not read them, and a registry that caches its lists (Quay, 120 s) would hold
-the row for minutes per change. Their lag is the lag row's. One address and a handful of reads
-cannot show a replica that DNS hands out to others, so `none` there is weak evidence; a larger
-`--monotonic-reads` and a run from each region the registry serves make it stronger.
+2 minutes ends the row. The row runs after "Delete a manifest by digest", and makes no deletes
+where their reads would not be judged, as above (`deletes not measured:` and why): the read by
+tag would wait out the 2 minutes for nothing, and a digest that answers 200 again after a delete
+that leaves the tags is not a replica that went back. The tag list and the catalog are not read
+again: the visibility barrier and the tag check do not read them, and a registry that caches its
+lists (Quay, 120 s) would hold the row for minutes per change. Their lag is the lag row's. One
+address and a handful of reads cannot show a replica that DNS hands out to others, so `none`
+there is weak evidence; a larger `--monotonic-reads` and a run from each region the registry
+serves make it stronger.
 
 ## Measuring a registry: `lajstrom registry probe`
 
@@ -600,7 +615,7 @@ written. How each row is measured, in requests:
 | Catalog | `_catalog?n=1`; five repositories `pre`, `pre/sub`, `pre-x`, `pre.y`, `prea` and their order; a page of two after the first by `last` and its `Link`; `n=1000`, `n=1001`, `n=100000`; the page without `n` |
 | Tag list | one manifest under seven tags pushed out of order (`b`, `A`, `1.10`, `_x`, `1.2`, `Z`, `a`); the list, a page of two by `last`, the list of a repository never pushed |
 | Read-after-write lag | the tag list and the catalog, then three blobs and three manifests, each read back until every read sees it; then the three manifests deleted, each read until every read misses it ([Consistency](#consistency)) |
-| Monotonic reads | three blobs and three manifests under new tags, the first tag moved, the three manifests deleted; after each, `HEAD`s of the blob, the manifest by digest and by tag, each over a new connection and a new DNS lookup, until one sees the change and then `--monotonic-reads` (5) times more; a later read that sees the state before is a regression ([Consistency](#consistency)) |
+| Monotonic reads | three blobs and three manifests under new tags, the first tag moved, the three manifests deleted (after "Delete a manifest by digest", and not where it found the delete refused or the tags left); after each, `HEAD`s of the blob, the manifest by digest and by tag, each over a new connection and a new DNS lookup, until one sees the change and then `--monotonic-reads` (5) times more; a later read that sees the state before is a regression ([Consistency](#consistency)) |
 | Deletes | a manifest under two tags deleted by digest, then its tags and the blob only it used; a subject with a referrer; a manifest an image index lists; a tag of a manifest pushed by tag only, and of one pushed by digest first. "Delete a repository": what stays after the cleanup |
 | Immutable tags | `A` under `v1`, `A` again, `B` under `v1`, then `A` by digest |
 | Blob redirect, `Range` | a 64 KiB blob by `GET` and `HEAD`, redirects not followed; then whole, `bytes=0-9` and a range past its end, after the redirect when there is one |
