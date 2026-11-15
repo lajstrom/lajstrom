@@ -765,13 +765,21 @@ Each registry has a circuit breaker. Five requests in a row that the registry an
 request to that registry fails at once instead of waiting for timeouts and retries. The client
 gets `503` with `Retry-After`, the seconds until the trial below (on `/v2` with the code
 `UNAVAILABLE`, which docker retries), and the log has `registry fails: circuit open` once, with
-the registry's name. Then the next `GET` or `HEAD` goes through as a trial, normally the readiness ping of `serve`; an
-answer closes the breaker (`registry answers again: circuit closed`), a failure opens it for
-another 30 s. A request with a body is never the trial, and fails at once until the breaker is
+the registry's name. Then the breaker is half-open: up to three `GET` or `HEAD` requests go
+through at once as trials, each of another repository, and the readiness ping of `serve`
+besides; the others fail at once. The first answer to a trial closes the breaker (`registry
+answers again: circuit closed`). Failed trials open it for another 30 s by the rule below for
+five failures in a row: when they are of two repositories, or one of them is a failure no
+request can cause, such as the ping's
+([#1116](https://github.com/lajstrom/lajstrom/issues/1116)). So a client that keeps asking for
+a repository the registry cannot serve does not keep a registry that came back unavailable:
+that repository's trials fail, and the next trial of another repository, or the ping, closes
+the breaker. A request with a body is never a trial, and fails at once until the breaker is
 closed. A `4xx` is an answer; a `429`, a request whose client went away, an upload whose
 client's body stalled or broke off as it streamed through to the registry, and one that the
 registry dropped while Lajstrom had waited a second or more on the client's body
-([below](#requests-from-clients)), count neither way.
+([below](#requests-from-clients)), count neither way, and a trial that counts neither way
+frees its place.
 
 The five failures in a row open the breaker only when they are of two repositories at least,
 or one of them is a failure no request can cause
