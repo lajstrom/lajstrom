@@ -40,12 +40,12 @@ func newProxyFixture(t *testing.T) *fixture {
 }
 
 // withProxies gives f the format npm, which has proxy repos, and the upstreams npmjs and
-// npmjs2 (npm) and pypi (pypi).
+// npmjs2 (npm) and fedora (rpm, a format without proxy repos).
 func withProxies(f *fixture) {
-	f.repos.Formats = oneOf("raw", "pypi", "npm")
+	f.repos.Formats = oneOf("raw", "rpm", "npm")
 	f.repos.Proxiers = func(name string) (format.Proxier, bool) { return stubProxier{}, name == "npm" }
 	f.repos.Upstreams = func(name string) (string, bool) {
-		formatName, ok := map[string]string{"npmjs": "npm", "npmjs2": "npm", "pypi": "pypi", "dockerhub": "oci"}[name]
+		formatName, ok := map[string]string{"npmjs": "npm", "npmjs2": "npm", "fedora": "rpm", "dockerhub": "oci"}[name]
 		return formatName, ok
 	}
 }
@@ -100,13 +100,13 @@ func TestCreateProxyInvalid(t *testing.T) {
 		{"null upstream", proxy + `, "upstream": null}`, "upstream: a proxy repo must name one"},
 		{"no upstream name", proxy + `, "upstream": {"deny": ["@acme/*"]}}`, "upstream.name: must be one of upstreams[].name"},
 		{"unknown upstream", proxy + `, "upstream": {"name": "verdaccio"}}`, `upstream.name: "verdaccio" is not a configured upstream`},
-		{"upstream of another format", proxy + `, "upstream": {"name": "pypi"}}`, `upstream.name: "pypi" serves pypi, not npm`},
+		{"upstream of another format", proxy + `, "upstream": {"name": "fedora"}}`, `upstream.name: "fedora" serves rpm, not npm`},
 		{"a URL", proxy + `, "upstream": {"name": "npmjs", "url": "http://169.254.169.254/"}}`, `upstream: "url" is not a key`},
 		{"a TTL out of range", proxy + `, "upstream": {"name": "npmjs", "negativeTTL": "25h"}}`,
 			`upstream.negativeTTL: "25h" is not a duration from 0s to 24h`},
 		{"a pattern with a space", proxy + `, "upstream": {"name": "npmjs", "allow": ["a b"]}}`, "upstream.allow[0]: "},
-		{"a format without proxy repos", `{"format": "pypi", "name": "pypi", "registry": "local", "kind": "proxy", "upstream": {"name": "pypi"}}`,
-			"kind: format pypi has no proxy repos"},
+		{"a format without proxy repos", `{"format": "rpm", "name": "fedora", "registry": "local", "kind": "proxy", "upstream": {"name": "fedora"}}`,
+			"kind: format rpm has no proxy repos"},
 		{"an oci proxy of an npm upstream", `{"format": "oci", "name": "hub", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs"}}`,
 			`upstream.name: "npmjs" serves npm, not oci`},
 	}

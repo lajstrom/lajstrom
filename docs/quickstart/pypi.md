@@ -204,7 +204,60 @@ manifest of the package's journal in the registry (`crane ls` lists it as `_j000
 `lajstrom reindex` keeps it, and an audit row `pypi.yank`. A version that is deleted and uploaded
 again is still yanked until it is unyanked.
 
-## 5. In the registry
+## 5. A proxy of pypi.org
+
+A proxy repo serves an upstream index and keeps every file it fetched as an artifact in the
+registry, so that installs keep working when the upstream is slow or gone. The upstream belongs to
+the operator, in the configuration: copy the example to `deploy/compose/lajstrom.yaml`, which
+`make run` prefers, and replace its `upstreams: []` with:
+
+```yaml
+upstreams:
+  - name: pypi
+    format: pypi
+    url: "https://pypi.org/simple/"
+```
+
+Restart `make run`, then on the host:
+
+```sh
+cfg=deploy/compose/lajstrom.yaml
+bin/lajstrom admin repo create pypi/pypi --registry local --kind proxy --upstream '{"name": "pypi", "deny": ["acme-*"]}' --config $cfg
+bin/lajstrom admin binding create --principal user:alice --role reader --mask pypi/pypi --config $cfg
+```
+
+`deny: ["acme-*"]` keeps the proxy from ever asking pypi.org for your own projects, so that a
+public project of the same name cannot stand in for a private one. In the container:
+
+```sh
+pip install --index-url http://alice:<password>@localhost:8080/pypi/pypi/simple/ requests
+curl -s -u alice http://localhost:8080/pypi/pypi/simple/acme-billing/    # 403: deny: acme-*
+```
+
+On the first request for a file, the proxy downloads it from the URL that pypi.org's page gives,
+checks it against the page's sha256, and publishes it to the registry through the same path as a
+`twine upload`, with the audit row `proxy.fetch`; pip gets it from the registry. Every link of the
+proxy's page names Lajstrom, never pypi.org or files.pythonhosted.org. The page keeps what pip
+and uv resolve with: `requires-python`, the yanks, and the sha256 of each wheel's core metadata
+(PEP 658), whose `.metadata` the proxy serves once it holds the wheel, fetching the wheel first.
+The next install of the same version, from any machine, is served from the registry. The pages
+are cached in the index database for `metadataTTL` (10 minutes), then revalidated; when pypi.org
+does not answer, the cached page is used however old it is. An upstream without the JSON form
+of PEP 691 (a directory of files behind nginx, an older devpi) works too: its HTML page is read.
+
+The first install of a version waits until the proxy holds the whole file before pip gets its
+first byte. pip gives up on a server that sends nothing for 15 seconds and retries 5 times, each
+retry waiting on the same download, and uv waits 30 seconds: for a large wheel (a CUDA build of
+torch is gigabytes) raise the timeout of its first install, `pip install --timeout 300` or
+`UV_HTTP_TIMEOUT=300`.
+
+The repo's `upstream` settings change with `PATCH /api/v1/repos/pypi/pypi`
+([api.md](../api.md#change-patch-apiv1reposformatname)): `metadataTTL`, `negativeTTL`, `offline`
+(never ask the upstream, serve what is held), `allow` and `deny`; `DELETE
+/api/v1/repos/pypi/pypi/upstream-cache` drops the cached pages. An upload to the proxy is `405`:
+publish to a hosted repo.
+
+## 6. In the registry
 
 Each file is a manifest under `pypi/internal/<normalized name>`, tagged with the version and the
 tag set (`1.0__py3-none-any`, [the tag scheme](../spec/manifest-profile.md)), with the file and
@@ -218,7 +271,7 @@ crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annot
 `bin/lajstrom reindex --repo pypi/internal --config $cfg` rebuilds the index of the repo from
 those manifests ([operations.md](../operations.md#reindex)).
 
-## 6. Clean up
+## 7. Clean up
 
 A version goes with `DELETE` on the API: every file of the version, or with `?variant=` one of
 them, `sdist` or the wheel's tag set

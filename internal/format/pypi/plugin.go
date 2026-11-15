@@ -129,7 +129,9 @@ type metadataIn struct {
 // metadata layer agree: the name (lajstrom.name is the normalized name of both), the version
 // (exactly), the variant (the wheel's build tag and tag set, or sdist; a wheel with a build tag
 // written before #726 has its tag set alone, which is read too), the file name, its sha256 and
-// packagetype, and lajstrom.pypi.nonstandard is true exactly when the version is not PEP 440.
+// packagetype, and lajstrom.pypi.nonstandard is true exactly when the version is not PEP 440; no
+// other annotation of the format but lajstrom.origin.* of a proxied file (manifest-profile.md
+// §3.1).
 // The core_metadata of the layer must say the same name and version, and be, byte for byte, the
 // METADATA or PKG-INFO inside the distribution (checkArchive), which pip is told it is (PEP 658);
 // but for the file of an upload that streams in (format.ErrStreamed), whose core_metadata Build
@@ -198,7 +200,7 @@ func check(a profile.Annotations, f profile.Layer, d dist, md *metadataIn) error
 		}
 	}
 	for k := range a.Attrs {
-		if k != profile.AnnotationPypiNonstandard {
+		if k != profile.AnnotationPypiNonstandard && !strings.HasPrefix(k, profile.AnnotationOriginPrefix) {
 			return fmt.Errorf("%w: %s is not a pypi annotation", format.ErrInvalid, k)
 		}
 	}
