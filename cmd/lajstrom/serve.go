@@ -220,7 +220,8 @@ func newServeCmd(a *app) *cobra.Command {
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, Handoffs: handoffsOf(edge), DPoP: proofs,
-				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID}})
+				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
+				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize})
 			srv, err := server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,

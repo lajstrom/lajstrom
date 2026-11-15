@@ -299,7 +299,8 @@ paths:
       operationId: getVersion
       summary: >-
         One version (read): its variants, each with what the index has of its manifest and its
-        files, and the OCI repository that holds it. The manifest and its referrers are not in it.
+        files, and the OCI repository that holds it. The manifest and its referrers are not in it:
+        they are GET …/manifest and …/referrers.
       parameters:
         - name: variant
           in: query
@@ -467,6 +468,95 @@ paths:
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/manifest:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      tags: [repos]
+      operationId: getManifests
+      summary: >-
+        The manifests of a version (read): each variant's, read from the registry by the digest
+        the index has and checked against it. One variant has its digest as ETag.
+      parameters:
+        - name: variant
+          in: query
+          description: Only this variant; empty for a format without variants.
+          schema: {type: string}
+        - name: If-None-Match
+          in: header
+          description: The ETag of an answer of one variant; 304 when it is still its digest, without a registry read.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The manifests, in variant order.
+          headers:
+            ETag:
+              description: "The variant's manifest digest, quoted; only when the answer has one variant."
+              schema: {type: string}
+            Cache-Control:
+              description: no-cache.
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ManifestList"}
+        "304":
+          description: The variant has the digest of If-None-Match; no body.
+          headers:
+            ETag:
+              description: The variant's manifest digest, quoted.
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+        "503":
+          description: The registry did not answer, or its circuit breaker is open; code UNAVAILABLE.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/referrers:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      tags: [repos]
+      operationId: listReferrers
+      summary: >-
+        The referrers of a version (read): the manifests whose subject is a variant's manifest,
+        as the registry lists them now, through its referrers API or the tag schema.
+      parameters:
+        - name: variant
+          in: query
+          description: Only this variant; empty for a format without variants.
+          schema: {type: string}
+        - name: artifactType
+          in: query
+          description: Only the referrers of this artifact type.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The referrers, by variant in variant order.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReferrerList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+        "503":
+          description: The registry did not answer, or its circuit breaker is open; code UNAVAILABLE.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
   /api/v1/repos/{format}/{repo}/versions:delete:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -2494,6 +2584,49 @@ components:
         reason: {type: string, description: Why it is not verified.}
         createdAt: {type: string, format: date-time, description: "The referrer's org.opencontainers.image.created, when it has one."}
         indexedAt: {type: string, format: date-time, description: When ingest or reindex last wrote or saw the row.}
+    ManifestList:
+      description: The manifests of a version's variants, read from the registry.
+      type: object
+      required: [manifests]
+      properties:
+        manifests:
+          type: array
+          items: {$ref: "#/components/schemas/Manifest"}
+    Manifest:
+      description: The manifest of one variant.
+      type: object
+      required: [variant, digest, mediaType, size, manifest]
+      properties:
+        variant: {type: string, description: Empty for a format without variants.}
+        digest: {type: string, description: "The manifest digest, the index's."}
+        mediaType: {type: string}
+        size: {type: integer, format: int64}
+        manifest:
+          type: object
+          description: "The manifest as JSON; its exact bytes are /v2/<ociRepository>/manifests/<digest>."
+    ReferrerList:
+      description: The referrers of a version's variants, as the registry lists them.
+      type: object
+      required: [referrers]
+      properties:
+        referrers:
+          type: array
+          items: {$ref: "#/components/schemas/Referrer"}
+    Referrer:
+      description: One manifest whose subject is a variant's manifest.
+      type: object
+      required: [variant, subject, digest, mediaType, artifactType, size, annotations]
+      properties:
+        variant: {type: string, description: Empty for a format without variants.}
+        subject: {type: string, description: The variant's manifest digest.}
+        digest: {type: string, description: The referrer manifest's digest.}
+        mediaType: {type: string}
+        artifactType: {type: string}
+        size: {type: integer, format: int64}
+        annotations:
+          type: object
+          description: The referrer manifest's annotations, as the registry lists them.
+          additionalProperties: {type: string}
     VariantDetail:
       description: One manifest of a version, with its row of the index, its facts and its files.
       type: object
