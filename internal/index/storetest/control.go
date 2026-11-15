@@ -912,3 +912,39 @@ func testTokenPages(t *testing.T, s index.Store) {
 	must(t, err)
 	same(t, "the first token", made[:1], page)
 }
+
+// testOpenSessions: ListOpenSessions pages a repo's open sessions by id, those whose time is not
+// up at the time it is given; not another repo's, not a session that committed, was aborted or
+// expired, not a blob upload of the facade.
+func testOpenSessions(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo, other := newRepo(t, s, "maven", "releases"), newRepo(t, s, "maven", "other")
+	var open []index.Session
+	for _, sess := range []index.Session{
+		{RepoID: repo.ID, Key: "g:a:1", State: "open", ExpiresAt: at(100)},
+		{RepoID: repo.ID, Key: "g:a:2", State: "committed", ExpiresAt: at(100)},
+		{RepoID: repo.ID, Key: "blob-upload:0f3c", State: "open", ExpiresAt: at(100)},
+		{RepoID: repo.ID, Key: "g:a:3", State: "open", ExpiresAt: at(10)}, // its time is up at 50
+		{RepoID: other.ID, Key: "g:a:1", State: "open", ExpiresAt: at(100)},
+		{RepoID: repo.ID, Key: "g:b:1", State: "open", ExpiresAt: at(51)},
+		{RepoID: repo.ID, Key: "g:c:1", State: "open", ExpiresAt: at(50)}, // ends at 50: not open then
+		{RepoID: repo.ID, Key: "g:d:1", State: "open", ExpiresAt: at(100)},
+	} {
+		sess.Principal, sess.Files = "user:alice", json.RawMessage(`{"name":"g:a","files":[]}`)
+		must(t, s.UpsertSession(ctx, &sess))
+		if sess.RepoID == repo.ID && sess.State == "open" && !strings.HasPrefix(sess.Key, "blob-upload:") && sess.ExpiresAt.After(at(50)) {
+			open = append(open, sess)
+		}
+	}
+	got, err := s.ListOpenSessions(ctx, repo.ID, at(50), 0, 10)
+	must(t, err)
+	same(t, "the open sessions at 50", open, got)
+	first, err := s.ListOpenSessions(ctx, repo.ID, at(50), 0, 2)
+	must(t, err)
+	rest, err := s.ListOpenSessions(ctx, repo.ID, at(50), first[len(first)-1].ID, 2)
+	must(t, err)
+	same(t, "two pages", open, append(first, rest...))
+	none, err := s.ListOpenSessions(ctx, repo.ID, at(50), 0, 0)
+	must(t, err)
+	same(t, "a page of limit 0", []index.Session{}, none)
+}
