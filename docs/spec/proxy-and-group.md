@@ -26,7 +26,7 @@ The kind is set when the repo is created; the one change is a proxy that becomes
 (§2.6), once and one way. A repo of any kind has the routes
 of its format: a client cannot tell a proxy or a group from a hosted repo. A format has the
 kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm; maven
-has both since #67 and #68.
+and pypi have both since #67 and #68.
 `oci` repos, which have no plugin, are `hosted`, `proxy` (§11) or `group` (§12): the facade
 serves their `/v2`.
 
@@ -412,7 +412,8 @@ repo holds (§10, `RenderProxy`), and it is kept in `index_cache` as a hosted re
 - For a version the repo holds, what the index says of the bytes (checksums, size) wins over
   the upstream's document: the client checks what it is served.
 - Every link to a file names this repo (or the group the request came through, §8), under
-  `server.externalURL`; a client never gets an upstream URL.
+  `server.externalURL`, or relative to the document as a hosted repo's (pypi); a client never
+  gets an upstream URL.
 - Without a document (offline, or the upstream down and no row), the plugin renders what the
   repo holds, as a hosted repo's document.
 
@@ -450,9 +451,10 @@ member has the name or not.
 The plugin merges the documents of the members that take part, in member order
 (§10, `MergeGroup`): the union of their versions, and for a version that several members have,
 the first member's entry; format-level fields (npm's `dist-tags`) by the format's rules (npm:
-[http-routing.md](http-routing.md), npm, **Group**; maven: http-routing.md, maven, **Group**).
-Every link names the group. A name that no member has is `404`. The hosted member's document is the one its own URL serves, from its
-`index_cache`; a proxy member's is the one of §7.
+[http-routing.md](http-routing.md), npm, **Group**; maven: there, maven, **Group**; pypi: there,
+pypi, **Group**). Every link names the group. A name that no member has is `404`. The hosted
+member's document is the one its own URL serves, from its `index_cache` (under the scope of the
+name's key, or the plugin's `HostedScope` of it, §10); a proxy member's is the one of §7.
 
 A file of `N` is served by the first member taking part that holds it, or, for a proxy member
 whose document lists it, fetched there (§5) and served. When the hosted member holds `N` and
@@ -526,8 +528,9 @@ upstream's response body never reach a log or an error.
 
 This section describes what a plugin provides for `proxy` and `group`. The Go shapes are
 [layout.md](layout.md) §2, "Proxy and group repos": `format.Proxier` (#309), and
-`format.Grouper`, a `Proxier` with `MergeGroup` (#311); the write target is
-`format.WriteTarget`. The sketch they came from:
+`format.Grouper`, a `Proxier` with `MergeGroup` (#311), and `format.HostedScoper`, a `Grouper`
+whose hosted repos keep the document of a name under another scope than its key (pypi
+`simple/<project>`, #68); the write target is `format.WriteTarget`. The sketch they came from:
 
 ```go
 // Proxier: a format with proxy and group repos.
