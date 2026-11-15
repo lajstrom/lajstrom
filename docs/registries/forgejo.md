@@ -3,7 +3,9 @@
 What the container registry built into Forgejo answered, measured with `curl`, `oras`,
 `lajstrom registry probe`, the integration tests and the end-to-end scenarios. It was first
 measured on 2026-11-10 beside Gitea (#120), with the same setup. On 2026-11-12 it got a page
-and a column of its own (#816), and the probe and the tests ran against it again.
+and a column of its own (#816), and the probe and the tests ran against it again. On
+2026-11-15 the probe ran once more, for its rows on consistency
+([The probe again](#the-probe-again-2026-11-15-850)).
 
 Forgejo is a hard fork of Gitea, made in 2024 (Codeberg e.V., GPLv3+). Both implement the
 distribution API themselves, in their package registry. The registry is `/v2/` on Forgejo's
@@ -27,6 +29,9 @@ The [summary column](README.md#capabilities) is in the README; this page has the
   moves the pin of compose.yaml to `data.forgejo.org` for that reason.
 - On macOS with OrbStack, arm64; the tests with Go 1.27.3, at a7aa4d3e (main) and at 5d9e5328
   (the branch of PR #814).
+- On 2026-11-15 the probe ran again on the same index, pulled from `data.forgejo.org` (the pin
+  of compose.yaml since #826), at a8762730
+  ([The probe again](#the-probe-again-2026-11-15-850)).
 
 ## Run it
 
@@ -60,7 +65,8 @@ On 2026-11-12, at a7aa4d3e, with `--registry-prefix lajstrom-it/ --max-blob-size
 --max-manifest-size 32MiB -v` ([Commands](#commands)). The provider's own probe said
 `vendor=gitea createOnPush=true referrers=false catalog=true deleteManifest=true
 immutableTags=false blobRedirect=true maxBlobSize=0`, and `serve`'s hint about
-`spoolUnknownLength`. Nothing was left behind.
+`spoolUnknownLength`. Nothing was left behind. It ran again on 2026-11-15, with the rows added
+since ([The probe again](#the-probe-again-2026-11-15-850)).
 
 | Row | Forgejo 17.0.1 |
 | --- | --- |
@@ -91,6 +97,77 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
 `LAJSTROM_GITEA_CLEANUP_OLDER_THAN=1s` and
 `POST /api/v1/admin/cron/cleanup_packages`, `/var/lib/gitea/packages` went from 1.1 GB to
 716 KB.
+
+## The probe again, 2026-11-15 (#850)
+
+Since the run of 2026-11-12 the probe reads the lists before each write and measures the
+deletes in its row "Read-after-write lag" (#845), and it has a row "Monotonic reads" (#564).
+Neither had been measured on Forgejo. Lajstrom at a8762730, against Forgejo 17.0.1, the pin,
+index `sha256:5ef02fbcf22beef56b8c844952ffad58cfe177b6f98e46e6abb5df90b88dc8d3`, pulled from
+`data.forgejo.org`. Forgejo came from a copy of compose.yaml with another compose project name,
+next to an unchanged copy of gitea.sh, because other runs shared the machine.
+
+```sh
+LAJSTROM_FORGEJO_PORT=57214 deploy/compose/gitea/gitea.sh up forgejo
+bin/lajstrom registry probe --url http://localhost:57214 --registry-prefix lajstrom-it/ \
+  --username lajstrom --password-file deploy/compose/gitea/.work/forgejo.token --max-manifest-size 32MiB -v
+```
+
+The provider's own probe said `vendor=forgejo createOnPush=true referrers=false
+referrersAlwaysTag=false catalog=true deleteManifest=true immutableTags=false blobRedirect=true
+maxBlobSize=0 consistency=unknown maxNameDepth=0 tagsFoldCase=true buildRoutes=false`, with
+`serve`'s hint about `spoolUnknownLength`. It names Forgejo since #829 (item 6), and
+`tagsFoldCase` comes from the vendor table (item 2). The probe ran three times. Each run took
+about 1.3 s, the three tables were the same, and nothing was left behind (`_catalog` was
+empty). `--max-blob-size` stayed at its default of 8 MiB because the shared disk had about
+6 GiB free; the 512 MiB of 2026-11-12 still stands. The rows that are new or that changed:
+
+| Row | Forgejo 17.0.1 |
+| --- | --- |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+| Delete a repository | no `/v2` API; it leaves `_catalog` with its last manifest, its tag list 200 |
+| Largest blob, chunk size | 8 MiB in one `PUT` and in one `PATCH`; no limit met |
+| What the probe finds, overrides | `referrers=false catalog=true`; none |
+
+Every other cell was the same as in the [table of 2026-11-12](#lajstrom-registry-probe), the
+routing words and the upload status one byte ahead included.
+
+What was read, from the `-v` log:
+
+- **The lists, primed.** In the repository `lag`, before each of the three manifests, the probe
+  read the tag list and the catalog once. Before the first, the tag list answered 200 with no
+  tags, since the repository held the blob just uploaded, and the catalog did not list `lag`.
+  Right after each `201`, `HEAD` by digest was 200, `HEAD` by tag answered the new digest, the
+  tag list had the new tag and the catalog listed `lag`, each at the first ask.
+- **The deletes.** Each manifest deleted by digest was 202. Then `HEAD` by digest and by tag
+  were 404, and the tag list no longer had the tag, at the first ask.
+- **Monotonic reads.** In the repository `mono`, the blob's `HEAD` and each manifest's `HEAD`
+  by digest and by tag saw each write at once, and then 5 more times, each over a new
+  connection. The tag `mono-0` was then moved to another manifest (201; Forgejo deletes the
+  manifest it named, as the probe's row "Immutable tags" [above](#lajstrom-registry-probe)
+  says), and each of 6 reads by tag answered the new digest. Then each of the three manifests
+  was deleted by digest, and each read of it, by digest and by tag, stayed 404.
+
+What is new against the [column](README.md#capabilities):
+
+- **Read-after-write lag, monotonic reads.** These are measured on Forgejo for the first time
+  with the lists read before each write, with the deletes, and over new connections. The lists
+  did not go stale, a deleted manifest was gone from every read at once, and no read over a new
+  connection undid a change. As on Gitea, the `none` is a measurement of three writes and three
+  deletes on one Forgejo with SQLite and local storage, three times over, not a promise of
+  Forgejo's. The vendor table's entry for Forgejo leaves its consistency unknown, so a publish
+  reads back its tag and blobs too, and that is right.
+- **Delete a repository.** An emptied repository leaves `_catalog`, as before, and its tag
+  list answers 200 with `"tags":[]`, not 404, as on Gitea.
+- **What the probe finds.** The provider now names the vendor `forgejo`. It said `gitea` on
+  2026-11-12, before #829.
+
+The `-v` log still shows a 401 before nearly every request: 587 of the 1,262 requests of each
+run, with 85 token requests. These are the probe's own requests. The probe has an auth client of
+its own (`newClient`, internal/provider/probe/client.go), not the provider's, so the alias of
+#1042 ([gitea.md](gitea.md#the-probe-again-2026-11-13-850)) is not in it, and this run does not
+measure that fix.
 
 ## What the provider must do differently
 
