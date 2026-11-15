@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 
@@ -161,8 +160,7 @@ func fail(w http.ResponseWriter, status int, code string) {
 // lag but never go back, that answer a stale state on some connections, and that refuse a move,
 // a delete, or to show a write at all.
 func TestMeasureMonotonic(t *testing.T) {
-	defer func(l time.Duration) { lagLimit = l }(lagLimit)
-	lagLimit = 150 * time.Millisecond
+	shortLag(t)
 	const none = "none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections " +
 		"after the first that saw it, from 1 address"
 	notMonotonic := "no override helps: **reads are not monotonic**; point `url` at one regional endpoint"

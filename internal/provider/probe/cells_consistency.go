@@ -27,6 +27,26 @@ const (
 // lagLimit is a variable so that the tests need not wait two minutes.
 var lagLimit = 2 * time.Minute
 
+// lagNow and lagSleep are the clock of the lag measurements (watch, follow): the time of a read
+// and the wait before the next. Variables, as lagLimit, so that a test counts the waits alone,
+// not what the scheduler adds to them.
+var (
+	lagNow   = time.Now
+	lagSleep = sleep
+)
+
+// sleep waits d, or until ctx is done: ctx.Err() then.
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // The reads of the consistency measurement, in the order of the cell.
 const (
 	readManifest = "manifest by digest"
@@ -242,7 +262,7 @@ func (r *run) manifestReads(repo, tag string, d digest.Digest) map[string]func(c
 // watch asks each of reads until it sees the write the registry acknowledged just before, and
 // records into s how long each took. A read that has not seen it after lagLimit is unseen.
 func (r *run) watch(ctx context.Context, s *lagSeen, reads map[string]func(context.Context) (bool, error)) error {
-	at, wait := time.Now(), lagFirst
+	at, wait := lagNow(), lagFirst
 	pending := map[string]bool{}
 	for k := range reads {
 		pending[k] = true
@@ -260,7 +280,7 @@ func (r *run) watch(ctx context.Context, s *lagSeen, reads map[string]func(conte
 				delete(pending, k)
 				if !first {
 					s.late[k] = true
-					s.worst[k] = max(s.worst[k], time.Since(at))
+					s.worst[k] = max(s.worst[k], lagNow().Sub(at))
 				} else if _, seen := s.worst[k]; !seen {
 					s.worst[k] = 0
 				}
@@ -269,16 +289,14 @@ func (r *run) watch(ctx context.Context, s *lagSeen, reads map[string]func(conte
 		if len(pending) == 0 {
 			return nil
 		}
-		if time.Since(at) >= lagLimit {
+		if lagNow().Sub(at) >= lagLimit {
 			for k := range pending {
 				s.unseen[k], s.late[k], s.worst[k] = true, true, max(s.worst[k], lagLimit)
 			}
 			return nil
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
+		if err := lagSleep(ctx, wait); err != nil {
+			return err
 		}
 		wait = min(2*wait, lagStep)
 	}
