@@ -907,13 +907,36 @@ cookie `lajstrom_oidc` has the path `/-/oidc/` and never authenticates `/api/v1`
   along.
 - **No CSRF token.** The browser adds a bearer to no request by itself. The one ambient
   credential is cached Basic, and `server.crossOrigin` refuses it on an unsafe request from
-  another site.
+  another site, but for an origin of `server.corsOrigins` on `/api/` (below).
 
-Same origin only (#136): the UI is served from the host of `server.externalURL`, by its own
-container at `/ui/` behind the same edge (§1; lajstrom-ui ADR 0001). No answer of `/api/v1` has
-an `Access-Control-*` header, and `OPTIONS` is `404 NOT_FOUND`, as is every method a route does
-not have. A page of another origin can neither read an answer nor send a request with a bearer.
-A CORS allowlist, for a UI on another origin, is #949.
+Same origin (#136): the UI is served from the host of `server.externalURL`, by its own
+container at `/ui/` behind the same edge (§1; lajstrom-ui ADR 0001). While `server.corsOrigins`
+is empty, the default, that is the only origin: no answer of `/api/v1` has an
+`Access-Control-*` header, and `OPTIONS` is `404 NOT_FOUND`, as is every method a route does not
+have. A page of another origin can neither read an answer nor send a request with a bearer.
+
+Another origin (#949): `server.corsOrigins` (configuration.md) lists the origins of a UI served
+from elsewhere, object storage behind a CDN for one, exactly as a browser sends them in
+`Origin`. On every path under `/api/` and on `/-/version`, on the main host:
+
+- a request whose `Origin` is a listed origin gets, on its answer, whatever its status, the
+  `401`, `403` and `429` of the middleware included: `Access-Control-Allow-Origin` with that
+  origin, and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`;
+- its preflight, an `OPTIONS` with `Access-Control-Request-Method`, is `204` before
+  authentication, whatever the path and the method it asks for, with
+  `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH,
+  DELETE`, `Access-Control-Allow-Headers: Authorization, Content-Type` and
+  `Access-Control-Max-Age: 600`;
+- no answer has `Access-Control-Allow-Credentials`: the UI sends its bearer with
+  `credentials: "omit"`, and no page of another origin reads an answer that cached Basic
+  credentials or a cookie made;
+- `server.crossOrigin` lets a listed origin's unsafe requests through on `/api/`, as the server's
+  own. On every other path they are refused as another site's.
+
+While the list is not empty, every answer of these paths has `Vary: Origin`. An origin the list
+does not have gets no `Access-Control-*` header, and its `OPTIONS` is `404`, as with an empty
+list. The frontends, `/v2`, `/-/oidc/` and the other system endpoints answer no CORS to any
+origin: a link to a file or to the login is a navigation, which needs none.
 
 Deleting a version (`delete`): `<name>` is the package name in the format's spelling, one path
 segment (a raw path escapes its `/` as `%2F`). Without `variant` every variant of the version
@@ -987,7 +1010,8 @@ admin role, checked before the body is read) the same routes take any mask in th
 `/-/healthz` (process up), `/-/readyz` (DB reachable, no other replica on it when it is SQLite
 ([index-schema.md](index-schema.md#coordination)), the replica's clock within 60 s of the DB's
 ([operations.md](../operations.md#clocks)), every configured registry answered `/v2/`
-within the last minute), `/-/version` (JSON: version, commit, date).
+within the last minute), `/-/version` (JSON: version, commit, date; with the CORS headers of §4
+for an origin of `server.corsOrigins`).
 
 Prometheus metrics are not on the public host: `server.metricsListen` (default
 `127.0.0.1:9464`, the OpenTelemetry Prometheus exporter convention) serves `GET /metrics`, and
