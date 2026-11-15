@@ -74,12 +74,16 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 	guard *egress.Guard) clients {
 	rotating := o.Credential
 	timeout := timeoutOf(cfg)
+	header := http.Header{"User-Agent": {"lajstrom/" + version.Get().Version}}
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
-	// once however often it was tried. Above both, the probe's ping sees the challenges.
+	// once however often it was tried. Above both, the probe's ping sees the challenges. The
+	// breaker's own probe goes below both, once and without credentials (breaker.suspect).
+	attempt := &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard, o.resolver), cfg.Name, timeout, log), registry: cfg.Name}, log: log}
 	br := newBreaker(cfg.Name, base.Host, log)
+	br.probe = probeOf(attempt, base.Scheme+"://"+base.Host+"/v2/", header, timeout)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
-		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard, o.resolver), cfg.Name, timeout, log), registry: cfg.Name}, log: log},
+		next:    attempt,
 		retries: retries(cfg),
 		log:     log,
 	}}}}}
@@ -98,7 +102,6 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 	case cfg.Auth.Username != "":
 		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
-	header := http.Header{"User-Agent": {"lajstrom/" + version.Get().Version}}
 	noFollow := &http.Client{
 		Transport: rt,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
