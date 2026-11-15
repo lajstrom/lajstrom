@@ -689,6 +689,18 @@ type Attachment struct {
 	IndexedAt     time.Time         // when ingest or reindex last wrote or saw the row
 }
 
+// VersionFacts is what Reader.ListVersionFacts answers of a versions row, one manifest, beyond
+// the row itself: what the list of versions shows of a variant (#1132; docs/spec/index-schema.md,
+// Pages of packages and versions).
+type VersionFacts struct {
+	VersionID int64
+	Files     int64 // its files rows
+	Size      int64 // the sizes of its files rows, added up
+	// Attachments counts its attachments rows by Kind; a kind without rows is absent, and a
+	// kind this binary does not know is counted as it is.
+	Attachments map[string]int64
+}
+
 // The states of a proxy_meta row.
 const (
 	ProxyMetaPresent = "present" // the upstream answered with a document

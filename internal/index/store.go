@@ -259,6 +259,12 @@ type Reader interface {
 	// package, in no order; a repo without a package has none (docs/spec/index-schema.md, A
 	// repo's stats). It runs a fixed number of statements for every few hundred repos.
 	RepoStats(ctx context.Context, repoIDs []int64) ([]RepoStats, error)
+
+	// ListVersionFacts returns the facts of the versions with the given ids, one per id in their
+	// order: its files counted and their sizes added up, its attachments counted by kind; the
+	// zero facts but VersionID for an id without rows (docs/spec/index-schema.md, Pages of
+	// packages and versions).
+	ListVersionFacts(ctx context.Context, versionIDs []int64) ([]VersionFacts, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use

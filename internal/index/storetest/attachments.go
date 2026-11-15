@@ -140,3 +140,60 @@ func digests(rows []index.Attachment) []digest.Digest {
 	}
 	return out
 }
+
+// testVersionFacts: the files of each version are counted and their sizes added up, its
+// attachments counted by kind, a kind no binary knows yet as it is; an id without rows has the
+// zero facts; the answer follows the ids, across statements too; a referrer's delete and a
+// version's take their rows from the counts.
+func testVersionFacts(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "pypi", "libs")
+	pkg := newPackage(t, s, repo.ID, "requests")
+	wheel, sdist, bare := newVersion(t, s, pkg.ID, "1.0"), newVersion(t, s, pkg.ID, "2.0"), newVersion(t, s, pkg.ID, "3.0")
+	must(t, s.ReplaceFiles(ctx, wheel.ID, []index.File{
+		{Name: "a.whl", MediaType: "application/zip", Digest: dg("whl"), Size: 64928},
+		{Name: "a.whl.metadata", MediaType: "text/plain", Digest: dg("md"), Size: 210},
+	}))
+	must(t, s.ReplaceFiles(ctx, sdist.ID, []index.File{{Name: "a.tar.gz", MediaType: "application/gzip", Digest: dg("tgz"), Size: 7}}))
+	kind := func(a index.Attachment, k string) index.Attachment { a.Kind = k; return a }
+	must(t, s.ReplaceAttachments(ctx, wheel.ID, dg("sig"), []index.Attachment{kind(attachment("sig", "s", 1, 1), index.AttachmentSignature)}))
+	must(t, s.ReplaceAttachments(ctx, wheel.ID, dg("sbom"), []index.Attachment{attachment("sbom", "a", 1, 1), attachment("sbom", "b", 1, 1)}))
+	must(t, s.ReplaceAttachments(ctx, sdist.ID, dg("vex"), []index.Attachment{kind(attachment("vex", "v", 1, 1), "vex")}))
+
+	got, err := s.ListVersionFacts(ctx, []int64{bare.ID, wheel.ID, sdist.ID, wheel.ID})
+	must(t, err)
+	wheelFacts := index.VersionFacts{VersionID: wheel.ID, Files: 2, Size: 65138,
+		Attachments: map[string]int64{index.AttachmentSignature: 1, index.AttachmentSBOM: 2}}
+	same(t, "the facts in the order of the ids", []index.VersionFacts{
+		{VersionID: bare.ID},
+		wheelFacts,
+		{VersionID: sdist.ID, Files: 1, Size: 7, Attachments: map[string]int64{"vex": 1}},
+		wheelFacts,
+	}, got)
+	got, err = s.ListVersionFacts(ctx, nil)
+	must(t, err)
+	same(t, "no ids", []index.VersionFacts{}, got)
+
+	// More ids than one statement takes: the version at the end has its facts.
+	many := make([]int64, 0, 1201)
+	for i := range 1200 {
+		many = append(many, int64(1<<40+i))
+	}
+	got, err = s.ListVersionFacts(ctx, append(many, wheel.ID))
+	must(t, err)
+	if len(got) != 1201 {
+		t.Fatalf("the facts of 1201 ids: %d", len(got))
+	}
+	same(t, "the first and the last of 1201 ids", []index.VersionFacts{{VersionID: 1 << 40}, wheelFacts},
+		[]index.VersionFacts{got[0], got[1200]})
+
+	_, err = s.DeleteAttachments(ctx, repo.ID, dg("sbom"))
+	must(t, err)
+	must(t, s.DeleteVersion(ctx, sdist.ID))
+	got, err = s.ListVersionFacts(ctx, []int64{wheel.ID, sdist.ID})
+	must(t, err)
+	same(t, "after a referrer's delete and a version's", []index.VersionFacts{
+		{VersionID: wheel.ID, Files: 2, Size: 65138, Attachments: map[string]int64{index.AttachmentSignature: 1}},
+		{VersionID: sdist.ID},
+	}, got)
+}
