@@ -202,7 +202,7 @@ func newServeCmd(a *app) *cobra.Command {
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
-			login, proxies, err := edgeInputs(c, st, a.log)
+			edge, err := edgeInputs(c, st, a.log)
 			if err != nil {
 				return err
 			}
@@ -213,27 +213,29 @@ func newServeCmd(a *app) *cobra.Command {
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log)})
 			srv, err := server.New(server.Options{
-				Listen:          c.Server.Listen,
-				ExternalURL:     c.Server.ExternalURL,
-				TLSCertFile:     c.Server.TLS.CertFile,
-				TLSKeyFile:      c.Server.TLS.KeyFile,
-				ShutdownTimeout: c.Server.ShutdownTimeout,
-				ShutdownDelay:   c.Server.ShutdownDelay,
-				OnShutdown:      endFetches,
-				Log:             a.log,
-				Plugins:         plugins,
-				Deps:            deps,
-				Ready:           ready(a.log, c.Database.Driver, st, health, rep),
-				API:             mgmt,
-				Facade:          v2,
-				OIDC:            login,
-				Authenticator:   authn,
-				MetricsListen:   c.Server.MetricsListen,
-				Pprof:           c.Server.Pprof,
-				StallTimeout:    c.Server.StallTimeout,
-				MaxUploads:      c.Server.MaxConcurrentUploads,
-				TrustedProxies:  proxies,
-				FQDNDomain:      c.Server.FQDN.Domain,
+				Listen:           c.Server.Listen,
+				ExternalURL:      c.Server.ExternalURL,
+				TLSCertFile:      c.Server.TLS.CertFile,
+				TLSKeyFile:       c.Server.TLS.KeyFile,
+				ShutdownTimeout:  c.Server.ShutdownTimeout,
+				ShutdownDelay:    c.Server.ShutdownDelay,
+				OnShutdown:       endFetches,
+				Log:              a.log,
+				Plugins:          plugins,
+				Deps:             deps,
+				Ready:            ready(a.log, c.Database.Driver, st, health, rep),
+				API:              mgmt,
+				Facade:           v2,
+				OIDC:             edge.login,
+				Authenticator:    authn,
+				MetricsListen:    c.Server.MetricsListen,
+				Pprof:            c.Server.Pprof,
+				StallTimeout:     c.Server.StallTimeout,
+				MaxUploads:       c.Server.MaxConcurrentUploads,
+				TrustedProxies:   edge.proxies,
+				ClientCerts:      edge.certs,
+				ClientCertHeader: c.Auth.ClientCertificates.ForwardedHeader,
+				FQDNDomain:       c.Server.FQDN.Domain,
 			})
 			if err != nil {
 				return err

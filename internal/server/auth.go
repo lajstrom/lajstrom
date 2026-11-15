@@ -73,6 +73,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     (token.ReadForm, docs/spec/http-routing.md §2, #908), authenticated as Basic credentials
 //     are; the Authorization header is not read. A form that is refused is answered 400 or 413
 //     in OAuth2's format before its credential is checked (authenticateForm).
+//   - GET /v2/token without an Authorization header: a client certificate, from the connection
+//     or from a trusted proxy's header (certificate, docs/spec/rbac.md §9), when
+//     Options.ClientCerts is set; refused like Basic credentials. Without one, anonymous.
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
@@ -108,30 +111,38 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			s.authenticateForm(w, r, next)
 			return
 		}
-		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		var (
-			p    auth.Principal
-			cred auth.Credential
-			err  error
-		)
-		switch {
-		case strings.EqualFold(scheme, "Basic"):
-			user, secret, ok := r.BasicAuth()
-			if !ok {
-				s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
-					"requestId", RequestID(r.Context()))
-				s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
-				return
-			}
-			p, cred, err = s.opts.Authenticator.Authenticate(r.Context(), user, secret)
-		case strings.EqualFold(scheme, "Bearer") && tokenBearer(r.URL.Path, strings.TrimSpace(value)):
-			p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), strings.TrimSpace(value))
-		default:
+		p, cred, ok, err := s.credential(r)
+		if !ok {
 			next.ServeHTTP(w, r)
 			return
 		}
 		s.settle(w, r, next, p, cred, err)
 	})
+}
+
+// credential authenticates the credential of r's Authorization header, or the client
+// certificate of a GET of /v2/token without one, and reports ok false when r has none that the
+// middleware reads: the request goes on as anonymous with the header untouched (authenticate).
+// Basic credentials that do not decode are auth.ErrBadCredentials.
+func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Credential, ok bool, err error) {
+	scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	switch {
+	case strings.EqualFold(scheme, "Basic"):
+		user, secret, decoded := r.BasicAuth()
+		if !decoded {
+			s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
+				"requestId", RequestID(r.Context()))
+			return auth.Principal{}, auth.Credential{}, true, auth.ErrBadCredentials
+		}
+		p, cred, err = s.opts.Authenticator.Authenticate(r.Context(), user, secret)
+		return p, cred, true, err
+	case strings.EqualFold(scheme, "Bearer") && tokenBearer(r.URL.Path, strings.TrimSpace(value)):
+		p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), strings.TrimSpace(value))
+		return p, cred, true, err
+	case scheme == "" && r.Method == http.MethodGet && r.URL.Path == tokenPath && s.opts.ClientCerts != nil:
+		return s.certificate(r)
+	}
+	return auth.Principal{}, auth.Credential{}, false, nil
 }
 
 // settle ends the authentication of r with the outcome of its credential: refused credentials

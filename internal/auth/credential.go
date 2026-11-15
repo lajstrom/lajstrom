@@ -32,6 +32,9 @@ const (
 	// CredOIDC is an OIDC login that has just verified its ID token (docs/spec/rbac.md §8): no
 	// request authenticates with it; the login mints its personal access token under it.
 	CredOIDC CredentialKind = "oidc"
+	// CredCertificate is a client certificate on GET /v2/token (docs/spec/rbac.md §9): the
+	// principal is cert:<name>, and its bindings decide.
+	CredCertificate CredentialKind = "certificate"
 )
 
 // Credential is how the principal of a request authenticated, beside the principal in the
@@ -90,7 +93,7 @@ func (c Credential) Limit(a Action, repo index.Repo) error {
 			return nil
 		}
 		return fmt.Errorf("%w: the deploy token has %s", ErrScope, scopeList(c.Scopes))
-	case CredPassword, CredOIDC:
+	case CredPassword, CredOIDC, CredCertificate:
 	}
 	return nil
 }
