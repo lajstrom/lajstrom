@@ -340,7 +340,9 @@ env:
     until the trial (measured: 30); before [#889] it was `502` without one;
   - expired tags are served from their rows at once;
   - then one request is the trial and waits the whole total. Another tag asked during the trial
-    got `502` at once.
+    got `502` at once. Since [#1116](https://github.com/lajstrom/lajstrom/issues/1116) (code), up
+    to three requests are trials at once, each of another image; one image whose trials fail
+    does not keep the breaker open, a trial of another image that the upstream answers closes it.
 - **`metadataTTL`** (default `10m`): a tag whose row is fresh costs no request, so an outage or a
   hang does not touch it. A longer one through a rollout (`1h`, `24h`) keeps every warmed tag off
   the upstream, at the price of seeing a moved tag later.

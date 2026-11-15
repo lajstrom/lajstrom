@@ -3,6 +3,7 @@ package generic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -298,4 +300,118 @@ func TestBreakerBlame(t *testing.T) {
 	if connectFailed(nil) {
 		t.Error("connectFailed(nil) = true")
 	}
+}
+
+// TestBreakerHalfOpenBrokenRepository is the acceptance of #1116: a registry that fails every
+// request opens the breaker; it comes back, but for one repository it answers 500, as for a
+// repository damaged in its storage. A client asks for that repository after the cooldown: its
+// trials fail, but the breaker stays half-open, and the first trial of another repository the
+// registry answers closes it. A trial of the broken repository that hangs does not keep the
+// others out either.
+func TestBreakerHalfOpenBrokenRepository(t *testing.T) {
+	lowerBreaker(t, 5)
+	const name = "breaker-half-open"
+	f := newFakeRegistry(t)
+	log, buf := testLogger()
+	p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = name, -1 })
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	p.clients.breaker.now = clk.now
+	broken, good, other := tagsCall(t, p, "raw/scratch/broken"), tagsCall(t, p, "raw/scratch/notes"), tagsCall(t, p, "raw/scratch/other")
+	reg := &recoveringRegistry{down: true, hanged: make(chan struct{}, 1)}
+	f.hook = reg.serve
+
+	for i := range breakerThreshold {
+		_ = wantCall(t, f, "tags of two repositories in turn, the registry down", []func() error{good, other}[i%2], false, 1)
+	}
+	_ = wantCall(t, f, "tags while open", good, true, 0)
+	reg.set(false, nil) // the registry is back, but for the broken repository
+
+	clk.add(time.Minute)
+	for range 3 {
+		if err := wantCall(t, f, "tags of the broken repository as the trial", broken, false, 1); err == nil {
+			t.Fatal("tags of the broken repository succeeded")
+		}
+	}
+	if g := circuitGauge(t, name); g != 1 {
+		t.Errorf("circuit gauge %v after the broken repository's trials failed, want 1: half-open", g)
+	}
+	if err := wantCall(t, f, "tags of another repository as a trial", good, false, 1); err != nil {
+		t.Fatalf("tags of another repository after the registry came back: %v", err)
+	}
+	if g := circuitGauge(t, name); g != 0 || !strings.Contains(buf.String(), "circuit closed") {
+		t.Errorf("circuit gauge %v after another repository's trial was answered, want 0, and a log line:\n%s", g, buf)
+	}
+	_ = wantCall(t, f, "tags of a third repository", other, false, 1)
+
+	reg.set(true, nil)
+	for i := range breakerThreshold {
+		_ = wantCall(t, f, "tags of two repositories in turn, the registry down again", []func() error{good, other}[i%2], false, 1)
+	}
+	release := make(chan struct{})
+	reg.set(false, release)
+	clk.add(time.Minute)
+	stuck := make(chan error, 1)
+	go func() { stuck <- broken() }()
+	<-reg.hanged // the broken repository's trial is in flight
+	if err := wantCall(t, f, "tags of another repository beside the broken one's trial", good, false, 1); err != nil {
+		t.Errorf("tags of another repository while the broken one's trial hangs: %v", err)
+	}
+	close(release)
+	if err := <-stuck; err == nil || byBreaker(err) {
+		t.Errorf("the broken repository's trial: %v, want the registry's 500", err)
+	}
+	if g := circuitGauge(t, name); g != 0 {
+		t.Errorf("circuit gauge %v after the broken repository's trial ended, want 0", g)
+	}
+}
+
+// tagsCall returns a call that lists the tags of the repository path of p; the fake's 404 for a
+// repository without tags is an answer, and no error.
+func tagsCall(t *testing.T, p *Provider, path string) func() error {
+	t.Helper()
+	repo, err := p.Repository(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func() error {
+		if _, err := listTags(t.Context(), repo); !errors.Is(err, provider.ErrNotFound) {
+			return err
+		}
+		return nil
+	}
+}
+
+// recoveringRegistry is the hook of a fake registry that fails every request while down, and
+// otherwise answers every request of the repository raw/scratch/broken 500, once hang closes
+// when hang is set; hanged gets a value for each such request that waits.
+type recoveringRegistry struct {
+	mu     sync.Mutex
+	down   bool
+	hang   chan struct{}
+	hanged chan struct{}
+}
+
+// set sets down and hang.
+func (r *recoveringRegistry) set(down bool, hang chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.down, r.hang = down, hang
+}
+
+func (r *recoveringRegistry) serve(w http.ResponseWriter, req *http.Request) bool {
+	r.mu.Lock()
+	down, wait := r.down, r.hang
+	r.mu.Unlock()
+	switch {
+	case down:
+		writeErr(w, http.StatusServiceUnavailable, "UNAVAILABLE", "down")
+		return true
+	case !strings.HasPrefix(req.URL.Path, "/v2/art/raw/scratch/broken/"):
+		return false
+	case wait != nil:
+		r.hanged <- struct{}{}
+		<-wait
+	}
+	writeErr(w, http.StatusInternalServerError, "UNKNOWN", "invalid repository layout")
+	return true
 }
