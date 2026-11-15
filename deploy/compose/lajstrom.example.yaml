@@ -47,7 +47,7 @@ database:
 
 registries:
   - name: local                       # referred to by repos[].registry
-    type: generic                     # generic (every registry of docs/registries/ but ECR) | ecr
+    type: generic                     # generic (every registry of docs/registries/ but ECR) | ecr | harbor
     url: "http://localhost:5000"      # Zot from the dev stack (make dev-up)
     prefix: ""                        # instance prefix of every OCI repository, e.g. "art/"; empty for none
     auth:
@@ -61,6 +61,7 @@ registries:
       spoolUnknownLength: false       # Gitea, Forgejo, JFrog: spool a /v2 chunk of unknown length after the first to $TMPDIR
       chunkSize: 0                    # bytes of each PATCH of an upload Lajstrom streams; 0: 4 MiB on GHCR, else 8 MiB
     # ecr: {region: "", endpoint: ""} # type ecr only: region, endpoint, imageTagMutability, encryption, … (docs/registries/ecr.md)
+    # harbor: {createProject: false} # type harbor only; prefix's first component is the project (docs/registries/harbor.md)
   - name: second                      # distribution from the dev stack, for repos created with --registry second
     type: generic
     url: "http://localhost:5001"      # no referrers API: Lajstrom lists referrers through the sha256-<digest> tag schema

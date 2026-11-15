@@ -387,7 +387,7 @@ log: {level: verbose, format: xml}
 database: {driver: mysql, dsn: ""}
 registries:
   - {name: local, url: "http://zot:5000", prefix: "/art"}
-  - {name: local, type: harbor, url: "zot:5000"}
+  - {name: local, type: quay, url: "zot:5000"}
   - {name: Bad Name, url: "https://u:secret@example.com"}
 repos:
   - {name: scratch, format: raw, registry: x}
@@ -406,7 +406,7 @@ repos:
 				"database.dsn: must not be empty",
 				`registries[0].prefix: must not start with "/" and must end with "/" when set`,
 				`registries[1].name: "local" is already used by registries[0]`,
-				`registries[1].type: "harbor" is not generic or ecr`,
+				`registries[1].type: "quay" is not generic, ecr or harbor`,
 				"registries[1].url: must be an absolute http(s) URL",
 				`registries[2].name: "Bad Name" must be lowercase`,
 				"registries[2].url: must not contain credentials",
@@ -516,6 +516,41 @@ registries:
 		{"empty filter", `{name: r, type: ecr, url: "https://r.example", ecr: {imageTagMutability: IMMUTABLE_WITH_EXCLUSION, imageTagMutabilityExclusions: [""]}}`, "must not contain an empty filter"},
 		{"encryption", `{name: r, type: ecr, url: "https://r.example", ecr: {encryption: SSE}}`, `registries[0].ecr.encryption: "SSE" is not one of AES256, KMS, KMS_DSSE`},
 		{"key without KMS", `{name: r, type: ecr, url: "https://r.example", ecr: {kmsKey: alias/x}}`, "registries[0].ecr.kmsKey: needs encryption KMS or KMS_DSSE"},
+	}
+	for _, tt := range bad {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, minimal+"registries:\n  - "+tt.entry+"\n"), nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Load: %v; want an error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRegistryHarbor(t *testing.T) {
+	file := minimal + `
+registries:
+  - name: harbor
+    type: harbor
+    url: https://harbor.example.com
+    prefix: lajstrom/
+    harbor:
+      createProject: true
+`
+	c, err := Load(writeConfig(t, file), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.Registries[0].Harbor; got != (Harbor{CreateProject: true}) {
+		t.Errorf("harbor = %+v", got)
+	}
+
+	bad := []struct{ name, entry, want string }{
+		{"harbor on generic", `{name: r, url: "http://zot:5000", harbor: {createProject: true}}`, "registries[0].harbor: is only for type harbor"},
+		{"harbor on ecr", `{name: r, type: ecr, url: "https://r.example", harbor: {createProject: true}}`, "registries[0].harbor: is only for type harbor"},
+		{"no prefix", `{name: r, type: harbor, url: "https://r.example"}`, "registries[0].prefix: must be set for type harbor"},
+		{"project name", `{name: r, type: harbor, url: "https://r.example", prefix: "Lajstrom/"}`, `registries[0].prefix: "Lajstrom/": component "Lajstrom" must be lowercase`},
+		{"ecr on harbor", `{name: r, type: harbor, url: "https://r.example", prefix: p/, ecr: {region: us-east-1}}`, "registries[0].ecr: is only for type ecr"},
 	}
 	for _, tt := range bad {
 		t.Run(tt.name, func(t *testing.T) {
