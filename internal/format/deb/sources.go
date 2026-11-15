@@ -90,7 +90,21 @@ func sourceParagraphOf(pkg index.Package, v index.Version, component string, raw
 		writeField(&b, names[k], fields[k])
 	}
 	writeField(&b, "Directory", "pool/"+component+"/"+poolDir(pkg.Name))
-	return paragraph{name: pkg.Name, version: v.Version, arch: ArchSource, component: component, text: b.Bytes()}, nil
+	return paragraph{name: pkg.Name, version: v.Version, arch: ArchSource, component: component, text: b.Bytes(),
+		files: poolFilesOf(md)}, nil
+}
+
+// poolFilesOf returns the pool files of a source version by name, each to its hex sha256: the
+// .dsc, and the lines of its Checksums-Sha256, which ingest checked against the files.
+func poolFilesOf(md sourceMetadata) map[string]string {
+	files := map[string]string{md.Filename: md.SHA256}
+	list, _ := lookup(md.Control, "Checksums-Sha256")
+	for line := range strings.Lines(list) {
+		if f := strings.Fields(line); len(f) == 3 {
+			files[f[2]] = strings.ToLower(f[0])
+		}
+	}
+	return files
 }
 
 // poolDir returns the directory of a source in a pool, <p>/<source> (PoolPath).

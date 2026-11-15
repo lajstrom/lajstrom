@@ -98,15 +98,29 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 	if checkDistName("suite", suite) != nil {
 		return nil, fmt.Errorf("%w: apt/%s: %q is not a suite", index.ErrNotFound, repo.Name, suite)
 	}
-	paras, srcs, err := p.paragraphs(ctx, repo, suite, st)
+	pkgs, err := st.ListPackages(ctx, repo.ID, "")
+	if err != nil {
+		return nil, fmt.Errorf("deb: packages of apt/%s: %w", repo.Name, err)
+	}
+	paras, srcs, err := p.paragraphs(ctx, repo, pkgs, suite, st)
 	if err != nil {
 		return nil, err
 	}
 	if len(paras) == 0 && len(srcs) == 0 {
 		return nil, fmt.Errorf("%w: apt/%s has no package in the suite %s", index.ErrNotFound, repo.Name, suite)
 	}
+	return p.renderSuite(repo, suite, paras, srcs)
+}
+
+// renderSuite renders the documents of the suite of repo from its paragraphs, binary and
+// source, each list sorted (sortParagraphs): the indexes of every component and architecture
+// (layout), and the Release that lists them first.
+func (p Plugin) renderSuite(repo index.Repo, suite string, paras, srcs []paragraph) ([]format.Document, error) {
 	components, archs := layout(paras, srcs)
-	var docs []format.Document
+	var (
+		docs []format.Document
+		err  error
+	)
 	for _, c := range components {
 		for _, a := range archs {
 			if docs, err = appendIndex(docs, suite, c+"/binary-"+a+"/"+packagesFile, packagesOf(paras, c, a), variants); err != nil {
@@ -175,16 +189,15 @@ type paragraph struct {
 	section string
 	// paths are the paths of a binary package in Contents (pathsOf).
 	paths []string
+	// files are the pool files of the version, by name, each to its hex sha256: the .deb, or the
+	// .dsc and the files it names. A group compares them with its earlier members' (clashes).
+	files map[string]string
 }
 
-// paragraphs returns the paragraphs of the versions of the suite, those of the binary versions
-// and those of the source versions, each sorted by package name, then version string, then
-// architecture.
-func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, st index.Reader) (paras, srcs []paragraph, err error) {
-	pkgs, err := st.ListPackages(ctx, repo.ID, "")
-	if err != nil {
-		return nil, nil, fmt.Errorf("deb: packages of apt/%s: %w", repo.Name, err)
-	}
+// paragraphs returns the paragraphs of the versions of the suite among those of pkgs, the
+// packages of repo: those of the binary versions and those of the source versions, each sorted
+// (sortParagraphs).
+func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, pkgs []index.Package, suite string, st index.Reader) (paras, srcs []paragraph, err error) {
 	for _, pkg := range pkgs {
 		versions, err := st.ListVersions(ctx, pkg.ID)
 		if err != nil {
@@ -205,12 +218,16 @@ func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, s
 			}
 		}
 	}
-	for _, list := range [][]paragraph{paras, srcs} {
-		slices.SortFunc(list, func(a, b paragraph) int {
-			return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.version, b.version), strings.Compare(a.arch, b.arch))
-		})
-	}
+	sortParagraphs(paras)
+	sortParagraphs(srcs)
 	return paras, srcs, nil
+}
+
+// sortParagraphs sorts list by package name, then version string, then architecture.
+func sortParagraphs(list []paragraph) {
+	slices.SortFunc(list, func(a, b paragraph) int {
+		return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.version, b.version), strings.Compare(a.arch, b.arch))
+	})
 }
 
 // layout returns the components and the architectures of the indexes of a suite, sorted: the
@@ -306,7 +323,7 @@ func (p Plugin) paragraphOf(ctx context.Context, repo index.Repo, pkg index.Pack
 	}
 	writeField(&b, "SHA256", f.SHA256)
 	return paragraph{name: pkg.Name, version: v.Version, arch: arch, component: component, text: b.Bytes(),
-		section: contentsSection(f.Control), paths: pathsOf(f.Files, f.MD5Sums)}, nil
+		section: contentsSection(f.Control), paths: pathsOf(f.Files, f.MD5Sums), files: map[string]string{f.Filename: f.SHA256}}, nil
 }
 
 // metadataOf returns the metadata of version v of pkg: versions.metadata, or the metadata layer
