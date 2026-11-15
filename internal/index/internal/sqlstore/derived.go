@@ -454,17 +454,18 @@ func (c *conn) PutIndexCache(ctx context.Context, ca *index.Cache, generation in
 	return stored && err == nil, err
 }
 
-// InvalidateIndexCache increments the repo's generation, then removes the cached documents of
-// a scope of the repo, or of every scope when scope is "". In that order: the increment takes
-// the lock of the generation row, so on Postgres the DELETE runs after the puts that held it
-// have committed, and sees their rows.
+// InvalidateIndexCache increments the generation of the repo and of the groups it is a member
+// of, then removes their cached documents of a scope, or of every scope when scope is "": an apt
+// group's documents are rendered from its members' versions (docs/spec/proxy-and-group.md §8.6).
+// In that order: the increment takes the locks of the generation rows, so on Postgres the DELETE
+// runs after the puts that held them have committed, and sees their rows.
 func (c *conn) InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error {
 	return c.withTx(ctx, func(c *conn) error {
 		if err := c.nextGeneration(ctx, repoID); err != nil {
 			return err
 		}
 		var w where
-		w.add("repo_id = ?", repoID)
+		w.add("(repo_id = ? OR repo_id IN ("+groupsOf+"))", repoID, repoID)
 		if scope != "" {
 			w.add("scope = ?", scope)
 		}
@@ -473,17 +474,22 @@ func (c *conn) InvalidateIndexCache(ctx context.Context, repoID int64, scope str
 	})
 }
 
-// nextGeneration increments the generation of a repo's rendered documents, or of every repo's
-// when repoID is 0; a repo without a row gets one at 1.
+// groupsOf selects the ids of the groups that the repo of its one argument is a member of.
+const groupsOf = "SELECT group_id FROM group_members WHERE member_id = ?"
+
+// nextGeneration increments the generation of the rendered documents of a repo and of the
+// groups it is a member of, or of every repo when repoID is 0; a repo without a row gets one at
+// 1. The rows are written in the order of their ids, so that two invalidations that share a
+// group take their locks in one order.
 func (c *conn) nextGeneration(ctx context.Context, repoID int64) error {
 	var w where
 	if repoID != 0 {
-		w.add("id = ?", repoID)
+		w.add("(id = ? OR id IN ("+groupsOf+"))", repoID, repoID)
 	} else {
 		w.add("true") // SQLite parses INSERT … SELECT … ON CONFLICT only after a WHERE
 	}
 	_, err := c.exec(ctx, fmt.Sprintf("index_cache_generations of repo %d", repoID),
-		"INSERT INTO index_cache_generations (repo_id, generation) SELECT id, 1 FROM repos"+w.clause()+
+		"INSERT INTO index_cache_generations (repo_id, generation) SELECT id, 1 FROM repos"+w.clause()+" ORDER BY id"+
 			" ON CONFLICT (repo_id) DO UPDATE SET generation = index_cache_generations.generation + 1", w.args...)
 	return err
 }
@@ -527,8 +533,8 @@ func (c *conn) PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.
 var derivedTables = []string{"packages", "index_cache", "oci_repos"}
 
 // ResetDerived removes the derived rows of a repo, or of every repo when repoID is 0, after it
-// incremented their generations as InvalidateIndexCache does. Control-plane tables are not
-// touched.
+// incremented their generations as InvalidateIndexCache does; of a repo, the documents of the
+// groups it is a member of go too. Control-plane tables are not touched.
 func (c *conn) ResetDerived(ctx context.Context, repoID int64) error {
 	return c.withTx(ctx, func(c *conn) error {
 		if err := c.nextGeneration(ctx, repoID); err != nil {
@@ -537,6 +543,10 @@ func (c *conn) ResetDerived(ctx context.Context, repoID int64) error {
 		var w where
 		if repoID != 0 {
 			w.add("repo_id = ?", repoID)
+			if _, err := c.exec(ctx, fmt.Sprintf("index_cache of the groups of repo %d", repoID),
+				"DELETE FROM index_cache WHERE repo_id IN ("+groupsOf+")", repoID); err != nil {
+				return err
+			}
 		}
 		for _, table := range derivedTables {
 			if _, err := c.exec(ctx, table, "DELETE FROM "+table+w.clause(), w.args...); err != nil {
