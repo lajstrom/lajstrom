@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/clientcert"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 )
@@ -94,6 +95,13 @@ type Options struct {
 	// TrustedProxies are the peers whose X-Forwarded-For names the client
 	// (server.trustedProxies, ADR 0011). Empty: the peer of the connection is the client.
 	TrustedProxies []netip.Prefix
+	// ClientCerts verifies the client certificates of GET /v2/token (auth.clientCertificates,
+	// docs/spec/rbac.md §9): with TLSCertFile, the listener asks every client for one, with its
+	// bundles' CAs as the acceptable ones. nil reads no certificate.
+	ClientCerts *clientcert.Verifier
+	// ClientCertHeader is the header in which a trusted proxy forwards the client certificate
+	// (auth.clientCertificates.forwardedHeader); empty reads none. It needs ClientCerts.
+	ClientCertHeader string
 	// FQDNDomain turns on the FQDN mode (server.fqdn.domain, docs/spec/http-routing.md §1.1):
 	// every repo also has the host <repo>.<domain>, and <repo>.<format>.<domain>, whose requests
 	// are served as the path form of the repo (repoHosts). It needs ExternalURL. Empty: off.
@@ -140,7 +148,7 @@ func New(o Options) (*Server, error) {
 	if o.ShutdownTimeout <= 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout
 	}
-	tlsConfig, err := loadTLS(o.TLSCertFile, o.TLSKeyFile)
+	tlsConfig, err := loadTLS(o.TLSCertFile, o.TLSKeyFile, o.ClientCerts)
 	if err != nil {
 		return nil, err
 	}
@@ -175,8 +183,11 @@ func New(o Options) (*Server, error) {
 
 // loadTLS loads the certificate of the main listener, or returns nil when certFile and keyFile
 // are both empty. TLS 1.2 is the oldest version it speaks; the cipher suites and curves are Go's
-// defaults, and HTTP/2 is offered.
-func loadTLS(certFile, keyFile string) (*tls.Config, error) {
+// defaults, and HTTP/2 is offered. With clientCerts, the listener asks every client for a
+// certificate, with the bundles' CAs as the acceptable ones, and verifies one that is sent: a
+// client without one connects as before, and one whose certificate no bundle's CA signed fails
+// the handshake (docs/spec/rbac.md §9).
+func loadTLS(certFile, keyFile string, clientCerts *clientcert.Verifier) (*tls.Config, error) {
 	if certFile == "" && keyFile == "" {
 		return nil, nil //nolint:nilnil // no TLS is not an error
 	}
@@ -184,7 +195,11 @@ func loadTLS(certFile, keyFile string) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: tls: %w", err)
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, nil
+	c := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	if clientCerts != nil {
+		c.ClientAuth, c.ClientCAs = tls.VerifyClientCertIfGiven, clientCerts.Pool()
+	}
+	return c, nil
 }
 
 // Handler returns the server's handler: the routes behind the middleware chain.

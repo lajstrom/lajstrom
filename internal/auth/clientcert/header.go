@@ -7,21 +7,23 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/lajstrom/lajstrom/internal/config"
 )
 
 // maxChain bounds the certificates a header may carry, the leaf and its intermediates.
 const maxChain = 8
 
-// ParseHeader returns the certificates of the value of the header in which an edge forwards a
-// client certificate (docs/spec/rbac.md §9), the leaf first. With xfcc, the value is Envoy's
-// X-Forwarded-Client-Cert: elements separated by ",", keys and values by ";" and "=", values in
-// double quotes where they need them; the last element counts, its Cert, a URL-escaped PEM
-// certificate, then its Chain, URL-escaped PEM intermediates. Otherwise it is a URL-escaped PEM
-// certificate followed by any intermediates (nginx's $ssl_client_escaped_cert), or base64 DER
-// certificates separated by ",", each URL-escaped or not (Traefik, HAProxy). Errors wrap
-// ErrRefused.
-func ParseHeader(value string, xfcc bool) ([]*x509.Certificate, error) {
-	if xfcc {
+// ParseHeader returns the certificates of the value of header, in which an edge forwards a
+// client certificate (docs/spec/rbac.md §9), the leaf first. When header is
+// config.XForwardedClientCert, in any case, the value is Envoy's: elements separated by ",",
+// keys and values by ";" and "=", values in double quotes where they need them; the last
+// element counts, its Cert, a URL-escaped PEM certificate, then its Chain, URL-escaped PEM
+// intermediates. Otherwise it is a URL-escaped PEM certificate followed by any intermediates
+// (nginx's $ssl_client_escaped_cert), or base64 DER certificates separated by ",", each
+// URL-escaped or not (Traefik, HAProxy). Errors wrap ErrRefused.
+func ParseHeader(header, value string) ([]*x509.Certificate, error) {
+	if strings.EqualFold(header, config.XForwardedClientCert) {
 		cert, chain, err := lastElement(value)
 		if err != nil {
 			return nil, err
