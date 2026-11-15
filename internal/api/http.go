@@ -111,6 +111,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/repos/{format}/{repo}/versions:delete  delete versions in a batch, each conditional; dryRun
 //	DELETE /api/v1/repos/{format}/{repo}/upstream-cache[?name=]  drop a proxy's cache of its upstream, or of one name
 //	POST   /api/v1/repos/{format}/{repo}/prefetch      fetch versions of 1 to 100 names into a proxy repo, a result each
+//	GET    /api/v1/repos/{format}/{repo}/sessions[?limit=&cursor=]  its open publication sessions, maven deploys (manage)
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
@@ -212,6 +213,7 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"POST /api/v1/repos/{format}/{repo}/prefetch", h.prefetch},
+		{"GET /api/v1/repos/{format}/{repo}/sessions", h.listSessions},
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},

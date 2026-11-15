@@ -40,6 +40,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"UsersDeleted", testUsersDeleted},
 		{"AuditPrincipalName", testAuditPrincipalName},
 		{"Sessions", testSessions},
+		{"OpenSessions", testOpenSessions},
 		{"SessionsTouch", testSessionsTouch},
 		{"SessionsConcurrent", testSessionsConcurrent},
 		{"Audit", testAudit},

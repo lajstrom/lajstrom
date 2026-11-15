@@ -438,6 +438,19 @@ func (c *conn) GetSessionByID(ctx context.Context, id int64) (*index.Session, er
 		"SELECT "+sessionCols+" FROM sessions WHERE id = ?", id)
 }
 
+// ListOpenSessions returns the open sessions of a repo that expire after at, but the blob
+// uploads of the facade, whose id is above after, by id, at most limit, on the partial index
+// sessions_open_key.
+func (c *conn) ListOpenSessions(ctx context.Context, repoID int64, at time.Time, after int64, limit int) ([]index.Session, error) {
+	if limit < 1 {
+		return []index.Session{}, nil
+	}
+	return getAll(ctx, c, fmt.Sprintf("open sessions of repo %d", repoID), sessionDests,
+		"SELECT "+sessionCols+" FROM sessions WHERE repo_id = ? AND state = 'open' AND expires_at > ? AND id > ?"+
+			" AND key NOT LIKE 'blob-upload:%' ORDER BY id LIMIT ?",
+		repoID, c.d.EncodeTime(Normalize(at)), after, limit)
+}
+
 // UpsertSession inserts s when s.ID is 0, and otherwise stores State, Files and ExpiresAt of
 // row s.ID and fills the other fields from it. It sets UpdatedAt to now.
 func (c *conn) UpsertSession(ctx context.Context, s *index.Session) error {

@@ -116,6 +116,11 @@ type Reader interface {
 	GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
 	// GetSessionByID returns the publication session with the given id, in any state.
 	GetSessionByID(ctx context.Context, id int64) (*Session, error)
+	// ListOpenSessions returns the open publication sessions of a repo whose ExpiresAt is after
+	// at and whose id is above after, by id, at most limit; never a blob upload of the facade,
+	// whose key starts with blob-upload: (docs/spec/index-schema.md, Pages of tokens and of open
+	// sessions). A limit below 1 returns none.
+	ListOpenSessions(ctx context.Context, repoID int64, at time.Time, after int64, limit int) ([]Session, error)
 
 	// ListAudit returns the audit events matching f, newest first.
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
