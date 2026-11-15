@@ -590,7 +590,10 @@ row "What the probe finds" is that answer, and "Overrides needed" compares it wi
 measured. A registry of type `ecr` (or `--url` of an ECR host) is answered with the authorization
 token of the AWS SDK's credentials. Where it does not create a repository on push, the run
 creates each of its repositories with the ECR API before the first write and deletes them at the
-end ([ecr.md](ecr.md#measure-a-real-ecr-19)).
+end ([ecr.md](ecr.md#measure-a-real-ecr-19)). A registry of type `harbor` is probed through the
+Harbor provider, which lists repositories with Harbor's REST API: "What the probe finds" says
+`catalog=true`, and the `_catalog`'s `401` asks for no override
+([harbor.md](harbor.md#type-harbor)).
 
 ```sh
 make registry-matrix                                    # the dev stack's Zot and distribution, one column each

@@ -4,7 +4,8 @@ What Harbor answered on 2026-11-07, measured with `curl`, `oras`, Harbor's REST 
 integration tests and the conformance suite through the facade (issue #21). Harbor puts a
 project model, a token service, robot accounts, immutability rules, quotas and a garbage
 collector around its own build of distribution. The [summary row](README.md) is in the README;
-this page has the details.
+this page has the details. Lajstrom runs on Harbor as type `generic` below a project's prefix, or
+as type `harbor`, which adds Harbor's REST API ([Type harbor](#type-harbor), #73).
 
 ## Version tested
 
@@ -191,20 +192,22 @@ What is new against the [column](README.md#capabilities), all of it Harbor's:
    refusing to store, not bad credentials. Since #357 its words, "exceed … limit", make it
    `provider.ErrLimit`: the client gets `403` (on `/v2` `403 DENIED`) naming the quota, and the
    log a warning ([operations.md](../operations.md#a-registrys-limits-and-quotas)).
-2. List repositories through Harbor's REST API when reindex (#29) needs a listing. A project
+2. **Done in #73, for type `harbor`:** list repositories through Harbor's REST API when reindex (#29) needs a listing. A project
    robot cannot read `_catalog` (401 with a Basic challenge; even the admin's Bearer token is
    refused, and only the admin with Basic auth gets it), so the probe sets `catalog=false` and
    `ListRepositories` is `ErrUnsupported`. Reindex calls it and, on Harbor, falls back to the
    `oci_repos` rows (#37), which a lost database loses; a REST listing would let it start from
    nothing. `GET /api/v2.0/projects/<project>/repositories`
    answers the robot (permission `repository:list`) with `page`, `page_size` (at most 100),
-   `q=name=~<prefix>`, `X-Total-Count` and `Link`; the names carry the project. A small Harbor
-   adapter, or a listing hook of the generic provider.
-3. Optional: say at startup what an empty prefix means on Harbor. Without one, the referrers
+   `q=name=~<prefix>`, `X-Total-Count` and `Link`; the names carry the project. Type `harbor`
+   lists so ([Type harbor](#type-harbor)); type `generic` still reads `oci_repos`.
+3. **Done in #73, for type `harbor`:** say at startup what an empty prefix means on Harbor. Without one, the referrers
    probe answers 400 `BAD_REQUEST` "invalid repository name: lajstrom-probe" (a one-component
    name), `Capabilities` fails, `serve` logs "registry capabilities unknown; serving anyway",
    and every repository is refused with 401 "project raw not found". The configuration needs
-   `prefix: <project>/`; the 400 could be turned into a message that says so.
+   `prefix: <project>/`; the 400 could be turned into a message that says so. Type `harbor`
+   refuses a configuration without a prefix, and a project that does not exist is an error at the
+   start and at each publish whose hint says to create it or to set `harbor.createProject`.
 4. Optional: read 412 `PRECONDITION` as a conflict by its code. Today a push to an immutable tag
    and the delete of a manifest under one become `ErrConflict` only because Harbor's message
    says "configured as immutable" (`mentionsImmutable`).
@@ -229,6 +232,125 @@ What is new against the [column](README.md#capabilities), all of it Harbor's:
 Nothing else: the token service, the referrers API, tags, uploads (the cross-replica one too),
 mounts, ranges and the digest delete work as the provider expects. The out-of-order chunk is
 Harbor's ([Uploads](#uploads)).
+
+## Type harbor
+
+`registries[].type: harbor` (#73) is the generic provider's `/v2` below one project, as above,
+and Harbor's REST API (`/api/v2.0`) for what `/v2` does not say or do
+([internal/provider/harbor](../../internal/provider/harbor)). The project is the first component
+of `prefix`, which the type requires; the rest of the prefix is a path inside the project. The
+robot account of `auth` answers `/v2` as for type `generic` and goes to the REST API as Basic
+credentials, to the registry's host only (no redirect is followed).
+
+```yaml
+registries:
+  - name: harbor
+    type: harbor
+    url: https://harbor.example.com
+    prefix: lajstrom/                     # the project; lajstrom/prod/ for a path inside it
+    auth: {username: "robot$lajstrom+lajstrom", passwordEnv: HARBOR_ROBOT_PASSWORD}
+    harbor:
+      createProject: false                # true: create a missing project (a system robot's)
+```
+
+| | type `generic` | type `harbor` |
+| --- | --- | --- |
+| The project | not checked: a missing one is `401` on `/v2`, read as Lajstrom's credentials refused, and a publish is `502` | `HEAD /api/v2.0/projects?project_name=<project>`, which any account may ask, at the start and at a publish, once per 10 minutes; a missing one is an error in the log and `502` for a publish, with a hint to create it or to set `harbor.createProject`, which creates it, private, with Harbor's default quota |
+| Listing, for reindex | none: `_catalog` is for system administrators, and reindex reads `oci_repos` | `GET /api/v2.0/projects/<project>/repositories?q=name=~<prefix>&sort=name&page_size=100`, every page; `catalog` is true when the robot may list (`repository:list`), else false, as type `generic` |
+| Repository delete | unsupported | `DELETE /api/v2.0/projects/<project>/repositories/<name below the project, / as %252F>`; `412` (a tag an immutability rule holds) is a conflict |
+| Immutability rules | not read; a refusal is a conflict all the same | counted at the start: one that is not disabled makes `immutableTags` true, and a warning says what such a rule refuses (the delete of a manifest under a tag it matches, the move of such a tag, the repository delete) |
+| Name length | 245 bytes with the project once the probe has told Harbor by its challenge, else 255 | 245 bytes with the project |
+| A quota, an immutable tag, a manifest an index lists | the generic provider's: `provider.ErrLimit` (`403`), `ErrConflict` (`409`) | the same: `/v2` is the generic provider's |
+
+Neither type creates or changes an immutability rule, a quota, a tag retention rule or a robot:
+they are the Harbor administrator's. Tag retention is not read: keep it off the project, or off
+the repositories under the prefix ([operations.md](../operations.md#the-registrys-own-rules)).
+`capabilities.catalog` and `capabilities.immutableTags` in the configuration replace what the
+REST API says, and the provider then does not ask it.
+
+### The robot account
+
+A project robot of the project, with five permissions and no more:
+
+| Resource | Actions | What Lajstrom does with it |
+| --- | --- | --- |
+| `repository` | `pull`, `push` | `/v2`: the reads, and every publish (Harbor's token service grants the scope's `pull` and `push` from them) |
+| `repository` | `delete` | `/v2`: the delete of a version's manifest by digest, prune; the REST API's repository delete |
+| `repository` | `list` | the listing; without it `catalog` is false, a warning says so, and reindex reads `oci_repos` |
+| `immutable-tag` | `list` | optional: the rules at the start; without it `immutableTags` stays false and an info line says so |
+
+No `artifact`, `tag` or `project` permission is needed: a version is deleted through `/v2`, and the
+project is asked about with the `HEAD` any account may send.
+
+```sh
+curl -u "$A" -H 'Content-Type: application/json' -X POST $H/api/v2.0/robots -d '{"name":"lajstrom","level":"project","duration":-1,
+  "permissions":[{"kind":"project","namespace":"lajstrom","access":[
+    {"resource":"repository","action":"pull"},{"resource":"repository","action":"push"},
+    {"resource":"repository","action":"delete"},{"resource":"repository","action":"list"},
+    {"resource":"immutable-tag","action":"list"}]}]}' | jq -r .secret > robot.secret
+```
+
+`harbor.createProject: true` needs more. A project robot cannot create a project: Harbor answers
+`403 FORBIDDEN` "Only system level robot can create project", which the provider reads as
+`provider.ErrUnauthorized` with a hint. A system robot can, with `project: create` and the five
+permissions on every project (`"namespace": "*"`), which then hold in the project it creates:
+
+```json
+{"name":"lajstrom","level":"system","duration":-1,"permissions":[
+  {"kind":"system","namespace":"/","access":[{"resource":"project","action":"create"}]},
+  {"kind":"project","namespace":"*","access":[{"resource":"repository","action":"pull"},
+    {"resource":"repository","action":"push"},{"resource":"repository","action":"delete"},
+    {"resource":"repository","action":"list"},{"resource":"immutable-tag","action":"list"}]}]}
+```
+
+Such a robot reaches every project of the Harbor, where a project robot reaches one: the default,
+`false`, keeps Lajstrom's credentials to its project. With Harbor's "project creation" set to
+administrators only, the system robot's `project: create` is what counts.
+
+Rotation is the operator's: Harbor refreshes a robot's secret (the UI's "Refresh secret", or
+`PATCH /api/v2.0/robots/<id>`), and a robot that expires stops working on its day. Lajstrom reads
+`passwordEnv` at the start: a new secret takes a restart of each replica, as for any registry.
+
+### Deletes and the garbage collector
+
+A version's delete and prune delete its manifest through `/v2` by digest (`202`): Harbor deletes
+the artifact with every tag that names it and its referrers, which it keeps as accessories
+([Delete](#delete)). The REST API's artifact delete does the same and is not used. A repository
+delete goes through the REST API. Neither frees space: Harbor keeps the blobs until its garbage
+collector runs, a job of jobservice that a system administrator schedules (Administration, Clean
+Up; `POST /api/v2.0/system/gc/schedule`). Lajstrom never starts it, and its robot has no
+permission to. The collector keeps an untagged referrer, with or without `delete_untagged`
+([Garbage collection](#garbage-collection)).
+
+### Measured, 2026-11-15 (#73)
+
+Harbor v2.15.4 from [harbor.sh](#run-it), as on 2026-11-14, Lajstrom at the change of #73, the
+project `lajstrom-it` and a project robot `robot$lajstrom-it+ci` with the five permissions above
+and no others:
+
+- `go test -tags integration -run TestIntegrationHarbor ./internal/provider/harbor/`
+  ([Commands](#commands)) passes. As the robot: the start's line `listRepositories=true
+  immutabilityRules=0`, `MaxNameLength` 221 below `lajstrom-it/it-<8 hex>/`; four repositories
+  pushed and listed through three pages of two (`page_size` lowered by the test); a repository
+  delete, then `404` as `ErrNotFound`; a version's `/v2` delete; a project that does not exist, a
+  `RejectedError` of `404` whose message does not name it. As the administrator, in projects of
+  its own: `createProject`; an immutability rule `**` (`immutableTags` true, the move of a tag and
+  the delete of its manifest `ErrConflict`, the repository delete `412`, `ErrConflict`); a quota of
+  1 MiB (a 1.5 MiB blob `ErrLimit`, the message without the project or Harbor's numbers).
+- With curl, as the robot: `POST /api/v2.0/projects` is `403` "Only system level robot can create
+  project"; `HEAD /api/v2.0/projects?project_name=` is `404` for a project that does not exist and
+  `200` for one that does, the robot's or not; the repositories of a project that does not exist
+  are `403 FORBIDDEN`, not `404`, since Harbor checks the permission first. As a system robot with
+  `project: create` and the five permissions on `*`: the `POST` is `201`, its listing of the new
+  project `200`, and its token for a repository there holds `pull`, `push` and `delete`.
+- Through Lajstrom, `serve` with a repo `raw/scratch` on `prefix: lajstrom-it/smoke/`: two files
+  uploaded, then the database replaced by an empty one and `lajstrom reindex --repo raw/scratch`
+  run. Type `harbor` found both: `ociRepositories=2 manifests=2 added=2`. Type `generic`, on the same
+  Harbor and the same empty database, found none, `ociRepositories=0`, and warned to name them
+  with `--attach`.
+- `lajstrom registry probe --registry harbor` on that configuration: "What the probe finds"
+  `referrers=true catalog=true`, "Overrides needed" none (the `_catalog`'s `401` asks for no
+  `catalog: false`, since the provider lists with the REST API).
 
 ## Projects, robots and create on push
 
@@ -601,6 +723,16 @@ curl -u "$A" -H 'Content-Type: application/json' -X POST $H/api/v2.0/system/gc/s
   -d '{"schedule":{"type":"Manual"},"parameters":{"delete_untagged":false,"dry_run":false,"workers":1}}'
 curl -s -u "$A" "$H/api/v2.0/system/gc?page_size=1" | jq '.[0] | {id, job_status, job_parameters}'
 curl -s -u "$A" $H/api/v2.0/system/gc/<id>/log
+```
+
+The integration tests of type `harbor`: as the project robot, and as the administrator, which
+makes projects of its own and deletes them:
+
+```sh
+LAJSTROM_TEST_HARBOR=http://localhost:5005 LAJSTROM_TEST_HARBOR_PROJECT=lajstrom-it \
+LAJSTROM_TEST_HARBOR_USERNAME='robot$lajstrom-it+ci' LAJSTROM_TEST_HARBOR_PASSWORD="$(cat robot.secret)" \
+LAJSTROM_TEST_HARBOR_ADMIN_USERNAME=admin LAJSTROM_TEST_HARBOR_ADMIN_PASSWORD="$HARBOR_ADMIN_PASSWORD" \
+  go test -race -count=1 -tags integration -run TestIntegrationHarbor -v ./internal/provider/harbor/
 ```
 
 The tests and the conformance suite (`lajstrom-harbor.yaml`: the example configuration with

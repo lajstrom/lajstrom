@@ -24,5 +24,6 @@
 // the REST API wrap the sentinels of package provider where one applies (translate), and a
 // 403 names the permission the account lacks.
 //
-// Tested against an httptest fake of the REST API and of /v2.
+// Tested against an httptest fake of the REST API and of /v2, and against Harbor v2.15.4
+// (integration_test.go; docs/registries/harbor.md, Type harbor).
 package harbor
