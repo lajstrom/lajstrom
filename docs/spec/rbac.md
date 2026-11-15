@@ -1,21 +1,23 @@
 # Spec: authentication, tokens and RBAC
 
-- Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69).
-  Owned by `internal/auth`.
-- Related: [ADR 0007](../adr/0007-rbac-model.md), [http-routing.md](http-routing.md).
+- Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69);
+  service accounts (§1) after the MVP (#1020). Owned by `internal/auth`.
+- Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
+  [http-routing.md](http-routing.md).
 
 ## 1. Principals
 
 | Principal | Form | MVP |
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
-| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
+| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days), but a service account's (below); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
 | Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>`; a service-account token of a configured cluster, on `/v2/token` only (§9) | #1019 |
 | group | `group:<name>`; the groups claim of a user's latest OIDC login (§8) | M6 |
 | OIDC user | `user:<uid>`, of the user its identity, the `iss` and `sub` of its ID token, maps to; made at its first login, without a password (§8) | M6 |
+| service account | `user:<uid>` of a user of kind `service` (below); no password, no OIDC login; authenticates with its personal access tokens only; a required owner | #1020 |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
 (`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`, where
@@ -70,8 +72,39 @@ that `user:<x>` is a uid when `x` is a UUID and a name otherwise.
 marked deleted: a uid in the audit log always resolves to who it was. A new user of the freed name
 gets a new uid and inherits nothing. A user can be disabled instead, which is undone by enabling
 it; deleting is not undone. The last enabled user with an admin binding is neither deleted nor
-disabled (`409`). A rename changes nothing but the name: the bindings and tokens keep working, and
-the audit log keeps the name of each event's time.
+disabled (`409`); a service account does not count (below). A rename changes nothing but the
+name: the bindings and tokens keep working, and the audit log keeps the name of each event's
+time.
+
+### Service accounts
+
+A **service account** (#1020, [ADR 0021](../adr/0021-service-accounts.md)) is a user of kind
+`service`, for a system rather than a person. It has no password and no OIDC identity, and
+nothing logs it in: it authenticates with its personal access tokens only, as Basic
+`<name>:<token>` or `Bearer <token>`. Everything else is a user's: its uid, its name among the
+names of the users, its bindings, a rename, disabling, enabling, deleting, and the principal
+`user:<uid>` of its requests. Setting its password is `400`.
+
+Its **owner** is required: a live user that is not a service account, given as `user:<name>` or
+`user:<uid>` and kept as `user:<uid>`, or a group, `group:<name>` with a name of §8, which need
+not have members. The owner answers for the account and gets no right on it, nor on its tokens,
+by owning it. The admin role creates a service account and changes its owner. A disabled owner
+changes nothing for its service accounts, which the users API marks `ownerDisabled`; deleting a
+user that owns a live service account is `409`, naming them, so that the owner of a service
+account is a live user or a group.
+
+Its tokens are personal access tokens, whose scopes narrow its bindings as a person's do.
+Creating one takes the admin role and the admin's password, or the command line (§3): the
+account has no password and never mints its own. Their lifetime is bounded by
+`auth.serviceAccounts.maxTokenTTL` instead of a person's year: `0`, the default, bounds nothing,
+and a token created without an expiry then never expires; with a bound, a token created without
+an expiry expires at the bound, and one asked to expire later is `400`. A bound lowered later
+counts for the tokens created after it.
+
+A service account may have any binding, `admin` included. Its `admin` binding does not count for
+the last-admin rule (above, §3) nor for the bootstrap (§6), as a group's does not: without a
+password it cannot make a token once its own expire. That rule never refuses disabling or
+deleting it, nor deleting its `admin` binding.
 
 ## 2. Resources and actions
 
@@ -139,7 +172,8 @@ A binding is refused with `400`, naming the field, when:
 The same `(principal, role, repo_mask)` twice is `409`, and so is deleting an `admin` binding
 of an enabled user when no enabled user would keep one: nobody could manage the server through
 `/api/v1` after it. A group's `admin` binding does not count for this rule nor for the bootstrap
-(§6): a group lapses without a change of the bindings (§8).
+(§6): a group lapses without a change of the bindings (§8). Neither does a service account's
+(§1), which cannot make a token once its own expire.
 `lajstrom admin binding create` on the command line can always make one (§6).
 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
@@ -219,7 +253,8 @@ this spec, so that a review need not find it in the code:
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
-  one itself (§8), and is no credential of this route. A personal access token, with scopes or without, the admin's too, and a deploy token
+  one itself (§8), and is no credential of this route. A service account has no password, so
+  only the admin role creates its tokens here (§1). A personal access token, with scopes or without, the admin's too, and a deploy token
   get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
   tokens that outlive its revocation (decided on #249, 2026-11-10). A personal access token
   without scopes still lists and revokes its user's tokens; one with scopes and a deploy token
@@ -304,7 +339,11 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 ([index-schema.md](index-schema.md#the-audit-row-of-a-registry-write),
 [guarantees.md](guarantees.md) INV-14). The creation's row also
 names the credential that created the token, `createdBy` in its details: `password`,
-`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
+`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A service account's
+requests have the principal `user:<uid>` and the name of every user, and the answers of the audit
+log add `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
+`owner` in its details, and a change of its owner is `user.owner`, with `from` and `owner`
+(§1). A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
 `webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
 `repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "urlHost", "events",
 "active"}`, the host of its URL and never the URL nor the secret, with the origin's keys of the
@@ -319,7 +358,8 @@ No admin password is read from the environment or the configuration (#440). The 
 is made in one of two ways, both with an `admin` binding on `*/*`:
 
 - **The bootstrap token.** The operator makes it and gives it as the file of
-  `auth.bootstrap.tokenFile`. While no enabled user has an admin binding, `serve` makes it valid
+  `auth.bootstrap.tokenFile`. While no enabled user has an admin binding (a service account's
+  does not count, §1), `serve` makes it valid
   on every replica at start; it never makes a token and never logs one. The index keeps its
   sha256 only (`bootstrap_token`, index-schema.md); it expires after `auth.bootstrap.ttl`. `POST /api/v1/bootstrap`
   (`lajstrom admin bootstrap`) exchanges it once for the first admin, in the transaction that
