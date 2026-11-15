@@ -514,6 +514,30 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    get:
+      tags: [repos]
+      operationId: listSessions
+      summary: A page of the repo's open publication sessions, maven deploys that wait for their maven-metadata.xml, by id (manage).
+      description: >-
+        Only the sessions whose time is not up; never one that committed, was aborted or expired, nor
+        a blob upload of /v2. A repo of a format that opens no session, and a group, have none.
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The sessions.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SessionList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/repos/{format}/{repo}/prefetch:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1938,6 +1962,41 @@ components:
             DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>, with
             ?variant=<variant> for a variant, the package and the version path-escaped.
           type: string
+    SessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items: {$ref: "#/components/schemas/Session"}
+        next: {type: string, description: The cursor of the next page; absent on the last.}
+    Session:
+      type: object
+      description: An open publication session (docs/api.md, Open deploys).
+      required: [id, key, principal, files, committing, createdAt, updatedAt, expiresAt]
+      properties:
+        id: {type: integer}
+        key: {type: string, description: "<groupId>:<artifactId>:<version>; a SNAPSHOT build's version is the build's."}
+        principal: {type: string, description: "Who opened it: user:<uid> or token:<id>."}
+        principalName: {type: string, description: A user's name now; absent for a token.}
+        files:
+          type: array
+          description: The files stored so far, in the order they first came.
+          items:
+            type: object
+            required: [name, digest, size]
+            properties:
+              name: {type: string, description: The path below the repo.}
+              digest: {type: string}
+              size: {type: integer}
+        refused:
+          type: object
+          description: The files a checksum file disagreed with, by name, with the reason; absent when none.
+          additionalProperties: {type: string}
+        committing: {type: boolean, description: A commit of the session runs.}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time, description: Its last change.}
+        expiresAt: {type: string, format: date-time, description: When it ends with nothing published unless it commits.}
     Token:
       type: object
       required: [id, kind, name, scopes, expiresAt, lastUsedAt, createdAt, revokedAt, hashPrefix]
