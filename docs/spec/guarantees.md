@@ -876,7 +876,8 @@ longer than `reconcile.graceAge` is outside them
   `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `PackageRace`,
   `ReferrersLock`, `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`,
   `TestServeTwoReplicasOnSQLite`, `TestServeAfterCrash`, `TestServeHangup`, `TestServeKilled`,
-  `TestProcessGone`, `TestReplicaBeat`, `TestReplicaBeatGone`, `TestReplicaClock`,
+  `TestServeLockFile`, `TestServeLockFileRows`, `TestProcessGone`, `TestLockFile`, `TestLockGone`,
+  `TestReplicaBeat`, `TestReplicaBeatGone`, `TestReplicaClock`,
   `TestCheckClock`, `TestOpenMigratedClock`, the conformance case `DatabaseTime`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,

@@ -25,7 +25,7 @@ func testDatabaseTime(t *testing.T, s index.Store) {
 	}
 }
 
-// testReplicas checks the rows of replicas: a start fills the times, the row keeps Process, and
+// testReplicas checks the rows of replicas: a start fills the times, the row keeps Process and Flock, and
 // a heartbeat moves HeartbeatAt; a second replica with a fresh heartbeat beside it is either refused, naming the
 // live one, on an engine that serves one replica (SQLite), or kept beside it (Postgres; the
 // engine tests say which); a start deletes the rows whose heartbeat is stale, and their
@@ -38,7 +38,7 @@ func testReplicas(t *testing.T, s index.Store) {
 		must(t, err)
 		return replicaIDs(rows)
 	}
-	a := index.Replica{ID: "a", Host: "host-a", PID: 7, Process: "boot=b pid:[1] start=2", Version: "v0.1.0", StartedAt: at(0)}
+	a := index.Replica{ID: "a", Host: "host-a", PID: 7, Process: "boot=b pid:[1] start=2", Flock: "64769:1234", Version: "v0.1.0", StartedAt: at(0)}
 	must(t, s.StartReplica(ctx, &a, at(-120)))
 	if !a.HeartbeatAt.Equal(at(0)) {
 		t.Errorf("HeartbeatAt after the start = %v, want StartedAt %v", a.HeartbeatAt, at(0))

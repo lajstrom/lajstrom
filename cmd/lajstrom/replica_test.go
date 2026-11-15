@@ -333,6 +333,103 @@ func TestServeAfterCrash(t *testing.T) {
 	}
 }
 
+// TestServeLockFile checks the lock file next to the SQLite file (#752), with two processes on
+// the file: a serve in a child process holds its lock, which this process then cannot take, and
+// its row says so. While it lives a start is refused, also when its row is as of another
+// container (another host name and PID namespace), whose process the kernel cannot say is gone
+// by its PID. Once it is killed, the start takes the lock, knows the row gone by it, deletes it
+// and serves at once.
+func TestServeLockFile(t *testing.T) {
+	if processScope() == "" {
+		t.Skip("this operating system does not tell Lajstrom its boot")
+	}
+	dir := t.TempDir()
+	cfg, addr := serveConfig(t, dir)
+	p, wait := startServeProcess(t, cfg, addr)
+	st := openIndex(t, dir)
+	child := oneReplica(t, st)
+	if f, id, err := lockFile(filepath.Join(dir, "lajstrom.db"+lockSuffix)); f != nil || id != "" || err != nil || child.Flock == "" {
+		t.Fatalf("this process took the lock of the child's serve (%v, %q, %v), whose row says %q", f, id, err, child.Flock)
+	}
+	container := child
+	container.Host, container.PID, container.Process = "another-container", 1, bootOf(child.Process)+" pid:[4026532409] start=1"
+	if err := st.StopReplica(t.Context(), child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartReplica(t.Context(), &container, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, nil, "serve", "--config", cfg); err == nil || !strings.Contains(err.Error(), container.ID) {
+		t.Fatalf("serve while the child's serve holds the lock: %v, want an error naming %s", err, container.ID)
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait(); err == nil {
+		t.Fatal("serve after SIGKILL: exit status 0")
+	}
+	stop := startServe(t, cfg, addr)
+	if row := oneReplica(t, st); row.ID == container.ID || row.Flock != child.Flock {
+		t.Errorf("replicas: %+v, want the row of the new serve, with the lock %s", row, child.Flock)
+	}
+	if err := stop(); err != nil {
+		t.Errorf("serve: %v", err)
+	}
+}
+
+// TestServeLockFileRows checks a start on the SQLite file of a row left with a fresh heartbeat
+// by a process of another container that held the lock file, which no process holds now (#752):
+// of this boot, the start takes the lock, deletes the row and serves at once; of another boot,
+// of a process that held no lock, or of another lock file, the start is refused.
+func TestServeLockFileRows(t *testing.T) {
+	if processScope() == "" {
+		t.Skip("this operating system does not tell Lajstrom its boot")
+	}
+	dir := t.TempDir()
+	cfg, addr := serveConfig(t, dir)
+	st := openIndex(t, dir)
+	f, id, err := lockFile(filepath.Join(dir, "lajstrom.db"+lockSuffix))
+	if err != nil || f == nil {
+		t.Fatalf("lockFile = %v, %v", f, err)
+	}
+	_ = f.Close()
+	boot := bootOf(thisProcess())
+	for _, tt := range []struct {
+		name, process, flock string
+		start                bool
+	}{
+		{"this boot", boot + " pid:[4026532409] start=1", id, true},
+		{"another boot", "boot=00000000-0000-0000-0000-000000000000 pid:[4026532409] start=1", id, false},
+		{"no lock", boot + " pid:[4026532409] start=1", "", false},
+		{"another lock file", boot + " pid:[4026532409] start=1", "1:2", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			left := index.Replica{ID: index.NewUID(now), Host: "another-container", PID: 1, Process: tt.process, Flock: tt.flock,
+				Version: "v0.1.0", StartedAt: now.Add(-time.Hour), HeartbeatAt: now.Add(-30 * time.Second)}
+			if err := st.StartReplica(t.Context(), &left, now.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.start {
+				if _, _, err := run(t, nil, "serve", "--config", cfg); err == nil || !strings.Contains(err.Error(), left.ID) {
+					t.Errorf("serve: %v, want an error naming %s", err, left.ID)
+				}
+				if err := st.StopReplica(t.Context(), left.ID); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			stop := startServe(t, cfg, addr)
+			if ids := replicaIDs(t, st); len(ids) != 1 || ids[0] == left.ID {
+				t.Errorf("replicas: %v, want the row of the new serve only", ids)
+			}
+			if err := stop(); err != nil {
+				t.Errorf("serve: %v", err)
+			}
+		})
+	}
+}
+
 // TestReplicaBeat checks the heartbeat of a row: it moves HeartbeatAt; a row a start elsewhere
 // deleted is written again; on SQLite, while another replica's row is fresh, Err says so without
 // naming it and the log names it, and once that row is gone the next beat writes this one's
@@ -343,7 +440,7 @@ func TestReplicaBeat(t *testing.T) {
 	var logs bytes.Buffer
 	now := time.Now()
 	clock := func() time.Time { return now }
-	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.NewTextHandler(&logs, nil)), clock)
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.NewTextHandler(&logs, nil)), clock, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +490,7 @@ func TestReplicaBeatGone(t *testing.T) {
 	st := openIndex(t, t.TempDir())
 	now := time.Now()
 	clock := func() time.Time { return now }
-	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.DiscardHandler), clock)
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.DiscardHandler), clock, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +518,7 @@ func TestReplicaClock(t *testing.T) {
 	st := openIndex(t, t.TempDir())
 	var logs bytes.Buffer
 	var skew time.Duration
-	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return time.Now().Add(skew) })
+	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return time.Now().Add(skew) }, "")
 	if err != nil {
 		t.Fatal(err)
 	}
