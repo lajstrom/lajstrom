@@ -19,7 +19,13 @@ One credential works on every protocol: HTTP Basic on the frontends and on `/v2/
 (`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`, where
 Basic is taken too and evaluated on each request (§4). Outside
 `/v2`, `Authorization: Bearer <secret>` with a personal access token or a deploy token counts
-as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012).
+as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012), and
+Terraform the token of its `credentials` block.
+The archive URL that the download of a terraform module answers carries a bearer token of §4
+in its query, made for the principal of the download, which downloads that version and nothing
+else: the archive route takes it in place of credentials, since Terraform fetches the archive
+without the credentials it sends the registry (http-routing.md, terraform; ADR 0023). It is no
+credential anywhere else.
 `npm login` is a way to get a personal access token: the user's password, checked and throttled
 as in Basic, buys a new one with the default expiry (http-routing.md, npm); nobody signs up
 that way. An OIDC login is another (§8): it ends in a personal access token, and no token of
@@ -256,6 +262,12 @@ MVP.
 - To end every token now, `lajstrom admin key rotate --token --drop` (operations.md): within a
   second no replica accepts a token of the old key, and clients get new tokens with their
   credentials, under the bindings of that moment.
+- The download of a terraform module (http-routing.md, terraform) issues a token too, for its
+  principal once it may read the repo, with the claims above and one access entry,
+  `{"type": "terraform-archive", "name": "terraform/<repo>/<package path>:<tag>", "actions":
+  ["pull"]}`: the version's OCI reference. The archive route of that version takes it, by its
+  signature, `exp`, service and that entry, and evaluates no binding; `/v2` grants nothing for
+  its type, as for any type that is not `repository`. `--drop` ends it with the others.
 
 ## 5. Audit
 
