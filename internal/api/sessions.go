@@ -81,7 +81,7 @@ func (h *handler) listSessions(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, fmt.Errorf("api: the sessions of %s/%s: %w", f, name, err)
 	}
-	out := SessionList{Sessions: make([]Session, 0, min(limit, len(rows)))}
+	out := SessionList{Sessions: make([]Session, 0, len(rows))}
 	names := map[string]string{} // a page reads each user once
 	for _, row := range rows[:min(limit, len(rows))] {
 		s, err := h.session(r, row, names)
