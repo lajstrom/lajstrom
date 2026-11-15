@@ -1254,7 +1254,9 @@ longer than `reconcile.graceAge` is outside them
   Not a `307` redirect to the backend's storage, whose bytes do not pass through Lajstrom
   ([Not guaranteed](#not-guaranteed)), and not a `206` answer to a `Range` request, which is
   not the whole blob. The verified tee of an `oci` proxy (proxy-and-group.md §11.8) holds the
-  last byte longer: until the bytes have the digest and the backend committed the blob.
+  last byte longer: until the bytes have the digest and the backend committed the blob. A layer
+  of an encrypted repo (manifest-profile.md §11) is decrypted as it passes: its last byte is held
+  back until the HMAC of the ciphertext and the plaintext digest, where it is known, match.
 - **Assumes.** Any.
 - **Mechanism.** `format.blobAnswer.copy` through `format.digestWriter`, and
   `facade.handler.streamManifest` through `facade.verifier`. The abort is a panic of an error

@@ -9,7 +9,8 @@
   identity from the predicate, sections 6.2 and 6.3, on 2026-11-14, #89; the snapshots of the
   control plane, section 9, on 2026-11-14, #76; the maven file a proxy fetched, sections 2 to
   5, on 2026-11-15, #1152; the terraform profile, sections 1 to 5, on 2026-11-15, #66, ADR
-  0023). Changes need an issue labelled `contract` and, if the wire format changes, an ADR.
+  0023; encrypted repos, section 11 and sections 5 and 6, on 2026-11-15, #114, ADR 0009's
+  Amendment). Changes need an issue labelled `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
   [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
@@ -451,7 +452,12 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
   and a manifest of `/v2` alike, and never on reindex, which keeps what the registry has whatever
   the policy says now;
 - a layer referenced by the manifest has not been uploaded; on `/v2` the facade checks blob
-  existence in the backend first and answers `400 MANIFEST_BLOB_UNKNOWN` naming the digest;
+  existence in the backend first and answers `400 MANIFEST_BLOB_UNKNOWN` naming the digest; on an
+  encrypted repo, a layer that was not uploaded there encrypted (section 11);
+- a layer's media type ends in `+encrypted`, or a layer has an annotation that starts with
+  `org.opencontainers.image.enc.`: on every managed repo, encrypted or not (section 11); on an
+  encrypted repo also a manifest whose change of section 11 could not be undone exactly (a
+  layer `digest` written with an escape, a descriptor member twice, `annotations` `null`);
 - pushed on `/v2`, `org.opencontainers.image.created` is more than `server.maxCreatedAhead`
   (5 minutes) after the server's clock or more than `server.maxCreatedBehind` (an hour) before
   it, and the repo does not have the manifest already (the facade checks it first). It is a
@@ -486,6 +492,9 @@ rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind from its man
 of the kinds of section 6.1, for the `kind` of its audit row: from its predicate type, cosign's
 legacy tag, or the media types it knows, cosign (`application/vnd.dev.cosign.*`), notation
 (`application/vnd.cncf.notary.signature`), SPDX, CycloneDX, the sigstore bundle, in-toto/DSSE.
+On an encrypted repo a referrer's layers are encrypted and its `subject` names the stored digest
+of its subject (section 11), and Lajstrom's own keys referrers (section 11.1) are among the
+referrers the registry lists.
 
 ### 6.1 Attachments (#89)
 
@@ -943,3 +952,116 @@ verifies the list. The writer pushes the blobs and the manifest under its tag th
 registry's own retention, if at all. It is not a publish: no repo, no claim, no index row, no
 audit row. Reindex does not list it, and ingest never receives one.
 
+
+## 11. Encrypted repos (#114, ADR 0009)
+
+A repo whose `policy.encryption.mode` is `at-rest` ([api.md](../api.md#policy)) keeps the bytes
+of its layers encrypted in the registry, in the format of OCI encrypted layers as
+`containers/ocicrypt` defines it, so that `skopeo` and `ctr-enc` decrypt them with the private key
+of a recipient. The manifest of a version is the manifest of sections 1 to 5, its layers
+encrypted and nothing else changed. The raw file of section 1, encrypted:
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.lajstrom.raw.v1",
+  "config": {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "size": 2
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.lajstrom.raw.file.v1+encrypted",
+      "digest": "sha256:7d2…",
+      "size": 1258496,
+      "annotations": {
+        "org.opencontainers.image.enc.keys.jwe": "eyJwcm90ZWN0ZWQiOi…",
+        "org.opencontainers.image.enc.pubopts": "eyJjaXBoZXIiOiJBRVNfMjU2X0NUUl9ITUFDX1NIQTI1NiIs…",
+        "org.opencontainers.image.title": "dist/app-1.2.0.tar.gz"
+      }
+    }
+  ],
+  "annotations": { "lajstrom.schema": "1", "lajstrom.format": "raw", "…": "…" }
+}
+```
+
+| Element | Rule |
+| --- | --- |
+| which layers | every layer of every manifest that Lajstrom stores in the repo while `at-rest` is on: the file layers, the metadata layer, the layers of a referrer. Never the config, which is the empty descriptor and stays the 2-byte blob `{}` in plain; never the manifest, its annotations, or its tag. A manifest stored before the repo turned `at-rest` on keeps its plain layers, and one stored while it was on keeps its encrypted ones after it is turned off: each layer says by its media type which it is |
+| `mediaType` | the media type of the layer's role (section 2) with the suffix `+encrypted`: `application/vnd.lajstrom.deb.package.v1+encrypted`, `application/vnd.lajstrom.pypi.wheel.v1+zip+encrypted`, `application/vnd.lajstrom.deb.metadata.v1+json+encrypted` |
+| `digest`, `size` | the ciphertext's: the blob the registry has. The digest is sha256. The size is the plaintext's too: the cipher does not change the length |
+| `org.opencontainers.image.enc.keys.jwe` | the private options, wrapped: the standard base64 of a JWE in JSON serialization (RFC 7516 §7.2) whose content cipher (`enc`) is `A256GCM` and whose plaintext is the private options. One recipient for the repo's active key, `alg` `RSA-OAEP-256`, `kid` the key's fingerprint (index-schema.md, `keys`), then one per key of `policy.encryption.recipients`, in their order, `RSA-OAEP-256` for an RSA key, `ECDH-ES+A256KW` for an EC key, `kid` its fingerprint (the uppercase hex sha256 of its SubjectPublicKeyInfo) |
+| `org.opencontainers.image.enc.pubopts` | the public options: the standard base64 of `{"cipher":"AES_256_CTR_HMAC_SHA256","hmac":"<base64>","cipheroptions":{}}` |
+| other annotations | the layer's own, `org.opencontainers.image.title` among them, as in sections 1 and 2 |
+
+**The private options** are the JSON object `{"symkey": "<base64>", "digest": "<algorithm>:<hex>",
+"cipheroptions": {"nonce": "<base64>"}}`: the blob's data key, 32 random bytes, its plaintext
+digest, the digest of the file as the client sent it (sha256, or the algorithm of the client's
+digest on `/v2`), and its nonce, 16 random bytes. A data key and a nonce are made for each blob
+and never used for another.
+
+**The cipher** is `AES_256_CTR_HMAC_SHA256`: the ciphertext is AES-256 in counter mode over the
+plaintext, with the data key and the nonce as the initial counter block, a 128-bit big-endian
+counter; `hmac` is HMAC-SHA256 under the data key over the whole ciphertext. A reader decrypts
+from any offset, and the HMAC proves a whole blob only.
+
+**The plaintext digest** is never in the clear in the registry: it is in the private options,
+and in the index (`blob_map`, index-schema.md). What the index calls a layer's digest
+(`files.digest`) is the ciphertext's. What the metadata layers carry about a file, the
+`sha256` of a deb, a wheel, a raw file or a tarball, its `md5`, `sha1` and `sha512`, the
+checksums of a maven file, an npm `integrity`, are the file's own, computed before the cipher, and
+so are the version of a raw file (section 3) and every annotation and tag. The protocol indexes
+render them as for a plain repo.
+
+**The stored manifest and the client's.** Lajstrom stores the manifest that a client pushed, or
+that a frontend's upload built, changed in place and nowhere else, so that the facade can answer
+it again exactly as it was (http-routing.md §2.1). For each layer descriptor, in its bytes:
+
+1. the value of `digest` is replaced with the ciphertext's digest, a string of the form
+   `"sha256:<hex>"`;
+2. `+encrypted` is written into the string value of `mediaType`, before its closing quote;
+3. the two annotations above are added: in a descriptor with `annotations`, as its first two
+   members, the text `"org.opencontainers.image.enc.keys.jwe":"<value>","org.opencontainers.image.enc.pubopts":"<value>"`
+   after the opening `{`, followed by `,` when the object has members; in a descriptor without
+   `annotations`, the text `,"annotations":{<the same two members>}` before the descriptor's
+   closing `}`.
+
+A manifest with a `subject` has the value of the subject's `digest` replaced in the same way with
+the stored digest of the subject, when the subject is a manifest of the repo that Lajstrom stored
+changed. Nothing else is written: whitespace, the order of members and every other byte stay.
+The manifest as the client had it is the stored one with these changes undone, its digests taken
+from `blob_map`; its digest is the one the client computed. A pushed manifest that the change could
+not undo exactly is refused (section 5): a layer whose `digest` is written with an escape, a
+descriptor with a member twice, `annotations` that is `null`.
+
+**Validation.** A manifest pushed to a managed repo, encrypted or not, whose layer has a media type
+that ends in `+encrypted` or an annotation that starts with `org.opencontainers.image.enc.` is
+refused with `400 MANIFEST_INVALID`: Lajstrom encrypts, and it validates the plaintext. On an
+encrypted repo every layer of a pushed manifest must have been uploaded into that OCI repository
+encrypted (`blob_map`), else `400 MANIFEST_BLOB_UNKNOWN` naming the digest: a blob uploaded
+before the repo turned `at-rest` on is uploaded again. The plugin's `Validate` reads the plaintext,
+through the cipher.
+
+### 11.1 The keys referrer
+
+A data key is wrapped again for a new repo key without changing a manifest, whose digest and tag
+never change (section 4.2): `lajstrom admin key rotate --encryption` pushes a referrer of each
+stored manifest whose layers are wrapped for another key.
+
+| Element | Rule |
+| --- | --- |
+| `artifactType` | `application/vnd.lajstrom.keys.v1` |
+| `config` | the empty descriptor |
+| `layers` | none |
+| `subject` | the stored manifest, by its stored digest |
+| annotations | `lajstrom.schema` (`"1"`); `lajstrom.keys`, the standard base64 of `{"key": "<fingerprint>", "layers": {"<stored layer digest>": "<the value of org.opencontainers.image.enc.keys.jwe for that key alone>", …}}`, one member per encrypted layer of the subject; `org.opencontainers.image.created` |
+
+It is pushed by digest, without a tag, through the referrer path of ingest and the referrers lock
+of its subject (section 6). The newest keys referrer of a manifest, by `created`, then digest,
+names the wrapping that reads and reindex take for its layers; the manifest's own annotation is
+the wrapping before the first rotation. Only Lajstrom writes one: a client's manifest of this
+artifact type is no referrer on `/v2` (http-routing.md §2) and is refused as a version (`400
+MANIFEST_INVALID`), the facade's referrers listing leaves it out, and it is no attachment
+(section 6.1). It goes with its subject when the version is deleted, as every referrer does.

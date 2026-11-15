@@ -27,7 +27,10 @@ internal/format/npm/          npm plugin: packuments, publish, dist-tags journal
 internal/format/rpm/          rpm plugin: header parsing, repodata (repomd, primary, filelists, other), signed repomd, Packages routes
 internal/format/terraform/    terraform plugin: module registry protocol (discovery, versions, download), archive checks, signed archive URLs, publish
 internal/format/formattest/   test doubles: Fake plugin, partial index.Store; imported only by tests
-internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate (pure)
+internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate, the change of an
+                              encrypted manifest and its undoing (pure)
+internal/blobcrypt/           the blob cipher of encrypted repos (ADR 0009): AES_256_CTR_HMAC_SHA256 streaming and resumable,
+                              the private and public options, their JWE wrapping with go-jose (pure)
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
@@ -55,9 +58,11 @@ internal/auth/clientcert/     client certificates (rbac.md §9): the bundles, a 
                               of the leaf, the header an edge forwards a certificate in
 internal/auth/dpop/           the DPoP proofs of a web UI's token (RFC 9449, #1170): verify, used once on any replica
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
-internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020)
-internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign over net/http, SigV4 of aws-sdk-go-v2
-internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign over net/http
+internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020),
+                              the keys of encrypted repos and their data keys (ADR 0009)
+internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign, Decrypt over net/http, SigV4 of aws-sdk-go-v2
+internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign, asymmetricDecrypt
+                              over net/http
 internal/keys/keystest/       test doubles: a KMS in memory; imported only by tests
 internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
                               (an oci upstream's auth.gcp, gcpkms)
@@ -231,7 +236,27 @@ type Deps struct {
     Signer    Signer                        // nil: signing is off (no keys.masterKeyEnv)
     Sessions  Sessions                      // publication sessions (maven)
     Proxy     Proxy                         // the core of proxy repos (*proxy.Core, ADR 0013); nil: none is served
+    Encryption Encryption                   // the keys of encrypted repos (internal/keys, ADR 0009); nil: no master key
 }
+
+// Encryption wraps and opens the data keys of encrypted repos (manifest-profile.md §11);
+// internal/keys implements it over the index, the master key and the KMS, format does not
+// import keys. Unwrap caches what it opened for 15 minutes; a KMS that does not answer is
+// ErrUnavailable (503).
+type Encryption interface {
+    // Wrap wraps opts for the repo's active key, made on first use from policy.encryption.key,
+    // and for the policy's recipients: the value of org.opencontainers.image.enc.keys.jwe and
+    // the fingerprint of the active key.
+    Wrap(ctx context.Context, repo index.Repo, opts blobcrypt.Private) (jwe, fingerprint string, err error)
+    // Unwrap opens jwe with the repo's key of fingerprint, active or retired.
+    Unwrap(ctx context.Context, repo index.Repo, fingerprint, jwe string) (blobcrypt.Private, error)
+    // Seal and Open keep the data key of a facade upload in its row, sealed with the master key.
+    Seal(aad string, key []byte) []byte
+    Open(aad string, sealed []byte) ([]byte, error)
+}
+// Decryption returns what ServeBlob needs to decrypt the file f of the version at the package
+// path path of an encrypted repo, from its row of blob_map; nil, nil for a plain layer.
+func Decryption(ctx context.Context, d Deps, repo index.Repo, path string, f index.File) (*BlobKey, error)
 
 type Entry struct {
     Name, Version, Variant string           // lajstrom.name, lajstrom.version, lajstrom.variant
@@ -469,6 +494,14 @@ type ServeBlobOptions struct {
     Redirect       bool                     // false: stream even where the provider could redirect
     Filename       string                   // Content-Disposition: attachment when set
     Fail           func(w http.ResponseWriter, err error) // errors before the response; nil: WriteError
+    Decrypt        *BlobKey                 // an encrypted layer: decrypted as it streams, never redirected
+}
+// BlobKey is an opened encrypted layer: its data key, nonce, HMAC and plaintext digest
+// (manifest-profile.md §11). ServeBlob decrypts a whole blob checking the HMAC and the digest,
+// its last byte held back, and a range from the 16-byte boundary before it.
+type BlobKey struct {
+    Private blobcrypt.Private
+    HMAC    []byte
 }
 func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, name string, d digest.Digest, opts ServeBlobOptions) error
 // BlobRedirect reads policy.blobRedirect of the repo: "never" is false, anything else true.
@@ -1066,6 +1099,12 @@ type Reader interface {
     // versions ids, in their order, its files counted and their sizes added up, and its
     // attachments counted by kind
     ListVersionFacts(ctx context.Context, versionIDs []int64) ([]VersionFacts, error)
+    // blob_map (#114, index-schema.md, The mapping of an encrypted repo): the row of the stored
+    // digest d at the package path, the rows of the plaintext digest d there (kind "" for both
+    // kinds), every row of a repo's path
+    GetBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest) (*BlobMap, error)
+    FindBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest, kind string) ([]BlobMap, error)
+    ListBlobMap(ctx context.Context, repoID int64, path string) ([]BlobMap, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -1241,6 +1280,12 @@ type Writer interface {
     // SweepAttachments removes the rows of a version whose IndexedAt is before seenBefore, the
     // sweep of reindex once it listed the version's referrers, and returns how many
     SweepAttachments(ctx context.Context, versionID int64, seenBefore time.Time) (int, error)
+    // PutBlobMap inserts the rows, or replaces those of the same (repo, path, stored digest),
+    // with their IndexedAt; DeleteBlobMap removes one; SweepBlobMap removes the rows of the path
+    // whose IndexedAt is before seenBefore, but those of kind blob indexed after keepBlobsAfter
+    PutBlobMap(ctx context.Context, rows []BlobMap) error
+    DeleteBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest) error
+    SweepBlobMap(ctx context.Context, repoID int64, path string, seenBefore, keepBlobsAfter time.Time) (int, error)
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
@@ -2338,6 +2383,7 @@ license policy). Prefer the standard library.
 | AWS (ECR adapter, KMS keys) | `github.com/aws/aws-sdk-go-v2` (`ecr`; `config` for the credential chain; `aws/signer/v4`, the SigV4 of the KMS client of `internal/keys/awskms`, which needs no `service/kms`: ADR 0020), `github.com/aws/smithy-go` (its API errors) | Apache-2.0 |
 | Metrics | `github.com/prometheus/client_golang`; `github.com/prometheus/client_model` in tests | Apache-2.0 |
 | Tests | `testing` + `github.com/google/go-cmp`; `github.com/stretchr/testify` acceptable | BSD-3 / MIT |
+| JWE (the wrapped keys of encrypted repos, #114) | `github.com/go-jose/go-jose/v4`, in the module graph already (sigstore-go and grpc require it): no new module. Only `internal/blobcrypt` imports it. The blob cipher is the standard library's (ADR 0009, Amendment) | Apache-2.0 |
 | Sigstore verification (keyless attachments, #89) | `github.com/sigstore/sigstore-go` (v1.4.0, 2026-10-29) and what it brings: `sigstore/protobuf-specs`, `sigstore/sigstore`, `sigstore/rekor`, `sigstore/rekor-tiles/v2`, `sigstore/timestamp-authority/v2`, `theupdateframework/go-tuf/v2`, `in-toto/in-toto-golang`, `in-toto/attestation`, `secure-systems-lab/go-securesystemslib`, `google/certificate-transparency-go`, `transparency-dev/*`, `digitorus/timestamp`, the `go-openapi` modules of Rekor's client types, `google.golang.org/protobuf` and `grpc`. Only `internal/attest` imports it (and the `trusted-root` command its `tuf` and `root`). Approved by the maintainer on 2026-11-14 (#89, option A) | Apache-2.0; its tree Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause (`make licenses`) |
 
 GCP has no client library: the metadata server (`internal/gcpauth`) and Cloud KMS

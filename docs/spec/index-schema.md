@@ -39,8 +39,8 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | `identities` | `id`, `user_id` → users, `issuer` text, `subject` text, `created_at` ts, `login_at` ts, `groups_expire_at` ts null | an OIDC identity, the `iss` and `sub` of its ID token, and the user it maps to (rbac.md §8; 0021). Unique `identities_subject` on `(issuer, subject)`; index `identities_user` on `(user_id)`. A login sets `login_at` and `groups_expire_at`, the end of the `auth.oidc.tokenLifetime` of that login; a login that finds the row's user deleted deletes the row and makes a new user and row |
 | `identity_groups` | `identity_id` → identities (`ON DELETE CASCADE`), `name` text | the groups of an identity's latest login (rbac.md §8; 0021); primary key `(identity_id, name)`. Each login replaces the identity's rows, in the transaction that moves `auth_version` |
 | `bindings` | `id`, `principal` text (`user:<uid>` or `group:<name>`, rbac.md §8), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | unique `(principal, role, repo_mask)`: the same binding twice is `409`; rbac.md |
-| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`, `policy`: the server's policy key of [policy.md](policy.md) §5, #101), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt and rpm signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data; for a key held in a KMS ([ADR 0020](../adr/0020-repo-signing-keys-in-a-cloud-kms.md)), `public` the OpenPGP key Lajstrom built around the KMS public key, and `private_enc` the same seal of its canonical key URI (`awskms:///arn:…:key/<id>`, `gcpkms://…/cryptoKeyVersions/<n>`) instead of the private key packets, which never leave the KMS; a `policy` row: `public` the PKIX DER of the ECDSA P-256 public key, `fingerprint` its hex sha256, `private_enc` the same seal of its PKCS #8 DER, or of its KMS key URI |
-| `sessions` | `id`, `repo_id`, `key` text (`g:a:v`, `v` the timestamped version of a maven SNAPSHOT build; apt `<source>:<version>` of a source upload, #79; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "refused", "committing"}`, `refused` the files a checksum file disagreed with, by name, with the reason; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, and whether a chunk failed since), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven, an apt source package; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
+| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`, `enc`, `policy`: the server's policy key of [policy.md](policy.md) §5, #101), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt and rpm signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data; for a key held in a KMS ([ADR 0020](../adr/0020-repo-signing-keys-in-a-cloud-kms.md)), `public` the OpenPGP key Lajstrom built around the KMS public key, and `private_enc` the same seal of its canonical key URI (`awskms:///arn:…:key/<id>`, `gcpkms://…/cryptoKeyVersions/<n>`) instead of the private key packets, which never leave the KMS; a `policy` row: `public` the PKIX DER of the ECDSA P-256 public key, `fingerprint` its hex sha256, `private_enc` the same seal of its PKCS #8 DER, or of its KMS key URI. An `enc` row is the key of an encrypted repo ([manifest-profile.md](manifest-profile.md) §11; ADR 0009): `public` the DER SubjectPublicKeyInfo of an RSA key, `fingerprint` the uppercase hex sha256 of `public`, the `kid` of its JWE recipients, `private_enc` the same seal of its PKCS #8 private key, or of the key URI of an RSA decryption key in a KMS. It is made on the repo's first encrypted write, from `policy.encryption.key`; a retired `enc` key keeps decrypting, with no grace: the wrappings of the blobs name it until a rotation wraps them again |
+| `sessions` | `id`, `repo_id`, `key` text (`g:a:v`, `v` the timestamped version of a maven SNAPSHOT build; apt `<source>:<version>` of a source upload, #79; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "refused", "committing"}`, `refused` the files a checksum file disagreed with, by name, with the reason; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck", "enc"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, whether a chunk failed since, and on an encrypted repo `enc`, `{"key", "nonce", "stored", "hmac"}`: the session's data key sealed with the master key (the row's `key` as the additional data), its nonce, the sha256 state of the ciphertext, and the HMAC of the ciphertext so far while one request only carried bytes (http-routing.md §2.1)), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven, an apt source package; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json, `state` text (`ok`, `pending`, `failed`, `unknown`; [below](#the-audit-row-of-a-registry-write)), `error` text null (why a failed row failed, its first 1024 bytes) | rows are never deleted, and only the row of a registry write changes, its state and details, once (below); retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name`; rows written before 0016 are `ok` |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings`, every insert, update or delete of `repos`, and every replacement of an identity's `identity_groups`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings, of the repos' `anonymous_read` and of the identities' groups when it moved (rbac.md §3) |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
@@ -392,7 +392,8 @@ row only as long as another writer's transaction of the package runs.
 
 ## Derived
 
-Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose rows say why.
+Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose rows say why;
+`blob_map` only with the keys of its repo.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -403,6 +404,7 @@ Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose ro
 | `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0017_index_cache_generations.sql` (#477) |
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | unique `(repo_id, path)`; repository list for backends without a catalog; reconcile source. Of an `oci` repo, only the repositories that hold a tag: its catalog lists them ([below](#invariants-and-rules), #748) |
 | `verdicts` | the verdicts that verify, [above](#policy) | rebuilt from the referrers: on a managed repo with `attachments`, on an `oci` repo from the referrers of its tagged manifests. Migration `0030_policy.sql` |
+| `blob_map` | the plaintext digests of an encrypted repo, [below](#the-mapping-of-an-encrypted-repo) | |
 | `proxy_meta` | the upstream's documents of a proxy repo, [above](#proxy-and-group-repos) | a cache of the upstream, not of the registry: not rebuilt, and `ResetDerived` leaves it. Migration `0010_proxy_meta.sql` |
 
 ### Pages of packages and versions
@@ -640,6 +642,42 @@ whatever the number of repos, over the unique indexes `(repo_id, name)` of `pack
 `(package_id, version, variant)` of `versions` and the index `(version_id, name)` of `files`. A
 repo without a package has no row, and its counts are 0. It needs no migration.
 
+### The mapping of an encrypted repo
+
+An encrypted repo ([manifest-profile.md](manifest-profile.md) §11, ADR 0009) stores ciphertext,
+and the facade answers each client in the form it pushed (http-routing.md §2.1). One table maps
+the digests a client knows to those the registry has, and keeps what a read needs to decrypt a
+layer without reading its manifest.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `blob_map` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the package path, as `packages.name_oci`, of the OCI repository that holds the blob or the manifest), `kind` text (`blob`, `manifest`), `plain_digest` text (the plaintext's digest: a layer's, or the digest of a manifest as the client had it), `stored_digest` text (the ciphertext's, or the stored manifest's), `size` int (the blob's, the same in both forms; the stored manifest's), `key_fingerprint` text (`''` for a manifest: the `enc` key that `wrapped` opens with), `wrapped` text (`''` for a manifest: the private options wrapped for that key, the value of `org.opencontainers.image.enc.keys.jwe`, or of a keys referrer's member), `pubopts` text (`''` for a manifest: the value of `org.opencontainers.image.enc.pubopts`), `indexed_at` ts | unique `(repo_id, path, stored_digest)`; index `blob_map_plain` on `(repo_id, path, plain_digest)`. Migration `0031_blob_map.sql` |
+
+- **Writers.** The facade, ingest, reindex, delete and the rotation, never a frontend:
+  - the close of a blob upload of the facade writes the row of the blob (`kind` `blob`), and a
+    mount from another path of the repo the row at the target path;
+  - ingest writes the rows of a manifest it stores, the manifest's and each encrypted layer's, in
+    the transaction that indexes it: a version's, or a referrer's once the registry serves it
+    back;
+  - the delete of a manifest removes its row, in the transaction of its rows; the rows of its
+    layers stay, which another manifest at the path may name, until reindex;
+  - a rotation sets `key_fingerprint` and `wrapped` of a layer's rows when its keys referrer is
+    served back.
+- **Reads.** A layer's row is found by `(repo_id, path, stored_digest)`, the decryption of a
+  frontend's file read; a plaintext digest by `(repo_id, path, plain_digest)`, the facade's. Two
+  rows of one plaintext digest at a path are two uploads of the same bytes: any of them answers.
+- **Reindex** marks and sweeps it per OCI repository, as `attachments`: a row of a manifest it
+  reads, or of one of that manifest's layers, is written or touched (`indexed_at`); then the rows
+  of the path not seen since the run started go, but those of `kind` `blob` written less than an
+  hour before it, the lifetime of an upload session: a blob uploaded and not yet named by a
+  manifest. The wrapping is the newest keys referrer's for the layer (manifest-profile.md §11.1),
+  else the manifest's annotation; reindex opens it with the repo's key, which it needs to learn
+  the plaintext digest. A run without the keys skips the repo whole and leaves its rows
+  ([operations.md](../operations.md#encryption-at-rest)).
+- **Rebuilt, not trusted.** A row only says where to look: a read checks the HMAC and, where it is
+  known, the plaintext digest of what it decrypts, and a push checks that the registry has the
+  ciphertext.
+
 ## Snapshots of the control plane
 
 A snapshot (#76; [manifest-profile.md](manifest-profile.md) §9) is the control plane written into
@@ -732,8 +770,9 @@ the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, an
 `0027_replicas_flock.sql` the column `replicas.flock` (#752), `0028_web_ui_sign_in.sql` the
 columns `tokens.dpop_jkt` and `oidc_logins.return_to`, `.code_challenge`, `.handoff` and
 `.dpop_jkt`, and the table `dpop_proofs` (#1170), `0029_versions_summary.sql` the column
-`versions.summary` and the index `files_digest` (#954, #956), and `0030_policy.sql` the tables of
-policy and `index_cache.expires_at` (#101); the others are named with
+`versions.summary` and the index `files_digest` (#954, #956), `0030_policy.sql` the tables of
+policy and `index_cache.expires_at` (#101), and `0031_blob_map.sql` the table `blob_map` (#114);
+the others are named with
 their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -836,7 +875,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0030, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0031, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
