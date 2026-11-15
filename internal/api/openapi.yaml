@@ -6,8 +6,9 @@ info:
     The REST interface to Lajstrom's control plane: repos, users, bindings, tokens and the audit
     log. docs/api.md is the guide; this document is checked against the server's routes by
     TestOpenAPIRoutes, its error codes against the server's and docs/api.md's by
-    TestErrorCodes, and the statuses of each operation against those its handler answers in
-    the tests of internal/api (statuses_test.go). Any operation may also answer 408 and 413 to
+    TestErrorCodes, the keys of its schemas against the keywords of JSON Schema by
+    TestOpenAPIKeywords, and the statuses of each operation against those its handler answers
+    in the tests of internal/api (statuses_test.go). Any operation may also answer 408 and 413 to
     a body, 500 and 503, as the Errors of docs/api.md say.
   license:
     name: Apache-2.0
@@ -1446,7 +1447,7 @@ components:
       properties:
         format: {type: string}
         name: {type: string}
-        registry: {type: string, description: Required but on a group, which has none.}
+        registry: {type: string, description: "Required but on a group, which has none."}
         kind: {type: string, enum: [hosted, proxy, group]}
         anonymousRead: {type: boolean}
         policy:
@@ -1542,7 +1543,7 @@ components:
       type: object
       required: [repository, subject, index, added]
       properties:
-        repository: {type: string, description: The OCI repository of the subject, below the repo's base.}
+        repository: {type: string, description: "The OCI repository of the subject, below the repo's base."}
         subject: {type: string}
         index: {type: string, description: The digest of the index pushed.}
         added:
@@ -1557,7 +1558,7 @@ components:
         kind: {type: string, enum: [pat, deploy]}
         user: {type: string, description: The owner of a personal access token.}
         repo: {type: string, description: The <format>/<name> of a deploy token of one repo.}
-        repoMask: {type: string, description: The mask of a deploy token over a mask, oci/* or */talos.}
+        repoMask: {type: string, description: "The mask of a deploy token over a mask, oci/* or */talos."}
         name: {type: string}
         scopes:
           type: array
@@ -1760,7 +1761,7 @@ components:
       properties:
         variant: {type: string, description: Empty for a format without variants.}
         tag: {type: string}
-        digest: {type: string, description: The manifest digest, the entity tag of If-Match.}
+        digest: {type: string, description: "The manifest digest, the entity tag of If-Match."}
         publishedAt: {type: string, format: date-time}
     Pointer:
       type: object
@@ -1816,7 +1817,7 @@ components:
         tag: {type: string, description: "cosign's legacy tag, sha256-<hex>.sig, .att or .sbom; absent for a referrer pushed by digest."}
         layer: {type: string, description: The digest of the attachment's layer; empty for a manifest without layers.}
         mediaType: {type: string, description: The layer's media type.}
-        artifactType: {type: string, description: The referrer's artifactType, else its config's media type.}
+        artifactType: {type: string, description: "The referrer's artifactType, else its config's media type."}
         kind:
           type: string
           description: What it is; a value this list does not name is shown as it is.
@@ -1827,10 +1828,10 @@ components:
           type: object
           description: The referrer manifest's annotations.
           additionalProperties: {type: string}
-        tool: {type: string, description: lajstrom.attachment.tool, when set.}
-        toolVersion: {type: string, description: lajstrom.attachment.toolVersion, when set.}
-        database: {type: string, description: lajstrom.attachment.database, when set.}
-        input: {type: string, description: lajstrom.attachment.input, the SBOM a scan was computed from, when it is a digest.}
+        tool: {type: string, description: "lajstrom.attachment.tool, when set."}
+        toolVersion: {type: string, description: "lajstrom.attachment.toolVersion, when set."}
+        database: {type: string, description: "lajstrom.attachment.database, when set."}
+        input: {type: string, description: "lajstrom.attachment.input, the SBOM a scan was computed from, when it is a digest."}
         verification:
           type: string
           description: >-
@@ -1841,7 +1842,7 @@ components:
           enum: [verified, untrusted, unsigned, invalid, unsupported]
         signedBy: {type: string, description: The name of the key or keyless identity that verified it.}
         reason: {type: string, description: Why it is not verified.}
-        createdAt: {type: string, format: date-time, description: The referrer's org.opencontainers.image.created, when it has one.}
+        createdAt: {type: string, format: date-time, description: "The referrer's org.opencontainers.image.created, when it has one."}
         indexedAt: {type: string, format: date-time, description: When ingest or reindex last wrote or saw the row.}
     VariantDetail:
       description: One manifest of a version, with its row of the index and its files.
@@ -1941,7 +1942,7 @@ components:
         status:
           type: string
           enum: [deleted, changed, protected, young, gone, error]
-        message: {type: string, description: Why, for every status but deleted.}
+        message: {type: string, description: "Why, for every status but deleted."}
         digests:
           type: array
           description: The digests of the version now, for changed.
@@ -2007,15 +2008,15 @@ components:
         httpStatus:
           type: integer
           description: For failed, the status a request of the file would have had.
-        message: {type: string, description: Why, for failed.}
+        message: {type: string, description: "Why, for failed."}
         kind:
           type: string
           enum: [index, manifest, blob]
           description: >-
             Of an oci repo: what a reference names, an index or a manifest; a platform's
             manifest; a blob. Absent for an image that failed before what it names was known.
-        platform: {type: string, description: Of an oci repo, the platform of a manifest or a blob of an index.}
-        digest: {type: string, description: Of an oci repo, the digest of the index, manifest or blob.}
+        platform: {type: string, description: "Of an oci repo, the platform of a manifest or a blob of an index."}
+        digest: {type: string, description: "Of an oci repo, the digest of the index, manifest or blob."}
         bytes:
           type: integer
           format: int64
@@ -2076,7 +2077,7 @@ components:
       required: [id, mask, url, events, active, description, createdBy, createdAt, updatedAt]
       properties:
         id: {type: integer, format: int64}
-        mask: {type: string, description: A repo mask of rbac.md §3, such as apt/ubuntu-internal, apt/* or */*.}
+        mask: {type: string, description: "A repo mask of rbac.md §3, such as apt/ubuntu-internal, apt/* or */*."}
         url: {type: string}
         events:
           type: array
@@ -2125,7 +2126,7 @@ components:
       required: [id, eventId, eventType, state, attempts, createdAt]
       properties:
         id: {type: integer, format: int64}
-        eventId: {type: string, description: The CloudEvents id, the same on every attempt.}
+        eventId: {type: string, description: "The CloudEvents id, the same on every attempt."}
         eventType: {type: string}
         state: {type: string, enum: [pending, delivered, failed]}
         attempts: {type: integer}
