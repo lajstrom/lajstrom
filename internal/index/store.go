@@ -245,6 +245,11 @@ type Reader interface {
 	// ListAttachments returns the attachments of the versions ids, newest first: CreatedAt
 	// descending, those without one after the others, then by Digest and Layer.
 	ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
+
+	// RepoStats returns the counts of the derived tables of each repo of repoIDs that has a
+	// package, in no order; a repo without a package has none (docs/spec/index-schema.md, A
+	// repo's stats). It runs a fixed number of statements for every few hundred repos.
+	RepoStats(ctx context.Context, repoIDs []int64) ([]RepoStats, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use

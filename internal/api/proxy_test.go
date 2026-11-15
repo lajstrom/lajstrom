@@ -61,8 +61,10 @@ func TestCreateProxy(t *testing.T) {
 		"upstream": {"name": "npmjs", "metadataTTL": "10m", "negativeTTL": "2m", "offline": false, "allow": [], "deny": ["@acme/*"]},
 		"createdAt": "2026-01-02T12:00:00Z", "updatedAt": "2026-01-02T12:00:00Z"}`
 	wantJSON(t, "the created proxy", got, want)
+	got = Repo{}
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/npm/npmjs", "", auth.Principal{}), http.StatusOK, &got)
-	wantJSON(t, "the proxy read back", got, want)
+	wantJSON(t, "the proxy read back", got, strings.TrimSuffix(want, "}")+`, "permissions": ["read", "write", "delete", "manage"],
+		"stats": {"packages": 0, "versions": 0, "manifests": 0, "files": 0, "size": 0, "lastPublishedAt": null}}`)
 	ev := oneAudit(t, f.st, "repo.create")
 	if up, _ := ev.details["repo"].(map[string]any)["upstream"].(map[string]any); up["name"] != "npmjs" {
 		t.Errorf("audit details %v, want the upstream in the resource", ev.details)

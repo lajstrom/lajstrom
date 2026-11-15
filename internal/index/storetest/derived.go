@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -684,4 +685,47 @@ func testVersionOCIRepo(t *testing.T, s index.Store) {
 	}
 	_, err = index.PackageOf(ctx, s, repo.ID, "netlify/other")
 	wantErr(t, "PackageOf of a path without a package", err, index.ErrNotFound)
+}
+
+// testRepoStats: RepoStats counts the packages, the distinct versions, the rows of versions,
+// their files and the sum of their sizes, and the newest publish time of each repo it is asked
+// for; a repo without a package has no row, and a package without a version counts.
+func testRepoStats(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "full")
+	other := newRepo(t, s, "raw", "other")
+	empty := newRepo(t, s, "raw", "empty")
+	unasked := newRepo(t, s, "raw", "unasked")
+	a, b := newPackage(t, s, repo.ID, "a"), newPackage(t, s, repo.ID, "b")
+	newPackage(t, s, repo.ID, "c") // no version yet
+	add := func(pkg int64, version, variant string, created time.Time, sizes ...int64) {
+		t.Helper()
+		v := index.Version{PackageID: pkg, Version: version, Variant: variant, Tag: version + variant,
+			Digest: dg(fmt.Sprint(pkg, version, variant)), ArtifactType: "application/vnd.lajstrom.raw.v1", CreatedAt: created}
+		must(t, s.UpsertVersion(ctx, &v))
+		var files []index.File
+		for i, size := range sizes {
+			files = append(files, index.File{Name: fmt.Sprintf("f%d", i), MediaType: "application/octet-stream",
+				Digest: dg(fmt.Sprint(v.ID, i)), Size: size})
+		}
+		must(t, s.ReplaceFiles(ctx, v.ID, files))
+	}
+	add(a.ID, "1.0", "", at(10), 100, 20)
+	add(a.ID, "2.0", "amd64", at(30), 7)
+	add(a.ID, "2.0", "arm64", at(20), 8)
+	add(b.ID, "1.0", "", at(5))
+	add(newPackage(t, s, other.ID, "x").ID, "1", "", at(1), 1)
+	add(newPackage(t, s, unasked.ID, "y").ID, "1", "", at(2), 2)
+
+	got, err := s.RepoStats(ctx, []int64{repo.ID, other.ID, empty.ID})
+	must(t, err)
+	slices.SortFunc(got, func(x, y index.RepoStats) int { return int(x.RepoID - y.RepoID) })
+	same(t, "RepoStats", []index.RepoStats{
+		{RepoID: repo.ID, Packages: 3, Versions: 3, Manifests: 4, Files: 4, Size: 135, LastPublishedAt: ptr(at(30))},
+		{RepoID: other.ID, Packages: 1, Versions: 1, Manifests: 1, Files: 1, Size: 1, LastPublishedAt: ptr(at(1))},
+	}, got)
+
+	none, err := s.RepoStats(ctx, nil)
+	must(t, err)
+	same(t, "RepoStats of no repo", []index.RepoStats{}, none)
 }

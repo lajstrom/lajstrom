@@ -300,13 +300,17 @@ func (h *handler) serve(fn endpoint) http.Handler {
 }
 
 // listRepos answers the repos the principal may read, of the format of ?format or of every
-// format, as {"repos": […]} ordered by format and name.
+// format, as {"repos": […]} ordered by format and name, each with what the request may do on it
+// and what the index holds of it (withFacts).
 func (h *handler) listRepos(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	repos, err := h.repos.List(r.Context(), r.URL.Query().Get("format"))
 	if err != nil {
 		return 0, nil, err
 	}
 	if repos, err = h.readable(r, repos); err != nil {
+		return 0, nil, err
+	}
+	if err := h.withFacts(r, repos); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, RepoList{Repos: repos}, nil
@@ -354,7 +358,8 @@ func (h *handler) createRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusCreated, repo, nil
 }
 
-// getRepo answers one repo.
+// getRepo answers one repo, with what the request may do on it and what the index holds of it
+// (withFacts).
 func (h *handler) getRepo(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
@@ -364,7 +369,11 @@ func (h *handler) getRepo(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, repo, nil
+	one := []Repo{*repo}
+	if err := h.withFacts(r, one); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, one[0], nil
 }
 
 // updateRepo applies the UpdateRequest of the body and answers the repo as it is now.

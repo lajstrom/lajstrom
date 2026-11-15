@@ -35,7 +35,9 @@ func TestCreate(t *testing.T) {
 
 	var fetched Repo
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/raw/scratch", "", auth.Principal{}), http.StatusOK, &fetched)
-	wantJSON(t, "fetched repo", fetched, mustJSON(t, want))
+	read := want // GET adds what the request may do and what the index holds (withFacts)
+	read.Permissions, read.Stats = []auth.Action{"read", "write", "delete", "manage"}, &RepoStats{}
+	wantJSON(t, "fetched repo", fetched, mustJSON(t, read))
 
 	ev := oneAudit(t, f.st, "repo.create")
 	if ev.Principal != "anonymous" || ev.Repo != "raw/scratch" || ev.IP != "192.0.2.1" || ev.Subject != "" {
