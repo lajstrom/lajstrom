@@ -206,7 +206,8 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 
-			plugins := servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}})
+			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
+				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins)}
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log)})
