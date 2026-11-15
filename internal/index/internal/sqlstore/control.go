@@ -150,10 +150,16 @@ func (c *conn) ListGroupsOf(ctx context.Context, memberID int64) ([]index.Repo, 
 			" WHERE m.member_id = ? ORDER BY r.format, r.name", memberID)
 }
 
-// SetGroupMembers replaces the group_members rows of a group with memberIDs, in order.
+// SetGroupMembers replaces the group_members rows of a group with memberIDs, in order, and
+// invalidates the group's index_cache, which an apt group renders from its members
+// (docs/spec/proxy-and-group.md §8.6). The group is a member of no group, so the invalidation is
+// its own alone.
 func (c *conn) SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error {
 	what := fmt.Sprintf("group_members of %d", groupID)
 	return c.withTx(ctx, func(c *conn) error {
+		if err := c.InvalidateIndexCache(ctx, groupID, ""); err != nil {
+			return err
+		}
 		if _, err := c.exec(ctx, what, "DELETE FROM group_members WHERE group_id = ?", groupID); err != nil {
 			return err
 		}

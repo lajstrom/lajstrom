@@ -251,7 +251,8 @@ type Writer interface {
 	// is ErrNotFound.
 	ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error
 	// SetGroupMembers makes the group_members rows of the group groupID exactly memberIDs, in
-	// that order. An id that is no repo is ErrNotFound, an id named twice ErrConflict. The caller
+	// that order, and invalidates the group's cached documents (InvalidateIndexCache of every
+	// scope). An id that is no repo is ErrNotFound, an id named twice ErrConflict. The caller
 	// writes the group's repos row in the same transaction, so that AuthVersion moves with it.
 	SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
 
@@ -480,8 +481,9 @@ type Writer interface {
 	// the repo that is not committed yet, and an invalidation for a put that is not, so that a
 	// render never outlives the invalidation that follows it (docs/spec/guarantees.md, INV-27).
 	PutIndexCache(ctx context.Context, c *Cache, generation int64) (bool, error)
-	// InvalidateIndexCache increments the repo's IndexCacheGeneration and removes the cached
-	// documents of a scope of the repo, or of every scope when scope is "".
+	// InvalidateIndexCache increments the IndexCacheGeneration of the repo and of every group it
+	// is a member of, and removes their cached documents of a scope, or of every scope when scope
+	// is "": an apt group's documents are rendered from its members (docs/spec/index-schema.md).
 	InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
 
 	// UpsertOCIRepo inserts r or sets SeenAt of the row with the same (RepoID, Path).
@@ -497,7 +499,8 @@ type Writer interface {
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
 
 	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0, and
-	// increments their IndexCacheGeneration; reindex never starts from it, it marks and sweeps
+	// increments their IndexCacheGeneration; of a repo, the cached documents of the groups it is a
+	// member of go too, as InvalidateIndexCache does. Reindex never starts from it, it marks and sweeps
 	// (docs/spec/index-schema.md). It never touches control-plane tables, tag claims or
 	// proxy_meta, which is a cache of the upstream and not of the registry.
 	ResetDerived(ctx context.Context, repoID int64) error
