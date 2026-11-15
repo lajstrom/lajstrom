@@ -121,7 +121,7 @@ a backup of the database keeps it, and reindex neither reads nor writes it.
 The tables of webhooks and of their deliveries ([webhooks.md](webhooks.md), #77). Both are
 control plane: authoritative, not derivable from the registry, backed up with the database.
 Reindex neither reads nor writes them, `ResetDerived` leaves them, and the derived tables never
-need them. Migration `0023_webhooks.sql` creates them; it only adds.
+need them. Migration `0024_webhooks.sql` creates them; it only adds.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -498,7 +498,7 @@ the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, an
 `0020_replicas_process.sql` the column `replicas.process`, `0021_oidc.sql` the tables
 `identities`, `identity_groups` and `oidc_logins` (#69), `0022_attachments.sql` the table
 `attachments` (#89), `0023_tokens_repo_mask.sql` the column `tokens.repo_mask` (#911), and
-`0023_webhooks.sql` the tables `webhooks` and `webhook_deliveries` (#77); the others are named
+`0024_webhooks.sql` the tables `webhooks` and `webhook_deliveries` (#77); the others are named
 with their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -569,7 +569,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0023, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0024, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
