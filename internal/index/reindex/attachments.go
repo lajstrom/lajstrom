@@ -42,8 +42,12 @@ func (s *scan) keepLegacy(pkgPath string, r legacyRef) {
 	s.legacy[pkgPath] = append(s.legacy[pkgPath], r)
 }
 
-// attachments indexes the attachments of every version of the package at pkgPath, once the
-// tags of its OCI repository rr are read, each version at a time under the scan's semaphore
+// attachments indexes the attachments of every version whose manifest is in the OCI repository
+// rr, at pkgPath, once its tags are read: the versions of the package whose versions may be there
+// (index.PackageOf) whose manifest is there (index.ManifestPath), as known takes them. The scan
+// of the other form of a split (#642) lists the referrers of the versions found there, and the
+// scan of the indexed form leaves them to it, neither listing them where they are not nor
+// sweeping their rows (#1133). Each version at a time under the scan's semaphore
 // (versionAttachments). Nothing without an Attacher, on an oci repo, or for a repository the
 // index has no package at.
 func (s *scan) attachments(ctx context.Context, rr provider.Repository, cache *manifests, pkgPath string) {
@@ -54,7 +58,7 @@ func (s *scan) attachments(ctx context.Context, rr provider.Repository, cache *m
 	if s.w.attacher == nil || s.repo.Format == ociFormat || s.stopped(ctx) {
 		return
 	}
-	pkg, err := s.w.index.GetPackageByNameOCI(ctx, s.repo.ID, pkgPath)
+	pkg, err := index.PackageOf(ctx, s.w.index, s.repo.ID, pkgPath)
 	if errors.Is(err, index.ErrNotFound) || s.dbErr(err) {
 		return
 	}
@@ -67,6 +71,9 @@ func (s *scan) attachments(ctx context.Context, rr provider.Repository, cache *m
 	for _, v := range versions {
 		if s.stopped(ctx) {
 			break
+		}
+		if index.ManifestPath(*pkg, v) != pkgPath {
+			continue // at another form of a split: that form's scan lists its referrers
 		}
 		s.sem <- struct{}{}
 		wg.Go(func() {
