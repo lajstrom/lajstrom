@@ -38,9 +38,10 @@ type monoRead struct {
 
 // monoChange is a change the measurement makes, and the reads that follow it.
 type monoChange struct {
-	what  string // "write 2", "the tag move", "delete 1"
-	after string // the state after it, in words: "seen", "the new digest", "gone"
-	reads map[string]monoRead
+	what   string // "write 2", "the tag move", "delete 1"
+	after  string // the state after it, in words: "seen", "the new digest", "gone"
+	reads  map[string]monoRead
+	delete bool // a delete: its regressions are judged apart (facts.deleteNotMonotonic)
 }
 
 // monoSeen is what the monotonic-reads measurement found.
@@ -50,10 +51,11 @@ type monoSeen struct {
 	addrs                  map[string]bool // the addresses the connections reached
 	back                   []string        // each regression, in order: "write 2, manifest by tag: seen, then 404"
 	backs                  map[string]int  // how many reads each regression was
+	deleteBacks            int             // how many of back follow a delete
 	other                  map[string]int  // the answers of neither state, by words
 	unseen                 []string        // "write 2, manifest by tag": not seen within lagLimit
 	moveRefused            string
-	deleteRefused          string
+	noDeletes              string // why the deletes were not measured
 }
 
 func newMonoSeen() *monoSeen {
@@ -67,7 +69,10 @@ func newMonoSeen() *monoSeen {
 // and then Options.MonotonicReads times more: a later read that sees the state before the change
 // is a regression, as a client behind an endpoint that picks a replica per connection meets one
 // (ACR's global endpoint with geo-replication). A move or a delete the registry refuses is not
-// measured, and a read that does not see a change within lagLimit ends the measurement.
+// measured, and a read that does not see a change within lagLimit ends the measurement. The
+// deletes are not made when the measurements before found that their reads would not count
+// (facts.deletesUnjudged): where a delete by digest leaves the tags, the read by tag would wait
+// out lagLimit for nothing.
 func (r *run) measureMonotonic(ctx context.Context) error {
 	const repo = "mono"
 	if err := r.ensureBase(ctx, repo); err != nil {
@@ -77,7 +82,8 @@ func (r *run) measureMonotonic(ctx context.Context) error {
 	if err := r.monoChanges(ctx, s, repo); err != nil {
 		return err
 	}
-	r.found.notMonotonic = len(s.back) > 0
+	r.found.notMonotonic = len(s.back) > s.deleteBacks
+	r.found.deleteNotMonotonic = s.deleteBacks > 0
 	r.set("monotonic", monoVerdict(s, r.opts.MonotonicReads))
 	return nil
 }
@@ -99,17 +105,21 @@ func (r *run) monoChanges(ctx context.Context, s *monoSeen, repo string) error {
 	if moved != nil {
 		tagged[0] = *moved
 	}
+	if why := r.found.deletesUnjudged(); why != "" {
+		s.noDeletes = why
+		return nil
+	}
 	for i, w := range tagged {
 		a, err := r.send(ctx, http.MethodDelete, r.path(repo, "manifests/"+w.digest.String()))
 		if err != nil {
 			return err
 		}
 		if !a.ok(http.StatusAccepted, http.StatusOK) {
-			s.deleteRefused = a.refusal()
+			s.noDeletes = "the registry refused a delete by digest (" + a.refusal() + ")"
 			return nil
 		}
 		s.deletes++
-		if err := r.follow(ctx, s, monoChange{what: fmt.Sprintf("delete %d", i+1), after: "gone", reads: map[string]monoRead{
+		if err := r.follow(ctx, s, monoChange{what: fmt.Sprintf("delete %d", i+1), after: "gone", delete: true, reads: map[string]monoRead{
 			readManifest: {target: r.path(repo, "manifests/"+w.digest.String()), manifest: true, state: absent},
 			readTag:      {target: r.path(repo, "manifests/"+w.tag), manifest: true, state: absent},
 		}}); err != nil || len(s.unseen) > 0 {
@@ -290,6 +300,9 @@ func (s *monoSeen) record(c monoChange, k string, state monoState, words string)
 		back := fmt.Sprintf("%s, %s: %s, then %s", c.what, k, c.after, words)
 		if s.backs[back] == 0 {
 			s.back = append(s.back, back)
+			if c.delete {
+				s.deleteBacks++
+			}
 		}
 		s.backs[back]++
 	case monoOther:
@@ -364,8 +377,8 @@ func monoVerdict(s *monoSeen, n int) string {
 	if s.moveRefused != "" {
 		v += "; the tag move not measured: the registry refused it (" + s.moveRefused + ")"
 	}
-	if s.deleteRefused != "" {
-		v += "; deletes not measured: the registry refused a delete by digest (" + s.deleteRefused + ")"
+	if s.noDeletes != "" {
+		v += "; deletes not measured: " + s.noDeletes
 	}
 	if len(s.unseen) > 0 {
 		v += fmt.Sprintf("; not seen within %s: %s, which ended the measurement", lagLimit, strings.Join(s.unseen, ", "))

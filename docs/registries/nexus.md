@@ -647,8 +647,13 @@ What it means:
   format, and the provider refuses every delete with 405 `UNSUPPORTED`
   ([Again after #352](#again-after-352)). Of the probe's "Overrides needed" only
   `deleteManifest: false` applies, and the vendor table sets it; `consistency: eventual` and
-  "point `url` at one regional endpoint" come from the deletes alone. The probe measures the
-  deletes whatever the provider's `deleteManifest` says; not changed here.
+  "point `url` at one regional endpoint" come from the deletes alone. Since #1149 the probe no
+  longer gives that advice: where a delete by digest leaves the tags, it does not judge the
+  reads after the deletes. "Read-after-write lag" then ends in
+  `deletes not judged: a delete by digest leaves the tags`, "Monotonic reads" makes no deletes,
+  and "Overrides needed" holds `deleteManifest: false` alone. The one wait of 2 minutes of
+  "Read-after-write lag" stays, so a run on this format should take about 2 minutes less; not
+  run again.
 - **The vendor table's entry for Nexus is unchanged.** It sets no consistency, so on both formats
   a publish reads back its tag and blobs too, and that is right: three writes on one instance are
   not a guarantee.

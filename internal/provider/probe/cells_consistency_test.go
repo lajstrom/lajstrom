@@ -19,13 +19,14 @@ import (
 
 // lagRegistry is a registry that answers 404 to the first reads of each write: HEAD of a blob
 // or a manifest, and a tag list or catalog without it, lag times per write and kind of read.
-// After the delete of a manifest by digest, HEAD by digest and by each of its tags still answer
-// 200 and the tag list still names the tags, gone times each; refuseDelete answers it 405
-// UNSUPPORTED. With cache, a tag list read is kept and answered to the next cache reads, as
-// Quay keeps its tag lists.
+// After the delete of a manifest by digest, HEAD and GET by digest and by each of its tags still
+// answer 200 and the tag list still names the tags, gone times each; refuseDelete answers it 405
+// UNSUPPORTED. With keepTags, it leaves the tags, as Nexus's docker format does: they serve the
+// manifest, and its digest answers 404 to the next relapse reads and then 200 again. With cache,
+// a tag list read is kept and answered to the next cache reads, as Quay keeps its tag lists.
 type lagRegistry struct {
-	lag, gone, cache int
-	refuseDelete     bool
+	lag, gone, cache, relapse int
+	refuseDelete, keepTags    bool
 
 	mu        sync.Mutex
 	blobs     map[string]int            // digest → reads left that miss it
@@ -37,6 +38,7 @@ type lagRegistry struct {
 	listed    map[string]map[string]int // repository → tag deleted → tag-list reads left that still name it
 	cached    map[string]cachedList     // repository → the tag list kept
 	events    []string                  // "tags", "catalog" and "put", in the order of the requests
+	deletes   map[string]int            // repository → manifest DELETEs
 }
 
 // cachedList is a tag list a lagRegistry keeps, and how many reads it answers still.
@@ -52,7 +54,7 @@ func newLagRegistry(t *testing.T, lag int) *httptest.Server {
 // serveLag serves g, its maps made.
 func serveLag(t *testing.T, g *lagRegistry) *httptest.Server {
 	g.blobs, g.manifests, g.digests, g.tags, g.repos = map[string]int{}, map[string]int{}, map[string]string{}, map[string]map[string]int{}, map[string]int{}
-	g.deleted, g.listed, g.cached = map[string]int{}, map[string]map[string]int{}, map[string]cachedList{}
+	g.deleted, g.listed, g.cached, g.deletes = map[string]int{}, map[string]map[string]int{}, map[string]cachedList{}, map[string]int{}
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	return srv
@@ -143,14 +145,15 @@ func (g *lagRegistry) blob(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// manifest answers a PUT, a DELETE and a HEAD of a manifest.
+// manifest answers a PUT, a DELETE, and a HEAD or a GET (without a body) of a manifest.
 func (g *lagRegistry) manifest(w http.ResponseWriter, r *http.Request) {
 	repo, ref, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v2/"), "/manifests/")
 	if r.Method == http.MethodDelete {
+		g.deletes[repo]++
 		g.delete(w, repo, ref)
 		return
 	}
-	if n := g.deleted[ref]; n > 0 && r.Method == http.MethodHead {
+	if n := g.deleted[ref]; n > 0 && r.Method != http.MethodPut {
 		g.deleted[ref] = n - 1
 		w.Header().Set("Docker-Content-Digest", ref)
 		return
@@ -187,6 +190,11 @@ func (g *lagRegistry) delete(w http.ResponseWriter, repo, d string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_, _ = io.WriteString(w, `{"errors":[{"code":"UNSUPPORTED"}]}`)
+		return
+	}
+	if g.keepTags && strings.HasPrefix(d, "sha256:") {
+		g.manifests[d] = g.relapse // the reads that miss it before it is back
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	delete(g.manifests, d)
@@ -300,6 +308,116 @@ func TestMeasureDeleteLag(t *testing.T) {
 	}
 }
 
+// TestDeletesThatLeaveTheTags: where a delete by digest leaves the tags and the digest answers
+// 200 again after it (Nexus's docker format, #1149), the reads after the deletes are not judged:
+// "Overrides needed" holds the delete's override only, and "Monotonic reads" makes no deletes,
+// which would wait out lagLimit each. A registry that lags after a real delete is still eventual,
+// though the read by tag right after the delete of "Delete a manifest by digest" met the lag.
+func TestDeletesThatLeaveTheTags(t *testing.T) {
+	defer func(l time.Duration) { lagLimit = l }(lagLimit)
+	lagLimit = 150 * time.Millisecond
+	const unjudged = `a delete by digest leaves the tags ("Delete a manifest by digest")`
+	tests := []struct {
+		name        string
+		g           *lagRegistry
+		consistency []string
+		monotonic   string
+		monoDeletes int
+		overrides   string
+	}{
+		{"the tags stay", &lagRegistry{keepTags: true, relapse: 1}, []string{
+			"none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); ",
+			"after a delete: manifest by digest at once, manifest by tag **not within 150ms**, tag list **not within 150ms**; " +
+				"the worst of 1 delete; deletes not judged: " + unjudged,
+		}, "none: no read saw a change undone; 3 writes, a tag move, each read 5 times more over new connections after the first " +
+			"that saw it, from 1 address; deletes not measured: " + unjudged, 0,
+			"`deleteManifest: false`, or a delete leaves the tags"},
+		{"a lag after a real delete", &lagRegistry{gone: 2}, []string{
+			"none: each read saw each of 3 writes at once",
+			"after a delete: manifest by digest **after ",
+			"; the worst of 3 deletes",
+		}, "none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more", 3,
+			"`deleteManifest: false`, or a delete leaves the tags; `consistency: eventual`, `consistencyBound: 1s`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := deleteRun(t, tt.g, "consistency", "deleteDigest", "monotonic")
+			c := r.report.Cell("consistency").Value
+			for _, want := range tt.consistency {
+				if !strings.Contains(c, want) {
+					t.Errorf("consistency = %q, want …%q…", c, want)
+				}
+			}
+			if judged := tt.monoDeletes > 0; judged == strings.Contains(c, "not judged") {
+				t.Errorf("consistency = %q, want its deletes judged %v", c, judged)
+			}
+			if v := r.report.Cell("deleteDigest").Value; !strings.HasPrefix(v, "yes, 202, **but its tags stay and serve it**") {
+				t.Errorf("deleteDigest = %q, want the tags to stay", v)
+			}
+			if v := r.report.Cell("monotonic").Value; !strings.HasPrefix(v, tt.monotonic) {
+				t.Errorf("monotonic = %q, want %q…", v, tt.monotonic)
+			}
+			tt.g.mu.Lock()
+			if n := tt.g.deletes["lajstrom-probe-lag/mono"]; n != tt.monoDeletes {
+				t.Errorf("%d deletes in mono, want %d", n, tt.monoDeletes)
+			}
+			tt.g.mu.Unlock()
+			if got := r.report.Cell("overrides").Value; got != tt.overrides {
+				t.Errorf("overrides = %q, want %q", got, tt.overrides)
+			}
+		})
+	}
+	// Measured before the deletes, as before #1149, "Monotonic reads" deletes and sees the digest
+	// come back: still not judged.
+	r := deleteRun(t, &lagRegistry{keepTags: true, relapse: 1}, "monotonic", "deleteDigest")
+	if v := r.report.Cell("monotonic").Value; !strings.Contains(v, "delete 1, manifest by digest: gone, then 200 (5 of 5)") {
+		t.Errorf("monotonic = %q, want the digest back after its delete", v)
+	}
+	if got := r.report.Cell("overrides").Value; got != "`deleteManifest: false`, or a delete leaves the tags" {
+		t.Errorf("overrides = %q, want the delete's override only", got)
+	}
+}
+
+// deleteRun runs against g, with a catalog, the measurements whose first cells are keys, in that
+// order, and then judges them as a run does.
+func deleteRun(t *testing.T, g *lagRegistry, keys ...string) *run {
+	t.Helper()
+	srv := serveLag(t, g)
+	r, err := newRun(config.Registry{Name: "lag", URL: srv.URL}, Options{Scratch: "lajstrom-probe-lag", MonotonicReads: 5, Log: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.found.catalog, r.report.Capabilities.Catalog = true, true
+	ctx := context.WithValue(context.Background(), tapeKey{}, r.tape)
+	groups := map[string]group{}
+	for _, gr := range r.groups() {
+		groups[gr.keys[0]] = gr
+	}
+	for _, k := range keys {
+		r.measure(ctx, groups[k])
+		if c := r.report.Cell(k); !c.Measured {
+			t.Fatalf("%s = %q, not measured", k, c.Value)
+		}
+	}
+	r.judge()
+	return r
+}
+
+// TestGroupsDeleteBeforeMonotonicReads: a run measures the deletes before "Monotonic reads" and
+// after "Read-after-write lag", whose wait tells a tag that stays from one that lags.
+func TestGroupsDeleteBeforeMonotonicReads(t *testing.T) {
+	var order []string
+	for _, g := range (&run{}).groups() {
+		switch g.keys[0] {
+		case "consistency", "deleteDigest", "monotonic":
+			order = append(order, g.keys[0])
+		}
+	}
+	if want := []string{"consistency", "deleteDigest", "monotonic"}; !slices.Equal(order, want) {
+		t.Errorf("order = %q, want %q", order, want)
+	}
+}
+
 // lagRun runs the consistency measurement against g, with a catalog.
 func lagRun(t *testing.T, g *lagRegistry) *run {
 	t.Helper()
@@ -337,6 +455,11 @@ func TestConsistencyOverrides(t *testing.T) {
 		{"a lag, unknown", Capabilities{}, facts{lag: 1500 * time.Millisecond, lagged: true}, []string{"`consistency: eventual`, `consistencyBound: 2s`"}},
 		{"a lag, eventual, no bound", Capabilities{Consistency: "eventual"}, facts{lag: 3 * time.Second, lagged: true}, []string{"`consistencyBound: 4s`"}},
 		{"a lag within the bound", Capabilities{Consistency: "eventual", ConsistencyBound: "5s"}, facts{lag: 3 * time.Second, lagged: true}, nil},
+		{"a delete lags longer", Capabilities{}, facts{lag: time.Second, lagged: true, deleteLag: 4500 * time.Millisecond, deleteLagged: true},
+			[]string{"`consistency: eventual`, `consistencyBound: 5s`"}},
+		{"a delete lags, the tags stay", Capabilities{}, facts{tagsStay: true, deleteLag: lagLimit, deleteLagged: true, deleteLagUnbounded: true}, nil},
+		{"a delete lags, refused elsewhere", Capabilities{}, facts{lag: time.Second, lagged: true, deleteRefused: true,
+			deleteLag: lagLimit, deleteLagged: true, deleteLagUnbounded: true}, []string{"`consistency: eventual`, `consistencyBound: 2s`"}},
 	}
 	for _, c := range cases {
 		if got := consistencyOverrides(c.caps, c.f); !slices.Equal(got, c.want) {

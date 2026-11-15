@@ -64,7 +64,8 @@ type lagWrite struct {
 // digest, the tag list names the tag and, when the registry has a catalog Lajstrom uses, the
 // catalog the repository. Before each manifest it reads the tag list and the catalog once, as a
 // client that lists before it pushes does, so that a registry that caches its lists serves the
-// stale one after the push (Quay, #803). Then each manifest is deleted (measureDeleteLag).
+// stale one after the push (Quay, #803). Then each manifest is deleted (measureDeleteLag); the
+// deletes are judged after "Delete a manifest by digest" (run.judge, facts.deletesUnjudged).
 func (r *run) measureConsistency(ctx context.Context) error {
 	const repo = "lag"
 	if err := r.ensureBase(ctx, repo); err != nil {
@@ -84,15 +85,21 @@ func (r *run) measureConsistency(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, seen := range []lagSeen{s, del} {
-		r.found.lagged = r.found.lagged || len(seen.late) > 0
-		r.found.lagUnbounded = r.found.lagUnbounded || len(seen.unseen) > 0
-		for _, w := range seen.worst {
-			r.found.lag = max(r.found.lag, w)
-		}
-	}
+	f := &r.found
+	f.lag, f.lagged, f.lagUnbounded = s.found()
+	f.deleteLag, f.deleteLagged, f.deleteLagUnbounded = del.found()
+	f.lagDeletes, f.lagTagGone = del.writes, del.writes > 0 && !del.unseen[readTag]
 	r.set("consistency", consistencyVerdict(s, del))
 	return nil
+}
+
+// found is the worst time of s, whether a read did not see a write (or a delete) at the first
+// ask, and whether one did not see it within lagLimit.
+func (s lagSeen) found() (worst time.Duration, lagged, unbounded bool) {
+	for _, w := range s.worst {
+		worst = max(worst, w)
+	}
+	return worst, len(s.late) > 0, len(s.unseen) > 0
 }
 
 // lagWrite is the write i of measureConsistency, its reads recorded into s: the blob, then the
@@ -149,7 +156,9 @@ func (r *run) primeLists(ctx context.Context, repo string) error {
 // it until HEAD by digest and by tag answer 404 and the tag list leaves the tag out. The first
 // delete the registry refuses ends them, and so does the first a read did not see within
 // lagLimit: a registry that keeps a tag after the delete of its manifest would hold the probe
-// lagLimit per delete.
+// lagLimit per delete. That one wait stays: it tells a tag that stays from one that lags, which
+// the single read of "Delete a manifest by digest" right after its delete does not
+// (facts.lagTagGone).
 func (r *run) measureDeleteLag(ctx context.Context, repo string, pushed []lagWrite) (lagSeen, error) {
 	s := newLagSeen()
 	for _, w := range pushed {
@@ -341,20 +350,25 @@ func roundLag(d time.Duration) time.Duration {
 
 // consistencyOverrides are the overrides of "Overrides needed" that the consistency
 // measurement asks for: a registry seen to lag, after a write or a delete, is eventual, with a
-// bound at least the worst lag, in whole seconds.
+// bound at least the worst lag, in whole seconds. The deletes count unless
+// facts.deletesUnjudged says why not.
 func consistencyOverrides(caps Capabilities, f facts) []string {
-	if !f.lagged {
+	lag, lagged, unbounded := f.lag, f.lagged, f.lagUnbounded
+	if f.deletesUnjudged() == "" {
+		lag, lagged, unbounded = max(lag, f.deleteLag), lagged || f.deleteLagged, unbounded || f.deleteLagUnbounded
+	}
+	if !lagged {
 		return nil
 	}
-	if f.lagUnbounded {
+	if unbounded {
 		return []string{fmt.Sprintf("`consistency: %s`; a read did not see a write or a delete within %s", config.ConsistencyEventual, lagLimit)}
 	}
-	bound := f.lag.Truncate(time.Second) + time.Second
+	bound := lag.Truncate(time.Second) + time.Second
 	known, _ := time.ParseDuration(caps.ConsistencyBound)
 	switch {
 	case caps.Consistency != config.ConsistencyEventual:
 		return []string{fmt.Sprintf("`consistency: %s`, `consistencyBound: %s`", config.ConsistencyEventual, bound)}
-	case known < f.lag:
+	case known < lag:
 		return []string{fmt.Sprintf("`consistencyBound: %s`", bound)}
 	}
 	return nil

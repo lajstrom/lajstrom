@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 )
@@ -136,6 +137,16 @@ func TestOverridesVerdict(t *testing.T) {
 		{"zot", withReferrers, facts{catalog: true, referrersAPI: true, referrersKnown: true}, "none"},
 		{"referrers not measured", withReferrers, facts{catalog: true}, "none"},
 		{"nexus docker", probed, facts{catalog: true, tagsStay: true}, "`deleteManifest: false`, or a delete leaves the tags"},
+		// #1149: the reads after a delete that leaves the tags, or that is refused, do not count.
+		{"nexus docker, its deletes read", probed, facts{catalog: true, tagsStay: true, lagDeletes: 1, deleteLag: 2 * time.Minute,
+			deleteLagged: true, deleteLagUnbounded: true, deleteNotMonotonic: true}, "`deleteManifest: false`, or a delete leaves the tags"},
+		{"refused, its deletes read", probed, facts{catalog: true, deleteRefused: true, lagDeletes: 1, deleteLag: time.Second,
+			deleteLagged: true, deleteNotMonotonic: true}, "`deleteManifest: false` saves the first refused delete"},
+		{"the tag seen gone after a delete", probed, facts{catalog: true, tagsStay: true, lagDeletes: 3, lagTagGone: true,
+			deleteLag: 1500 * time.Millisecond, deleteLagged: true},
+			"`deleteManifest: false`, or a delete leaves the tags; `consistency: eventual`, `consistencyBound: 2s`"},
+		{"a replica undoes a delete", probed, facts{catalog: true, lagDeletes: 3, deleteNotMonotonic: true},
+			"no override helps: **reads are not monotonic**; point `url` at one regional endpoint"},
 		{"jcr before the probe fix", withReferrers, facts{referrersAPI: true, referrersKnown: true}, "`catalog: false`"},
 		{"zot behind a policy", withReferrers, facts{catalog: true, referrersAPI: true, referrersKnown: true, repointRefused: true}, "`immutableTags: true`"},
 		{"gitlab B", probed, facts{catalog: true, profileRefused: true}, "no override helps: **the registry refuses Lajstrom's manifests**"},
