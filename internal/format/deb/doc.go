@@ -48,6 +48,14 @@
 // the cached Release into InRelease and Release.gpg, kept beside it until the Signer no longer
 // calls them current, and serve the repo's keyring at key.asc; without one the Release is
 // unsigned and clients mark the source
-// [trusted=yes]. The plugin registers itself with format.Register when the package is
-// imported; the binary imports it in cmd/lajstrom/formats.go.
+// [trusted=yes].
+//
+// A group repo of hosted apt repos (#68, format.IndexGrouper) has the routes of a hosted repo:
+// RenderGroupIndex renders a suite from the versions of its members in order, the first
+// member's version of a package, version and architecture, without a later member's version
+// whose pool file name an earlier member holds with other bytes; format.CachedDocument keeps the
+// documents under the group, which the store invalidates with a member's, and the group's own
+// keys sign them. A pool file is the first member's that has it. The plugin registers itself
+// with format.Register when the package is imported; the binary imports it in
+// cmd/lajstrom/formats.go.
 package deb

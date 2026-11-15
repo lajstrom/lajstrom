@@ -43,7 +43,7 @@ const abortTimeout = 10 * time.Second
 // .dsc. The same files again are the idempotent repeat of ingest; other files under the same
 // source, version, suite and component its 409.
 func (h *handlers) uploadSource(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.startAs(w, r, auth.ActionWrite)
+	r, repo, ok := h.startWrite(w, r)
 	if !ok {
 		return
 	}

@@ -58,7 +58,7 @@ type uploadResponse struct {
 // 409 of ingest, whose tag holds another manifest; in another suite they are the 409 of the
 // pool file name rule.
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.startAs(w, r, auth.ActionWrite)
+	r, repo, ok := h.startWrite(w, r)
 	if !ok {
 		return
 	}

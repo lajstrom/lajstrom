@@ -54,14 +54,15 @@ var errTwoContents = errors.New("deb: one pool file name, two contents")
 // it, else the backend's 200, 206 or 416 streamed. The ETag is the blob digest, Last-Modified
 // the created of the newest version that holds the file, Docker-Content-Digest that version's
 // manifest digest. HEAD asks the backend for the headers. A stream that breaks after the
-// headers is logged.
+// headers is logged. Of a group, the file is that of the first member that has it (groupPool),
+// served from that member's registry.
 func (h *handlers) pool(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r)
 	if !ok {
 		return
 	}
 	ctx := r.Context()
-	m, err := h.poolFile(ctx, repo, r.PathValue("component"), r.PathValue("p")+"/"+r.PathValue("source"), r.PathValue("filename"))
+	m, repo, err := h.groupPool(ctx, repo, r.PathValue("component"), r.PathValue("p")+"/"+r.PathValue("source"), r.PathValue("filename"))
 	switch {
 	case errors.Is(err, errTwoContents):
 		format.WriteError(w, err) // 500, logged by poolFile with what the operator needs
@@ -86,6 +87,27 @@ func (h *handlers) pool(w http.ResponseWriter, r *http.Request) {
 		h.deps.Log.WarnContext(ctx, "apt: the blob stream failed after the response started", "repo", repo.Format+"/"+repo.Name,
 			"file", m.File.Name, "digest", m.File.Digest.String(), "error", err.Error())
 	}
+}
+
+// groupPool returns the file pool/<component>/<dir>/<filename> of the repo and the repo that
+// holds it: poolFile of the repo; of a group, poolFile of each member in member order, the first
+// that has it (docs/spec/http-routing.md, apt, Group), or index.ErrNotFound when none has it.
+func (h *handlers) groupPool(ctx context.Context, repo index.Repo, component, dir, filename string) (*index.FileMatch, index.Repo, error) {
+	if repo.Kind != index.KindGroup {
+		m, err := h.poolFile(ctx, repo, component, dir, filename)
+		return m, repo, err
+	}
+	members, err := h.deps.Index.ListGroupMembers(ctx, repo.ID)
+	if err != nil {
+		return nil, repo, fmt.Errorf("deb: the members of apt/%s: %w", repo.Name, err)
+	}
+	for _, member := range members {
+		m, err := h.poolFile(ctx, member, component, dir, filename)
+		if !errors.Is(err, index.ErrNotFound) {
+			return m, member, err
+		}
+	}
+	return nil, repo, fmt.Errorf("%w: no member of apt/%s has pool/%s/%s/%s", index.ErrNotFound, repo.Name, component, dir, filename)
 }
 
 // poolFile returns the file pool/<component>/<dir>/<filename> of the repo, dir being
