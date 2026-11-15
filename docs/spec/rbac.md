@@ -113,8 +113,8 @@ deleting it, nor deleting its `admin` binding.
 
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
 are after the MVP. Two system-level resources, which only the `admin` role reaches: `system`
-(users, bindings, registries, creating a repo, every user's tokens, the deploy tokens over a
-mask, the webhooks of any mask) and `audit`.
+(users, bindings, registries, creating a repo, every user's tokens, every token at once
+(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask) and `audit`.
 
 | Action | Meaning |
 | --- | --- |
@@ -122,7 +122,7 @@ mask, the webhooks of any mask) and `audit`.
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `attach` | attach to a version: the `PUT` of a referrer on `/v2` (manifest-profile.md §6: a signature, an SBOM, a scan report, provenance, a verdict, any manifest with a `subject`) and the blob uploads it needs; the `push` scope on `/v2` for a principal without `write`, which the token carries as `attach` (§4) (#89) |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
-| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)) |
+| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); read its open publication sessions (`GET …/sessions`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)) |
 
 `write` implies `attach`: a role, a binding, a personal access token's scopes or a deploy
 token's scopes that have `write` have `attach` too, so a token made before `attach` existed keeps
@@ -235,6 +235,15 @@ this spec, so that a review need not find it in the code:
   need not name a repo that exists (above), so creating one tells nothing either.
 - **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
   answers of this rule. Its list holds its own tokens, not those over a mask that matches it.
+- **A repo's open publication sessions** (`GET …/sessions`, http-routing.md §4) need `manage` on
+  it, decided before the repo is looked up: the answers of this rule. Their files are not
+  published yet, and `read` does not show them.
+- **Every token and the registries** (`GET /api/v1/tokens`, `GET /api/v1/registries`) are
+  `system` (§2): the `admin` role, checked before anything else, so that every other principal
+  gets `403` (`anonymous` `401`), a `maintainer` on `*/*` included. A filter on a repo that does
+  not exist answers what one on a repo without tokens answers, to the admin only.
+- **A repo's `permissions`** (`GET /api/v1/repos`, http-routing.md §4) are the answers of the
+  evaluation above for the request on a repo it may read: they tell nothing of another repo.
 - **The deploy tokens over a mask** (`/api/v1/deploy-tokens`, http-routing.md §4) are `system`
   (§2). The `admin` role is checked before the body is read, so the `400` of a mask that breaks
   the grammar and the `409` of a name that is taken reach an admin only; every other principal
