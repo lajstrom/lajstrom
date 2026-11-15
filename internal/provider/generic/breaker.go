@@ -50,10 +50,10 @@ const (
 // timeouts and retries. The failures in a row must be of breakerVariety repositories at least,
 // or one of them must be the registry's whatever the request (breaker.blame): a repository that
 // the registry cannot serve, damaged in its storage or a name it mishandles, fails every request
-// of it, and must not fail every other repository with it (#972). Such a run is logged, at most
-// once a cooldown. Then the next GET or HEAD, the readiness ping
-// of serve every 20 s or a client's, goes through as a trial: an answer closes the breaker, a
-// failure opens it for another cooldown. A request with a body is never the trial: an upload
+// of it, and must not fail every other repository with it (#972). Such a run is counted
+// (lajstrom_provider_circuit_held_total) and logged, at most once a cooldown. Then the next GET
+// or HEAD, the readiness ping of serve every 20 s or a client's, goes through as a trial: an
+// answer closes the breaker, a failure opens it for another cooldown. A request with a body is never the trial: an upload
 // would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429, a
 // request whose caller went away, one whose body failed to read, and one that failed after it
 // waited clientWait or longer on its body count neither way.
@@ -76,9 +76,11 @@ type breaker struct {
 }
 
 // newBreaker returns the breaker of the registry named registry at host, the host[:port] of its
-// URL.
+// URL. Its series start at zero, so that an increase over a window counts the first opening.
 func newBreaker(registry, host string, log *slog.Logger) *breaker {
 	metrics.ProviderCircuitOpen.WithLabelValues(registry).Set(0)
+	metrics.ProviderCircuitOpens.WithLabelValues(registry).Add(0)
+	metrics.ProviderCircuitHeld.WithLabelValues(registry).Add(0)
 	return &breaker{registry: registry, host: host, log: log, now: time.Now}
 }
 
@@ -213,24 +215,38 @@ func (b *breaker) done(ctx context.Context, trial bool, result int, against blam
 		case b.failures < breakerThreshold:
 		case b.wide > 0 || len(b.repos) >= breakerVariety:
 			b.open(ctx)
-		case b.now().Sub(b.held) >= breakerCooldown:
-			b.held = b.now()
-			b.log.WarnContext(ctx, "registry fails the requests of one repository only: circuit kept closed, "+
-				"the repository may be broken in the registry", "repositories", b.repos, "failures", b.failures)
+		default:
+			b.hold(ctx)
 		}
 	case result < 0 && trial:
 		b.open(ctx)
 	}
 }
 
-// open opens the breaker for a cooldown; b.mu is held. The log line names the repositories the
-// failures in a row were of, at most breakerThreshold, and how many were the registry's whatever
-// the request.
+// hold records a failure that leaves a run of failures in a row at breakerThreshold or past it,
+// of too few repositories, with the breaker closed; b.mu is held. The run is counted once, when
+// it reaches the threshold, and logged at most once a cooldown.
+func (b *breaker) hold(ctx context.Context) {
+	if b.failures == breakerThreshold {
+		metrics.ProviderCircuitHeld.WithLabelValues(b.registry).Inc()
+	}
+	if b.now().Sub(b.held) >= breakerCooldown {
+		b.held = b.now()
+		b.log.WarnContext(ctx, "registry fails the requests of one repository only: circuit kept closed, "+
+			"the repository may be broken in the registry", "repositories", b.repos, "failures", b.failures)
+	}
+}
+
+// open opens the breaker for a cooldown; b.mu is held. Opened from closed, it is logged and
+// counted (lajstrom_provider_circuit_opens_total); a re-opening after a failed trial is neither.
+// The log line names the repositories the failures in a row were of, at most breakerThreshold,
+// and how many were the registry's whatever the request.
 func (b *breaker) open(ctx context.Context) {
 	if b.state == breakerClosed {
 		b.log.WarnContext(ctx, "registry fails: circuit open, its requests fail at once for a while",
 			"failures", b.failures, "repositories", b.repos, "registryWide", b.wide, "cooldown", breakerCooldown)
 		metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(1)
+		metrics.ProviderCircuitOpens.WithLabelValues(b.registry).Inc()
 	}
 	b.state, b.opened = breakerOpen, b.now()
 	b.reset()

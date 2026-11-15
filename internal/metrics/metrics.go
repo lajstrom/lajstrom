@@ -56,6 +56,18 @@ var (
 	ProviderCircuitOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_provider_circuit_open", Help: "1 while the circuit breaker of a backend registry is open.",
 	}, []string{"registry"})
+	// ProviderCircuitOpens counts the openings of the circuit breaker of a registry from closed,
+	// not the re-openings after a failed trial: a breaker that flaps shows here, which the gauge
+	// sampled at each scrape can miss.
+	ProviderCircuitOpens = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_provider_circuit_opens_total", Help: "Times the circuit breaker of a backend registry opened from closed.",
+	}, []string{"registry"})
+	// ProviderCircuitHeld counts the runs of failures in a row that reached the threshold of the
+	// circuit breaker of a registry from one repository only, which leave it closed (#972): a
+	// repository the registry cannot serve. The log names the repository; the label never does.
+	ProviderCircuitHeld = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_provider_circuit_held_total", Help: "Runs of failures of one repository only that reached the circuit breaker's threshold and left it closed.",
+	}, []string{"registry"})
 	// DBDuration is the time of a statement of the index database, by the store method that ran
 	// it and whether it failed.
 	DBDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -163,7 +175,8 @@ var (
 )
 
 func init() {
-	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
+	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, ProviderCircuitOpens, ProviderCircuitHeld,
+		DBDuration, Ingest,
 		AttachmentsIndexed, AttachmentIndexFailures,
 		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, ProxyRateLimit, ProxyRateRemaining, ProxyRateWindow, Throttled,
 		UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, SpoolBytes, SpoolRefusals, buildInfo,
