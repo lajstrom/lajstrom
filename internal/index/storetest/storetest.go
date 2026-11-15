@@ -91,6 +91,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"DatabaseTime", testDatabaseTime},
 		{"Journal", testJournal},
 		{"Attachments", testAttachments},
+		{"VersionFacts", testVersionFacts},
 		{"JournalState", testJournalState},
 		{"JournalCascades", testJournalCascades},
 		{"JournalRace", testJournalRace},
