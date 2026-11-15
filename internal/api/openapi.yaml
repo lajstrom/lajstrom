@@ -1523,6 +1523,41 @@ components:
           description: A group only, with members and merge, or members and paths on a group of oci repos; absent on another kind.
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+        permissions:
+          type: array
+          description: >-
+            Answered by GET only: of read, write, delete and manage, those the request's principal has
+            on the repo within the scopes of its credential (docs/spec/rbac.md §3), in that order.
+          items: {type: string, enum: [read, write, delete, manage]}
+        stats:
+          $ref: "#/components/schemas/RepoStats"
+          description: Answered by GET only; absent on a group and an oci repo, which index no versions.
+        signingKeys:
+          type: array
+          description: >-
+            Answered by GET only, on an apt or rpm repo: its signing keys, the active one first, then the
+            retired ones, the most recently retired first; [] before its first key.
+          items: {$ref: "#/components/schemas/SigningKey"}
+    RepoStats:
+      type: object
+      description: Counts of the index's rows of a repo (docs/api.md, Repos); reindex rebuilds them.
+      required: [packages, versions, manifests, files, size, lastPublishedAt]
+      properties:
+        packages: {type: integer}
+        versions: {type: integer, description: Distinct versions of its packages.}
+        manifests: {type: integer, description: One per variant of a version.}
+        files: {type: integer, description: The file layers of its manifests.}
+        size: {type: integer, description: "The sum of their sizes in bytes: a blob of two manifests counts twice, the metadata layer not at all."}
+        lastPublishedAt: {type: [string, "null"], format: date-time, description: The newest publish time of its manifests.}
+    SigningKey:
+      type: object
+      description: The public facts of a repo's OpenPGP signing key.
+      required: [fingerprint, algorithm, createdAt, retiredAt]
+      properties:
+        fingerprint: {type: string, description: Uppercase hexadecimal.}
+        algorithm: {type: string, description: "ed25519 or rsa4096 for a key made by Lajstrom; rsa2048, rsa3072, rsa4096 or ecdsa-p256 for one in a KMS."}
+        createdAt: {type: string, format: date-time}
+        retiredAt: {type: [string, "null"], format: date-time, description: Null for the active key.}
     Group:
       type: object
       description: >-

@@ -553,6 +553,21 @@ type VersionKey struct {
 	Version   string
 }
 
+// RepoStats are the counts of a repo's derived rows, as Reader.RepoStats returns them
+// (docs/spec/index-schema.md, A repo's stats).
+type RepoStats struct {
+	RepoID   int64
+	Packages int64 // rows of packages
+	// Versions are the distinct (package, version) of versions; Manifests its rows, one per
+	// variant of a version.
+	Versions  int64
+	Manifests int64
+	Files     int64 // rows of files of those versions
+	Size      int64 // the sum of their files.size
+	// LastPublishedAt is the newest versions.created_at; nil without a version.
+	LastPublishedAt *time.Time
+}
+
 // FileMatch is a file together with its version and package, as Reader.FindFiles returns it:
 // ManifestPath of the package and the version locates the OCI repository that holds the blob.
 type FileMatch struct {

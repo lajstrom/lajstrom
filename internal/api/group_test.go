@@ -53,7 +53,7 @@ func TestCreateGroup(t *testing.T) {
 		"createdAt": "2026-01-02T12:00:00Z", "updatedAt": "2026-01-02T12:00:00Z"}`
 	wantJSON(t, "the created group", got, want)
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/npm/all", "", admin), http.StatusOK, &got)
-	wantJSON(t, "the group read back", got, want)
+	wantJSON(t, "the group read back", got, strings.TrimSuffix(want, "}")+`, "permissions": ["read", "manage"]}`)
 	ev := auditOf(t, f.st, "repo.create")[0] // the newest
 	if g, _ := ev.details["repo"].(map[string]any)["group"].(map[string]any); fmt.Sprint(g["members"]) != "[internal npmjs]" {
 		t.Errorf("audit details %v, want the members in the resource", ev.details)

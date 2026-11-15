@@ -187,6 +187,9 @@ func TestKeyFor(t *testing.T) {
 			}
 			checkKey(t, first.OpenPGP, row, tt.pubAlgo, tt.bits)
 			checkStored(t, e.svc.master, row)
+			if got, err := Algorithm(row.Public); err != nil || got != tt.algorithm {
+				t.Errorf("Algorithm = %q, %v; want %q", got, err, tt.algorithm)
+			}
 			again, err := e.svc.KeyFor(ctx, e.repo)
 			must(t, err)
 			if again.Key.ID != row.ID || again.OpenPGP.PrivateKey == nil || again.OpenPGP.PrivateKey.Encrypted {
@@ -782,4 +785,13 @@ func equal(a, b []string) bool { return strings.Join(a, ",") == strings.Join(b, 
 func jsonEqual(raw json.RawMessage, want string) bool {
 	var a, b any
 	return json.Unmarshal(raw, &a) == nil && json.Unmarshal([]byte(want), &b) == nil && fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+// TestAlgorithmNotAKey: bytes that hold no public key packet are an error, not a name.
+func TestAlgorithmNotAKey(t *testing.T) {
+	for _, b := range [][]byte{nil, []byte("pub")} {
+		if got, err := Algorithm(b); err == nil {
+			t.Errorf("Algorithm(%q) = %q, want an error", b, got)
+		}
+	}
 }

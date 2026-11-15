@@ -40,6 +40,15 @@ type Repo struct {
 	Group     json.RawMessage `json:"group,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
 	UpdatedAt time.Time       `json:"updatedAt"`
+	// Permissions, Stats and SigningKeys are what the request may do on the repo and what the
+	// index holds of it (docs/api.md, Repos): GET /api/v1/repos and GET …/repos/{format}/{repo}
+	// fill them (handler.withFacts), and every other answer of the resource, the CLI's, an
+	// audit row's and a webhook's, leaves them out. A group has neither Stats nor SigningKeys.
+	Permissions []auth.Action `json:"permissions,omitempty"`
+	Stats       *RepoStats    `json:"stats,omitempty"`
+	SigningKeys *[]SigningKey `json:"signingKeys,omitempty"`
+	// id is the row's, for the reads of withFacts.
+	id int64
 }
 
 // MarshalJSON writes r as the API shows it: a group has neither a registry nor a policy, and
@@ -57,7 +66,8 @@ func (r Repo) MarshalJSON() ([]byte, error) {
 		Group         json.RawMessage `json:"group,omitempty"`
 		CreatedAt     time.Time       `json:"createdAt"`
 		UpdatedAt     time.Time       `json:"updatedAt"`
-	}{r.Format, r.Name, r.Kind, r.AnonymousRead, r.Group, r.CreatedAt, r.UpdatedAt})
+		Permissions   []auth.Action   `json:"permissions,omitempty"`
+	}{r.Format, r.Name, r.Kind, r.AnonymousRead, r.Group, r.CreatedAt, r.UpdatedAt, r.Permissions})
 }
 
 // RepoList is the answer of GET /api/v1/repos and of lajstrom admin repo list --json.
@@ -865,7 +875,7 @@ func repoError(op, formatName, name string, err error) error {
 func resource(ctx context.Context, rd index.Reader, r *index.Repo) (Repo, error) {
 	out := Repo{
 		Format: r.Format, Name: r.Name, Registry: r.Registry, Kind: r.Kind, AnonymousRead: r.AnonymousRead,
-		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
+		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), id: r.ID,
 	}
 	if r.Kind != index.KindGroup {
 		return out, nil
