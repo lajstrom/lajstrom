@@ -286,6 +286,21 @@ func (p *Provider) StatManifest(ctx context.Context, name string, d digest.Diges
 // Ping implements provider.Pinger: GET /v2/ with the authorization token.
 func (p *Provider) Ping(ctx context.Context) error { return p.data.Ping(ctx) }
 
+// Report implements provider.Reporter: the generic provider's, the vendor ecr whatever the
+// probe detected, and the capabilities as Capabilities answers them.
+func (p *Provider) Report() provider.Report {
+	r := p.data.Report()
+	r.Vendor = "ecr"
+	if r.Capabilities != nil {
+		c := *r.Capabilities
+		c.MaxNameLength = max(maxNameLen-len(p.prefix), 1)
+		r.Capabilities = &c
+	}
+	return r
+}
+
+var _ provider.Reporter = (*Provider)(nil)
+
 // Credential is the auth.CredentialFunc of the registry's /v2 API, the one the data path
 // uses: the authorization token as the Basic username and password, fetched with the SDK's
 // credentials and replaced before it expires. lajstrom registry probe answers its own requests

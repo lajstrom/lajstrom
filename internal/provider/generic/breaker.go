@@ -116,6 +116,20 @@ func newBreaker(registry, host string, log *slog.Logger) *breaker {
 	return &breaker{registry: registry, host: host, log: log, now: time.Now}
 }
 
+// report returns the breaker's state: open until the cooldown is over, half-open from then until
+// an answer closes it.
+func (b *breaker) report() provider.BreakerState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch {
+	case b.state == breakerClosed:
+		return provider.BreakerClosed
+	case b.state == breakerOpen && b.now().Sub(b.opened) < breakerCooldown:
+		return provider.BreakerOpen
+	}
+	return provider.BreakerHalfOpen
+}
+
 // blame is what the breaker holds a failed request against (breaker.blame).
 type blame struct {
 	// repo is the repository the request names, or the path of a request to the registry of

@@ -1324,6 +1324,22 @@ paths:
               schema: {$ref: "#/components/schemas/SearchResult"}
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/registries:
+    get:
+      tags: [meta]
+      operationId: listRegistries
+      summary: The registries of the configuration, their capabilities, repos and health, as the replica that answers knows them (admin).
+      description: >-
+        Never Lajstrom's credentials for a registry. Each replica probes and pings the registries
+        itself; the answer sends no request to a registry. /-/readyz stays public and without detail.
+      responses:
+        "200":
+          description: The registries, by name.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RegistryList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /api/v1/bootstrap:
     post:
       tags: [users]
@@ -2650,6 +2666,66 @@ components:
           type: array
           items: {type: string}
           description: A user's groups that count now, from its latest OIDC login (docs/spec/rbac.md §8).
+    RegistryList:
+      type: object
+      required: [replica, registries]
+      properties:
+        replica: {type: string, description: "The replica that answers, as replicas.id names it: host name and process id."}
+        registries:
+          type: array
+          items: {$ref: "#/components/schemas/Registry"}
+    Registry:
+      type: object
+      required: [name, type, url, prefix, capabilities, repos, status]
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [generic, ecr]}
+        url: {type: string}
+        prefix: {type: string}
+        capabilities:
+          anyOf:
+            - {$ref: "#/components/schemas/Capabilities"}
+            - {type: "null"}
+          description: "What ingest and the facade go by; null before a probe of the replica succeeded."
+        repos:
+          type: array
+          description: "The repos on the registry, <format>/<name>, by format and name."
+          items: {type: string}
+        status: {$ref: "#/components/schemas/RegistryStatus"}
+    Capabilities:
+      type: object
+      description: A registry's capabilities, under the keys of registries[].capabilities (docs/configuration.md).
+      required: [createOnPush, referrers, catalog, deleteManifest, immutableTags, blobRedirect, referrersAlwaysTag, maxBlobSize,
+        consistency, consistencyBound, maxNameDepth, maxNameLength, tagsFoldCase, buildRoutes]
+      properties:
+        createOnPush: {type: boolean}
+        referrers: {type: boolean}
+        catalog: {type: boolean}
+        deleteManifest: {type: boolean}
+        immutableTags: {type: boolean}
+        blobRedirect: {type: boolean}
+        referrersAlwaysTag: {type: boolean}
+        maxBlobSize: {type: integer, description: Bytes; 0 when unknown.}
+        consistency: {type: string, enum: [strong, eventual, ""], description: "\"\" when unknown."}
+        consistencyBound: {type: string, description: "A duration, 2m10s; 0s when none is known."}
+        maxNameDepth: {type: integer, description: 0 for no limit.}
+        maxNameLength: {type: integer, description: 0 for no limit.}
+        tagsFoldCase: {type: boolean}
+        buildRoutes: {type: boolean}
+    RegistryStatus:
+      type: object
+      description: What the replica's readiness ping (GET /v2/ every 20 seconds) and the registry's circuit breaker know.
+      required: [state, checkedAt, answeredAt, latencyMs, message, breaker]
+      properties:
+        state:
+          type: string
+          enum: [ok, degraded, down]
+          description: "down: no ping answered 200 for a minute, or the breaker is open; degraded: the last ping failed, or the breaker is half-open."
+        checkedAt: {type: [string, "null"], format: date-time, description: "The last ping; null before the first, and for a provider that is not pinged."}
+        answeredAt: {type: [string, "null"], format: date-time, description: The last ping answered 200.}
+        latencyMs: {type: [integer, "null"], description: How long the last ping took.}
+        message: {type: [string, "null"], description: "The error of the last ping, as the provider words it: no credential, no instance prefix."}
+        breaker: {type: string, enum: [closed, open, half-open]}
     Info:
       description: "What a client needs before it signs in, and the caller."
       type: object
