@@ -529,8 +529,9 @@ leaked: the manifests keep the old wrapping, and only an upload of the files aga
 
 **Reindex needs the keys** of an encrypted repo: it opens each layer's wrapping to rebuild the
 mapping of digests (`blob_map`) and decrypts each metadata layer. A run without them (no master
-key, a seal that does not open, a KMS that refuses) skips the repo and says why in the repo's
-report (`skipped`), leaving its rows as they are. With a KMS key, a run sends one request per
+key, a seal that does not open, no client for its KMS) skips the repo and says why in the repo's
+report (`skipped`), leaving its rows as they are; a KMS that refuses during the run fails the
+manifests it was asked for. With a KMS key, a run sends one request per
 encrypted layer.
 
 **The costs**, paid by the encrypted repos only:
