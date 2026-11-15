@@ -47,7 +47,10 @@ internal/egress/              where an upstream's client may connect (Guard): th
                               as they are, any other host over https at public addresses only (proxy-and-group.md §9.2)
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
-internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69)
+internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69); the
+                              verification of a Kubernetes service-account token of auth.kubernetes (rbac.md §9)
+internal/auth/clientcert/     client certificates (rbac.md §9): the bundles, a chain verified against them, the name
+                              of the leaf, the header an edge forwards a certificate in
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020)
 internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign over net/http, SigV4 of aws-sdk-go-v2
