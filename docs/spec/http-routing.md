@@ -791,6 +791,8 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
 | yanking and unyanking a pypi version: `PUT` and `DELETE …/repos/pypi/<repo>/packages/<name>/versions/<version>/yank` (#81) | `write` on the repo, as an npm deprecation; a repo the caller may not read is `404` |
 | a repo's webhooks: `GET`/`POST …/repos/<format>/<repo>/webhooks`, `GET`/`PATCH`/`DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries` (#77) | `manage` on the repo, decided before the repo is looked up (rbac.md §3); the webhooks whose mask is exactly the repo |
+| a repo's open publication sessions: `GET …/repos/<format>/<repo>/sessions` (#960) | `manage` on the repo, decided before the repo is looked up (rbac.md §3) |
+| every token, `GET /api/v1/tokens` (#959), and the registries, `GET /api/v1/registries` (#952) | the admin role, checked before anything else (rbac.md §3) |
 | creating a repo, and the system resources: users, bindings, audit, the deploy tokens over a mask (`/api/v1/deploy-tokens`, #911; the role checked before the body is read), the webhooks of any mask under `/api/v1/webhooks` (#77) | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
@@ -807,6 +809,9 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>`, `group:<name>`, or a `cert:` or `k8s:` principal or pattern (rbac.md §3, §8, §9) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
+| publication sessions | `GET /api/v1/repos/<format>/<repo>/sessions[?limit=&cursor=]` |
+| every token | `GET /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]` |
+| registries | `GET /api/v1/registries` |
 | webhooks (#77, [webhooks.md](webhooks.md)) | a repo's: `GET/POST /api/v1/repos/<format>/<repo>/webhooks`, `GET/PATCH/DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`; every mask: the same under `/api/v1/webhooks` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
@@ -1146,6 +1151,84 @@ where it runs and since when (index-schema.md, Coordination). `GET …/reindex` 
 run that covered the repo, its own or a run of every repo, with `state`, the times, `error` and
 the repo's part of the report (layout.md, `reindex.Report`); `404` when no run has covered it.
 The run writes the audit event `repo.reindex` when it starts.
+
+A repo (`read`, #957): `GET /api/v1/repos` and `GET …/repos/<format>/<repo>` answer, beside
+the repo's settings, what the request may do on it and what the index holds of it, read when the
+request is answered:
+
+- `permissions`: the actions of rbac.md §2 that the evaluation of rbac.md §3 allows the
+  request's principal on the repo, its credential's scopes included: of `read`, `write`,
+  `delete` and `manage`, those it has, in that order. A group's are its own, whatever its
+  members allow (rbac.md §7).
+- `stats`: what the derived tables hold of the repo (index-schema.md), so that reindex rebuilds
+  it: `packages`; `versions`, the distinct versions of its packages; `manifests`, its rows of
+  `versions`, one per variant of a version; `files`, their file layers; `size`, the sum of those
+  layers' sizes, a blob of two manifests counted twice and the metadata layer not at all, which
+  is not what the registry stores; `lastPublishedAt`, the newest publish time of its manifests
+  (`versions.created_at`), `null` without one. A group and an `oci` repo index no versions and
+  have no `stats`.
+- `signingKeys`: an apt or rpm repo's OpenPGP keys (index-schema.md, `keys`), their public facts
+  only: the active key first, then the retired ones, the most recently retired first, each with
+  `fingerprint` (uppercase hexadecimal), `algorithm` (`ed25519`, `rsa2048`, `rsa3072`, `rsa4096`
+  or `ecdsa-p256`), `createdAt` and `retiredAt` (`null` for the active key). It is `[]` before
+  the repo's first signed document makes its first key, and on a server that signs nothing. A
+  repo of another format has no `signingKeys`.
+
+The list reads `stats` for all its repos in one query, not one per repo. The state of the repo's
+reindex is not part of it: `GET …/reindex` answers that, to `manage`.
+
+A repo's open publication sessions (`manage`, #960):
+`GET …/repos/<format>/<repo>/sessions[?limit=&cursor=]` pages, by id, the rows of `sessions`
+(index-schema.md) of the repo whose state is `open` and whose time is not up: the deploys of a
+maven repo that wait for their `maven-metadata.xml` (§3, maven), never a blob upload of the
+facade (§2). Each has `id`; `key`, `<groupId>:<artifactId>:<version>`; `principal`, `user:<uid>`
+or `token:<id>`, and for a user `principalName`, its name now; `files`, the files stored so
+far in the order they first came, each with `name` (its path below the repo), `digest` and
+`size`; `refused`, when there are any, the files a checksum file disagreed with, by name, with
+the reason; `committing`, `true` while a commit runs; `createdAt`, `updatedAt` (its last change)
+and `expiresAt`. A session that committed, was aborted or expired is not listed: the audit log
+has the publish, and the others' files were dropped. A repo of a format that opens no session,
+and a group, have none; a repo that does not exist is `404`. No route aborts a session: it ends
+with its commit, or at `expiresAt`.
+
+Every token (the admin role, #959):
+`GET /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]` pages, by id, which is
+the order of their creation, every token: the personal access tokens of every user, deleted
+users' too, the deploy tokens of every repo and those over a mask, the revoked and expired ones
+included. Each is the resource of the other token lists ([api.md](../api.md#tokens)): never
+its secret, and of its hash `hashPrefix` only. `kind` keeps `pat` or `deploy`; `user` the
+personal access tokens of the live user of that name or uid; `repo`, `<format>/<repo>`, that
+repo's own deploy tokens, not those over a mask that matches it; `repoMask` the deploy tokens
+over that mask as it was written (`oci/*` does not list a token over `*/*`); `live=true` those
+neither revoked nor expired when the request is answered. The filters add up. A user or a repo
+that does not exist has none; a `kind` that is neither, a `live` that is not a boolean and a
+`repo` or `repoMask` that is not two segments are `400`. The personal access token a web UI
+creates at a sign-in (above) is listed as any other: the server does not tell them apart.
+
+The registries (the admin role, #952, #953): `GET /api/v1/registries` answers
+`{"replica", "registries": [...]}`, the registries of the configuration by name, as the replica
+that answers knows them, and that replica (`replicas.id`, index-schema.md). Each has:
+
+- `name`, `type` (`generic` or `ecr`), `url` and `prefix`, as `registries[]` has them; never
+  `auth`, nor any part of a credential;
+- `vendor`, the product the provider's probe detected, as `lajstrom registry probe` names it
+  (`unknown` for one that the vendor table does not know), and `support`, the tier of that
+  vendor in this release ([registries/README.md](../registries/README.md#support-tiers)):
+  `ci`, `manual`, `hosted` or `untested`; both `null` before a probe of the replica answered;
+- `capabilities`: the provider's capabilities (layout.md, `provider.Capabilities`) after the
+  vendor table and `registries[].capabilities`, as ingest and the facade use them; `null` before
+  a probe of the replica succeeded;
+- `repos`: the repos on the registry, `<format>/<name>`, by format and name;
+- `status`: what the replica's readiness ping (§5) and the registry's circuit breaker know:
+  `checkedAt`, the time of the last ping, `null` for a provider that is not pinged;
+  `answeredAt`, the last ping answered `200`, `null` before one; `latencyMs`, how long the last
+  ping took; `message`, the error of the last ping when it failed, as the provider words it,
+  which names neither a credential nor the instance prefix, else `null`; `breaker`, `closed`,
+  `open` or `half-open`; and `state`: `down` when no ping was answered `200` for a minute, as
+  `/-/readyz` counts it, or the breaker is open; else `degraded` when the last ping failed or
+  the breaker is half-open; else `ok`.
+
+The answer sends no request to a registry. `/-/readyz` stays public and without detail (§5).
 
 Webhooks (#77; events, payload and delivery in [webhooks.md](webhooks.md)). Under a repo
 (`manage`), a webhook's mask is the repo: `POST …/webhooks` takes `{"url", "events",

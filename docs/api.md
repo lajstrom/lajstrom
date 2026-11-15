@@ -57,7 +57,7 @@ Every error is answered with one envelope:
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
 | 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)) |
+| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log, every token, the registries; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)) |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
@@ -103,6 +103,7 @@ audit alike.
 | `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
 | `group` | a group only, required there: `members`, the names of 1 to 16 repos of the group's format, in the order they are read, each `hosted` or `proxy` and at most one `hosted`, and `merge` (at most 256 name patterns): the names whose versions are merged even when the hosted member holds them ([proxy-and-group.md](spec/proxy-and-group.md) §2.3, §8). The resource shows both keys. A group of `oci` repos has no `merge`, may have several hosted members, and has `paths` instead: each member's name to the patterns of the paths it serves, `<path>`, `<prefix>/*` or `*`, every member one at least and no pattern on two members (§12.1). A group of apt repos has hosted members only, any number of them, and an empty `merge`; it renders and signs its own indexes (§8.6) | `members` and `paths` by the admin role, `merge` by `manage` |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
+| `permissions`, `stats`, `signingKeys` | answered by `GET`, never sent: what the request may do on the repo, and what the index holds of it ([below](#what-the-request-may-do-and-what-the-repo-holds)) | with the bindings and the content |
 
 A proxy repo of the upstream `npmjs` and a group of the hosted repo `npm/internal` and that
 proxy ([proxy-and-group.md](spec/proxy-and-group.md) §2.4):
@@ -128,6 +129,30 @@ write ([proxy-and-group.md](spec/proxy-and-group.md) §12):
  "group": {"members": ["internal", "hub"], "paths": {"hub": ["*"], "internal": ["acme/*"]}},
  "createdAt": "2026-11-10T17:44:02Z", "updatedAt": "2026-11-10T17:44:02Z"}
 ```
+
+#### What the request may do, and what the repo holds
+
+`GET /api/v1/repos` and `GET /api/v1/repos/<format>/<name>` answer three fields more, read when
+the request is answered (the examples above leave them out;
+[http-routing.md](spec/http-routing.md) §4, #957):
+
+| Field | What |
+| --- | --- |
+| `permissions` | of `read`, `write`, `delete` and `manage` ([rbac.md](spec/rbac.md) §2), those the request's principal has on the repo, within the scopes of its credential, in that order. A group's are its own, whatever its members allow |
+| `stats` | counts of the index: `packages`; `versions`, distinct versions of its packages; `manifests`, one per variant of a version; `files`, their file layers; `size`, the sum of those layers' sizes in bytes, a blob of two manifests counted twice and the metadata layer not at all, which is not what the registry stores; `lastPublishedAt`, the newest publish time of a manifest, `null` without one. Reindex rebuilds them. A group and an `oci` repo, which index no versions, have none |
+| `signingKeys` | an apt or rpm repo only: its signing keys, public facts only, the active one first, then the retired ones, the most recently retired first: `fingerprint` (uppercase hexadecimal), `algorithm` (`ed25519`, `rsa2048`, `rsa3072`, `rsa4096` or `ecdsa-p256`), `createdAt`, `retiredAt` (`null` for the active one). `[]` before the first signed document makes the first key, and on a server that signs nothing ([operations.md](operations.md#repo-keys)) |
+
+```json
+{"format": "apt", "name": "ubuntu-internal", "registry": "local", "kind": "hosted", "anonymousRead": false, "policy": null,
+ "createdAt": "2026-11-07T12:00:00Z", "updatedAt": "2026-11-07T12:00:00Z",
+ "permissions": ["read", "write"],
+ "stats": {"packages": 12, "versions": 30, "manifests": 41, "files": 41, "size": 73400320, "lastPublishedAt": "2026-11-14T09:12:03Z"},
+ "signingKeys": [{"fingerprint": "6C1E0F3B…", "algorithm": "ed25519", "createdAt": "2026-11-12T08:00:00Z", "retiredAt": null},
+                 {"fingerprint": "A04D7E91…", "algorithm": "rsa4096", "createdAt": "2026-11-07T12:00:00Z", "retiredAt": "2026-11-12T08:00:00Z"}]}
+```
+
+The state of a reindex is not among them: [`GET …/reindex`](#reindex-post-and-get-apiv1reposformatnamereindex)
+answers it, to `manage`.
 
 #### Policy
 
@@ -810,6 +835,40 @@ was purged.
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/npm/npmjs/upstream-cache?name=left-pad"
 ```
 
+### Open deploys: `GET /api/v1/repos/<format>/<name>/sessions`
+
+A page of the repo's open publication sessions, by id ([Conventions](#conventions)): the deploys
+of a maven repo that wait for their `maven-metadata.xml`, each a session of one version opened by
+its first file ([http-routing.md](spec/http-routing.md) §3, maven), whose time is not up. It
+needs `manage` on the repo: the files of a deploy are not published yet. A session that
+committed, was aborted or expired is not listed; the audit log has the publishes. A repo of a
+format that opens no session, and a group, have none; `404` when there is no such repo.
+
+```sh
+curl -s "$LAJSTROM/api/v1/repos/maven/releases/sessions"
+```
+
+```json
+{"sessions": [{
+  "id": 31, "key": "com.example:lib-core:1.4.0",
+  "principal": "token:8", "files": [
+    {"name": "com/example/lib-core/1.4.0/lib-core-1.4.0.pom", "digest": "sha256:…", "size": 1711},
+    {"name": "com/example/lib-core/1.4.0/lib-core-1.4.0.jar", "digest": "sha256:…", "size": 48213}],
+  "committing": false,
+  "createdAt": "2026-11-15T10:00:02Z", "updatedAt": "2026-11-15T10:00:04Z", "expiresAt": "2026-11-15T10:30:04Z"}]}
+```
+
+| Field | What |
+| --- | --- |
+| `key` | `<groupId>:<artifactId>:<version>`; a SNAPSHOT build's version is the build's, `1.0-20261114.101112-3` |
+| `principal`, `principalName` | who opened it, `user:<uid>` or `token:<id>`, and a user's name now; only that principal adds files to it and commits it |
+| `files` | the files stored so far, in the order they first came: `name`, the path below the repo, `digest` and `size` |
+| `refused` | when there are any, the files that a checksum file disagreed with, by name, with the reason: the session commits once they are uploaded again |
+| `committing` | `true` while a commit of the session runs |
+| `updatedAt`, `expiresAt` | its last change, and when it ends with nothing published unless it commits: `maven.sessionTimeout` after its last request ([Policy](#policy)) |
+
+No route aborts a session.
+
 ### Prefetch a proxy repo: `POST /api/v1/repos/<format>/<name>/prefetch`
 
 Fetches versions of a list of package names into a proxy repo before a client asks for them,
@@ -1331,9 +1390,32 @@ curl -s -u admin -X POST "$LAJSTROM/api/v1/deploy-tokens" \
 {"id": 9, "kind": "deploy", "repoMask": "oci/*", "name": "talos-nodes", "scopes": ["read"], "expiresAt": null, "lastUsedAt": null, "createdAt": "2026-11-14T12:00:00Z", "revokedAt": null, "hashPrefix": "5d1e0c42", "secret": "ljs_dep_…"}
 ```
 
+### Every token: `GET /api/v1/tokens`
+
+The admin role lists every token at once, for an access page: `{"tokens": […], "next": "…"}`,
+a page by id ([Conventions](#conventions)), which is the order of their creation, of the personal
+access tokens of every user, a deleted user's too (its `user` is then `~<uid>`), the deploy tokens
+of every repo and those over a mask, the revoked and expired ones included. Each is the resource
+above, never its secret. The filters add up:
+
+| Parameter | Keeps |
+| --- | --- |
+| `kind` | `pat` or `deploy`; another value is `400` |
+| `user` | the personal access tokens of the live user of that name or uid; a user that does not exist has none |
+| `repo` | `<format>/<name>`: the deploy tokens of that repo, not those over a mask that matches it; a repo that does not exist has none |
+| `repoMask` | the deploy tokens over that mask as it was written: `oci/*` does not list a token over `*/*` |
+| `live` | `true`: those neither revoked nor expired when the request is answered; `false` or absent: all |
+
+A personal access token that a web UI creates when a person signs in
+([A browser on the same origin](#a-browser-on-the-same-origin)) is listed as any other.
+
+```sh
+curl -s -u admin "$LAJSTROM/api/v1/tokens?kind=deploy&live=true&limit=50"
+```
+
 ### Who may
 
-A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it; the deploy tokens over a mask, the admin's, created with the admin's password only. A deploy token, and a
+A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it; the deploy tokens over a mask, the admin's, created with the admin's password only; every token at once, the admin's. A deploy token, and a
 personal access token with scopes, asking for any of these is `403`, even for its own repo or
 its own user: tokens never manage.
 
@@ -1470,6 +1552,44 @@ lajstrom admin webhook deliveries <id> [--limit 20]
 `create` prints the resource and its secret as JSON on one line, `rotate` the new secret, `update`
 and `test` the resource and the row of the delivery log (`test` exits with status 1 when the ping
 was not delivered); `list` and `deliveries` print tables.
+
+## Registries: `GET /api/v1/registries`
+
+The backend registries of the configuration ([configuration.md](configuration.md#registries)),
+what Lajstrom found of each and whether it answers, for the admin role
+([http-routing.md](spec/http-routing.md) §4, #952). `{"replica", "registries": […]}`, by name, as
+the replica that answers knows them: each replica probes and pings the registries itself, and
+`replica` names it as `/-/readyz` and the reindex runs do (host name and process id).
+
+```sh
+curl -s -u admin "$LAJSTROM/api/v1/registries"
+```
+
+```json
+{"replica": "lajstrom-a 7", "registries": [{
+  "name": "local", "type": "generic", "url": "http://zot:5000", "prefix": "lajstrom/",
+  "vendor": "zot", "support": "ci",
+  "capabilities": {"createOnPush": true, "referrers": true, "catalog": true, "deleteManifest": true, "immutableTags": false,
+    "blobRedirect": true, "referrersAlwaysTag": false, "maxBlobSize": 0, "consistency": "strong", "consistencyBound": "0s",
+    "maxNameDepth": 0, "maxNameLength": 246, "tagsFoldCase": false, "buildRoutes": false},
+  "repos": ["npm/internal", "raw/assets"],
+  "status": {"state": "ok", "checkedAt": "2026-11-15T10:00:20Z", "answeredAt": "2026-11-15T10:00:20Z", "latencyMs": 3,
+    "message": null, "breaker": "closed"}}]}
+```
+
+| Field | What |
+| --- | --- |
+| `name`, `type`, `url`, `prefix` | as `registries[]` has them; Lajstrom's credentials for the registry are never answered |
+| `vendor` | the product the probe detected from the registry's answer to `GET /v2/` and its host, as [`lajstrom registry probe`](registries/README.md#measuring-a-registry-lajstrom-registry-probe) names it: `distribution`, `zot`, `gitlab`, `ghcr`, `harbor`, `nexus`, `gitea`, `forgejo`, `jfrog`, `quay`, `dockerhub`, `ecr`, or `unknown`; `null` before a probe of the replica answered |
+| `support` | the vendor's tier in this release ([registries/README.md](registries/README.md#support-tiers)): `ci`, `manual`, `hosted` or `untested`; `null` with `vendor` |
+| `capabilities` | what ingest and the facade go by: the probe's findings, the vendor table's and `registries[].capabilities` over them ([configuration.md](configuration.md#registry-capabilities)); `consistencyBound` a duration. `null` before a probe of the replica succeeded |
+| `repos` | the repos on the registry, `<format>/<name>`, by format and name |
+| `status.checkedAt`, `status.answeredAt` | the replica's last ping of the registry (`GET /v2/` with Lajstrom's credentials, every 20 seconds), and the last one answered `200`; `null` before the first |
+| `status.latencyMs`, `status.message` | how long the last ping took, and its error when it failed, as the provider words it: it names neither a credential nor the instance prefix; `null` when it did not fail |
+| `status.breaker` | the registry's circuit breaker: `closed`, `open` (requests fail at once, `503`) or `half-open` (trials go through) ([operations.md](operations.md#readiness)) |
+| `status.state` | `down`: no ping was answered `200` for a minute, which `/-/readyz` counts as not ready, or the breaker is open; `degraded`: the last ping failed or the breaker is half-open; `ok` otherwise |
+
+The answer sends no request to a registry. Anyone else is `403`, anonymous `401`.
 
 ## Server information: `GET /api/v1/info`
 

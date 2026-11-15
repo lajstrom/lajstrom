@@ -67,6 +67,37 @@ profile of the dev stack or a script, run by hand. `hosted`: a service, an accou
 | Azure Container Registry | none | `untested` |
 | Docker Hub | none | `untested` |
 
+## Support tiers
+
+The tier of each vendor that the provider's probe detects, as `GET /api/v1/registries` answers it
+in `support` beside the `vendor` (#953, [api.md](../api.md#registries-get-apiv1registries)): the
+tiers of [Versions tested](#versions-tested), lower-cased. This table is the source; the server
+carries a copy of it, and a test holds the two equal. The vendor is detected as the probe
+detects it, from the registry's answer to `GET /v2/` and the host of its URL
+(`internal/provider/generic/vendor.go`), and `lajstrom registry probe` prints the same name.
+
+| Vendor | Detected by | Tier |
+| --- | --- | --- |
+| `distribution` | `Docker-Distribution-Api-Version` on `GET /v2/` and nothing below, on a host that is no hosted service's | `ci` |
+| `zot` | `X-ZOT-API-CLIENT` in `Access-Control-Allow-Headers` | `ci` |
+| `gitlab` | `Gitlab-Container-Registry-Version` | `manual` |
+| `harbor` | a bearer challenge with `service="harbor-registry"` | `manual` |
+| `nexus` | `Server: Nexus/<version>`, or a Basic challenge with `realm="Sonatype Nexus Repository Manager"` | `manual` |
+| `gitea` | a bearer challenge with `service="container_registry"` and `scope="*"` | `manual` |
+| `forgejo` | as Gitea, and its own version API, `/api/forgejo/v1/version` | `manual` |
+| `jfrog` | `X-Jfrog-Version` | `manual` |
+| `quay` | the host `quay.io`, or `X-Sparse-Manifest-Support` | `manual` |
+| `ghcr` | the host `ghcr.io` | `hosted` |
+| `ecr` | a private ECR registry's host, `<account>.dkr.ecr.<region>.amazonaws.com` | `hosted` |
+| `dockerhub` | the host `docker.io` or one below it | `untested` |
+| `unknown` | none of the above: ACR, Google Artifact Registry, and every registry not measured here | `untested` |
+
+The tier is the vendor's in the release that answers, whatever version the registry runs:
+[Versions tested](#versions-tested) names the versions. A distribution on S3 answers `ci`, the
+tier of its filesystem storage, which is the one CI runs: the probe cannot see the storage. A
+registry's tier changes here first, in the pull request that changes its row of Versions tested
+([Keeping the matrix current](#keeping-the-matrix-current)), and the copy in the server with it.
+
 ## Capabilities
 
 One row per capability or behaviour, one column per registry. distribution's cells are its

@@ -77,6 +77,24 @@ only adds: a replica of the release before it, during a rolling update, reads th
 named columns and appends its rows without a state, which are `ok`, as they were written in the
 transaction of their change.
 
+### Pages of tokens and of open sessions
+
+The admin's list of every token and a repo's open publication sessions (http-routing.md §4,
+#959, #960) are pages of two queries of the Reader, each one statement:
+
+- **`ListTokenPage(TokenFilter)`** returns the rows of `tokens` whose id is above the filter's
+  `After`, by id, at most its `Limit`: of its kind, of its user (`user_id`), of its repo
+  (`repo_id`) or over its mask (`repo_mask`, as written), each when it is set, and, when it has a
+  time, those neither revoked nor expired then (`revoked_at IS NULL AND (expires_at IS NULL OR
+  expires_at > ?)`). It reads the primary key.
+- **`ListOpenSessions(repoID, at, after, limit)`** returns the rows of `sessions` of the repo
+  whose `state` is `open`, whose `expires_at` is after `at` and whose id is above `after`, by
+  id, at most `limit`, but the blob uploads of the facade (a key that starts with
+  `blob-upload:`). It reads the partial index `sessions_open_key`.
+
+A `limit` below 1 returns none; a caller asks for one more than its page to know whether
+another follows. Neither needs a migration.
+
 ## Proxy and group repos
 
 The tables and columns of the kinds `proxy` and `group` ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
@@ -584,6 +602,17 @@ table of record of scans (#89, decision 1).
 - **Versions without an attachment.** `ListVersionPage` with attachment kinds keeps the
   variants that have no row of any of them (`NOT EXISTS` on `version_id` and `kind`, over the
   unique index), for `?without=` (http-routing.md §4).
+
+### A repo's stats
+
+The `stats` of a repo in the management API (http-routing.md §4, #957) are counts of the derived
+tables, so that reindex rebuilds them. **`RepoStats(repoIDs)`** returns, for each repo of
+`repoIDs` that has a package, its rows of `packages`, its distinct `(package_id, version)` of
+`versions`, its rows of `versions`, their rows of `files` with the sum of `files.size`, and the
+newest `versions.created_at`: a fixed number of statements grouped by `packages.repo_id`,
+whatever the number of repos, over the unique indexes `(repo_id, name)` of `packages` and
+`(package_id, version, variant)` of `versions` and the index `(version_id, name)` of `files`. A
+repo without a package has no row, and its counts are 0. It needs no migration.
 
 ## Snapshots of the control plane
 
