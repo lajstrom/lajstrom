@@ -318,7 +318,7 @@ every repo, with the repo's part of the report:
   "startedAt": "2026-11-09T10:00:00Z", "heartbeatAt": "2026-11-09T10:00:30Z", "finishedAt": "2026-11-09T10:00:41Z",
   "report": {
     "repo": "raw/assets", "ociRepositories": 3, "manifests": 120, "added": 2, "updated": 0, "unchanged": 117,
-    "removed": 1, "pending": 0, "deletedPending": 0, "degraded": 0, "referrers": 4,
+    "removed": 1, "pending": 0, "deletedPending": 0, "degraded": 0, "referrers": 4, "attachments": 4,
     "foreign": [{"repository": "charts/demo", "tag": "0.1.0", "digest": "sha256:…", "mediaType": "application/vnd.oci.image.manifest.v1+json"}],
     "orphanReferrers": [], "orphanJournal": [], "drift": [], "split": [], "repositoryUnknown": [],
     "repairedReferrers": [], "errors": [], "truncated": false
@@ -329,13 +329,15 @@ every repo, with the repo's part of the report:
 `deletedPending` counts the tags the registry still lists whose manifests were deleted through
 Lajstrom less than `reconcile.graceAge` before the run, on a registry not classified `strong`:
 the run does not index them again
-([operations.md](operations.md#on-an-eventually-consistent-registry)). It is absent from the
-report of a run of an earlier release.
+([operations.md](operations.md#on-an-eventually-consistent-registry)). In the report of a run
+of an earlier release it is 0, as is every count that release did not write, and a list it did
+not write is `null`.
 
 `repairedReferrers` lists, for a run of the reconcile loop or with `verify` on a registry without
 the referrers API, each `sha256-<hex>` index that Lajstrom pushed again with the referrers it
 lacked: `{"repository", "subject", "index", "added": [digests]}`
-([operations.md](operations.md#what-a-run-does)).
+([operations.md](operations.md#what-a-run-does)). `openapi.yaml` describes every field of the
+report and the items of each list.
 
 `state` is `running`, `done` (it went to the end, whatever the report lists), `failed` (the run's
 own error is in `error`) or `abandoned` (its heartbeat stopped, a later start closed it);
