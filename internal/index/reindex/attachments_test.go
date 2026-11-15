@@ -239,3 +239,60 @@ func TestAttachmentsKeylessRelabel(t *testing.T) {
 		t.Errorf("after the identity was trusted: %d reads, %+v", attacher.reads.Load(), rows)
 	}
 }
+
+// TestAttachmentsSplit: of a package at two forms of its OCI name (ADR 0017), the run lists the
+// referrers of the version at the other form (versions.oci_repo, #642) in that form's OCI
+// repository, with its manifests under cosign's legacy tags there, and those of the version at
+// the indexed form in its own: the scan of the indexed form neither sweeps the rows of the
+// version at the other form nor looks its referrers up there. Ingest's rows are kept without a
+// read, and rebuilt after the rows were lost and after the whole index was (#1133).
+func TestAttachmentsSplit(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	scanner := attesttest.NewKey(t)
+	attacher := e.attaching(t, scanner.Entry(t, "scanner"))
+	sp := e.split(t, "netlify/blobs")
+	if r := e.run(t, reindex.Request{Prune: true}); r.Added != 1 || len(r.Errors) != 0 {
+		t.Fatalf("the run that indexes the version at the earlier form: %+v", *r)
+	}
+	one := &format.Published{RepoPath: e.repo.Prefix + "/" + sp.earlier, Digest: sp.one}
+	two := &format.Published{RepoPath: e.repo.Prefix + "/" + sp.newest, Digest: sp.twoDigest}
+	spdx := []byte(`{"spdxVersion":"SPDX-2.3"}`)
+	e.attach(t, one, "", "application/spdx+json", spdx, "", true)
+	e.attach(t, one, "sha256-"+sp.one.Encoded()+".att", attesttest.DSSEMediaType,
+		attesttest.Envelope(t, attesttest.Statement(sp.one, cyclonedx, `{}`), scanner), cyclonedx, true)
+	e.attach(t, two, "", "application/spdx+json", spdx, "", true)
+	written := e.attachmentRows(t)
+	oneKey, twoKey := sp.path+":"+sp.oneTag, sp.path+":"+sp.two
+	if len(written[oneKey]) != 2 || len(written[twoKey]) != 1 {
+		t.Fatalf("ingest wrote %d rows of the version at %s, want 2, and %d of the version at %s, want 1",
+			len(written[oneKey]), sp.earlier, len(written[twoKey]), sp.newest)
+	}
+
+	// Under the same trust, a run reads no referrer again and keeps every row.
+	r := e.run(t, reindex.Request{Prune: true})
+	if r.Attachments != 3 || attacher.reads.Load() != 0 || len(r.Errors) != 0 {
+		t.Errorf("a run over ingest's rows: %d attachments, %d reads, errors %v", r.Attachments, attacher.reads.Load(), r.Errors)
+	}
+	same(t, "the rows after a run", written, e.attachmentRows(t))
+
+	// The rows lost: each form's scan reads the referrers of its version again.
+	for _, d := range []digest.Digest{sp.one, sp.twoDigest} {
+		v, err := e.st.GetVersionByDigest(ctx, e.repo.ID, d)
+		must(t, err)
+		_, err = e.st.SweepAttachments(ctx, v.ID, time.Now().Add(time.Hour))
+		must(t, err)
+	}
+	r = e.run(t, reindex.Request{Prune: true})
+	if r.Attachments != 3 || attacher.reads.Load() != 3 || len(r.Errors) != 0 {
+		t.Errorf("a run after the rows were lost: %d attachments, %d reads, errors %v", r.Attachments, attacher.reads.Load(), r.Errors)
+	}
+	same(t, "the rows rebuilt", written, e.attachmentRows(t))
+
+	// The whole index lost.
+	must(t, e.st.ResetDerived(ctx, e.repo.ID))
+	if r := e.run(t, reindex.Request{Prune: true}); r.Attachments != 3 || len(r.Errors) != 0 {
+		t.Errorf("a run from an empty index: %d attachments, errors %v", r.Attachments, r.Errors)
+	}
+	same(t, "the rows rebuilt with the index", written, e.attachmentRows(t))
+}

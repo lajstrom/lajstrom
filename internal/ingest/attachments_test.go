@@ -20,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
 const (
@@ -28,16 +29,18 @@ const (
 )
 
 // attachEnv is a repo with the version notes 1.0 and a pipeline that trusts scanner for
-// CycloneDX and vulnerability reports; stranger is a key it does not trust.
+// CycloneDX and vulnerability reports; stranger is a key it does not trust. path is the package
+// path of the OCI repository that holds the subject's manifest, where its referrers go.
 type attachEnv struct {
 	*env
+	path              string
 	subject           ocispec.Descriptor
 	scanner, stranger *attesttest.Key
 }
 
 func newAttachEnv(t *testing.T, maxSize int64) *attachEnv {
 	t.Helper()
-	e := &attachEnv{env: newEnv(t), scanner: attesttest.NewKey(t), stranger: attesttest.NewKey(t)}
+	e := &attachEnv{env: newEnv(t), path: "notes", scanner: attesttest.NewKey(t), stranger: attesttest.NewKey(t)}
 	trust, err := attest.NewTrust([]attest.Entry{e.scanner.Entry(t, "scanner", cyclonedx, vulnType)})
 	must(t, err)
 	opts := e.options(e.prov)
@@ -54,7 +57,7 @@ func newAttachEnv(t *testing.T, maxSize int64) *attachEnv {
 // push stores b as a blob of the version's OCI repository and returns its descriptor.
 func (e *attachEnv) push(t *testing.T, b []byte) ocispec.Descriptor {
 	t.Helper()
-	rr, err := e.prov.Repository(t.Context(), "raw/scratch/notes")
+	rr, err := e.prov.Repository(t.Context(), "raw/scratch/"+e.path)
 	must(t, err)
 	d := ocispec.Descriptor{MediaType: "application/octet-stream", Digest: digest.FromBytes(b), Size: int64(len(b))}
 	if ok, err := rr.Exists(t.Context(), d); err != nil || !ok {
@@ -84,7 +87,7 @@ func (e *attachEnv) referrer(t *testing.T, subject digest.Digest, tag, artifactT
 	}
 	b, err := json.Marshal(m)
 	must(t, err)
-	return ingest.Referrer{Path: "notes", Tag: tag, Manifest: b, Subject: subject,
+	return ingest.Referrer{Path: e.path, Tag: tag, Manifest: b, Subject: subject,
 		Desc: ocispec.Descriptor{MediaType: m.MediaType, Digest: digest.FromBytes(b), Size: int64(len(b))}}
 }
 
@@ -225,6 +228,69 @@ func TestPutReferrerLegacyAttachments(t *testing.T) {
 	}
 	if !kinds[index.AttachmentSBOM] || !kinds[index.AttachmentScan] {
 		t.Errorf("the kinds of the legacy layers: %v", kinds)
+	}
+}
+
+// at is e with the subject the version whose manifest is subject, at the package path path.
+func (e *attachEnv) at(path string, subject ocispec.Descriptor) *attachEnv {
+	c := *e
+	c.path, c.subject = path, subject
+	return &c
+}
+
+// TestPutReferrerSplitAttachments: of a package at two forms of its OCI name (ADR 0017), a
+// referrer pushed at the other form, whose subject is the version reindex found there
+// (versions.oci_repo, #642), is indexed on that version; one pushed at the indexed form of the
+// version there is indexed as before; and one pushed at the other form of the indexed version's
+// manifest, which the other form holds too, has none: that version's referrers are those at the
+// indexed form, which reindex lists (#1133).
+func TestPutReferrerSplitAttachments(t *testing.T) {
+	ctx := t.Context()
+	const name = "netlify/blobs"
+	base := &attachEnv{env: newEnv(t)}
+	built, raw, newest := base.prepare(t, upload(name, "2.0", file{"f", "two"}))
+	res, err := base.ingest(t, built, raw, newest)
+	must(t, err)
+	two := base.at(newest, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: res.Digest, Size: int64(len(raw))})
+	forms := profile.EarlierPackagePaths(newest)
+	if len(forms) == 0 {
+		t.Fatalf("the package path %s has no earlier form", newest)
+	}
+	earlier := forms[len(forms)-1]
+	built, raw = base.pushAt(t, upload(name, "1.0", file{"f", "one"}), earlier)
+	rows, err := base.pipe.Inspect(ctx, base.repo, earlier, built.Tag, built.Manifest, raw, ingest.InspectOptions{})
+	must(t, err)
+	rows.Version.OCIRepo = earlier
+	must(t, base.st.Tx(ctx, func(w index.Writer) error { return ingest.WriteRows(ctx, w, rows, now) }))
+	if rows.Package.NameOCI != newest {
+		t.Fatalf("the package of the split row is at %s, want %s", rows.Package.NameOCI, newest)
+	}
+	one := base.at(earlier, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(raw), Size: int64(len(raw))})
+	_, copied := base.pushAt(t, upload(name, "2.0", file{"f", "two"}), earlier)
+	if digest.FromBytes(copied) != two.subject.Digest {
+		t.Fatalf("the copy of 2.0 at %s is %s, want %s", earlier, digest.FromBytes(copied), two.subject.Digest)
+	}
+
+	spdx := layerOf{"application/spdx+json", []byte(`{"spdxVersion":"SPDX-2.3"}`), nil}
+	atOne := one.referrer(t, one.subject.Digest, "", "application/spdx+json", nil, spdx)
+	atTwo := two.referrer(t, two.subject.Digest, "", "application/spdx+json", nil, spdx)
+	copyOfTwo := two.at(earlier, two.subject).referrer(t, two.subject.Digest, "", "application/spdx+json", nil,
+		layerOf{"application/spdx+json", []byte(`{"spdxVersion":"SPDX-2.3","name":"the copy"}`), nil})
+	for _, r := range []ingest.Referrer{atOne, atTwo, copyOfTwo} {
+		_, err := base.pipe.PutReferrer(ctx, base.repo, r, alice)
+		must(t, err)
+	}
+	for _, tt := range []struct {
+		what string
+		e    *attachEnv
+		want ingest.Referrer
+	}{
+		{"the version at the other form, " + earlier, one, atOne},
+		{"the version at the indexed form, " + newest, two, atTwo},
+	} {
+		if got := tt.e.attachments(t); len(got) != 1 || got[0].Digest != tt.want.Desc.Digest || got[0].Verification != index.AttachmentUnsigned {
+			t.Errorf("%s: rows %+v, want the one of %s", tt.what, got, tt.want.Desc.Digest)
+		}
 	}
 }
 
