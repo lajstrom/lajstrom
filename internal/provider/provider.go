@@ -188,6 +188,37 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// Reporter is a Provider that says what it knows of its registry without sending it a request,
+// for the admin's GET /api/v1/registries (docs/spec/http-routing.md §4). A Provider without it
+// is answered with no vendor, no capabilities and a closed breaker.
+type Reporter interface {
+	Report() Report
+}
+
+// Report is what a Reporter knows of its registry now.
+type Report struct {
+	// Vendor is the product its probe detected, as `lajstrom registry probe` names it
+	// (docs/registries/README.md, Support tiers); "" before a probe got an answer.
+	Vendor string
+	// Capabilities are what Capabilities answers once a probe succeeded; nil before.
+	Capabilities *Capabilities
+	// Breaker is the state of the registry's circuit breaker.
+	Breaker BreakerState
+}
+
+// BreakerState is the state of a registry's circuit breaker.
+type BreakerState string
+
+// The states of a circuit breaker.
+const (
+	// BreakerClosed: requests go to the registry.
+	BreakerClosed BreakerState = "closed"
+	// BreakerOpen: requests fail at once, ErrUnavailable, until its cooldown is over.
+	BreakerOpen BreakerState = "open"
+	// BreakerHalfOpen: trials go to the registry, and its first answer closes the breaker.
+	BreakerHalfOpen BreakerState = "half-open"
+)
+
 // Set is the configured backend registries by name (registries[].name in the configuration).
 // index.Repo.Registry selects one; the server builds the Set at startup.
 type Set interface {

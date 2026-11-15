@@ -17,6 +17,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 const (
@@ -232,5 +233,24 @@ func TestCapabilitiesChecksLifecycleOnce(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "can expire or archive what Lajstrom needs") {
 		t.Errorf("no warning:\n%s", buf.String())
+	}
+}
+
+// TestReport: the report is ecr's whatever the probe detected, with the capabilities as
+// Capabilities answers them once it did.
+func TestReport(t *testing.T) {
+	v2 := httptest.NewServer(http.HandlerFunc(ecrV2))
+	t.Cleanup(v2.Close)
+	p := fakeProvider(t, newFakeECR(newClock()), func(c *config.Registry) { c.URL = v2.URL })
+	if r := p.Report(); r.Vendor != "ecr" || r.Capabilities != nil || r.Breaker != provider.BreakerClosed {
+		t.Errorf("Report before a probe = %+v", r)
+	}
+	want, err := p.Capabilities(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-p.lifecycleDone
+	if r := p.Report(); r.Vendor != "ecr" || r.Capabilities == nil || *r.Capabilities != want {
+		t.Errorf("Report = %+v, capabilities %+v; want ecr and %+v", r, r.Capabilities, want)
 	}
 }

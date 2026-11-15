@@ -31,12 +31,23 @@ type registryHealth struct {
 	lastOK  map[string]time.Time
 	failed  map[string]bool // logged once per outage, and again when its kind changes
 	refused map[string]bool // the last ping was provider.ErrUnauthorized: a 401 or 403
+	// last is the last ping of each registry, for GET /api/v1/registries (status).
+	last map[string]pingStatus
+}
+
+// pingStatus is what the probe knows of one registry (registryHealth.status).
+type pingStatus struct {
+	pinged     bool          // its provider is a provider.Pinger
+	checkedAt  time.Time     // the last ping; zero before the first
+	answeredAt time.Time     // the last ping answered 200; zero before one
+	took       time.Duration // how long the last ping took
+	err        string        // the error of the last ping, as the provider words it; "" when it answered
 }
 
 // newRegistryHealth returns the probe of providers; it pings nothing until Ping or Run.
 func newRegistryHealth(providers provider.Map, log *slog.Logger) *registryHealth {
 	h := &registryHealth{pingers: map[string]provider.Pinger{}, log: log, now: time.Now,
-		lastOK: map[string]time.Time{}, failed: map[string]bool{}, refused: map[string]bool{}}
+		lastOK: map[string]time.Time{}, failed: map[string]bool{}, refused: map[string]bool{}, last: map[string]pingStatus{}}
 	for name, p := range providers {
 		if pinger, ok := p.(provider.Pinger); ok {
 			h.pingers[name] = pinger
@@ -53,9 +64,14 @@ func (h *registryHealth) Ping(ctx context.Context) {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(ctx, registryProbeTimeout)
 			defer cancel()
+			start := time.Now()
 			err := p.Ping(ctx)
+			took := time.Since(start)
 			h.mu.Lock()
 			defer h.mu.Unlock()
+			if err == nil || ctx.Err() == nil || errors.Is(err, context.DeadlineExceeded) {
+				h.record(name, took, err)
+			}
 			switch {
 			case err == nil:
 				if h.failed[name] {
@@ -76,6 +92,28 @@ func (h *registryHealth) Ping(ctx context.Context) {
 		})
 	}
 	wg.Wait()
+}
+
+// record keeps the ping of the registry name that took took and ended with err; h.mu is held.
+func (h *registryHealth) record(name string, took time.Duration, err error) {
+	s := h.last[name]
+	s.checkedAt, s.took, s.err = h.now(), took, ""
+	if err == nil {
+		s.answeredAt = s.checkedAt
+	} else {
+		s.err = err.Error()
+	}
+	h.last[name] = s
+}
+
+// status returns what the probe knows of the registry name: its last ping, and whether it is
+// pinged at all.
+func (h *registryHealth) status(name string) pingStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.last[name]
+	_, s.pinged = h.pingers[name]
+	return s
 }
 
 // Run pings every registryPingEvery until ctx ends.

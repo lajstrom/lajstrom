@@ -84,6 +84,8 @@ type Provider struct {
 	flight   *probeFlight // the probe under way, nil when none
 	failedAt time.Time    // when the last probe that the read path ran failed (probeBackoff)
 	probed   atomic.Pointer[provider.Capabilities]
+	// detected is the vendor the last probe that got an answer detected (Report).
+	detected atomic.Pointer[vendor]
 	// referrers is what the probe learnt about the referrers API, for the repositories that
 	// Repository hands out.
 	referrers atomic.Int32
