@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ const maxBody = 1 << 20
 // every request and answer into the cell its context names.
 type client struct {
 	base    *url.URL     // scheme://host of the registry
-	auth    *auth.Client // the registry's credentials, its challenges answered
+	auth    *aliasClient // the registry's credentials, its challenges answered
 	anon    *http.Client // no credentials: a hop that has left the registry's origin
 	timeout time.Duration
 	// transport is the transport under the record and the guard, closed by close.
@@ -40,8 +41,9 @@ type client struct {
 }
 
 // newClient builds the client of cfg: the registry's Basic or bearer challenge is answered with
-// cred, else with registries[].auth, and a bearer challenge whose token realm is on another host
-// is refused (realmGuard) before anything is sent there.
+// cred, else with registries[].auth, a bearer challenge whose token realm is on another host is
+// refused (realmGuard) before anything is sent there, and the token got after a challenge is
+// found by the next request with the same scopes (aliasClient).
 func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -54,12 +56,12 @@ func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *cl
 	}
 	c := &client{base: base, timeout: timeout, transport: t}
 	c.anon = c.plain()
-	c.auth = &auth.Client{
+	c.auth = &aliasClient{Client: &auth.Client{
 		Client:     c.anon,
 		Header:     http.Header{"User-Agent": {"lajstrom-probe/" + version.Get().Version}},
 		Credential: cred,
 		Cache:      auth.NewCache(),
-	}
+	}}
 	return c
 }
 
@@ -73,11 +75,11 @@ func newTransport(timeout time.Duration) *http.Transport {
 	return t
 }
 
-// plain is the http.Client over c's transport: every round trip recorded, a token realm on
-// another host refused, redirects not followed.
+// plain is the http.Client over c's transport: every round trip recorded, the challenge of a
+// 401 kept for aliasClient, a token realm on another host refused, redirects not followed.
 func (c *client) plain() *http.Client {
 	return &http.Client{
-		Transport:     &recordTransport{next: &realmGuard{base: c.base, next: c.transport}},
+		Transport:     &recordTransport{next: &challengeTransport{next: &realmGuard{base: c.base, next: c.transport}}},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
@@ -99,9 +101,9 @@ func (c *client) fresh(reached func(addr string)) *client {
 	}
 	f := &client{base: c.base, timeout: c.timeout, transport: t}
 	f.anon = f.plain()
-	a := *c.auth
+	a := *c.auth.Client
 	a.Client = f.anon
-	f.auth = &a
+	f.auth = &aliasClient{Client: &a}
 	return f
 }
 
@@ -332,6 +334,75 @@ func (a answer) location() *url.URL {
 		return nil
 	}
 	return u
+}
+
+// aliasClient is the probe's auth client: auth.Client.Do, and after a request that met a bearer
+// challenge, aliasToken with the challenge, which challengeTransport keeps. It is the generic
+// provider's aliasClient (#1042), for the probe's own requests: against a registry whose
+// challenge names a scope the request does not (Gitea's and Forgejo's scope="*", on every
+// challenge), each of them went out once without the token, got the 401 and was sent again
+// with the token the cache held.
+type aliasClient struct{ *auth.Client }
+
+// Do sends req as auth.Client.Do does, then aliases the token after the request's challenge.
+func (c *aliasClient) Do(req *http.Request) (*http.Response, error) {
+	challenge := new(string)
+	req = req.WithContext(context.WithValue(req.Context(), challengeKey{}, challenge))
+	resp, err := c.Client.Do(req)
+	if *challenge != "" {
+		host := req.Host // the auth client's key of the cache
+		if host == "" {
+			host = req.URL.Host
+		}
+		aliasToken(req.Context(), c.Cache, host, *challenge)
+	}
+	return resp, err
+}
+
+// aliasToken caches the bearer token that the auth client got after challenge also under the
+// scopes of ctx alone, as the generic provider's aliasToken does. The auth client keys a token
+// by the request's scopes merged with the challenge's scope parameter, but looks a request up
+// by its scopes alone before it is challenged. A Basic challenge, a challenge without a scope
+// (Harbor's) or with the request's own, and a request without scopes of its own change nothing:
+// those meet the registry's challenge as before.
+func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
+	scheme, params, _ := strings.Cut(strings.TrimSpace(challenge), " ")
+	scope := challengeParam(params, "scope")
+	if !strings.EqualFold(scheme, "bearer") || scope == "" {
+		return
+	}
+	scopes := auth.GetAllScopesForHost(ctx, host)
+	own := strings.Join(scopes, " ")
+	merged := strings.Join(auth.CleanScopes(append(slices.Clone(scopes), strings.Split(scope, " ")...)), " ")
+	if own == "" || merged == own {
+		return
+	}
+	token, err := cache.GetToken(ctx, host, auth.SchemeBearer, merged)
+	if err != nil {
+		return
+	}
+	_, _ = cache.Set(ctx, host, auth.SchemeBearer, own, func(context.Context) (string, error) { return token, nil })
+}
+
+// challengeKey is the context key under which aliasClient asks challengeTransport for the
+// challenge of a 401: a *string, which the first one fills.
+type challengeKey struct{}
+
+// challengeTransport keeps the WWW-Authenticate header of the first 401 of a request whose
+// context asks for it. The auth client answers a challenge itself, and the answer it returns in
+// the end does not show the challenge.
+type challengeTransport struct{ next http.RoundTripper }
+
+// RoundTrip implements http.RoundTripper.
+func (t *challengeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	if dst, ok := req.Context().Value(challengeKey{}).(*string); ok && *dst == "" {
+		*dst = resp.Header.Get("WWW-Authenticate")
+	}
+	return resp, nil
 }
 
 // realmGuard refuses a bearer challenge of the registry whose token realm is on another host
