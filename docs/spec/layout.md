@@ -535,7 +535,8 @@ type Proxier interface {
     // proxy_meta holds (nil without a row: the repo's versions alone, as a hosted repo's
     // document), and the versions of the name that st has in repo, whose bytes (checksums,
     // size) win over kept's. Every link to a file starts with base,
-    // <server.externalURL>/<format>/<repo>/. The Document's Kind is kind.
+    // <server.externalURL>/<format>/<repo>/, or is relative to the document, as a hosted repo's
+    // (pypi). The Document's Kind is kind.
     RenderProxy(ctx context.Context, repo index.Repo, name, kind string, kept []byte, st index.Reader, base string) (Document, error)
 }
 type UpstreamRequest struct {
@@ -573,9 +574,20 @@ type Grouper interface {
     // (§8.1, §8.2), in member order, into the group's document (§8.3): the union of their
     // versions, the first member's entry of a version that several have, the format's own
     // fields by the format's rules (npm: http-routing.md, npm, Group). Every link to a file
-    // starts with base, <server.externalURL>/<format>/<group>/; a member's links are under its
-    // own base. docs has at least one element. The Document's Kind is kind.
+    // starts with base, <server.externalURL>/<format>/<group>/, or is relative to the document
+    // (pypi); a member's links are under its own base, or relative. docs has at least one
+    // element. The Document's Kind is kind.
     MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
+}
+
+// HostedScoper is implemented by a Grouper whose hosted repos render the document of a name
+// under another index_cache scope than its key (#68): a group reads its hosted member's
+// document at HostedScope(Key(name)). Without it, the scope is the key.
+type HostedScoper interface {
+    Grouper
+    // HostedScope is the scope of a hosted repo's document of the name whose key is key: pypi
+    // simple/<project>.
+    HostedScope(key string) IndexScope
 }
 type MemberDocument struct {
     Repo    index.Repo                       // the member; its Kind tells the hosted member from a proxy
@@ -633,13 +645,13 @@ type Proxy interface {
     // Document of a group (§8): the members in order (Index.ListGroupMembers), each proxy member
     // hidden while the hosted member has a package of the package path of name and name
     // matches no group.merge pattern; the hosted member's document is CachedDocument of scope
-    // Key(name) and kind (a format with groups renders a hosted repo's document of a name under
-    // that scope), a proxy member's what Document answers for it with WithVia(ctx, group), a 403
-    // of its lists or a 404 meaning the member does not have the name, and another error that
-    // it does not take part (§8.1). The documents are merged (MergeGroup) on every call and
-    // nothing is stored: the Cache has RepoID the group's, Scope Key(name), SHA256 the group's
-    // ETag (§8.5), RenderedAt the newest member document's, no ID. When no member has the name:
-    // the first proxy member's error, else index.ErrNotFound.
+    // Key(name), or HostedScope(Key(name)) of a HostedScoper, and kind, a proxy member's what
+    // Document answers for it with WithVia(ctx, group), a 403 of its lists or a 404 meaning the
+    // member does not have the name, and another error that it does not take part (§8.1). The
+    // documents are merged (MergeGroup) on every call and nothing is stored: the Cache has
+    // RepoID the group's, Scope Key(name), SHA256 the group's ETag (§8.5), RenderedAt the newest
+    // member document's, no ID. When no member has the name: the first proxy member's error,
+    // else index.ErrNotFound.
     Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error)
     // File of a proxy: the file path names (FileRequest), held or fetched and ingested on a miss
     // (§5) by the principal of ctx (auth.PrincipalFrom); the handler serves it as a hosted file
@@ -2021,8 +2033,11 @@ Where the merged shapes differ from the first sketch of this section, and why:
   than a sixth method of `Proxier`: a format may have proxies before groups (#67, #68), and
   the implementers of `Proxier` keep compiling. `MergeGroup` takes the members' documents as
   they serve them, links under their own bases, and writes every link under the group's. The
-  hosted member's document is its `index_cache` row of scope `Key(name)`, so no hook maps a name
-  to a hosted scope; a format whose hosted scope differs adds one with its groups.
+  hosted member's document is its `index_cache` row of scope `Key(name)`, or of the scope that
+  `format.HostedScoper` maps it to: pypi keeps a project's page under `simple/<project>` beside
+  the project list under `simple`, which is also the key of a project named `simple`, so its
+  groups (#68) add the hook. It is an interface of its own, a `Grouper` with one method, so that
+  npm's plugin, whose scope is the key, stays as it is.
 - **A proxy becomes hosted through `format.Adopter`** (#441), a `Proxier` with two methods.
   The core reads the kept document of each held package and needs of the plugin only which kind
   to read and the journal ops it means: a proxy's dist-tags are its upstream's, in a cache, and a
