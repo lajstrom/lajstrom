@@ -831,16 +831,20 @@ One version (`read`, #136): `GET …/packages/<name>/versions/<version>[?variant
 `<name>` and `<version>` as the delete below has them, answers the version's row of that list
 (`version`, `publishedAt`, `lastModified`, `pointers`, `variants`, and `yanked` when it has one)
 and `ociRepository`, the OCI
-repository below the instance prefix that holds it (`<format>/<repo>/<name_oci>`, the `<name>`
-of §2). Each variant adds what the index has of its manifest: `artifactType`, `attrs`
+repository below the instance prefix that holds the manifest of its first variant: the `<name>`
+of §2, `<format>/<repo>/<package path>`, whose package path is `index.ManifestPath` of the
+variant's row, its `oci_repo`, else the package's `name_oci`. The variants are in the order of
+their names; those of a version split across two forms of its package path (index-schema.md,
+Invariants and rules) may be at both. Each variant adds its own `ociRepository` and what the
+index has of its manifest: `artifactType`, `attrs`
 (`versions.attrs`, by annotation key), `metadata` (the metadata layer; `null` when it is absent
 or omitted for size), `degraded`, `indexedAt` and `files`, its file layers in manifest order,
 each with `name`, `mediaType`, `digest`, `size` and `attrs` (the layer's annotations).
 `?variant=` keeps one variant (`""` is the variant of a format that has none); the version's times
 and pointers stay those of all its variants. It is all read from
 the derived tables (index-schema.md), so reindex rebuilds it. The manifest itself and its referrers
-are live registry reads and not part of it (#951); `/v2/<ociRepository>/…` serves both
-(§2). A file's protocol URL is not part of it either: the client builds it from the format, as
+are live registry reads and not part of it (#951); `/v2/<ociRepository>/…` of a variant serves
+both (§2). A file's protocol URL is not part of it either: the client builds it from the format, as
 for its usage snippets. The answer is `404` when the repo, the package, the version or the variant
 does not exist, and for a group, which has no versions.
 
