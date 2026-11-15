@@ -238,15 +238,16 @@ ciphertext to disk.
 `blob_map` (derived) holds, per repo and OCI repository, the plaintext digest of every encrypted
 layer and of every manifest of an encrypted repo, the stored digest it maps to, the key that
 wraps its data key and that wrapping, and the public options. Reindex rebuilds it from the
-manifests and the keys referrers below. A row of a blob that the facade received and no manifest
-names yet is kept by reindex for an hour, an upload session's lifetime.
+manifests and the keys referrers below. A row of a blob that the facade or a publication session
+received and no manifest names yet is kept by reindex for a day, the longest a publication
+session lives.
 
 ### Reindex without the key
 
-A run that cannot open the repo's keys (no master key, a key whose seal does not open, a KMS that
-refuses) skips the repo whole and says why in the repo's report (`skipped`): its rows stay as
-they are, `blob_map` included. A KMS that is only unavailable is an error of the
-repo, retried by the next run. A run with the keys rebuilds everything, decrypting each metadata
+A run that cannot open the repo's keys (no master key, a key whose seal does not open, no client
+for the KMS that holds one) skips the repo whole and says why in the repo's report (`skipped`):
+its rows stay as they are, `blob_map` included. A KMS that refuses or does not answer during the
+run fails the manifests it was asked for, which keep their rows, and the next run tries again. A run with the keys rebuilds everything, decrypting each metadata
 layer and unwrapping each layer's data key once (one KMS request per layer for a KMS key).
 
 ### Rotation: a keys referrer per manifest
