@@ -385,6 +385,59 @@ func (c *conn) ListFiles(ctx context.Context, versionID int64) ([]index.File, er
 		"SELECT "+fileCols+" FROM files WHERE version_id = ? ORDER BY id", versionID)
 }
 
+// factRow is one row of the statement of ListVersionFacts: a version's files (file 1, kind "")
+// or its attachments of one kind (file 0), counted, and the files' sizes added up.
+type factRow struct {
+	versionID, file int64
+	kind            string
+	count, size     int64
+}
+
+// ListVersionFacts returns the facts of the versions ids, one per id in their order. The distinct
+// ids go in statements of at most touchBatch, each the files of its ids grouped by version and
+// their attachments grouped by version and kind, joined by UNION ALL, over the indexes that
+// start with version_id.
+func (c *conn) ListVersionFacts(ctx context.Context, versionIDs []int64) ([]index.VersionFacts, error) {
+	facts := make(map[int64]index.VersionFacts, len(versionIDs))
+	distinct := slices.Compact(slices.Sorted(slices.Values(versionIDs)))
+	for chunk := range slices.Chunk(distinct, touchBatch) {
+		args := make([]any, 0, 2*len(chunk))
+		for range 2 {
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+		}
+		marks := strings.Repeat(", ?", len(chunk))[2:]
+		rows, err := getAll(ctx, c, fmt.Sprintf("the facts of %d versions", len(chunk)),
+			func(r *factRow) []any { return []any{&r.versionID, &r.file, &r.kind, &r.count, &r.size} },
+			"SELECT version_id, 1, '', COUNT(*), CAST(SUM(size) AS BIGINT) FROM files WHERE version_id IN ("+marks+")"+
+				" GROUP BY version_id"+
+				" UNION ALL SELECT version_id, 0, kind, COUNT(*), 0 FROM attachments WHERE version_id IN ("+marks+")"+
+				" GROUP BY version_id, kind", args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			f := facts[r.versionID]
+			if r.file == 1 {
+				f.Files, f.Size = r.count, r.size
+			} else {
+				if f.Attachments == nil {
+					f.Attachments = map[string]int64{}
+				}
+				f.Attachments[r.kind] += r.count
+			}
+			facts[r.versionID] = f
+		}
+	}
+	out := make([]index.VersionFacts, len(versionIDs))
+	for i, id := range versionIDs {
+		out[i] = facts[id]
+		out[i].VersionID = id
+	}
+	return out, nil
+}
+
 // FindFiles returns the files called name in a repo with their versions and packages, in the
 // order they were stored.
 func (c *conn) FindFiles(ctx context.Context, repoID int64, name string) ([]index.FileMatch, error) {
