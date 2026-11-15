@@ -86,7 +86,8 @@ The admin's list of every token and a repo's open publication sessions (http-rou
   `After`, by id, at most its `Limit`: of its kind, of its user (`user_id`), of its repo
   (`repo_id`) or over its mask (`repo_mask`, as written), each when it is set, and, when it has a
   time, those neither revoked nor expired then (`revoked_at IS NULL AND (expires_at IS NULL OR
-  expires_at > ?)`). It reads the primary key.
+  expires_at >= ?)`: a token that expires at that very time is live, as the authenticator takes
+  it). It reads the primary key.
 - **`ListOpenSessions(repoID, at, after, limit)`** returns the rows of `sessions` of the repo
   whose `state` is `open`, whose `expires_at` is after `at` and whose id is above `after`, by
   id, at most `limit`, but the blob uploads of the facade (a key that starts with
