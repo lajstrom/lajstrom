@@ -1,6 +1,6 @@
 # 0008. Policy verdicts: deny lists, quarantine, and where enforcement lives
 
-- Status: accepted
+- Status: accepted; amended by #101 (below, Amendment)
 - Date: 2026-11-07
 - Deciders: gecube
 
@@ -140,3 +140,62 @@ Nothing above is built in the PoC. These are the seams it must not close:
   (digests, signed, derived). The UI and the API show both under one word, *policy*.
 - The post-MVP issue of this record carries the contract changes: `policy_rules`, the verdict
   predicate, the API, the `policy` resource, the `enforcePull` switch.
+
+## Amendment: the choices the issue left open (#101, 2026-11-15)
+
+Issue #101 builds this record and names its contract changes; [policy.md](../spec/policy.md) is
+the spec. These are the choices the issue left open, each with the default the spec takes.
+
+- **A. Version constraints: one grammar for every format.** `==`, `!=`, `<`, `<=`, `>`, `>=`,
+  joined with `,`, a bare version meaning `==`, and `*` as a glob in `==` and `!=`. The ranges
+  compare in the format's order where the plugin has one (`format.VersionComparer`: npm's semver
+  and Maven's `ComparableVersion` today), and a rule with a range on another format is refused.
+  Rejected: each ecosystem's own syntax (PEP 440 specifiers, npm ranges, Debian relations, Maven
+  ranges), four grammars, and no rule over a mask that spans formats. Consequence: `==` and
+  globs work everywhere from the first day; a pypi, apt or rpm range is refused until its plugin
+  orders versions.
+- **B. A rule's mask matches as a binding's**, by whole segments, and a decision is taken in the
+  repo that holds the artifact. A mask that names a group exactly also holds for each of its
+  members. Rejected: a group's rules applied only when it merges, which would make a member's
+  documents differ by the path they were read through, while `index_cache` keeps one per
+  member. Consequence: a rule on `npm/all` holds for `npm/npmjs` read directly too.
+- **C. The quarantine's clock is the upstream's publish time** where its document gives one (npm
+  `time`, pypi's PEP 700 `upload-time`), which a held version keeps as its `created_at`
+  (manifest-profile.md §3.1); else the first time the repo saw the version listed (`policy_seen`,
+  a cache), and a held version the time of its fetch. Rejected: first seen always, or the later of the two, which resist an
+  upstream that backdates but hold back every version for the whole quarantine the day it is
+  turned on. Consequence: the upstream's clock is trusted; a lost `policy_seen` row lengthens a
+  quarantine and never shortens it.
+- **D. The deny list is an OCI artifact at `lajstrom/policy/denylist`**, not `_meta/policy/denylist`:
+  a component of an OCI name cannot begin with `_`, and `lajstrom` is the first segment that no
+  format has and snapshots use already (manifest-profile.md §9). One JSON layer and one layer with
+  its signature as `cosign sign-blob` writes it, by the server's policy key, so that `oras pull`
+  and `cosign verify-blob --key` check it with no other tool. Its tags sort by the policy
+  generation and never move; `/v2` answers `latest` as the greatest. Rejected: a moving `latest`
+  in the registry (a second exception to immutable tags), and an in-toto envelope, which `cosign
+  verify-blob` does not read without a bundle. Consequence: a consumer that pulls from the
+  registry directly lists the tags and takes the greatest.
+- **E. `DENIED` under `enforcePull`** is `403` for `GET` and `HEAD` of a manifest once its
+  reference has resolved to a digest, with the reason; blobs, tag lists and referrers never.
+  Rejected: `404`, which hides why and makes a client try elsewhere, and a decision before the
+  resolve, which does not know the digest a tag names. Consequence: a denied image index is
+  refused, a denied platform manifest is refused when the client asks for it by digest.
+- **F. The server signs with one ECDSA P-256 key**, the policy key, a `keys` row of kind `policy`,
+  sealed with the master key or held in the KMS of ADR 0020. Rejected: a repo's GPG key (#41),
+  which is OpenPGP and not what `cosign` verifies, and the token key (ADR 0010), one key for two
+  purposes. Consequence: one public key for every verdict the server makes and for the deny list,
+  answered by `GET /api/v1/policy/key`; no rotation in #101.
+- **G. Precedence:** a `deny` verdict, then an `allow` rule, then a `deny` rule, then quarantine,
+  which an `allow` verdict releases. An `allow` rule is an exception to the rules and to
+  quarantine; a signed `deny` verdict wins over every rule, and lifts only by its expiry or the
+  deletion of its referrer.
+- **H. A verdict's `scope` is a repo mask**, the repo that holds the referrer when absent: a
+  trusted signer may ban a digest wherever it is held.
+- **I. Who may.** #89 has not decided its `attach` action (option C). Verdicts pushed through
+  `/v2` need what every referrer needs on `main`, `write`; they follow option C if the maintainer
+  takes it. The deny of the management API, which the server signs, needs `manage`.
+- **J. A reason for pip and apt.** A version left out of an index is a version the client does
+  not see, so `pip install requests==2.32.0` fails with "no matching distribution" and `apt-get
+  install p=1.0` with "version not found", and neither shows the rule's reason: neither protocol
+  has a field for it. The reason is in the `403` of a direct download, in the audit row of the
+  refusal, and in the API.

@@ -45,6 +45,8 @@ internal/index/storetest/     conformance suite of index.Store, run by both engi
 internal/proxy/               proxy repos (ADR 0013): the settings, the upstream client, the metadata cache, fetch on miss
 internal/egress/              where an upstream's client may connect (Guard): the configured hosts and the egress proxies
                               as they are, any other host over https at public addresses only (proxy-and-group.md §9.2)
+internal/policy/              policy (#101): rules, the decision over rules and verdicts, the view a render reads through
+internal/policy/denylist/     the deny list: the document, the signed artifact in the registry, the flat JSON
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
 internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69); the
@@ -1996,6 +1998,79 @@ type Event struct {
 }
 ```
 
+### Policy (`internal/policy`, #101)
+
+What the contract packages use of it ([policy.md](policy.md)). `format`, `ingest`, `proxy`,
+`facade` and `api` import it; it imports `index` and nothing of theirs: the order of a format's
+versions comes in as a function.
+
+```go
+// package policy
+type Subject struct {
+    Repo      index.Repo
+    Name      string                        // lajstrom.name
+    Version   string
+    Variant   string
+    Digest    digest.Digest                 // the manifest's; "" for a coordinate the repo does not hold
+    Published time.Time                     // the quarantine's clock (policy.md §4); zero: now
+}
+type Verdict struct {                       // a decision (policy.md §3)
+    Effect      string                      // EffectAllow, EffectDeny, EffectQuarantine
+    Reason      string                      // as clients see it
+    Rule        int64                       // the rule that decided; 0 when none
+    Attestation digest.Digest               // the referrer of the verdict that decided; "" when none
+    Source      string                      // its source
+    Until       time.Time                   // when it may change by the clock alone; zero: never
+}
+func (v Verdict) Allowed() bool
+// DeniedError is the error of a refusal; it wraps ErrDenied, which format.StatusOf answers 403
+// and the facade DENIED.
+type DeniedError struct{ Subject Subject; Verdict Verdict }
+var ErrDenied = errors.New("policy: denied")
+
+type Options struct {
+    Index   index.Store
+    Compare func(format, a, b string) (int, bool) // a format's order of versions; false: none
+    Now     func() time.Time
+    Log     *slog.Logger
+}
+func New(o Options) *Decider
+// Decide answers one subject: the rules (kept per policy_state.generation) and the verdicts of
+// its digest (verdicts_subject). Groups: a subject's repo is the member that holds it.
+func (d *Decider) Decide(ctx context.Context, s Subject) (Verdict, error)
+// View reads the rules and the verdicts that may hold in repo once, through r, for a render.
+func (d *Decider) View(ctx context.Context, r index.Reader, repo index.Repo) (*View, error)
+func (v *View) Decide(s Subject) Verdict
+// Reader is r without the versions the view refuses (policy.md §6.1).
+func (v *View) Reader(r index.Reader) index.Reader
+// Until is the earliest Until of the decisions taken so far: index_cache.expires_at.
+func (v *View) Until() time.Time
+// Refuse appends the audit row policy.refuse of a refusal (policy.md §6.6).
+func (d *Decider) Refuse(ctx context.Context, surface string, err *DeniedError, principal auth.Principal)
+// ParseRule checks a rule as policy.md §1.3 does; an error wraps format.ErrInvalid and names
+// the field.
+func ParseRule(r index.PolicyRule, compare func(format, a, b string) (int, bool)) error
+```
+
+The contract packages grow these, each nil or absent for no policy:
+
+- `format.Deps.Policy *policy.Decider`; `format.ServeBlobOptions.Subject *policy.Subject`, decided
+  first by `ServeBlob` in a function of its own (`decide`); `format.CachedDocument` renders
+  through `View.Reader` and stores `View.Until` as each document's `ExpiresAt`.
+- `format.VersionComparer`, a `Plugin` with `CompareVersions(a, b string) (int, error)` (npm,
+  maven); `format.Trimmer`, a `Proxier` with `Trim` (proxy-and-group.md §10; npm);
+  `format.Locator`, a `Plugin` with `DownloadPrefix(repo index.Repo, name, version string)
+  (string, bool)`, the path of policy.md §8 (pypi, maven, npm).
+- `index.PolicyRule`, `index.Verdict`, `index.PolicySeen`; `Attachment.Verdict *Verdict` (a
+  verified verdict's row, written by `ReplaceAttachments` with its attachment);
+  `Cache.ExpiresAt`. The Reader: `ListPolicyRules`, `PolicyGeneration`, `ListVerdicts(repoID,
+  subject)`, `GetPolicySeen`. The Writer: `CreatePolicyRule`, `DeletePolicyRule` (both increment
+  the generation), `BumpPolicyGeneration`, `ReplaceOCIVerdicts`, `DeleteOCIVerdicts`,
+  `TouchOCIVerdicts`, `SweepOCIVerdicts`, `PutPolicySeen` (insert if absent).
+- `ingest.Options.Policy *policy.Decider`, decided in `ingest.decide` between `validate` and
+  `claimTag`; `ingest.ErrDenied` is `policy.ErrDenied`. `proxy.Options.Policy`,
+  `facade.Options.Policy`, `api.Options.Policy` the same Decider.
+
 ### Decisions
 
 Where the merged shapes differ from the first sketch of this section, and why:
@@ -2345,6 +2420,10 @@ attachments:                                # the verification of attachments (#
         issuer: https://token.actions.githubusercontent.com
         subject: https://github.com/acme/app/.github/workflows/release.yml@refs/heads/main # or subjectRegex
         predicateTypes: [https://slsa.dev/provenance/v1]
+policy:                                     # policy.md (#101)
+  signingKey: local                         # the policy key: local (sealed with the master key) or a KMS key URI of ADR 0020
+  denylist:
+    registry: ""                            # where the deny list is written; "": the first of registries
 webhooks:                                   # webhooks.md (#77): the delivery of every replica
   allowedHosts: []                          # hosts dialed as they are: http and private addresses allowed
   timeout: 10s                              # one attempt; at most 60s

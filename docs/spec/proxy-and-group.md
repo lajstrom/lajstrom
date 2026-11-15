@@ -221,7 +221,7 @@ pattern that refused it (`deny: @acme/*`, or `allow` when no pattern of it match
 0008's rules will answer, and no request goes to the upstream for it; through a group, the
 member does not have the name (§8.1), so a name that no other member has is the group's `404`.
 The lists say what a proxy mirrors; refusing a version for a reason, with `403`, is ADR 0008's
-rules, which will be asked at the same point (§5, step 3) once they are implemented (#101).
+rules and verdicts, asked at §5, step 3 ([policy.md](policy.md) §6.4, #101).
 
 `deny` also bounds what a proxy forwards for a client (§9.2): a name it refuses never leaves the
 server (#514). The plugin asks the core (layout.md, `Proxy.Denies`) and leaves the name out of
@@ -285,8 +285,11 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    name. A path it cannot map is the format's `404`.
 2. A name outside the lists (§3): `403` (through a group: the member does not have it).
 3. The index has the version, with the file: it is served as a hosted file is
-   (`format.ServeBlob`), and nothing else happens. This is where ADR 0008's `policy.Decider`
-   will be asked (#101), before step 4, for a held version and a fetch alike.
+   (`format.ServeBlob`), and nothing else happens. Before this step, for a held version and a
+   fetch alike, `policy.Decider` decides ([policy.md](policy.md) §6.4, #101): a decision other
+   than `allow` is `403` with the reason, an audit row `policy.refuse`, and no request to the
+   upstream. A version the repo does not hold is decided on the entry of step 5 (its publish time
+   is the quarantine's clock), read before the decision.
 4. Offline (§4.4): `404`.
 5. The name's document (§4.2) lists the version and the file: their URL and the upstream's
    checksums. A version it does not list, or a name it does not have, is `404`. A format whose
@@ -596,6 +599,22 @@ type UpstreamFile struct {
     Name      string
     URL       string                 // absolute, or relative to the upstream URL
     Checksums map[string]string      // sha512, sha256, sha1 → lowercase hex
+}
+```
+
+Policy (#101, [policy.md](policy.md) §6.1) adds `format.Trimmer`, a `Proxier` with one method; a
+format whose plugin lacks it renders its upstream's versions whatever the policy says, and their
+files are refused when they are asked for:
+
+```go
+// Trimmer: a Proxier whose kept documents can lose versions.
+type Trimmer interface {
+    Proxier
+    // Trim returns kept, the document of kind of name as ParseMetadata kept it, without the
+    // versions for which drop is true; kept as it is when it drops none. npm also leaves out a
+    // dist-tag that names a version dropped, and moves latest to the greatest version left that
+    // is not a prerelease.
+    Trim(name, kind string, kept []byte, drop func(version, variant string) bool) ([]byte, error)
 }
 ```
 
