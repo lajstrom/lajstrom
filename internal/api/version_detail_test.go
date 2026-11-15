@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -58,11 +59,11 @@ func TestGetVersion(t *testing.T) {
 		  {"name": "requests-1.0-py3-none-any.whl", "mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip", "digest": "` + dg("whl") + `",
 		   "size": 64928, "attrs": {"org.opencontainers.image.title": "requests-1.0-py3-none-any.whl"}},
 		  {"name": "requests-1.0-py3-none-any.whl.metadata", "mediaType": "application/vnd.lajstrom.pypi.core-metadata.v1", "digest": "` + dg("md") + `",
-		   "size": 210, "attrs": {}}]}`
+		   "size": 210, "attrs": {}}], "ociRepository": "pypi/libs/requests"}`
 	sdist := `{"variant": "sdist", "tag": "1.0__sdist", "digest": "` + dg("sdist") + `", "publishedAt": "2025-12-30T12:00:00Z",
 		"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {}, "metadata": null, "degraded": true, "indexedAt": "2026-01-02T12:00:00Z",
 		"files": [{"name": "requests-1.0.tar.gz", "mediaType": "application/vnd.lajstrom.pypi.sdist.v1+gzip", "digest": "` + dg("tgz") + `",
-		   "size": 131072, "attrs": {}}]}`
+		   "size": 131072, "attrs": {}}], "ociRepository": "pypi/libs/requests"}`
 	version := func(variants string) string {
 		return `{"version": "1.0", "publishedAt": "2025-12-30T12:00:00Z", "lastModified": "2026-01-02T12:00:00Z",
 			"variants": [` + variants + `], "pointers": [{"kind": "dist-tag", "name": "latest"}], "ociRepository": "pypi/libs/requests"}`
@@ -76,6 +77,44 @@ func TestGetVersion(t *testing.T) {
 		var got any
 		decodeJSON(t, f.do(http.MethodGet, target+tt.query, "", admin), http.StatusOK, &got)
 		wantJSON(t, "version"+tt.query, got, tt.want)
+	}
+}
+
+// TestGetVersionSplit: the variants of a version split across two forms of its package path
+// (#642) each name the OCI repository that holds their manifest, index.ManifestPath, and the
+// version names that of its first variant: with ?variant=, of the one it keeps.
+func TestGetVersionSplit(t *testing.T) {
+	f := newFixture(t, Options{})
+	repo := f.create(t, "pypi", "libs")
+	ctx := context.Background()
+	pkg := index.Package{RepoID: repo.ID, Name: "manifests", NameOCI: "manifest_73"} // ADR 0017; "manifests" before it
+	must(t, f.st.UpsertPackage(ctx, &pkg))
+	for _, v := range []index.Version{
+		{Variant: "py3-none-any", Tag: "1.0__py3-none-any"},
+		{Variant: "sdist", Tag: "1.0__sdist", OCIRepo: "manifests"}, // found by reindex at the earlier form
+	} {
+		v.PackageID, v.Version, v.Digest, v.ArtifactType = pkg.ID, "1.0", digest.FromString(v.Variant), "application/vnd.lajstrom.pypi.v1"
+		v.CreatedAt, v.IndexedAt = testNow, testNow
+		must(t, f.st.UpsertVersion(ctx, &v))
+	}
+	target := "/api/v1/repos/pypi/libs/packages/manifests/versions/1.0"
+	for _, tt := range []struct {
+		query, version string
+		variants       []string
+	}{
+		{"", "pypi/libs/manifest_73", []string{"pypi/libs/manifest_73", "pypi/libs/manifests"}},
+		{"?variant=sdist", "pypi/libs/manifests", []string{"pypi/libs/manifests"}},
+		{"?variant=py3-none-any", "pypi/libs/manifest_73", []string{"pypi/libs/manifest_73"}},
+	} {
+		var got VersionDetail
+		decodeJSON(t, f.do(http.MethodGet, target+tt.query, "", admin), http.StatusOK, &got)
+		variants := make([]string, len(got.Variants))
+		for i, v := range got.Variants {
+			variants[i] = v.OCIRepository
+		}
+		if got.OCIRepository != tt.version || !slices.Equal(variants, tt.variants) {
+			t.Errorf("version%s: ociRepository %q, of the variants %q; want %q, %q", tt.query, got.OCIRepository, variants, tt.version, tt.variants)
+		}
 	}
 }
 

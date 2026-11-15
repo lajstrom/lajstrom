@@ -58,8 +58,7 @@ type VariantEntry struct {
 
 // VersionDetail is the answer of GET …/packages/{name}/versions/{version} (docs/api.md, Get a
 // version): the version's row of VersionList with its variants in detail, and OCIRepository,
-// <format>/<repo>/<package path>, the OCI repository below the instance prefix that holds its
-// manifests (the <name> of /v2).
+// the OCIRepository of its first variant.
 type VersionDetail struct {
 	Version       string           `json:"version"`
 	PublishedAt   time.Time        `json:"publishedAt"`
@@ -80,6 +79,10 @@ type VariantDetail struct {
 	Degraded     bool              `json:"degraded"`
 	IndexedAt    time.Time         `json:"indexedAt"`
 	Files        []FileEntry       `json:"files"` // in manifest order
+	// OCIRepository is <format>/<repo>/<package path>, the OCI repository below the instance
+	// prefix that holds the manifest (the <name> of /v2): index.ManifestPath, which differs
+	// between the variants of a version split across two forms of its package path (#642).
+	OCIRepository string `json:"ociRepository"`
 }
 
 // FileEntry is one file layer of a manifest.
@@ -127,16 +130,18 @@ func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, 
 		}
 	}
 	out := VersionDetail{Version: v.Version, PublishedAt: v.PublishedAt, LastModified: v.LastModified,
-		Variants: make([]VariantDetail, 0, len(rows)), Pointers: v.Pointers, Yanked: v.Yanked,
-		OCIRepository: repo.Format + "/" + repo.Name + "/" + pkg.NameOCI}
+		Variants: make([]VariantDetail, 0, len(rows)), Pointers: v.Pointers, Yanked: v.Yanked}
 	slices.SortFunc(rows, func(a, b index.Version) int { return strings.Compare(a.Variant, b.Variant) })
 	for _, row := range rows {
 		files, err := h.repos.Index.ListFiles(ctx, row.ID)
 		if err != nil {
 			return 0, nil, fmt.Errorf("api: files of %s of %q in %s/%s: %w", row.Digest, pkg.Name, repo.Format, repo.Name, err)
 		}
-		out.Variants = append(out.Variants, variantDetail(row, files))
+		d := variantDetail(row, files)
+		d.OCIRepository = repo.Format + "/" + repo.Name + "/" + index.ManifestPath(*pkg, row)
+		out.Variants = append(out.Variants, d)
 	}
+	out.OCIRepository = out.Variants[0].OCIRepository
 	return http.StatusOK, out, nil
 }
 

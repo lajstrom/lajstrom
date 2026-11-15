@@ -1907,7 +1907,7 @@ components:
         yanked: {$ref: "#/components/schemas/Yank"}
         ociRepository:
           type: string
-          description: <format>/<repo>/<package path>, the repository of its manifests on /v2.
+          description: "The ociRepository of its first variant: <format>/<repo>/<package path>, the repository of its manifest on /v2."
     AttachmentList:
       description: The attachments of a version, newest first.
       type: object
@@ -1962,7 +1962,7 @@ components:
     VariantDetail:
       description: One manifest of a version, with its row of the index and its files.
       type: object
-      required: [variant, tag, digest, publishedAt, artifactType, attrs, metadata, degraded, indexedAt, files]
+      required: [variant, tag, digest, publishedAt, artifactType, attrs, metadata, degraded, indexedAt, files, ociRepository]
       properties:
         variant: {type: string, description: Empty for a format without variants.}
         tag: {type: string}
@@ -1985,6 +1985,11 @@ components:
           type: array
           description: The file layers, in manifest order.
           items: {$ref: "#/components/schemas/File"}
+        ociRepository:
+          type: string
+          description: >-
+            <format>/<repo>/<package path>, the repository of its manifest on /v2: of a package split across
+            two forms of its OCI name, the form where reindex found it (#642).
     File:
       description: One file layer of a manifest.
       type: object
