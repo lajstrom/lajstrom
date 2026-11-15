@@ -1790,7 +1790,9 @@ Some registries do not list their repositories to Lajstrom: Harbor's `_catalog` 
 administrators with Basic auth, GHCR's lists all of GHCR ([registries](registries/README.md)).
 The probe or the vendor table then sets `catalog` false, as `capabilities.catalog: false` in the
 registry's configuration does. (ECR is not one of them: the type `ecr` lists with
-`DescribeRepositories`, [ecr.md](registries/ecr.md).) A run reads the OCI
+`DescribeRepositories`, [ecr.md](registries/ecr.md); nor is Harbor of type `harbor`, which lists
+a project's repositories with Harbor's REST API when its robot account has `repository:list`,
+[harbor.md](registries/harbor.md#type-harbor).) A run reads the OCI
 repositories that the index records in `oci_repos` instead: ingest records each one it writes
 to, and a run each one it reads. Each is checked by its tag list: one the registry no longer
 knows loses its row once no run has seen it for `reconcile.graceAge`, and its versions go only
