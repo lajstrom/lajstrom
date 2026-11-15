@@ -28,6 +28,9 @@ const breakerVariety = 2
 // repository (blame.repo), and the readiness ping besides (#1116).
 const breakerTrials = 3
 
+// probeEvery is how often at most the breaker sends a probe of its own (breaker.suspect, #1119).
+const probeEvery = time.Second
+
 // The circuit breaker of a registry: breakerThreshold requests in a row that fail open it, when
 // they are of breakerVariety repositories or one of them is the registry's whatever the request,
 // and it stays open for breakerCooldown. Variables so that tests can change them.
@@ -56,7 +59,9 @@ const (
 // or one of them must be the registry's whatever the request (breaker.blame): a repository that
 // the registry cannot serve, damaged in its storage or a name it mishandles, fails every request
 // of it, and must not fail every other repository with it (#972). Such a run is counted
-// (lajstrom_provider_circuit_held_total) and logged, at most once a cooldown. Then the breaker is
+// (lajstrom_provider_circuit_held_total) and logged, at most once a cooldown, and the breaker
+// sends a probe of its own, GET /v2/ (suspect): when the registry does not answer that either,
+// the breaker opens; when it does, the run ends (#1119). After the cooldown the breaker is
 // half-open: up to breakerTrials GET or HEAD go through at once as trials, each of another
 // repository (blame.repo), and the readiness ping of serve, GET /v2/ every 20 s, besides. The
 // first answer to a trial closes the breaker. Failed trials open it for another cooldown by the
@@ -72,6 +77,8 @@ type breaker struct {
 	host     string       // the registry's host[:port], of its URL
 	log      *slog.Logger // carries registry=<name>
 	now      func() time.Time
+	// probe sends GET /v2/ of the registry and returns its outcome (probeOf); nil sends none.
+	probe func() int
 
 	mu    sync.Mutex
 	state int
@@ -84,8 +91,13 @@ type breaker struct {
 	opened   time.Time // when it last opened
 	period   int       // how often it opened: a trial of an earlier opening is not this one's
 	trials   []string  // the repositories of the trials in flight, while half-open (blame.repo)
+	answers  uint64    // how many answers came: a probe's failure counts when none came while it ran
+	probing  bool      // a probe is in flight
+	probed   time.Time // when the last probe was sent
 	// waitUntil is when the wait ends that the registry last asked for (askedToWait).
 	waitUntil time.Time
+	// probes are the probes in flight, which a test waits for.
+	probes sync.WaitGroup
 }
 
 // newBreaker returns the breaker of the registry named registry at host, the host[:port] of its
@@ -246,12 +258,8 @@ func (b *breaker) done(ctx context.Context, p pass, result int, against blame) {
 	}
 	switch {
 	case result > 0:
-		if b.state != breakerClosed {
-			b.log.InfoContext(ctx, "registry answers again: circuit closed") // the logger names the registry
-			metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(0)
-		}
-		b.state = breakerClosed
-		b.reset()
+		b.answers++
+		b.answered(ctx)
 	case result < 0 && trial:
 		b.count(against)
 		if b.varied() {
@@ -271,7 +279,8 @@ func (b *breaker) done(ctx context.Context, p pass, result int, against blame) {
 
 // hold records a failure that leaves a run of failures in a row at breakerThreshold or past it,
 // of too few repositories, with the breaker closed; b.mu is held. The run is counted once, when
-// it reaches the threshold, and logged at most once a cooldown.
+// it reaches the threshold, and logged at most once a cooldown, and the breaker sends its probe
+// (suspect).
 func (b *breaker) hold(ctx context.Context) {
 	if b.failures == breakerThreshold {
 		metrics.ProviderCircuitHeld.WithLabelValues(b.registry).Inc()
@@ -280,6 +289,77 @@ func (b *breaker) hold(ctx context.Context) {
 		b.held = b.now()
 		b.log.WarnContext(ctx, "registry fails the requests of one repository only: circuit kept closed, "+
 			"the repository may be broken in the registry", "repositories", b.repos, "failures", b.failures)
+	}
+	b.suspect(ctx)
+}
+
+// answered closes the breaker, or ends the failures in a row of a closed one: the registry
+// answered; b.mu is held.
+func (b *breaker) answered(ctx context.Context) {
+	if b.state != breakerClosed {
+		b.log.InfoContext(ctx, "registry answers again: circuit closed") // the logger names the registry
+		metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(0)
+	}
+	b.state = breakerClosed
+	b.reset()
+}
+
+// suspect sends a probe, GET /v2/ of the registry (probeOf), after a run of failures in a row
+// of one repository reached breakerThreshold and left the breaker closed (#1119). From inside,
+// that run is a repository the registry cannot serve, or a registry that fails or hangs while
+// one repository is asked, which nothing else would tell when no readiness ping is sent: an
+// upstream of an oci proxy repo. At most one probe is in flight, and at most one is sent a
+// probeEvery; b.mu is held. The probe confirms that the registry answers, not that its storage
+// works: on Zot and distribution GET /v2/ touches no storage.
+func (b *breaker) suspect(ctx context.Context) {
+	if b.probe == nil || b.probing || !b.probed.IsZero() && b.now().Sub(b.probed) < probeEvery {
+		return
+	}
+	b.probing, b.probed = true, b.now()
+	answers, ctx := b.answers, context.WithoutCancel(ctx)
+	b.probes.Go(func() { b.probedWith(ctx, b.probe(), answers) })
+}
+
+// probedWith records the outcome of a probe sent when answers answers had come (suspect), while
+// the breaker is still closed: an answer ends the failures in a row, as any answer does; a
+// failure, no answer or a 5xx, is the registry's whatever the request, and opens the breaker,
+// unless an answer came while the probe ran.
+func (b *breaker) probedWith(ctx context.Context, result int, answers uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probing = false
+	switch {
+	case b.state != breakerClosed:
+	case result > 0:
+		b.answers++
+		b.reset()
+	case result < 0 && b.answers == answers:
+		b.count(blame{repo: "/v2/", wide: true})
+		b.open(ctx, "probe", "GET /v2/ failed too")
+	}
+}
+
+// probeOf returns the probe of a breaker (breaker.suspect): GET url, the registry's /v2/,
+// through rt, the transport below the retries and the credentials, with header, the whole
+// request bounded by timeout. So it is sent once, anonymously, and recorded in the metrics as
+// any attempt is. It returns the outcome: +1 an answer but a 5xx (501 aside) and a 429; -1 a
+// 5xx, or no answer within timeout; 0 a 429.
+func probeOf(rt http.RoundTripper, url string, header http.Header, timeout time.Duration) func() int {
+	return func() int {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return 0
+		}
+		req.Header = header.Clone()
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			return -1 // its own deadline too: no caller can go away
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+		_ = resp.Body.Close()
+		return outcome(context.Background(), resp, nil, false)
 	}
 }
 
@@ -303,11 +383,11 @@ func (b *breaker) varied() bool { return b.wide > 0 || len(b.repos) >= breakerVa
 // open opens the breaker for a cooldown; b.mu is held. Opened from closed, it is logged and
 // counted (lajstrom_provider_circuit_opens_total); a re-opening after a failed trial is neither.
 // The log line names the repositories the failures in a row were of, at most breakerThreshold,
-// and how many were the registry's whatever the request.
-func (b *breaker) open(ctx context.Context) {
+// and how many were the registry's whatever the request, and has the attributes attrs.
+func (b *breaker) open(ctx context.Context, attrs ...any) {
 	if b.state == breakerClosed {
-		b.log.WarnContext(ctx, "registry fails: circuit open, its requests fail at once for a while",
-			"failures", b.failures, "repositories", b.repos, "registryWide", b.wide, "cooldown", breakerCooldown)
+		b.log.WarnContext(ctx, "registry fails: circuit open, its requests fail at once for a while", append([]any{
+			"failures", b.failures, "repositories", b.repos, "registryWide", b.wide, "cooldown", breakerCooldown}, attrs...)...)
 		metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(1)
 		metrics.ProviderCircuitOpens.WithLabelValues(b.registry).Inc()
 	}

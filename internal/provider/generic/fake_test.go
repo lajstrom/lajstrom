@@ -64,6 +64,7 @@ type fakeRegistry struct {
 	uploads   map[string]*fakeUpload              // upload id → session
 	uploadSeq int
 	streams   map[digest.Digest]func(w http.ResponseWriter) // blobs a GET answers with this function
+	breakers  []*breaker                                    // of the providers made by provider, or watched
 }
 
 // fakeManifest is a stored manifest.
@@ -103,7 +104,26 @@ func (f *fakeRegistry) provider(t *testing.T, log *slog.Logger, edit func(*confi
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	f.watch(p)
 	return p
+}
+
+// watch adds the breaker of p to those whose probes settle waits for.
+func (f *fakeRegistry) watch(p *Provider) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.breakers = append(f.breakers, p.clients.breaker)
+}
+
+// settle waits for the probes in flight of the breakers of the providers made by provider, or
+// watched (breaker.suspect), so that the requests counted are those of the calls made.
+func (f *fakeRegistry) settle() {
+	f.mu.Lock()
+	breakers := slices.Clone(f.breakers)
+	f.mu.Unlock()
+	for _, b := range breakers {
+		b.probes.Wait()
+	}
 }
 
 // log returns the requests so far.
