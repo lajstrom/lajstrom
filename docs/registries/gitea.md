@@ -21,6 +21,12 @@ owner (a user or an organisation), and every tag is a package version in Gitea's
   `sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d` (`gitea version
   28.3.0 built with go1.27.3`), with the image changed in a copy of compose.yaml
   ([The probe again](#the-probe-again-2026-11-13-850)). The pin stays 1.27.3.
+- On 2026-11-15 the names that 1.27.3 and 28.3.0 refuse ran on the nightly of Gitea's main,
+  `docker.gitea.com/gitea:nightly-rootless`, index
+  `sha256:64e8e36deaae610d65d0dac5b7cd909bb47a6dd448efcb893476b1c75ac03021` (built 2026-11-15
+  00:53 UTC from go-gitea/gitea@45d13431; `gitea version 29.0.0+dev-405-g45d13431a0 built with
+  go1.27.4`), with the image changed in a copy of compose.yaml
+  ([The name grammar](#the-name-grammar-2026-11-15)).
 
 ## Run it
 
@@ -137,8 +143,8 @@ What is new against the [column](README.md#capabilities):
   Gitea's. The vendor table's entry for Gitea leaves its consistency unknown, so a publish
   reads back its tag and blobs too, and that is right.
 - **Where a repository may be created**: a name of 256 characters and a component of 256 bytes
-  are taken, as on Forgejo. The probe does not try `--` or `__`, which Gitea refuses
-  ([quirks.md](quirks.md#per-registry)).
+  are taken, as on Forgejo. The probe does not try `--` or `__`, which these two versions refuse
+  and Gitea's main takes since 2026-11-14 ([The name grammar](#the-name-grammar-2026-11-15)).
 - **Delete a repository**: an emptied repository leaves `_catalog`, as before, and its tag list
   answers 200 with `"tags":[]`, not 404.
 - **Largest blob, chunk size, manifest size**: only the 8 MiB of the default and the ladder up
@@ -158,6 +164,65 @@ costs one more round trip. Nothing fails, and Forgejo's challenge is the same. *
 request does not (`aliasClient`, internal/provider/generic/client.go), so only the first
 request with a given set of scopes meets the 401; `TestTokenAfterChallenge` counts it. Not
 measured with the probe again.
+
+## The name grammar, 2026-11-15
+
+Gitea 1.27.3 and 28.3.0 answer 400 `NAME_INVALID` to a name with `__` or a run of `-` in a
+component: `a__b`, `a--b`, `a---b` (measured on 2026-11-13, [quirks.md](quirks.md#per-registry)).
+Their pattern is distribution-spec 1.0's, one of `[._-]` between alphanumerics; 1.1.1 allows
+`__` and runs of `-`. We reported it on 2026-11-13 as
+[go-gitea/gitea#40360](https://github.com/go-gitea/gitea/issues/40360).
+[go-gitea/gitea#40363](https://github.com/go-gitea/gitea/pull/40363) changed the pattern to
+1.1.1's and was merged into Gitea's main on 2026-11-14 at 04:11 UTC (ac96408f), milestone
+29.0.0. [go-gitea/gitea#40369](https://github.com/go-gitea/gitea/pull/40369) backports it to
+`release/v28`, merged the same day, milestone 28.x. It is in no release yet: the latest is 28.3.0,
+of 2026-11-01.
+
+**Fixed in Gitea's main.** Measured on the nightly of [Version tested](#version-tested), built
+from 45d13431, three commits after the fix (`nightly`, the image that is not rootless, was built
+from the same commit). The stack of [Run it](#run-it) came from a copy of compose.yaml with the
+image and the compose project's name changed; gitea.sh ran as it is. The script of
+go-gitea/gitea#40360, in the user's namespace:
+
+```text
+name                                         v1.1.1  v1.0    POST blob / PUT manifest / GET it back
+lajstrom/oci-name-check-889122148-a__b       valid   invalid 201 / 201 / 200, same bytes
+lajstrom/oci-name-check-889122148-a--b       valid   invalid 201 / 201 / 200, same bytes
+lajstrom/oci-name-check-889122148-a---b      valid   invalid 201 / 201 / 200, same bytes
+lajstrom/oci-name-check-889122148-a_b        valid   valid   201 / 201 / 200, same bytes
+lajstrom/oci-name-check-889122148-a-b        valid   valid   201 / 201 / 200, same bytes
+lajstrom/oci-name-check-889122148-a.b        valid   valid   201 / 201 / 200, same bytes
+PASS: every name that matches the v1.1.1 <name> grammar was taken.
+```
+
+On 1.27.3 and 28.3.0 the first three lines were `400 {"code":"NAME_INVALID","message":""}`.
+Below the prefix, a manifest with one layer in each image `lajstrom-it/raw/n40360-2768231194/<x>`,
+with curl:
+
+```text
+<x>                                         POST config / POST layer / PUT manifest / GET manifest / GET layer / tags/list / DELETE by digest
+plain, a-b                                  201 / 201 / 201 / 200, same bytes / 200, same bytes / ["v1"] / 202
+a__b, a--b, a---b, a--b.txt                 the same
+h0__bc37d034bad564583790a46f19d807ab        the same
+site/h0__ecec67b0e1d7e17a83587c6d27b6baaa   the same
+a___b                                       400 NAME_INVALID: 1.1.1's grammar refuses it too
+```
+
+The tests, Lajstrom at 2d240ddb with Go 1.27.4:
+
+- reindex `TestIntegrationSplit`, over SQLite: pass, all three cases. It pushes `a--b.txt` and
+  `.gitignore` (`h0__bc37…`) at the names Lajstrom wrote before ADR 0017. On 1.27.3 and 28.3.0
+  those pushes are `NAME_INVALID`, and the test skips them (`skipNameInvalid`).
+- the provider's `TestIntegration*`, with `LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1`:
+  `TestIntegrationUploads`, `TestIntegrationNameLength` and `TestIntegrationBuildRoutes` pass;
+  `TestIntegration` fails at the range only, as on 1.27.3
+  ([item 3](#what-the-provider-must-do-differently)).
+- the scenarios of the job `e2e (gitea)`, `oras`, `auth`, `rbac`, `oci-token`, `cosign` and
+  `tokens`: pass.
+
+**Lajstrom needs no change.** The names it writes since ADR 0017 have neither `__` nor a run of
+`-` (`h0_h…`, `_2d_2d`), so every Gitea stores them; a Gitea with the fix also stores the names
+an earlier Lajstrom wrote. The pin stays 1.27.3.
 
 ## What the provider must do differently
 

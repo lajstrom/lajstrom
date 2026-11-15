@@ -133,7 +133,8 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
    written since ADR 0017 fit: `h0_h…`, `_2d_2d`. A name in its earlier form cannot be stored:
    `TestIntegrationSplit` pushes those forms on purpose and fails at `a--b.txt` and
    `.gitignore` (`h0__…`). quirks.md said this from the code ([Per registry](quirks.md#per-registry)).
-   It is now measured on Forgejo; Gitea is still read from its code.
+   It is now measured on Forgejo, and on Gitea since 2026-11-13; Gitea's main takes these names
+   since go-gitea/gitea#40363 ([gitea.md](gitea.md#the-name-grammar-2026-11-15)).
 5. **Expect a digest delete to take the blobs only that manifest used**, as Gitea's does. A
    push of the same manifest right after the delete, with blobs uploaded before it, is
    404 `BLOB_UNKNOWN`. The facade's `TestIntegrationDeleteInterleaved` pushes a manifest while a
@@ -247,6 +248,8 @@ Filed on 2026-11-13, each with curl lines run against Forgejo 17.0.1 and, for Gi
   [forgejo#15259](https://codeberg.org/forgejo/forgejo/issues/15259), [go-gitea/gitea#40359](https://github.com/go-gitea/gitea/issues/40359);
 - the 1.0 name grammar, where 1.1.1 allows `__` and runs of `-` in a component:
   [forgejo#15260](https://codeberg.org/forgejo/forgejo/issues/15260), [go-gitea/gitea#40360](https://github.com/go-gitea/gitea/issues/40360).
+  Gitea fixed it on main in go-gitea/gitea#40363, in no release yet
+  ([gitea.md](gitea.md#the-name-grammar-2026-11-15)).
 
 The [deviations](README.md#deviations-from-the-specification) table has them with the spec's
 words.
