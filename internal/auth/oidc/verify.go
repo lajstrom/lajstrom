@@ -27,6 +27,18 @@ const maxSubject = 255
 // Leeway, and nonce. Every failure wraps ErrRefused, but a JWKS that never loaded, which wraps
 // ErrUnavailable.
 func (c *Client) verify(ctx context.Context, raw, nonce string) (*Identity, error) {
+	claims, err := c.parse(ctx, raw, c.cfg.ClientID)
+	if err != nil {
+		return nil, err
+	}
+	return c.identity(ctx, claims, nonce)
+}
+
+// parse checks the signature of the JWT raw by the key of its kid with an algorithm that is the
+// key's, its iss, its aud for audience, and exp, iat and nbf with Leeway, and returns its claims.
+// Every failure wraps ErrRefused, but a discovery document or a JWKS that never loaded, which
+// wraps ErrUnavailable.
+func (c *Client) parse(ctx context.Context, raw, audience string) (jwt.MapClaims, error) {
 	m, err := c.disc.get(ctx)
 	if err != nil {
 		return nil, err
@@ -36,7 +48,7 @@ func (c *Client) verify(ctx context.Context, raw, nonce string) (*Identity, erro
 	_, err = jwt.NewParser(
 		jwt.WithValidMethods(algorithms),
 		jwt.WithIssuer(c.cfg.Issuer),
-		jwt.WithAudience(c.cfg.ClientID),
+		jwt.WithAudience(audience),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
 		jwt.WithLeeway(Leeway),
@@ -61,9 +73,9 @@ func (c *Client) verify(ctx context.Context, raw, nonce string) (*Identity, erro
 	case errors.Is(keyErr, ErrUnavailable):
 		return nil, keyErr // the JWKS never loaded
 	case err != nil:
-		return nil, fmt.Errorf("%w: the ID token: %w", ErrRefused, err)
+		return nil, fmt.Errorf("%w: the token: %w", ErrRefused, err)
 	}
-	return c.identity(ctx, claims, nonce)
+	return claims, nil
 }
 
 // identity checks the claims that the parser does not (azp, nonce, sub) and reads the identity.

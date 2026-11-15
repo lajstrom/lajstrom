@@ -501,6 +501,41 @@ type Auth struct {
 	// ClientCertificates are the CAs whose client certificates are a credential of /v2/token
 	// (docs/spec/rbac.md §9, #1019); off while it has no bundle.
 	ClientCertificates ClientCertificates `yaml:"clientCertificates"`
+	// Kubernetes are the clusters whose service-account tokens are a credential of /v2/token
+	// (docs/spec/rbac.md §9, KEP-4412); off while it has no cluster.
+	Kubernetes Kubernetes `yaml:"kubernetes"`
+}
+
+// Kubernetes configures Kubernetes service-account tokens as a credential of /v2/token
+// (docs/spec/rbac.md §9).
+type Kubernetes struct {
+	// Clusters are the clusters, each with its own issuer. Empty takes no token.
+	Clusters []KubernetesCluster `yaml:"clusters"`
+}
+
+// KubernetesCluster is a cluster of auth.kubernetes.
+type KubernetesCluster struct {
+	// Name is the cluster's name, in the principal k8s:<name>/<namespace>/<service account>
+	// (CheckIdentitySource).
+	Name string `yaml:"name"`
+	// Issuer is the service-account issuer, the exact iss of the cluster's tokens; https, http
+	// only with server.insecureHTTP.
+	Issuer string `yaml:"issuer"`
+	// Audience is what a token's aud must contain; empty is server.externalURL without a
+	// trailing slash (KubernetesCluster.AudienceOr).
+	Audience string `yaml:"audience"`
+	// CAFile is a PEM file of the CAs of the issuer's TLS certificate, read by serve at start;
+	// empty uses the system's roots.
+	CAFile string `yaml:"caFile"`
+}
+
+// AudienceOr returns the cluster's audience, or externalURL without a trailing slash when it has
+// none.
+func (k KubernetesCluster) AudienceOr(externalURL string) string {
+	if k.Audience != "" {
+		return k.Audience
+	}
+	return strings.TrimSuffix(externalURL, "/")
 }
 
 // ClientCertificates configures client certificates as a credential of /v2/token

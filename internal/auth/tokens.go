@@ -145,11 +145,11 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 // operator runs. A personal access
 // token, with scopes or without, and a deploy token may not, an error wrapping ErrScope: a
 // stolen token would otherwise mint tokens that outlive its revocation (decided on #249,
-// docs/auth.md, Rules). Nor may a client certificate, which authenticates /v2/token only
-// (docs/spec/rbac.md §9).
+// docs/auth.md, Rules). Nor may a client certificate or a Kubernetes service-account token,
+// which authenticate /v2/token only (docs/spec/rbac.md §9).
 func MayCreatePAT(ctx context.Context) error {
 	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredCertificate:
+	case CredPAT, CredDeploy, CredCertificate, CredKubernetes:
 		return &authError{msg: "a personal access token is created with a password, not with a token", err: ErrScope}
 	case CredPassword, CredOIDC:
 	}
@@ -165,7 +165,7 @@ func MayCreatePAT(ctx context.Context) error {
 // of its mask and outlives its revocation (decided on #911, 2026-11-14).
 func MayCreateMaskDeploy(ctx context.Context) error {
 	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredOIDC, CredCertificate:
+	case CredPAT, CredDeploy, CredOIDC, CredCertificate, CredKubernetes:
 		return &authError{msg: "a deploy token over a mask is created with the admin's password, not with a token", err: ErrScope}
 	case CredPassword:
 	}
@@ -180,7 +180,7 @@ func createdBy(c Credential) string {
 		return string(c.Kind)
 	case CredPAT, CredDeploy:
 		return "token:" + strconv.FormatInt(c.TokenID, 10)
-	case CredCertificate: // authenticates /v2/token only, and creates no token
+	case CredCertificate, CredKubernetes: // authenticate /v2/token only, and create no token
 	}
 	return ""
 }

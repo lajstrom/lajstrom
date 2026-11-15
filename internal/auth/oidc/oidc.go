@@ -94,6 +94,8 @@ type Client struct {
 	cfg  Config
 	disc *discovery
 	keys *keySet
+	// keysOnly is a Verifier's client: the discovery document needs a jwks_uri only.
+	keysOnly bool
 }
 
 var _ Provider = (*Client)(nil)

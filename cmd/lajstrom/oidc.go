@@ -28,6 +28,9 @@ type edge struct {
 	proxies []netip.Prefix
 	// certs is the verifier of auth.clientCertificates (clientCertificates), nil without bundles.
 	certs *clientcert.Verifier
+	// kubernetes authenticates the tokens of auth.kubernetes (kubernetesClusters), nil without
+	// clusters.
+	kubernetes *auth.Kubernetes
 }
 
 // edgeInputs returns the edge of c.
@@ -41,7 +44,11 @@ func edgeInputs(c *config.Config, st index.Store, log *slog.Logger) (edge, error
 		return edge{}, err
 	}
 	certs, err := clientCertificates(c, log)
-	return edge{login: login, proxies: proxies, certs: certs}, err
+	if err != nil {
+		return edge{}, err
+	}
+	kubernetes, err := kubernetesClusters(c, log)
+	return edge{login: login, proxies: proxies, certs: certs, kubernetes: kubernetes}, err
 }
 
 // oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), and nil
