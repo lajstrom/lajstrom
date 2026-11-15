@@ -69,7 +69,9 @@ func archivePath(ctx context.Context, repo index.Repo, m Module, v, file string)
 
 // download answers the download of a module version: 204 with X-Terraform-Get, the path of the
 // version's archive, which Terraform resolves against the URL of the download and fetches with
-// go-getter, which takes it as a gzip-compressed tar by its extension.
+// go-getter, which takes it as a gzip-compressed tar by its extension. For a principal that is
+// not anonymous the path carries a token in its query (signed): go-getter sends the credentials
+// of ~/.netrc only, not those Terraform sends the registry.
 func (h *handlers) download(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r, auth.ActionRead)
 	if !ok {
@@ -86,28 +88,39 @@ func (h *handlers) download(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	w.Header().Set("X-Terraform-Get", archivePath(r.Context(), repo, m, v, f.file.Name))
+	loc, err := h.signed(r, repo, m, v, archivePath(r.Context(), repo, m, v, f.file.Name))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("X-Terraform-Get", loc)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// archive serves the archive of a module version, whose title the path names, through
+// archive serves the archive of a module version, whose title the path names, to a principal that
+// may read the repo or with the token of the version's download (authorizeArchive), through
 // format.ServeBlob: one request to the backend at most, a 307 to the backend's storage when the
 // provider gives a URL and the repo's policy.blobRedirect allows it, else the backend's 200, 206
 // or 416 streamed. The ETag is the blob digest, Last-Modified the version's created,
 // Docker-Content-Digest its manifest digest. HEAD asks the backend for the headers. A stream that
 // breaks after the headers is logged.
 func (h *handlers) archive(w http.ResponseWriter, r *http.Request) {
-	repo, ok := h.start(w, r, auth.ActionRead)
-	if !ok {
-		return
-	}
 	ctx := r.Context()
-	m, err := module(r, repo)
-	if err != nil {
-		h.fail(w, r, err)
+	repo, ok := format.RepoFrom(ctx)
+	if !ok {
+		h.fail(w, r, errors.New("terraform: the route has no repo"))
 		return
 	}
+	m, err := ParseModule(r.PathValue("name"), r.PathValue("system"))
 	v, file := r.PathValue("version"), r.PathValue("file")
+	if denied := h.authorizeArchive(r, repo, m, v); denied != nil {
+		h.fail(w, r, denied)
+		return
+	}
+	if err != nil {
+		h.fail(w, r, fmt.Errorf("%w: terraform/%s has no module %s/%s", index.ErrNotFound, repo.Name, r.PathValue("name"), r.PathValue("system")))
+		return
+	}
 	f, err := h.resolve(ctx, repo, m, v)
 	if err == nil && f.file.Name != file {
 		err = fmt.Errorf("%w: version %s of %s has no file %s; its archive is %s", index.ErrNotFound, v, m.PackageName(), file, f.file.Name)

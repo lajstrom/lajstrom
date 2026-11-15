@@ -28,7 +28,7 @@ const jsonContentType = "application/json"
 //	GET /{repo}/{name}/{system}/{version}/download                  204 with X-Terraform-Get
 //	GET /{repo}/{namespace}/{name}/{system}/versions                the same, the namespace the repo's name:
 //	GET /{repo}/{namespace}/{name}/{system}/{version}/download      the routes Terraform asks on a repo host
-//	GET /{repo}/{name}/{system}/{version}/{file}                    the archive, through format.ServeBlob
+//	GET /{repo}/{name}/{system}/{version}/{file}                    the archive, through format.ServeBlob, to read or its token
 //	PUT /{repo}/{name}/{system}/{version}                           one archive, published through deps.Ingest
 //
 // The service discovery of the main host, /.well-known/terraform.json, is WellKnown's, which the
@@ -38,7 +38,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
 	}
-	h := &handlers{deps: deps}
+	h := &handlers{deps: deps, tokens: p.Tokens}
 	r.HandleFunc("GET /{repo}/.well-known/terraform.json", h.repoDiscovery)
 	r.HandleFunc("GET /{repo}/{name}/{system}/versions", h.versions)
 	r.HandleFunc("GET /{repo}/{name}/{system}/{version}/download", h.download)
@@ -72,7 +72,8 @@ func writeDiscovery(w http.ResponseWriter, modules string) {
 
 // handlers are the terraform routes over one format.Deps.
 type handlers struct {
-	deps format.Deps
+	deps   format.Deps
+	tokens ArchiveTokens // nil: archive URLs are not signed
 }
 
 // start returns the repo of the request once the principal may perform a on it; otherwise it

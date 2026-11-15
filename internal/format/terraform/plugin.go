@@ -18,9 +18,13 @@ const (
 	ParamUploadedBy = "uploaded-by"
 )
 
-// Plugin is the terraform format plugin. It is stateless; its routes get their services
-// through format.Deps.
-type Plugin struct{}
+// Plugin is the terraform format plugin. The value format.Register holds has no tokens: Build,
+// Validate and EscapeName need none. Its routes get their services through format.Deps, and the
+// tokens of archive URLs from Tokens, which serve sets (WithArchiveTokens).
+type Plugin struct {
+	// Tokens sign and check the archive URLs; nil: a download writes the archive's path alone.
+	Tokens ArchiveTokens
+}
 
 var _ format.Plugin = Plugin{}
 
