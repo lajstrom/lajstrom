@@ -340,7 +340,9 @@ env:
   answer that either, or answers `5xx`, opens the breaker, and one that answers it, `401`
   included, does not. So an upstream that hangs or answers `5xx` while a single image is asked
   costs each of the first five requests the total above, and opens the breaker within one more
-  `timeout`. Once open:
+  `timeout`. After those five, that image alone is also refused, `503` at once with
+  `Retry-After`, for 30 s, then one request of it is its trial
+  ([#1117](https://github.com/lajstrom/lajstrom/issues/1117), code). Once open:
   - for 30 s, everything asked of the upstream is `503` at once with `Retry-After`, the seconds
     until the trial (measured: 30); before [#889] it was `502` without one;
   - expired tags are served from their rows at once;

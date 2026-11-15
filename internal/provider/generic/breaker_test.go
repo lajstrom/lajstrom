@@ -255,7 +255,9 @@ func byBreaker(err error) bool {
 // answer such as a 404 resets the count, a 429 and a cancelled request count neither way. Each
 // request is of another repository, but in the rows of one repository: failures of one
 // repository alone never open the breaker, however many (#972), while the registry answers the
-// breaker's probe, GET /v2/, which ends the run (#1119). When the probe fails too, they do.
+// breaker's probe, GET /v2/, which ends the run (#1119). When the probe fails too, they do. The
+// repository's own breaker refuses it after the threshold (#1117): another repository tells
+// whether the registry's is open.
 func TestBreakerCounts(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -320,7 +322,11 @@ func TestBreakerCounts(t *testing.T) {
 				_, _ = listTags(ctx, repoOf(k))
 				f.settle()
 			}
-			_, err := listTags(t.Context(), repoOf(0))
+			fresh, err := p.Repository(t.Context(), "raw/scratch/fresh") // refused by the registry's breaker only (#1117)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = listTags(t.Context(), fresh)
 			if got := byBreaker(err); got != tt.open {
 				t.Errorf("circuit open = %v (last error %v), want %v", got, err, tt.open)
 			}

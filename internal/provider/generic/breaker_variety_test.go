@@ -29,32 +29,36 @@ import (
 // repository with 500, as Zot does for a name it cannot store (zot#4695) and as any registry
 // may for a repository damaged in its storage. That repository is asked 100 times in a row, by
 // every kind of request a reader or a writer sends, and then 30 times at once while another
-// repository is read. The breaker stays closed: every request reaches the registry, the other
-// repository keeps working, and the log says once that the registry fails one repository only.
-// The fifth failure sets off the breaker's probe, GET /v2/, which the registry answers (#1119);
-// the clock does not move, so it is the only one.
+// repository is read. The registry's breaker stays closed: the other repository keeps working,
+// and the log says once that the registry fails one repository only. The fifth failure sets off
+// the breaker's probe, GET /v2/, which the registry answers (#1119); the clock does not move, so
+// it is the only one. From the fifth failure on, the repository's own breaker refuses its
+// requests without sending them, for the cooldown (#1117), and the refusal holds nothing of
+// what the registry said.
 func TestBreakerOneRepository(t *testing.T) {
 	lowerBreaker(t, 5)
 	b := newBrokenRepository(t, "breaker-one-repository")
 	for i := range 100 {
 		c := b.calls[i%len(b.calls)]
-		sent := 1
-		if i == breakerThreshold-1 {
-			sent = 2
-		}
-		if err := wantCall(t, b.f, c.name+" of the broken repository", func() error { return c.call(i) }, false, sent); err == nil {
+		refused, sent := brokenCallWants(i)
+		err := wantCall(t, b.f, c.name+" of the broken repository", func() error { return c.call(i) }, refused, sent)
+		if err == nil {
 			t.Fatalf("%s of the broken repository succeeded", c.name)
 		}
+		if refused {
+			wantRepoRefusal(t, c.name, err)
+		}
 	}
-	if err := wantCall(t, b.f, "a read of another repository after 100 failures", b.readGood, false, 2); err != nil {
+	if err := wantCall(t, b.f, "a read of another repository after 100 requests", b.readGood, false, 2); err != nil {
 		t.Fatalf("a read of another repository: %v", err)
 	}
 
+	before := len(b.f.log())
 	var wg sync.WaitGroup // a client that asks for the broken repository 30 times at once
 	for i := range 30 {
 		wg.Go(func() {
-			if err := b.calls[i%len(b.calls)].call(i); err == nil || byBreaker(err) {
-				t.Errorf("a request of the broken repository: %v, want the registry's 500", err)
+			if err := b.calls[i%len(b.calls)].call(i); !byBreaker(err) {
+				t.Errorf("a request of the broken repository: %v, want the breaker's refusal", err)
 			}
 		})
 	}
@@ -64,6 +68,9 @@ func TestBreakerOneRepository(t *testing.T) {
 		}
 	}
 	wg.Wait()
+	if n := len(b.f.log()) - before; n != 10*2 {
+		t.Errorf("%d requests reached the registry in the burst, want the 20 of the reads of another repository", n)
+	}
 	if err := b.readGood(); err != nil {
 		t.Errorf("a read of another repository after the burst: %v", err)
 	}
@@ -75,6 +82,31 @@ func TestBreakerOneRepository(t *testing.T) {
 	if n := strings.Count(logs, "fails the requests of one repository only"); n != 1 ||
 		!strings.Contains(logs, "repositories=[art/raw/scratch/broken]") {
 		t.Errorf("logged %d times that the registry fails one repository only, want once, naming it:\n%s", n, logs)
+	}
+}
+
+// brokenCallWants says whether the breaker refuses the request i of a run of requests of a
+// broken repository, and how many requests reach the registry for it: the first
+// breakerThreshold go through, the last of them followed by the probe (#1119); the rest are
+// refused by the repository's breaker (#1117).
+func brokenCallWants(i int) (refused bool, sent int) {
+	switch {
+	case i >= breakerThreshold:
+		return true, 0
+	case i == breakerThreshold-1:
+		return false, 2
+	}
+	return false, 1
+}
+
+// wantRepoRefusal checks the refusal err of the request what of a repository whose breaker is
+// open: the time until the repository's trial, within the cooldown, and nothing the registry
+// said (#1117).
+func wantRepoRefusal(t *testing.T, what string, err error) {
+	t.Helper()
+	after, ok := provider.RetryAfter(err)
+	if !ok || after <= 0 || after > breakerCooldown || strings.Contains(err.Error(), "invalid repository layout") {
+		t.Errorf("%s refused: %v, RetryAfter %v; want the time until the repository's trial, and nothing the registry said", what, err, after)
 	}
 }
 
