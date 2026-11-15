@@ -363,7 +363,7 @@ not write is `null`.
 
 On an encrypted repo the report counts the rows of `blob_map` written or seen (`blobMap`), and a
 run that cannot open the repo's keys skips the repo whole and says why in `skipped` (`""`
-otherwise): no master key, a key whose seal does not open, a KMS that refuses
+otherwise): no master key, a key whose seal does not open, no client for its KMS
 ([operations.md](operations.md#encryption-at-rest)).
 
 `repairedReferrers` lists, for a run of the reconcile loop or with `verify` on a registry without

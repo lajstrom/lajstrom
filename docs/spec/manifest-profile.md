@@ -1042,7 +1042,8 @@ refused with `400 MANIFEST_INVALID`: Lajstrom encrypts, and it validates the pla
 encrypted repo every layer of a pushed manifest must have been uploaded into that OCI repository
 encrypted (`blob_map`), else `400 MANIFEST_BLOB_UNKNOWN` naming the digest: a blob uploaded
 before the repo turned `at-rest` on is uploaded again. The plugin's `Validate` reads the plaintext,
-through the cipher.
+through the cipher. An attachment whose layer is encrypted is labelled `unsupported` (§6.3), its
+reason that the layer is encrypted at rest: the verification does not decrypt it.
 
 ### 11.1 The keys referrer
 
