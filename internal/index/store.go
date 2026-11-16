@@ -348,7 +348,8 @@ type Writer interface {
 	CreateToken(ctx context.Context, t *Token) error
 	// RevokeToken sets RevokedAt of the token.
 	RevokeToken(ctx context.Context, id int64, at time.Time) error
-	// TouchToken sets LastUsedAt of the token.
+	// TouchToken sets LastUsedAt of the token to lastUsed when it is null or earlier, else
+	// changes nothing: it only moves forward (#1277). No token wraps ErrNotFound.
 	TouchToken(ctx context.Context, id int64, lastUsed time.Time) error
 
 	// PutBootstrapToken makes t the bootstrap token when the stored one is still the one whose
