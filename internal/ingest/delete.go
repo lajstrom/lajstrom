@@ -473,13 +473,84 @@ func (d *deletion) subjectOfCondition() string {
 }
 
 // begin is what comes before the first request that changes anything, under the locks of the
-// delete: the other tags are counted, then the audit row is written pending (#473).
+// delete: the other tags are counted, the attachments that name a referrer read, then the audit
+// row is written pending (#473).
 func (d *deletion) begin(ctx context.Context) error {
 	if err := d.refuseTagged(ctx); err != nil {
 		return err
 	}
+	if err := d.refuseReferenced(ctx); err != nil {
+		return err
+	}
 	return d.p.intend(ctx, &d.ev)
 }
+
+// refuseReferenced refuses the delete of a referrer of a version of a managed repo that another
+// attachment of the version names as its input, by the referrer's digest or by the digest of one
+// of its layers: a scan report keeps the SBOM it was computed from (docs/spec/index-schema.md,
+// Attachments; #89). The rows of the referrer itself do not count, nor does a delete of the
+// version, which takes them all. The subject is the manifest's, or that of cosign's legacy tag
+// the reference is. It reads the index under the locks of the delete: a report whose rows are
+// not written yet keeps nothing.
+func (d *deletion) refuseReferenced(ctx context.Context) error {
+	subject := d.subject
+	if s, _, ok := profile.CosignTag(d.del.Reference); subject == "" && ok {
+		subject = s
+	}
+	if d.version != nil || subject == "" || d.repo.Format == ociFormat {
+		return nil
+	}
+	v, err := d.p.index.GetVersionByDigest(ctx, d.repo.ID, subject)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("ingest: version of %s: %w", subject, err)
+	}
+	rows, err := d.p.index.ListAttachments(ctx, []int64{v.ID})
+	if err != nil {
+		return fmt.Errorf("ingest: attachments of %s: %w", subject, err)
+	}
+	names := map[digest.Digest]bool{d.target.Digest: true}
+	for _, a := range rows {
+		if a.Digest == d.target.Digest && a.Layer != "" {
+			names[a.Layer] = true
+		}
+	}
+	var by []digest.Digest
+	for _, a := range rows {
+		if a.Digest != d.target.Digest && a.Input != "" && names[a.Input] && !slices.Contains(by, a.Digest) {
+			by = append(by, a.Digest)
+		}
+	}
+	if len(by) == 0 {
+		return nil
+	}
+	slices.Sort(by)
+	return &referencedError{name: d.name, digest: d.target.Digest, by: by}
+}
+
+// referencedError refuses the delete of a referrer that other attachments of its version name as
+// their input: index.ErrConflict, with their referrers for the facade's answer (ReferencedBy).
+type referencedError struct {
+	name   string
+	digest digest.Digest
+	by     []digest.Digest
+}
+
+func (e *referencedError) Error() string {
+	by := make([]string, len(e.by))
+	for i, d := range e.by {
+		by[i] = d.String()
+	}
+	return fmt.Sprintf("ingest: delete %s@%s: the attachments of %s name it as their input (a scan report and its SBOM); "+
+		"delete them first; nothing was deleted", e.name, e.digest, strings.Join(by, ", "))
+}
+
+func (e *referencedError) Unwrap() error { return index.ErrConflict }
+
+// ReferencedBy returns the referrers whose attachments name the referrer, sorted.
+func (e *referencedError) ReferencedBy() []digest.Digest { return slices.Clone(e.by) }
 
 // finish deletes in the backend and records the delete, under its locks, on a context of its
 // own: a client that goes away once the registry starts to change does not stop the delete

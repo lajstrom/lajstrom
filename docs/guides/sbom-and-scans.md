@@ -174,13 +174,19 @@ deleted there. It asks the registry for the referrers of each version, one reque
 ## 6. Deleting
 
 `DELETE /v2/<ociRepository>/manifests/<referrer digest>` deletes one attachment, with `delete` on
-the repo; deleting a version deletes its attachments first. Nothing prunes old scan reports yet.
+the repo; deleting a version deletes its attachments first. An SBOM that a scan report of the same
+version names as its input (`lajstrom.attachment.input`, the digest of the SBOM's referrer or of
+its layer) is kept: its delete is `409` naming the reports, until they are deleted
+([http-routing.md](../spec/http-routing.md) §2). A job that prunes old reports (keep the first and
+the last N per predicate type, [operations.md](../operations.md#retention)) meets the same rule, so
+it keeps the SBOMs its kept reports name. Nothing in Lajstrom prunes reports by itself.
 
 ## Not there yet
 
 - **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
 - **Finding the versions without a fresh scan**: `?without=scan` lists the versions without any
   scan; a scan of an older vulnerability database still counts as one.
-- **Keeping the SBOM a kept report names**, and pruning old reports (option E, with #72).
+- **Pruning old reports**: a job of yours, through the same `DELETE`; `lajstrom admin retention`
+  deletes versions only.
 - **A reference scan job** under `deploy/jobs/scan/` (option F).
 - **Refusing to serve a version without a verified attachment**: #101.
