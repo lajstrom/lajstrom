@@ -181,8 +181,10 @@ const maxBody = 64 << 10
 //	GET    /api/v1/ci/policies                         the CI trust policies, of the configuration and of the API (admin)
 //	POST   /api/v1/ci/policies                         make one of the API
 //	GET    /api/v1/ci/policies/{name}                  one policy
-//	PUT    /api/v1/ci/policies/{name}                  replace the issuer, claims and grants of one of the API
+//	PUT    /api/v1/ci/policies/{name}                  replace the issuer, claims, grants and expiry of one of the API
 //	DELETE /api/v1/ci/policies/{name}                  delete one of the API
+//	POST   /api/v1/ci/policies/{name}/renew            renew one of the API that grants write
+//	POST   /api/v1/ci/policies/{name}/approve          approve what waits on one of the API (If-Match)
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
@@ -314,6 +316,8 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/ci/policies/{name}", h.getCIPolicy},
 		{"PUT /api/v1/ci/policies/{name}", h.replaceCIPolicy},
 		{"DELETE /api/v1/ci/policies/{name}", h.deleteCIPolicy},
+		{"POST /api/v1/ci/policies/{name}/renew", h.renewCIPolicy},
+		{"POST /api/v1/ci/policies/{name}/approve", h.approveCIPolicy},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},

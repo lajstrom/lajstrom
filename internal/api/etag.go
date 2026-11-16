@@ -12,16 +12,17 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// Revisions (docs/api.md, Revisions; #796): a repo, a user and a webhook have a revision, the
-// revision column of their row, which every update of the row moves. The ETag of a GET of one,
-// and of the answer of its POST and PATCH, names it; If-Match makes its PATCH and DELETE
-// conditional, and If-None-Match its GET.
+// Revisions (docs/api.md, Revisions; #796): a repo, a user, a webhook and a CI trust policy of
+// the API have a revision, the revision column of their row, which every update of the row moves.
+// The ETag of a GET of one, and of the answer of its POST, PATCH or PUT, names it; If-Match makes
+// its changes conditional, and If-None-Match its GET.
 
 // The tables whose rows have a revision, the first argument of ETag and IfMatch.
 const (
-	TableRepos    = "repos"
-	TableUsers    = "users"
-	TableWebhooks = "webhooks"
+	TableRepos      = "repos"
+	TableUsers      = "users"
+	TableWebhooks   = "webhooks"
+	TableCIPolicies = "ci_policies"
 )
 
 // ETag returns the entity tag of the row id of table at revision: a strong tag, opaque, the
