@@ -24,10 +24,10 @@ import (
 // a miss as much as a hit, and no argon2id.
 func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret string) (Principal, Credential, error) {
 	if CheckName(username) != nil {
-		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed user name")
+		return Principal{}, Credential{}, a.refuse(ctx, CredPAT, nil, "malformed user name")
 	}
 	if !tokenShaped(secret, PATPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
+		return Principal{}, Credential{}, a.refuse(ctx, CredPAT, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
@@ -53,12 +53,12 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 		reason = unbounded(t, u)
 	}
 	if reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
+		return Principal{}, Credential{}, a.refuseToken(ctx, CredPAT, u, t, reason)
 	}
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
-	if err := a.admit(ctx, u); err != nil {
+	if err := a.admit(ctx, CredPAT, u); err != nil {
 		return Principal{}, Credential{}, err
 	}
 	a.touch(ctx, t)
@@ -74,14 +74,14 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 // repo: one GetTokenByHash (docs/spec/rbac.md §1).
 func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (Principal, Credential, error) {
 	if !tokenShaped(secret, DeployPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
+		return Principal{}, Credential{}, a.refuse(ctx, CredDeploy, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
 	if reason := a.dead(t, TokenDeploy); reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
+		return Principal{}, Credential{}, a.refuseToken(ctx, CredDeploy, nil, t, reason)
 	}
 	if t.RepoMask != "" {
 		a.touch(ctx, t)
@@ -92,7 +92,7 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 	repo, err := a.index.GetRepoByID(ctx, *t.RepoID)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, "the repo is gone")
+		return Principal{}, Credential{}, a.refuseToken(ctx, CredDeploy, nil, t, "the repo is gone")
 	case err != nil:
 		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its repo: %w", t.ID, err)
 	}
@@ -123,7 +123,7 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
-	if err := a.admit(ctx, u); err != nil {
+	if err := a.admit(ctx, CredPAT, u); err != nil {
 		return Principal{}, Credential{}, err
 	}
 	a.touch(ctx, t)
@@ -142,15 +142,15 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 	case err != nil:
 		return Principal{}, Credential{}, err
 	case t.DPoPJKT == "":
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to no DPoP key, sent with a proof")
+		return Principal{}, Credential{}, a.refuseToken(ctx, CredPAT, u, t, "a token bound to no DPoP key, sent with a proof")
 	case subtle.ConstantTimeCompare([]byte(t.DPoPJKT), []byte(jkt)) != 1:
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to another DPoP key")
+		return Principal{}, Credential{}, a.refuseToken(ctx, CredPAT, u, t, "a token bound to another DPoP key")
 	}
 	if last, idle := a.idleSince(t); idle {
-		_ = a.refuseToken(ctx, u, t, "a sign-in idle for longer than auth.login.idleTimeout")
+		_ = a.refuseToken(ctx, CredPAT, u, t, "a sign-in idle for longer than auth.login.idleTimeout")
 		return Principal{}, Credential{}, &IdleError{TokenID: t.ID, LastUse: last, Timeout: a.idle}
 	}
-	if err := a.admit(ctx, u); err != nil {
+	if err := a.admit(ctx, CredPAT, u); err != nil {
 		return Principal{}, Credential{}, err
 	}
 	a.touch(ctx, t)
@@ -167,28 +167,28 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 // of the index.
 func (a *Authenticator) bearerPAT(ctx context.Context, secret string) (*index.Token, *index.User, error) {
 	if !tokenShaped(secret, PATPrefix) {
-		return nil, nil, a.refuse(ctx, nil, "malformed token")
+		return nil, nil, a.refuse(ctx, CredPAT, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
 		return nil, nil, err
 	}
 	if reason := a.dead(t, TokenPAT); reason != "" {
-		return nil, nil, a.refuseToken(ctx, nil, t, reason)
+		return nil, nil, a.refuseToken(ctx, CredPAT, nil, t, reason)
 	}
 	u, err := a.index.GetUserByID(ctx, *t.UserID)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return nil, nil, a.refuseToken(ctx, nil, t, "unknown user")
+		return nil, nil, a.refuseToken(ctx, CredPAT, nil, t, "unknown user")
 	case err != nil:
 		return nil, nil, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
 	case u.DeletedAt != nil:
-		return nil, nil, a.refuseToken(ctx, u, t, "deleted")
+		return nil, nil, a.refuseToken(ctx, CredPAT, u, t, "deleted")
 	case u.Disabled:
-		return nil, nil, a.refuseToken(ctx, u, t, "disabled")
+		return nil, nil, a.refuseToken(ctx, CredPAT, u, t, "disabled")
 	}
 	if reason := unbounded(t, u); reason != "" {
-		return nil, nil, a.refuseToken(ctx, u, t, reason)
+		return nil, nil, a.refuseToken(ctx, CredPAT, u, t, reason)
 	}
 	return t, u, nil
 }
@@ -196,7 +196,7 @@ func (a *Authenticator) bearerPAT(ctx context.Context, secret string) (*index.To
 // refuseBound logs the refusal of a token bound to a DPoP key that came without its proof, as
 // refuseToken does, and returns ErrBound.
 func (a *Authenticator) refuseBound(ctx context.Context, u *index.User, t *index.Token) error {
-	_ = a.refuseToken(ctx, u, t, "a token bound to a DPoP key, without its proof")
+	_ = a.refuseToken(ctx, CredPAT, u, t, "a token bound to a DPoP key, without its proof")
 	return ErrBound
 }
 
@@ -259,18 +259,22 @@ func validMask(mask string) bool {
 	return err == nil
 }
 
-// refuseToken logs the refusal of a token at debug level, with the principal user:<uid> of
-// the user u unless it is nil and the token's id when there is a token, never a user name as
-// typed (refuse), the secret or its hash, and returns ErrBadCredentials.
-func (a *Authenticator) refuseToken(ctx context.Context, u *index.User, t *index.Token, reason string) error {
-	attrs := make([]any, 0, 6)
-	if u != nil {
-		attrs = append(attrs, "user", UserPrincipal(u).String())
-	}
+// refuseToken logs the refusal of a token of kind cred at info (LogRefusal), with its account,
+// user:<uid> of the user u, token:<id> of a deploy token, or unknown, and the token's id when
+// there is a token; never a user name as typed (refuse), the secret or its hash. It returns
+// ErrBadCredentials.
+func (a *Authenticator) refuseToken(ctx context.Context, cred CredentialKind, u *index.User, t *index.Token, reason string) error {
+	account, id := AccountUnknown, int64(0)
 	if t != nil {
-		attrs = append(attrs, "token", t.ID)
+		id = t.ID
+		if t.Kind == TokenDeploy {
+			account = "token:" + strconv.FormatInt(t.ID, 10)
+		}
 	}
-	a.log.DebugContext(ctx, "authentication refused", append(attrs, "reason", reason)...)
+	if u != nil {
+		account = UserPrincipal(u).String()
+	}
+	LogRefusal(ctx, a.log, string(cred), account, id, reason)
 	return ErrBadCredentials
 }
 

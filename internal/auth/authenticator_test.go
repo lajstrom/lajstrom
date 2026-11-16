@@ -263,10 +263,12 @@ func TestAuthenticate(t *testing.T) {
 				}
 				return
 			}
-			want := fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","reason":%q}`, tt.reason)
-			if u := f.users.byName(tt.user); tt.reads > 0 && u.UID != "" { // a user read is logged by its uid, a name as typed never
-				want = fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","user":%q,"reason":%q`, UserPrincipal(&u).String(), tt.reason)
+			// at info (rbac.md §1): a user read is logged by its uid, a name as typed never
+			account := AccountUnknown
+			if u := f.users.byName(tt.user); tt.reads > 0 && u.UID != "" {
+				account = UserPrincipal(&u).String()
 			}
+			want := fmt.Sprintf(`"level":"INFO","msg":"authentication refused","credential":"password","account":%q,"reason":%q,`, account, tt.reason)
 			if !strings.Contains(logs, want) {
 				t.Errorf("log %s does not have %s", logs, want)
 			}

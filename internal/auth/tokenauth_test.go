@@ -305,7 +305,7 @@ func (f *tokenFixture) wantSuccess(t *testing.T, p Principal, c Credential, err 
 	}
 }
 
-// wantRefusal checks a refusal, logged at debug with the reason and the token's id when it is
+// wantRefusal checks a refusal, logged at info with the reason and the token's id when it is
 // not 0.
 func (f *tokenFixture) wantRefusal(t *testing.T, p Principal, c Credential, err error, token int64, reason string) {
 	t.Helper()
@@ -316,7 +316,7 @@ func (f *tokenFixture) wantRefusal(t *testing.T, p Principal, c Credential, err 
 	if token != 0 {
 		want = fmt.Sprintf(`"token":%d,"reason":%q`, token, reason)
 	}
-	if !strings.Contains(f.logs.String(), `"level":"DEBUG","msg":"authentication refused"`) || !strings.Contains(f.logs.String(), want) {
+	if !strings.Contains(f.logs.String(), `"level":"INFO","msg":"authentication refused"`) || !strings.Contains(f.logs.String(), want) {
 		t.Errorf("log %s does not have %s", f.logs, want)
 	}
 }

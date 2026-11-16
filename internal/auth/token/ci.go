@@ -67,18 +67,18 @@ func (i *Issuer) IssueCI(ctx context.Context, p auth.Principal, service string, 
 func (v *Verifier) VerifyCI(ctx context.Context, secret string) (*CIGrant, error) {
 	raw, ok := strings.CutPrefix(secret, auth.CIPrefix)
 	if !ok {
-		return nil, v.refuse(ctx, "", "not a CI token")
+		return nil, v.refuse(ctx, string(auth.CredCI), "", "not a CI token", false)
 	}
 	kid, err := kidOf(raw)
 	if err != nil {
-		return nil, v.refuse(ctx, "", err.Error())
+		return nil, v.refuse(ctx, string(auth.CredCI), "", err.Error(), false)
 	}
 	k, err := v.key(ctx, kid)
 	if err != nil {
 		return nil, err
 	}
 	if k == nil {
-		return nil, v.refuse(ctx, kid, "no key has this kid")
+		return nil, v.refuse(ctx, string(auth.CredCI), kid, "no key has this kid", false)
 	}
 	var c ciClaims
 	_, err = jwt.ParseWithClaims(raw, &c, func(t *jwt.Token) (any, error) {
@@ -91,14 +91,14 @@ func (v *Verifier) VerifyCI(ctx context.Context, secret string) (*CIGrant, error
 		jwt.WithLeeway(Leeway), jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
 		jwt.WithTimeFunc(v.now))
 	if err != nil {
-		return nil, v.refuse(ctx, kid, err.Error())
+		return nil, v.refuse(ctx, string(auth.CredCI), kid, err.Error(), errors.Is(err, jwt.ErrTokenExpired))
 	}
 	p, err := auth.ParsePrincipal(c.Subject)
 	switch {
 	case err != nil || p.Kind != auth.KindCI:
-		return nil, v.refuse(ctx, kid, "the subject is not a ci: principal")
+		return nil, v.refuse(ctx, string(auth.CredCI), kid, "the subject is not a ci: principal", false)
 	case c.ID == "" || len(c.Policies) == 0:
-		return nil, v.refuse(ctx, kid, "no jti or no policy")
+		return nil, v.refuse(ctx, string(auth.CredCI), kid, "no jti or no policy", false)
 	}
 	return &CIGrant{Principal: p, Policies: c.Policies, ID: c.ID, ExpiresAt: c.ExpiresAt.Time}, nil
 }

@@ -209,11 +209,12 @@ func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string,
 	}
 	if cur == nil || subtle.ConstantTimeCompare([]byte(hash), []byte(cur.Hash)) != 1 {
 		b.failed(addr)
-		b.log().InfoContext(ctx, "bootstrap token refused: not the token", "address", addr)
+		LogRefusal(ctx, b.log(), RefusedBootstrap, AccountUnknown, 0, "not the token")
 		return nil, &authError{msg: "the bootstrap token is refused", err: ErrBootstrapToken}
 	}
 	now := b.now()
 	if err := tokenValid(cur, now); err != nil {
+		LogRefusal(ctx, b.log(), RefusedBootstrap, AccountUnknown, 0, "used or expired")
 		return nil, err
 	}
 	u, err := b.Users.create(ctx, name, password, true, o, func(w index.Writer) error {

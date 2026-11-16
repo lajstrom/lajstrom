@@ -38,25 +38,11 @@ func Inactive(u *index.User, after time.Duration, now time.Time) bool {
 	return after > 0 && !u.Disabled && u.DeletedAt == nil && now.Sub(LastActivity(u)) > after
 }
 
-// requestKey is the context key of WithRequest.
-type requestKey struct{}
-
-// request is what WithRequest stores.
-type request struct{ ip, id string }
-
-// WithRequest returns a copy of ctx that carries the address of the client of the request and
-// the id of the request, for the audit row of a change that the authentication of the request
-// makes itself: the disabling of an inactive user (docs/spec/rbac.md §5). internal/server stores
-// them on every request.
-func WithRequest(ctx context.Context, ip, requestID string) context.Context {
-	return context.WithValue(ctx, requestKey{}, request{ip: ip, id: requestID})
-}
-
 // inactivityOrigin is the Origin of the disabling of an inactive user by the request of ctx: the
 // source inactivity, and the client's address and the request's id of WithRequest.
 func inactivityOrigin(ctx context.Context) Origin {
-	r, _ := ctx.Value(requestKey{}).(request)
-	return Origin{Source: SourceInactivity, IP: r.ip, RequestID: r.id}
+	r := RequestFrom(ctx)
+	return Origin{Source: SourceInactivity, IP: r.Address, RequestID: r.ID}
 }
 
 // errLastAdmin rolls back the disabling of the last enabled user with an admin binding, which
@@ -230,7 +216,7 @@ func shortDuration(d time.Duration) string {
 // (DisableInactive) and its credential refused, ErrBadCredentials, unless DisableInactive keeps
 // it: the last enabled admin, or a user an admin enabled meanwhile. Otherwise the activity is
 // recorded (recordSeen) and admit returns nil.
-func (a *Authenticator) admit(ctx context.Context, u *index.User) error {
+func (a *Authenticator) admit(ctx context.Context, cred CredentialKind, u *index.User) error {
 	if a.users != nil && Inactive(u, a.users.InactiveAfter, a.now()) {
 		refused, err := a.users.DisableInactive(ctx, u.ID, inactivityOrigin(ctx))
 		if err != nil {
@@ -238,7 +224,7 @@ func (a *Authenticator) admit(ctx context.Context, u *index.User) error {
 				"user", UserPrincipal(u).String(), "error", err.Error())
 		}
 		if refused {
-			return a.refuse(ctx, u, "inactive")
+			return a.refuse(ctx, cred, u, "inactive")
 		}
 	}
 	a.recordSeen(ctx, u)
@@ -248,7 +234,7 @@ func (a *Authenticator) admit(ctx context.Context, u *index.User) error {
 // admitPassword is admit for a password of the user u, whose refusal counts as a failed login
 // of account and addr, as a disabled user's does; it returns the principal user:<uid>.
 func (a *Authenticator) admitPassword(ctx context.Context, u *index.User, account, addr string) (Principal, error) {
-	if err := a.admit(ctx, u); err != nil {
+	if err := a.admit(ctx, CredPassword, u); err != nil {
 		a.failed(account, addr)
 		return Principal{}, err
 	}
