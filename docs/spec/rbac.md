@@ -624,7 +624,7 @@ values say more, each from a flag or, without it, from the environment:
 A value outside its bounds is a usage error, exit status `2`, before anything is written; an empty
 variable counts as unset, and a flag wins over its variable. The same values go into every row the
 command writes. Each command that writes rows against the database takes both flags; the
-commands that go over HTTP (`admin bootstrap`, `admin retention`, `admin prefetch`), whose rows
+commands that go over HTTP (`admin bootstrap`, `admin retention`, `admin repo prefetch`), whose rows
 the server writes for the credential they send, and those that write no row do not. On
 `lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
 the change comes from `LAJSTROM_REASON` there.

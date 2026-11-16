@@ -55,7 +55,7 @@ func newPolicyRuleCreateCmd(a *app) *cobra.Command {
 				req.ExpiresAt = &t
 			}
 			return a.withRules(cmd.Context(), func(ctx context.Context, s *api.Rules) error {
-				r, err := s.Create(ctx, req, auth.PrincipalFrom(ctx).String(), cliOrigin())
+				r, err := s.Create(ctx, req, auth.PrincipalFrom(ctx).String(), a.cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -66,7 +66,7 @@ func newPolicyRuleCreateCmd(a *app) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&req.RepoMask, "mask", "", "which repos: pypi/proxy-pypi, npm/* (a format), */payments, */* (all)")
 	f.StringVar(&req.Name, "name", "", "the package name, * any run of characters: requests, @evil/*")
-	f.StringVar(&req.Reason, "reason", "", "why, shown to clients")
+	f.StringVar(&req.Reason, "reason", "", "why, shown to clients (the reason of this change for the audit log: env "+envReason+")")
 	f.StringVar(&version, "version", "*", "the versions: ==2.32.0, ==2.32.*, >=1.0,<2.0 (a range on a format that orders its versions)")
 	f.StringVar(&variant, "variant", "*", "the variant, * any; empty for the empty variant only")
 	f.Bool("allow", false, "an exception to the deny rules and to quarantine instead of a deny")
@@ -109,7 +109,7 @@ func newPolicyRuleDeleteCmd(a *app) *cobra.Command {
 				return fmt.Errorf("rule %q: want its number", args[0])
 			}
 			return a.withRules(cmd.Context(), func(ctx context.Context, s *api.Rules) error {
-				return s.Delete(ctx, id, auth.PrincipalFrom(ctx).String(), cliOrigin(), nil)
+				return s.Delete(ctx, id, auth.PrincipalFrom(ctx).String(), a.cliOrigin(), nil)
 			})
 		},
 	}

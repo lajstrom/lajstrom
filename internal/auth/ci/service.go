@@ -298,12 +298,7 @@ func (s *Service) changed(ctx context.Context, w index.Writer, action, typ strin
 		details["signIn"] = map[string]any{"token": cred.TokenID, "authTime": cred.SignIn.At.UTC().Format(time.RFC3339),
 			"amr": cred.SignIn.AMR}
 	}
-	for k, v := range map[string]string{"source": o.Source, "requestId": o.RequestID, "host": o.Host} {
-		if v != "" {
-			details[k] = v
-		}
-	}
-	raw, err := json.Marshal(details)
+	raw, err := json.Marshal(o.AddTo(details))
 	if err != nil {
 		return fmt.Errorf("ci: audit details of %s: %w", action, err)
 	}

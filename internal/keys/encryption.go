@@ -416,11 +416,11 @@ func (e *Encryption) Rotate(ctx context.Context, repo index.Repo) (*index.Key, s
 		if err := tx.CreateKey(ctx, row); err != nil {
 			return err
 		}
-		details := map[string]string{"kind": KindEnc}
+		details := auth.OriginFrom(ctx).AddTo(map[string]any{"kind": KindEnc})
 		if retired != "" {
 			details["retired"] = retired
 		}
-		b, _ := json.Marshal(details) // a map of strings: never an error
+		b, _ := json.Marshal(details) // strings: never an error
 		return tx.AppendAudit(ctx, &index.AuditEvent{At: e.now(), Principal: auth.PrincipalFrom(ctx).String(), Action: ActionRotate,
 			Repo: repoName(repo), Subject: row.Fingerprint, Details: b})
 	})

@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/api"
-	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/webhook"
@@ -54,7 +53,7 @@ func newWebhookCreateCmd(a *app) *cobra.Command {
 				req.Events = &events
 			}
 			return a.withWebhooks(cmd.Context(), func(ctx context.Context, s *webhook.Service) error {
-				h, secret, err := s.Create(ctx, req, auth.Origin(cliOrigin()))
+				h, secret, err := s.Create(ctx, req, a.cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -130,7 +129,7 @@ func newWebhookUpdateCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				h, err := s.Update(ctx, id, req, auth.Origin(cliOrigin()))
+				h, err := s.Update(ctx, id, req, a.cliOrigin())
 				if err != nil {
 					return ifMatched(err)
 				}
@@ -165,7 +164,7 @@ func newWebhookDeleteCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(s.Delete(ctx, id, auth.Origin(cliOrigin())))
+				return ifMatched(s.Delete(ctx, id, a.cliOrigin()))
 			})
 		},
 	}
@@ -186,7 +185,7 @@ func newWebhookRotateCmd(a *app) *cobra.Command {
 				return err
 			}
 			return a.withWebhooks(cmd.Context(), func(ctx context.Context, s *webhook.Service) error {
-				secret, err := s.Rotate(ctx, id, auth.Origin(cliOrigin()))
+				secret, err := s.Rotate(ctx, id, a.cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -274,7 +273,7 @@ func (a *app) withWebhooks(ctx context.Context, fn func(context.Context, *webhoo
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
 	return fn(ctx, &webhook.Service{Index: st, Deliverer: newDeliverer(a.cfg, a.log), Master: m, Formats: api.RepoFormat,
-		Replica: "cli:" + cliOrigin().Host, Source: a.cfg.Server.ExternalURL, Log: a.log})
+		Replica: "cli:" + hostName(), Source: a.cfg.Server.ExternalURL, Log: a.log})
 }
 
 // writeWebhookTable prints webhooks as a table: ID, MASK, ACTIVE, EVENTS, URL host, CREATED.

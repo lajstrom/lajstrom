@@ -30,3 +30,29 @@ func TestPrincipalContext(t *testing.T) {
 		})
 	}
 }
+
+// TestOriginContext: OriginFrom returns what WithOrigin stored, the zero Origin without it, and
+// AddTo writes the keys of rbac.md §5 that are set, the reason of a change as changeReason.
+func TestOriginContext(t *testing.T) {
+	if o := OriginFrom(context.Background()); o != (Origin{}) {
+		t.Errorf("OriginFrom(Background) = %+v, want the zero Origin", o)
+	}
+	o := Origin{Source: "cli", Host: "bastion", OSUser: "uid:1000", Actor: "alice@example.com", ChangeReason: "INC-42"}
+	if got := OriginFrom(WithOrigin(context.Background(), o)); got != o {
+		t.Errorf("OriginFrom = %+v, want %+v", got, o)
+	}
+	d := o.AddTo(map[string]any{"reason": "a rule's"})
+	want := map[string]any{"reason": "a rule's", "source": "cli", "host": "bastion", "osUser": "uid:1000", "actor": "alice@example.com",
+		"changeReason": "INC-42"}
+	if len(d) != len(want) {
+		t.Errorf("AddTo = %v, want %v", d, want)
+	}
+	for k, v := range want {
+		if d[k] != v {
+			t.Errorf("AddTo: %s = %v, want %v", k, d[k], v)
+		}
+	}
+	if d := (Origin{Source: "api", RequestID: "r1", IP: "192.0.2.1"}).AddTo(map[string]any{}); len(d) != 2 {
+		t.Errorf("AddTo of an API origin = %v, want source and requestId only", d)
+	}
+}

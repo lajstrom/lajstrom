@@ -126,20 +126,10 @@ const (
 	SourceConfig = "config"
 )
 
-// Origin says where a change comes from, for its audit event. The principal is not part of it:
-// it is auth.PrincipalFrom(ctx): the request's, or anonymous for the CLI and the config bootstrap.
-type Origin struct {
-	// Source is SourceAPI, SourceCLI or SourceConfig; the audit details carry it as "source".
-	Source string
-	// IP is the client address without the port; empty outside HTTP.
-	IP string
-	// RequestID is the id of the HTTP request (server.RequestID); the audit details carry it as
-	// "requestId" when it is set.
-	RequestID string
-	// Host is the host name of the machine lajstrom admin ran on; the audit details carry it as
-	// "host" when it is set.
-	Host string
-}
+// Origin says where a change comes from, for its audit event: auth.Origin, whose Source is
+// SourceAPI, SourceCLI or SourceConfig here. The principal is not part of it: it is
+// auth.PrincipalFrom(ctx): the request's, or anonymous for the CLI and the config bootstrap.
+type Origin = auth.Origin
 
 // Audit actions of the repo changes (docs/spec/index-schema.md, audit).
 const (
@@ -855,16 +845,7 @@ func samePolicy(a, b json.RawMessage) bool {
 // it on w, in the transaction of the change, when there is no audit.Writer. The caller passes
 // the event to writeAudit after the commit.
 func (s *Repos) record(ctx context.Context, w index.Writer, action string, row *index.Repo, o Origin, details map[string]any) (index.AuditEvent, error) {
-	if o.Source != "" {
-		details["source"] = o.Source
-	}
-	if o.RequestID != "" {
-		details["requestId"] = o.RequestID
-	}
-	if o.Host != "" {
-		details["host"] = o.Host
-	}
-	raw, err := json.Marshal(details)
+	raw, err := json.Marshal(o.AddTo(details))
 	if err != nil {
 		return index.AuditEvent{}, fmt.Errorf("api: audit details of %s: %w", action, err)
 	}

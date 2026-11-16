@@ -75,7 +75,7 @@ func newUserCreateCmd(a *app) *cobra.Command {
 			}
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
 				if service {
-					u, err := users.CreateService(ctx, name, owner, auth.Origin(cliOrigin()))
+					u, err := users.CreateService(ctx, name, owner, a.cliOrigin())
 					if err != nil {
 						return err
 					}
@@ -91,7 +91,7 @@ func newUserCreateCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				u, err := users.Create(ctx, name, password, admin, auth.Origin(cliOrigin()))
+				u, err := users.Create(ctx, name, password, admin, a.cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -144,7 +144,7 @@ func newUserSetOwnerCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.SetOwner(ctx, args[0], args[1], auth.Origin(cliOrigin()))
+				return users.SetOwner(ctx, args[0], args[1], a.cliOrigin())
 			})
 		},
 	}
@@ -165,7 +165,7 @@ func newUserDisableCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(users.Disable(ctx, args[0], auth.Origin(cliOrigin())))
+				return ifMatched(users.Disable(ctx, args[0], a.cliOrigin()))
 			})
 		},
 	}
@@ -187,7 +187,7 @@ func newUserRenameCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(users.Rename(ctx, args[0], args[1], auth.Origin(cliOrigin())))
+				return ifMatched(users.Rename(ctx, args[0], args[1], a.cliOrigin()))
 			})
 		},
 	}
@@ -210,7 +210,7 @@ func newUserDeleteCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(users.Delete(ctx, args[0], auth.Origin(cliOrigin())))
+				return ifMatched(users.Delete(ctx, args[0], a.cliOrigin()))
 			})
 		},
 	}
@@ -232,7 +232,7 @@ func newUserEnableCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(users.Enable(ctx, args[0], auth.Origin(cliOrigin())))
+				return ifMatched(users.Enable(ctx, args[0], a.cliOrigin()))
 			})
 		},
 	}
@@ -266,7 +266,7 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return users.SetPassword(ctx, args[0], password, auth.Origin(cliOrigin()))
+				return users.SetPassword(ctx, args[0], password, a.cliOrigin())
 			})
 		},
 	}
