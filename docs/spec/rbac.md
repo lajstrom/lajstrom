@@ -1,8 +1,10 @@
 # Spec: authentication, tokens and RBAC
 
 - Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69);
-  service accounts (§1) after the MVP (#1020). Owned by `internal/auth`.
+  service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283). Owned
+  by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
+  [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -126,6 +128,74 @@ A service account may have any binding, `admin` included. Its `admin` binding do
 the last-admin rule (above, §3) nor for the bootstrap (§6), as a group's does not: without a
 password it cannot make a token once its own expire. That rule never refuses disabling or
 deleting it, nor deleting its `admin` binding.
+
+### Inactive users
+
+A user's **last activity** (#1283,
+[ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md)), `users.last_seen_at`
+([index-schema.md](index-schema.md#a-users-last-activity)), is the time of its last successful
+authentication: its password (HTTP Basic, `/v2/token`, `npm login`, a web UI's
+`POST /api/v1/login`), a personal access token of its own (in Basic, as a bearer, a web UI's token with its proof, §10), or an
+OIDC login (§8: the callback that verified the ID token, for a browser, a web UI or a device). A
+service account authenticates with its tokens only, so their use is its activity. Nothing else
+is: the bearer of §4 and the archive token of a terraform download are issued for an
+authentication, which counts, and are no credential of the user; an admin's change of the user
+(a password set, a token made for it, a binding, a rename) is not the user's. A deploy token, a
+CI token (§11) and the principals of §9 are no user, and nothing here concerns them.
+
+An authentication reads the user's row for every credential anyway (§3). After the credential
+has verified and the check below has passed, it records the activity as a request records a
+token's use (#1277, `tokens.last_used_at`): when the `last_seen_at` it read is NULL or a minute
+old or more, with a write that only moves it forward and moves neither the row's revision nor
+`auth_version`. An OIDC login records it in its transaction. So the record is less than a minute
+behind, costs no read, and is at most one write a minute per active user across the replicas. A
+record that fails is logged at debug and refuses nothing, and the next request writes again.
+
+**Disabling an inactive user.** `auth.disableInactiveUsersAfter` (configuration.md) is `0` by
+default, which disables nobody; PCI DSS 8.2.6 is `2160h`, 90 days. A user is **inactive** when it
+is live and enabled, and the setting has passed since its last activity, or since its creation
+when it has none. No task looks for inactive users (decided on #1283, 2026-11-16): the
+authentication of one disables it. Once its credential has verified (a password by argon2id, a
+token by its hash, neither revoked nor expired, the ID token of an OIDC login), the credential is
+refused, and the user is disabled in a transaction that reads its row again and changes it only
+while it is still enabled and inactive: one `user.disable` row (§5). So from the moment the
+setting has passed, no credential of the user is taken on any replica, and its row says
+`disabled` from the first one tried. A credential that does not verify disables nobody: trying
+names and passwords disables no one and tells nothing.
+
+The refusal is a disabled user's: `401` with the challenge and without the reason, and for a
+password a failed login of the account and the address (§1). The page of an OIDC login says that
+the account was disabled for inactivity and that an admin can enable it, and the login writes no
+`user.login` row. The refusal is logged at info with the user's principal, its last activity and
+the setting. With `auth.serviceAccounts.onOwnerDisabled` `disable`, the user's service accounts
+are disabled with it, as with every disabling (above).
+
+**The last enabled admin** (the rule above) is never disabled so: its credential is taken and
+its activity recorded, which makes it active again, and a warning is logged with its principal
+and its last activity. A service account's and a group's `admin` bindings do not count for the
+rule, so a service account with one, and a user who is an admin through a group only, are
+disabled as any user.
+
+**Enabling** a user restarts its clock: the transaction of its `user.enable` sets
+`last_seen_at` to that time, so that the person is not disabled again by the next request.
+Creating a user sets nothing: a user that never authenticates is inactive once the setting has
+passed since its creation.
+
+**What is shown.** The users API (http-routing.md §4) and `lajstrom admin user list` answer
+`lastSeenAt` for every user, `null` before any record, and, while the setting is not `0`,
+`inactive: true` for an inactive user: before an authentication disables it, and for the last
+enabled admin, whom none disables. The access report (#1279) reads the two. The setting counts from
+the start of the `serve` that has it: a lowered one makes the users beyond it inactive at once,
+and a raised one makes active again those it no longer reaches, unless they are disabled
+already.
+
+**Upgrades.** A user of a release before migration 0034 has the last activity the migration
+gives it (index-schema.md, A user's last activity): the time of the migration for a user with a password, whose
+password logins left no record before it, and the latest use of its tokens and of its OIDC
+logins for a user without one, a service account or an OIDC user. So the upgrade alone makes no
+user with a password inactive; a service account or an OIDC user whose records are older than
+the setting is inactive at once. A snapshot of before 0034 is restored alike (index-schema.md,
+Snapshots of the control plane).
 
 ## 2. Resources and actions
 
@@ -351,8 +421,9 @@ MVP.
   The backend registry is never exposed to clients and trusts only Lajstrom (network policy or
   the backend's own credentials held by the provider).
 - A token is trusted until its `exp`, and the facade does not evaluate the bindings again for
-  a request it decides by the token. The bindings, a disabled user, a revoked or expired
-  personal access or deploy token, and a repo's `anonymousRead` count when a token is issued:
+  a request it decides by the token. The bindings, a disabled or inactive user (§1), a revoked
+  or expired personal access or deploy token, and a repo's `anonymousRead` count when a token is
+  issued:
   on `/v2` a change takes effect at the client's next `/v2/token`, at most 20 minutes later for
   a token issued before it. A repo deleted is unknown at once (`NAME_UNKNOWN`): the token names
   repositories by name. Two requests are evaluated when they come, as on every other route: one
@@ -391,7 +462,11 @@ principal `user:<uid>` and the name of every user, and the answers of the audit 
 `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
 `owner` in its details, a change of its owner is `user.owner`, with `from` and `owner`, and a
 service account that its owner's disabling disables (§1) is a `user.disable` of its own, with the
-owner as `owner` in its details. A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
+owner as `owner` in its details. A user that its inactivity disables (§1) is a `user.disable` by
+`anonymous`, with the `source` `inactivity`, the address and the request id of the request whose
+credential found it inactive, and in its details `reason` `inactive`, its `lastSeenAt` (absent
+when it had none) and the setting as `after` (`2160h`); a service account disabled with it has
+`owner` in its details, as above. A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
 `webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
 `repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "urlHost", "events",
 "active"}`, the host of its URL and never the URL nor the secret, with the origin's keys of the
@@ -519,7 +594,8 @@ the user, `kind` `oidc`, without a password, named by the claim `auth.oidc.usern
 missing or breaks the rule refuses the login, naming the claim. A name that a live user has
 already refuses it too, naming the name: an identity is never joined to an existing user by
 its name. Later logins find the user by the identity and keep its name, which a rename (§1)
-may change. A disabled user is refused at login as on every request. A deleted user lets its
+may change. A disabled user is refused at login as on every request, and an inactive one is
+disabled and refused (§1). A deleted user lets its
 identity go: the next login creates a new user with a new uid, which inherits nothing; it is
 disabling, not deleting, that keeps a person out.
 
@@ -563,11 +639,11 @@ and verifies the ID token:
 
 The JWKS is cached: a `kid` it does not have fetches it again, at most once every 30 s, and it
 is fetched again hourly; while the IdP does not answer, the last set that loaded stays. Then,
-in one transaction with the audit rows, the identity's user is found or created and its groups
-replaced: `user.create` for a first login (`details.source` `oidc`), and `user.login`
-(`details`: `issuer`, `subject`, `groups`). The browser's login mints a personal access token
-of the user without scopes, named `oidc <time>`, which expires after `auth.oidc.tokenLifetime`
-(24h by default, at most a year), with its `token.create` row (`createdBy` `oidc`), and answers
+in one transaction with the audit rows, the identity's user is found or created, its groups
+replaced and its last activity recorded (§1): `user.create` for a first login (`details.source`
+`oidc`), and `user.login` (`details`: `issuer`, `subject`, `groups`). The browser's login mints
+a personal access token of the user without scopes, named `oidc <time>`, which expires after
+`auth.oidc.tokenLifetime` (24h by default, at most a year), with its `token.create` row (`createdBy` `oidc`), and answers
 it once, on a page with `Cache-Control: no-store`; a login that a web UI started hands the UI a
 code instead (§10). A refusal at the IdP (`error=`), a state that
 is unknown, used, expired or of another browser, a code the IdP refuses, an ID token that does
