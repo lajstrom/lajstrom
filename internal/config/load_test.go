@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1040,6 +1041,58 @@ func TestFQDNDomain(t *testing.T) {
 				t.Errorf("Load: %v, want server.fqdn.domain: …%s…", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestCORSOrigins checks server.corsOrigins (docs/spec/http-routing.md §4, #949): each an origin
+// exactly as a browser sends it, https, http for a loopback host only, without a wildcard, a
+// path, a trailing / or the default port, and none twice.
+func TestCORSOrigins(t *testing.T) {
+	tests := []struct {
+		origin string
+		want   string // a substring of the error; empty for none
+	}{
+		{origin: "https://ui.example.com"},
+		{origin: "https://ui.example.com:8443"},
+		{origin: "https://[2001:db8::1]:8443"},
+		{origin: "https://xn--bcher-kva.example"},
+		{origin: "http://localhost:5173"},
+		{origin: "http://127.0.0.1:5173"},
+		{origin: "http://[::1]:5173"},
+		{origin: "*", want: "without a wildcard"},
+		{origin: "https://*.example.com", want: "without a wildcard"},
+		{origin: "null", want: "without a wildcard"},
+		{origin: "https://ui.example.com/", want: "without a path or a trailing /"},
+		{origin: "https://ui.example.com/ui", want: "without a path or a trailing /"},
+		{origin: "https://ui.example.com?x=1", want: "without a path or a trailing /"},
+		{origin: "https://ui.example.com#", want: "without a path or a trailing /"},
+		{origin: "https://u@ui.example.com", want: "without a path or a trailing /"},
+		{origin: "ui.example.com", want: "without a path or a trailing /"},
+		{origin: "ftp://ui.example.com", want: "without a path or a trailing /"},
+		{origin: "https://UI.example.com", want: "must be lowercase ASCII"},
+		{origin: "https://bücher.example", want: "must be lowercase ASCII"},
+		{origin: "https://ui.example.com:443", want: "must not name the default port"},
+		{origin: "http://localhost:80", want: "must not name the default port"},
+		{origin: "http://ui.example.com", want: "http is for a loopback host only"},
+		{origin: "http://10.0.0.1:5173", want: "http is for a loopback host only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.origin, func(t *testing.T) {
+			file := fmt.Sprintf("%s  externalURL: https://art.example.com\n  corsOrigins: [%q]\n", listenOnly, tt.origin)
+			c, err := Load(writeConfig(t, file), nil)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want no error", err)
+			case tt.want == "" && !slices.Equal(c.Server.CORSOrigins, []string{tt.origin}):
+				t.Errorf("server.corsOrigins = %q, want [%q]", c.Server.CORSOrigins, tt.origin)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), "server.corsOrigins[0]: ") || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("Load: %v, want server.corsOrigins[0]: …%s…", err, tt.want)
+			}
+		})
+	}
+	file := listenOnly + "  externalURL: https://art.example.com\n  corsOrigins: [\"https://ui.example.com\", \"https://ui.example.com\"]\n"
+	if _, err := Load(writeConfig(t, file), nil); err == nil || !strings.Contains(err.Error(), "server.corsOrigins[1]: \"https://ui.example.com\" is listed twice") {
+		t.Errorf("Load of an origin twice: %v, want server.corsOrigins[1]: … is listed twice", err)
 	}
 }
 

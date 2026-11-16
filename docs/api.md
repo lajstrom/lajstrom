@@ -42,8 +42,8 @@ The OpenAPI 3.1 document of these endpoints is
   request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
-- **Any other method or path** under `/api/` answers `404 NOT_FOUND`, `OPTIONS` too: the API
-  answers no CORS ([A browser on the same origin](#a-browser-on-the-same-origin)).
+- **Any other method or path** under `/api/` answers `404 NOT_FOUND`, `OPTIONS` too, but the
+  preflight of an origin of `server.corsOrigins` ([A web UI in a browser](#a-web-ui-in-a-browser)).
 
 ### Errors
 
@@ -1376,10 +1376,11 @@ curl -s "$LAJSTROM/api/v1/info"
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
 
-## A browser on the same origin
+## A web UI in a browser
 
 A web UI ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)) reads this API from the same
-origin: its container serves it at `/ui/` behind the same edge as Lajstrom
+origin, its container serving it at `/ui/` behind the same edge as Lajstrom, or from an origin
+of `server.corsOrigins`, object storage behind a CDN for one
 ([http-routing.md](spec/http-routing.md) §1 and §4).
 
 - **Signing in.** The API sets no cookie and reads none. The UI asks for the person's name and
@@ -1399,10 +1400,31 @@ origin: its container serves it at `/ui/` behind the same edge as Lajstrom
   challenge of a `401` then opens no browser dialog, and no cached Basic credentials go along.
 - **No CSRF token.** A browser never adds a bearer to a request by itself. The one credential it
   adds is cached Basic, and an unsafe request from another site is refused before credentials
-  are checked ([operations.md](operations.md#what-lajstrom-answers-browsers)).
-- **Same origin only.** No answer has an `Access-Control-*` header, so a page of another origin
-  can neither read an answer nor send a request with a bearer. A UI on another origin, such as
-  object storage behind a CDN, needs the allowlist of #949.
+  are checked ([operations.md](operations.md#what-lajstrom-answers-browsers)), but from an origin
+  of `server.corsOrigins`, which the operator lists as the UI's own.
+- **Another origin.** With `server.corsOrigins` empty, the default, no answer has an
+  `Access-Control-*` header, so a page of another origin can neither read an answer nor send a
+  request with a bearer. An origin it lists ([configuration.md](configuration.md#server)) gets,
+  on `/api/` and `/-/version`, `Access-Control-Allow-Origin` with itself on every answer, with
+  `Access-Control-Expose-Headers: Date, Retry-After, WWW-Authenticate, X-Request-Id` (`Date`
+  for a UI whose clock is off to sign its proofs by the server's), and a preflight answered
+  `204` for `Authorization`, `Content-Type` and `DPoP`, the proof of a sign-in (#1170), cached
+  10 minutes. There is never `Access-Control-Allow-Credentials`: the UI sends its bearer
+  with `credentials: "omit"`. The links to files and the login are navigations and need no CORS.
+
+```sh
+curl -si -X OPTIONS -H 'Origin: https://ui.example.com' -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization,dpop' "$LAJSTROM/api/v1/repos"
+```
+
+```http
+HTTP/1.1 204 No Content
+Access-Control-Allow-Headers: Authorization, Content-Type, DPoP
+Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH, DELETE
+Access-Control-Allow-Origin: https://ui.example.com
+Access-Control-Max-Age: 600
+Vary: Origin
+```
 
 ## Who am I: `GET /api/v1/whoami`
 

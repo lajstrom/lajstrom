@@ -239,6 +239,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Kubernetes:       edge.kubernetes,
 				ClientCertHeader: c.Auth.ClientCertificates.ForwardedHeader,
 				FQDNDomain:       c.Server.FQDN.Domain,
+				CORSOrigins:      c.Server.CORSOrigins,
 			})
 			if err != nil {
 				return err
