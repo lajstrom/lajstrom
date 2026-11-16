@@ -134,6 +134,9 @@ grep -qxF "greeting: from $first / hello from $two" "$work/update.log" || { cat 
 grep -qF " 500 $base/apt/$group jammy/main amd64 Packages" "$work/update.log" || { cat "$work/update.log" >&2; fail "apt-cache policy does not name the group"; }
 step "apt-get update && apt-get install $one $two through apt/$group [$source_opts]: $one is the first member's, apt-cache policy names the group"
 
+# A document rendered again within the second of the render apt holds has its Last-Modified,
+# and apt, which asks with If-Modified-Since, keeps the old one (#1255): publish a second later.
+sleep 1
 put "$deb3" "$second"
 expect "PUT $(basename "$deb3") to apt/$second ($(cat "$work/body"))" 201 "$status"
 in_client late.log "
