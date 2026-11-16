@@ -2,7 +2,9 @@ package format
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -14,8 +16,10 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -38,6 +42,10 @@ type ServeBlobOptions struct {
 	// Filename is sent as Content-Disposition: attachment with this file name when it is set;
 	// "" means no Content-Disposition.
 	Filename string
+	// Subject is the version the blob is a file of, which the policy of the request
+	// (policy.FromContext) decides before anything else (CheckVersion, docs/spec/policy.md
+	// §6.2); nil decides nothing: the facade's blobs, which artifacts that are not denied share.
+	Subject *policy.Subject
 	// Fail answers an error met before the response started; nil means WriteError. The facade
 	// answers in the error format of the distribution spec, a frontend through its own fail,
 	// which logs the cause of a 5xx: ServeBlob takes no logger.
@@ -78,6 +86,12 @@ func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, n
 	if opts.ContentType == "" || prov == nil {
 		a.fail(w, fmt.Errorf("format: serve blob %s@%s: no content type or no provider", name, d))
 		return nil
+	}
+	if opts.Subject != nil {
+		if err := CheckVersion(r.Context(), *opts.Subject); err != nil {
+			a.fail(w, err)
+			return nil
+		}
 	}
 	a.v = validators{etag: opts.ETag, modified: opts.LastModified.Truncate(time.Second)}
 	if a.v.etag == "" {
@@ -408,4 +422,23 @@ func BlobRedirect(repo index.Repo) bool {
 	}
 	var value string
 	return json.Unmarshal(p.BlobRedirect, &value) != nil || value != "never"
+}
+
+// VersionSubject is the policy subject of the version v of the package pkg of repo, the repo
+// that holds it (docs/spec/policy.md §3): what a frontend gives ServeBlob for a file of v.
+func VersionSubject(repo index.Repo, pkg index.Package, v index.Version) *policy.Subject {
+	return &policy.Subject{Repo: repo, Name: pkg.Name, Version: v.Version, Variant: v.Variant, Digest: v.Digest, Published: v.CreatedAt}
+}
+
+// CheckVersion decides s with the policy of ctx (policy.FromContext): nil when it allows, and
+// otherwise the *policy.DeniedError, which StatusOf answers 403, after its audit row
+// policy.refuse (surface download). An error of the index is returned as it is.
+func CheckVersion(ctx context.Context, s policy.Subject) error {
+	d := policy.FromContext(ctx)
+	err := d.Check(ctx, s)
+	var denied *policy.DeniedError
+	if errors.As(err, &denied) {
+		d.Refuse(ctx, policy.SurfaceDownload, denied, auth.PrincipalFrom(ctx))
+	}
+	return err
 }

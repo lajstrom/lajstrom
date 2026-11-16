@@ -46,6 +46,7 @@ func (h *handlers) packageFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
+		Subject:        format.VersionSubject(repo, m.Package, m.Version),
 		ContentType:    packageContentType,
 		LastModified:   m.Version.CreatedAt,
 		ManifestDigest: m.Version.Digest,

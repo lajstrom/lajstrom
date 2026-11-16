@@ -89,6 +89,9 @@ func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if err != nil {
 		return manifestUnknown(err)
 	}
+	if err := h.checkPull(ctx, t, ref, desc.Digest); err != nil {
+		return err
+	}
 	var rc io.ReadCloser
 	if r.Method == http.MethodGet {
 		if rc, err = rr.Fetch(ctx, desc); err != nil {
@@ -181,6 +184,9 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	}
 	var ev *index.AuditEvent // a manifest with a subject is ingest's to audit, as a referrer
 	if subject == nil {
+		if err := h.checkPush(ctx, t, ref, desc.Digest); err != nil {
+			return err
+		}
 		if ev, err = h.intendPassThrough(ctx, t, tag, desc.Digest); err != nil {
 			return err
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -184,7 +185,7 @@ func clientStatus(err error) (int, bool) {
 		return http.StatusBadRequest, true
 	case errors.Is(err, ErrUnauthenticated):
 		return http.StatusUnauthorized, true
-	case errors.Is(err, ErrForbidden), errors.Is(err, provider.ErrLimit):
+	case errors.Is(err, ErrForbidden), errors.Is(err, provider.ErrLimit), errors.Is(err, policy.ErrDenied):
 		return http.StatusForbidden, true
 	case errors.Is(err, ErrMethodNotAllowed):
 		return http.StatusMethodNotAllowed, true

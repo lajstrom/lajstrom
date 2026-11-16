@@ -29,6 +29,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/keys"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -62,6 +63,7 @@ type env struct {
 	logs   *logBuffer
 	h      http.Handler // replica A
 	proxy  OCIProxy     // Options.OCIProxy
+	policy *policy.Decider
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
@@ -76,6 +78,7 @@ type envOptions struct {
 	behind      time.Duration                              // Options.MaxCreatedBehind
 	externalURL string                                     // Options.ExternalURL
 	ociProxy    OCIProxy                                   // Options.OCIProxy
+	policy      bool                                       // a Decider over the store, in Options.Policy and ingest's
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
@@ -97,9 +100,12 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.store != nil {
 		e.idx = o.store(st)
 	}
+	if o.policy {
+		e.policy = policy.New(policy.Options{Index: e.idx, Now: e.clock.Now})
+	}
 	if e.ingest == nil {
 		e.ingest = ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: e.idx,
-			Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now})
+			Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now, Policy: e.policy})
 	}
 	for _, r := range []*index.Repo{&e.raw, &e.oci} {
 		*r = index.Repo{Registry: "local", Kind: "hosted"}
@@ -124,7 +130,7 @@ func (e *env) replicaWith(k token.Keys) http.Handler {
 	h := New(Options{Index: e.idx, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
 		MaxManifestSize: e.max, MaxCreatedBehind: e.behind, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
-		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1], OCIProxy: e.proxy})
+		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1], OCIProxy: e.proxy, Policy: e.policy})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), userP(name)))

@@ -22,6 +22,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	_ "github.com/lajstrom/lajstrom/internal/provider/ecr"    // registers registries[].type ecr
 	"github.com/lajstrom/lajstrom/internal/provider/generic"  // registers registries[].type generic; server.spoolBudget
@@ -161,9 +162,11 @@ func newServeCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			decider := policy.New(policy.Options{Index: st, Order: versionOrder(lookupIn(servedPlugins(c.Server.ExternalURL, nil))),
+				Origin: requestOrigin, Log: a.log})
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize,
-				Webhooks: newOutbox(c)})
+				Webhooks: newOutbox(c), Policy: decider})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
@@ -195,13 +198,13 @@ func newServeCmd(a *app) *cobra.Command {
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
-				Proxy: proxyCore}
+				Proxy: proxyCore, Policy: decider}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
-				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore})
+				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore, Policy: decider})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}

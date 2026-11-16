@@ -220,3 +220,7 @@ func isVersionSeparator(c byte) bool { return c == '.' || c == '-' || c == '_' }
 
 // isDigit reports whether c is an ASCII digit.
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
+
+// CompareVersions compares two versions in Maven's version order (format.VersionComparer, the
+// order of a policy rule's ranges). Every string is a Maven version, so it never fails.
+func (Plugin) CompareVersions(a, b string) (int, error) { return compareVersions(a, b), nil }

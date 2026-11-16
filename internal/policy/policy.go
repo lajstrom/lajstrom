@@ -94,10 +94,15 @@ type DeniedError struct {
 	Verdict Verdict
 }
 
-// Error is the message of docs/spec/policy.md §6.6.
+// Error is the message of docs/spec/policy.md §6.6: the name and the version, without the
+// variant, which the audit row has.
 func (e *DeniedError) Error() string {
+	what := e.Subject.Name
+	if e.Subject.Version != "" {
+		what += " " + e.Subject.Version
+	}
 	if e.Verdict.Effect == EffectQuarantine {
-		msg := e.Subject.String() + " is quarantined"
+		msg := what + " is quarantined"
 		if !e.Verdict.Lifts.IsZero() {
 			msg += " until " + e.Verdict.Lifts.UTC().Format(time.RFC3339)
 		}
@@ -106,7 +111,7 @@ func (e *DeniedError) Error() string {
 		}
 		return msg
 	}
-	return fmt.Sprintf("%s is denied by policy: %s", e.Subject.String(), e.Verdict.Reason)
+	return fmt.Sprintf("%s is denied by policy: %s", what, e.Verdict.Reason)
 }
 
 // Unwrap is ErrDenied.
