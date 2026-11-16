@@ -33,6 +33,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"TokenPages", testTokenPages},
 		{"BootstrapToken", testBootstrapToken},
 		{"BootstrapTokenRace", testBootstrapTokenRace},
+		{"ConfigState", testConfigState},
+		{"ConfigStateRace", testConfigStateRace},
 		{"Bindings", testBindings},
 		{"AuthVersion", testAuthVersion},
 		{"Keys", testKeys},
