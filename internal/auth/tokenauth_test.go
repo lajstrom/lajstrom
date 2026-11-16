@@ -128,7 +128,8 @@ func ptr[T any](v T) *T { return &v }
 
 // tokenFixture is an authFixture with tokens: alice's (full rights, read only, revoked,
 // expired, without an expiry, of a deploy row), bob's (bob is disabled), carol's (no
-// password), one of a user that does not exist, deploy tokens of raw/scratch (repo 10:
+// password), robot's without an expiry (a service account), one of a user that does not exist,
+// one without an owner, deploy tokens of raw/scratch (repo 10:
 // read and write, revoked, expired, never expiring, of a pat row) and of a repo that is gone,
 // and deploy tokens over the mask raw/* (#911: read, revoked) and rows this package never
 // writes (a repo and a mask, neither, a mask of one segment).
@@ -157,6 +158,8 @@ func newTokenFixture(t *testing.T, o Options) *tokenFixture {
 		{"bob", PATPrefix, index.Token{ID: 7, Kind: TokenPAT, UserID: ptr(int64(2)), ExpiresAt: hour}},
 		{"carol", PATPrefix, index.Token{ID: 8, Kind: TokenPAT, UserID: ptr(int64(3)), ExpiresAt: hour}},
 		{"nobody", PATPrefix, index.Token{ID: 9, Kind: TokenPAT, UserID: ptr(int64(42)), ExpiresAt: hour}},
+		{"robot", PATPrefix, index.Token{ID: 11, Kind: TokenPAT, UserID: ptr(int64(4)), Scopes: []string{"read"}}},
+		{"no-owner", PATPrefix, index.Token{ID: 12, Kind: TokenPAT, ExpiresAt: hour}},
 		{"deploy", DeployPrefix, index.Token{ID: 20, Kind: TokenDeploy, RepoID: ptr(int64(10)), Scopes: []string{"read", "write"}, ExpiresAt: hour}},
 		{"deploy-revoked", DeployPrefix, index.Token{ID: 21, Kind: TokenDeploy, RepoID: ptr(int64(10)), Scopes: []string{"read"}, RevokedAt: past}},
 		{"deploy-expired", DeployPrefix, index.Token{ID: 22, Kind: TokenDeploy, RepoID: ptr(int64(10)), Scopes: []string{"read"}, ExpiresAt: past}},
@@ -217,7 +220,10 @@ func TestAuthenticateTokens(t *testing.T) {
 		{name: "pat with a bad user name", user: "Alice", which: "alice", reason: "malformed user name"},
 		{name: "pat revoked", user: "alice", which: "alice-revoked", reason: "revoked", token: 3, tokenReads: 1, reads: 1},
 		{name: "pat expired", user: "alice", which: "alice-expired", reason: "expired", token: 4, tokenReads: 1, reads: 1},
-		{name: "pat without an expiry", user: "alice", which: "alice-no-expiry", reason: "a personal access token without an expiry or an owner", token: 5, tokenReads: 1, reads: 1},
+		{name: "pat without an expiry", user: "alice", which: "alice-no-expiry", reason: "a personal access token without an expiry, of a user that is not a service account", token: 5, tokenReads: 1, reads: 1},
+		{name: "pat of a service account without an expiry", user: "robot", which: "robot", want: userP("robot"),
+			cred: Credential{Kind: CredPAT, TokenID: 11, UserID: 4, Scopes: []string{"read"}}, tokenReads: 1, reads: 1},
+		{name: "pat without an owner", user: "alice", which: "no-owner", reason: "a personal access token without an owner", token: 12, tokenReads: 1, reads: 1},
 		{name: "pat of a disabled owner", user: "bob", which: "bob", reason: "disabled", token: 7, tokenReads: 1, reads: 1},
 		{name: "pat unknown", user: "alice", which: "unknown", reason: "unknown token", tokenReads: 1, reads: 1},
 		{name: "pat secret on a deploy row", user: "alice", which: "alice-as-deploy", reason: "a token of kind deploy", token: 6, tokenReads: 1, reads: 1},
@@ -318,6 +324,8 @@ func TestAuthenticateBearer(t *testing.T) {
 		{name: "expired", which: "alice-expired", reason: "expired"},
 		{name: "owner disabled", which: "bob", reason: "disabled"},
 		{name: "owner unknown", which: "nobody", reason: "unknown user"},
+		{name: "a service account's without an expiry", which: "robot", want: userP("robot")},
+		{name: "a person's without an expiry", which: "alice-no-expiry", reason: "a personal access token without an expiry, of a user that is not a service account"},
 		{name: "a deploy row", which: "alice-as-deploy", reason: "a token of kind deploy"},
 	}
 	for _, tt := range tests {
@@ -329,8 +337,11 @@ func TestAuthenticateBearer(t *testing.T) {
 			}
 			p, c, err := f.a.AuthenticateBearer(context.Background(), secret)
 			want := map[Kind]Credential{KindUser: {Kind: CredPAT, UserID: 1}, KindToken: {Kind: CredDeploy, TokenID: 20, RepoID: 10}}[tt.want.Kind]
-			if tt.which == "mask" {
+			switch tt.which {
+			case "mask":
 				want = Credential{Kind: CredDeploy, TokenID: 26, Mask: "raw/*"}
+			case "robot":
+				want = Credential{Kind: CredPAT, UserID: 4}
 			}
 			if tt.want != (Principal{}) {
 				if err != nil || p != tt.want || c.Kind != want.Kind || c.UserID != want.UserID || c.RepoID != want.RepoID || c.Mask != want.Mask {

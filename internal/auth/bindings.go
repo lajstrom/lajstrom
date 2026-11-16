@@ -182,7 +182,8 @@ func (s *Bindings) Delete(ctx context.Context, id int64, o Origin) error {
 }
 
 // lastAdmin returns an error wrapping index.ErrConflict when the admin binding gone, deleted on
-// w, was one of a live, enabled user and no such user has an admin binding left (anyAdmin).
+// w, was one of a live, enabled user that is not a service account, and no such user has an
+// admin binding left (anyAdmin).
 func lastAdmin(ctx context.Context, w index.Writer, gone index.Binding) error {
 	p, perr := ParsePrincipal(gone.Principal)
 	if perr != nil {
@@ -194,7 +195,7 @@ func lastAdmin(ctx context.Context, w index.Writer, gone index.Binding) error {
 		return nil
 	case err != nil:
 		return err
-	case u.Disabled:
+	case u.Disabled, u.Kind == KindService:
 		return nil
 	}
 	ok, err := anyAdmin(ctx, w)

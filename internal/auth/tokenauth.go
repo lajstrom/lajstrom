@@ -16,7 +16,8 @@ import (
 
 // authenticatePAT returns the principal user:<uid> of the user called username when secret is a personal access token
 // of that user: a token of kind pat that is not revoked and not expired (ExpiresAt before now,
-// without leeway), whose owner is the user called username and is not disabled. A malformed
+// without leeway), whose owner is the user called username and is not disabled, and which has an
+// expiry unless its owner is a service account (docs/spec/rbac.md §1). A malformed
 // user name, the reserved name deploy among them, and a secret that is not of the token's
 // shape are refused without the index. Otherwise it costs one GetTokenByHash and one GetUser,
 // a miss as much as a hit, and no argon2id.
@@ -47,6 +48,8 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 		reason = "the token of another user"
 	case u.Disabled:
 		reason = "disabled"
+	default:
+		reason = unbounded(t, u)
 	}
 	if reason != "" {
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
@@ -126,8 +129,21 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	case u.Disabled:
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "disabled")
 	}
+	if reason := unbounded(t, u); reason != "" {
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
+	}
 	a.touch(ctx, t.ID)
 	return UserPrincipal(u), patCredential(t), nil
+}
+
+// unbounded returns why the personal access token t of the user u cannot authenticate for its
+// expiry, or "" when it can: only a service account's may have none (docs/spec/rbac.md §1). A
+// replica of a release before service accounts refuses every one without an expiry.
+func unbounded(t *index.Token, u *index.User) string {
+	if t.ExpiresAt == nil && u.Kind != KindService {
+		return "a personal access token without an expiry, of a user that is not a service account"
+	}
+	return ""
 }
 
 // patCredential is the credential of a personal access token.
@@ -148,10 +164,11 @@ func (a *Authenticator) token(ctx context.Context, secret string) (*index.Token,
 }
 
 // dead returns why t cannot authenticate as a token of kind, or "" when it can: none, another
-// kind, revoked, expired, a personal access token without an expiry or an owner, a deploy token
-// with neither a repo nor a mask, or with both, or with a mask that is not <format>/<repo>. The
-// last three are rows this package never writes; a replica of a release before the masks
-// (#911) refuses a token over a mask as one without a repo.
+// kind, revoked, expired, a personal access token without an owner, a deploy token with neither
+// a repo nor a mask, or with both, or with a mask that is not <format>/<repo>. The last four are
+// rows this package never writes; a replica of a release before the masks (#911) refuses a token
+// over a mask as one without a repo. A personal access token without an expiry is its owner's
+// to decide (unbounded).
 func (a *Authenticator) dead(t *index.Token, kind string) string {
 	switch {
 	case t == nil:
@@ -162,8 +179,8 @@ func (a *Authenticator) dead(t *index.Token, kind string) string {
 		return "revoked"
 	case t.ExpiresAt != nil && t.ExpiresAt.Before(a.now()):
 		return "expired"
-	case kind == TokenPAT && (t.ExpiresAt == nil || t.UserID == nil):
-		return "a personal access token without an expiry or an owner"
+	case kind == TokenPAT && t.UserID == nil:
+		return "a personal access token without an owner"
 	case kind == TokenDeploy && (t.RepoID == nil) == (t.RepoMask == ""):
 		return "a deploy token with neither a repo nor a mask, or with both"
 	case kind == TokenDeploy && t.RepoMask != "" && !validMask(t.RepoMask):

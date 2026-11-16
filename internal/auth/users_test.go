@@ -120,7 +120,7 @@ func TestUsersCreate(t *testing.T) {
 		t.Errorf("the stored hash does not verify the password: %v, %v", ok, err)
 	}
 	wantAdminBinding(t, st)
-	list, err := users.List(ctx)
+	list, err := users.List(ctx, "")
 	if err != nil || len(list) != 2 || list[0].Name != "admin" || list[1].Name != "alice" {
 		t.Errorf("List = %+v, %v; want admin and alice", list, err)
 	}
@@ -297,7 +297,7 @@ func TestUsersFailures(t *testing.T) {
 	for name, err := range map[string]error{
 		"create":  func() error { _, err := users.Create(ctx, "alice", "alice-password", false, cli); return err }(),
 		"disable": users.Disable(ctx, "alice", cli),
-		"list":    func() error { _, err := users.List(ctx); return err }(),
+		"list":    func() error { _, err := users.List(ctx, ""); return err }(),
 	} {
 		if !errors.Is(err, errDatabase) || errors.Is(err, index.ErrNotFound) || !strings.HasPrefix(err.Error(), "auth: ") {
 			t.Errorf("%s = %v, want the index error wrapped", name, err)

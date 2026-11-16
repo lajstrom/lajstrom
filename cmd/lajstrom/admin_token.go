@@ -166,14 +166,15 @@ func newTokenRevokeCmd(a *app) *cobra.Command {
 }
 
 // withTokens opens the index database of the configuration, runs fn with the tokens service
-// over it, and closes the database.
+// over it, its bound of a service account's tokens auth.serviceAccounts.maxTokenTTL, and closes
+// the database.
 func (a *app) withTokens(ctx context.Context, fn func(context.Context, *auth.Tokens) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &auth.Tokens{Index: st, Formats: api.RepoFormat, Log: a.log})
+	return fn(ctx, &auth.Tokens{Index: st, Formats: api.RepoFormat, Log: a.log, ServiceMaxLifetime: a.cfg.Auth.ServiceAccounts.MaxTokenTTL})
 }
 
 // writeTokenTable prints tokens as a table with the columns ID, KIND, NAME, SCOPES, EXPIRES,

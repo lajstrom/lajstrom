@@ -6,15 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// KindLocal is the kind of a user whose password Lajstrom keeps (users.kind); oidc comes after
-// the MVP.
-const KindLocal = "local"
+// Kinds of users (users.kind). KindOIDC, a user that its first OIDC login makes, is with the
+// login.
+const (
+	// KindLocal is the kind of a user whose password Lajstrom keeps.
+	KindLocal = "local"
+	// KindService is the kind of a service account (docs/spec/rbac.md §1): a user for a system,
+	// without a password, with an owner, authenticated by its personal access tokens only.
+	KindService = "service"
+)
 
 // RoleAdmin and MaskAll make the admin binding of docs/spec/rbac.md §3 and §6: everything on
 // every repo, plus the system and the audit log.
@@ -31,10 +38,11 @@ const (
 	ActionUserEnable   = "user.enable"
 	ActionUserRename   = "user.rename"
 	ActionUserDelete   = "user.delete"
+	ActionUserOwner    = "user.owner"
 )
 
-// User is a local user as the CLI prints it and the users API (#47) answers it. It never
-// carries the password hash.
+// User is a user as the CLI prints it and the users API (#47) answers it. It never carries the
+// password hash.
 type User struct {
 	// UID is the user's identity (docs/spec/rbac.md §1); principals refer to it, user:<uid>.
 	UID       string    `json:"uid"`
@@ -42,6 +50,12 @@ type User struct {
 	Kind      string    `json:"kind"`
 	Disabled  bool      `json:"disabled"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Owner is a service account's owner, user:<uid> or group:<name>; OwnerName the name of a
+	// user owner, and OwnerDisabled whether that user is disabled. All three are empty for every
+	// other kind.
+	Owner         string `json:"owner,omitempty"`
+	OwnerName     string `json:"ownerName,omitempty"`
+	OwnerDisabled bool   `json:"ownerDisabled,omitempty"`
 }
 
 // Origin says where a change comes from, for its audit event; the principal is
@@ -77,6 +91,11 @@ type Users struct {
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
+	// DisableWithOwner disables the enabled service accounts of a user in the transaction that
+	// disables the user, their owner: auth.serviceAccounts.onOwnerDisabled disable
+	// (docs/spec/rbac.md §1). False flags them only, ownerDisabled. Enabling the owner again
+	// enables none of them.
+	DisableWithOwner bool
 }
 
 // Create checks name and password and creates the local user, with a new uid, and one
@@ -121,8 +140,101 @@ func (s *Users) create(ctx context.Context, name, password string, admin bool, o
 		return nil, userError("create", name, err)
 	}
 	s.writeAudit(ctx, ev)
-	u := resource(&row)
-	return &u, nil
+	return s.resource(ctx, s.Index, &row, nil)
+}
+
+// CreateService checks name and owner and creates the service account (docs/spec/rbac.md §1),
+// with a new uid, no password and one user.create audit event whose details have its kind and
+// owner. owner is user:<name> or user:<uid> of a live user that is not a service account, kept as
+// user:<uid>, or group:<name> with a name of CheckGroupName (ownerOf).
+func (s *Users) CreateService(ctx context.Context, name, owner string, o Origin) (*User, error) {
+	if err := CheckName(name); err != nil {
+		return nil, err
+	}
+	row := index.User{Name: name, Kind: KindService, CreatedAt: s.now()}
+	var ev index.AuditEvent
+	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
+		if row.Owner, err = ownerOf(ctx, w, owner); err != nil {
+			return err
+		}
+		if err = w.CreateUser(ctx, &row); err != nil {
+			return err
+		}
+		ev, err = s.record(ctx, w, ActionUserCreate, &row, o, map[string]any{"kind": KindService, "owner": row.Owner})
+		return err
+	})
+	if err != nil {
+		return nil, userError("create", name, err)
+	}
+	s.writeAudit(ctx, ev)
+	return s.resource(ctx, s.Index, &row, nil)
+}
+
+// SetOwner makes owner, as for CreateService, the owner of the service account called name,
+// with one user.owner audit event whose details have the owner it had (from) and the new one. An
+// owner it has already is left as it is, without an event. A user that is not a service account
+// has no owner (ErrInvalid).
+func (s *Users) SetOwner(ctx context.Context, name, owner string, o Origin) error {
+	var ev *index.AuditEvent
+	err := s.Index.Tx(ctx, func(w index.Writer) error {
+		row, err := w.GetUser(ctx, name)
+		if err != nil {
+			return err
+		}
+		if row.Kind != KindService {
+			return invalidf("owner: user %s is not a service account, and only a service account has an owner", name)
+		}
+		to, err := ownerOf(ctx, w, owner)
+		if err != nil || to == row.Owner {
+			return err
+		}
+		from := row.Owner
+		row.Owner = to
+		if err := w.UpdateUser(ctx, row); err != nil {
+			return err
+		}
+		e, err := s.record(ctx, w, ActionUserOwner, row, o, map[string]any{"from": from, "owner": to})
+		ev = &e
+		return err
+	})
+	if err != nil {
+		return userError(ActionUserOwner, name, err)
+	}
+	if ev != nil {
+		s.writeAudit(ctx, *ev)
+	}
+	return nil
+}
+
+// ownerOf returns the owner of a service account that owner names, as it is kept: user:<uid> of
+// the live user of user:<name> or user:<uid>, which must not be a service account, or
+// group:<name> with a name of CheckGroupName, which need not have members. Errors wrap
+// ErrInvalid and name the field owner.
+func ownerOf(ctx context.Context, r index.Reader, owner string) (string, error) {
+	p, err := ParsePrincipal(owner)
+	if err != nil {
+		return "", invalidf("owner: %s", err.Error())
+	}
+	switch p.Kind {
+	case KindGroup:
+		if err := CheckGroupName(p.Name); err != nil {
+			return "", invalidf("owner: %s", err.Error())
+		}
+		return p.String(), nil
+	case KindUser:
+		u, err := LookupUser(ctx, r, p)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			return "", invalidf("owner: user %s does not exist", p.Name)
+		case err != nil:
+			return "", err
+		case u.Kind == KindService:
+			return "", invalidf("owner: %s is a service account, which owns nothing: name a person or a group", u.Name)
+		}
+		return UserPrincipal(u).String(), nil
+	case KindToken, KindAnonymous, KindCert, KindKubernetes:
+	}
+	return "", invalidf("owner: %q is neither user:<name> nor group:<name>", owner)
 }
 
 // Get returns the user called name.
@@ -131,19 +243,35 @@ func (s *Users) Get(ctx context.Context, name string) (*User, error) {
 	if err != nil {
 		return nil, userError("get", name, err)
 	}
-	u := resource(row)
-	return &u, nil
+	return s.resource(ctx, s.Index, row, nil)
 }
 
-// List returns every user, ordered by name.
-func (s *Users) List(ctx context.Context) ([]User, error) {
+// List returns the users of kind, local, oidc or service, or every user when kind is "", ordered
+// by name. Any other kind is ErrInvalid.
+func (s *Users) List(ctx context.Context, kind string) ([]User, error) {
+	switch kind {
+	case "", KindLocal, KindOIDC, KindService:
+	default:
+		return nil, invalidf("kind: %q is not local, oidc or service", kind)
+	}
 	rows, err := s.Index.ListUsers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list users: %w", err)
 	}
-	users := make([]User, len(rows))
+	byUID := make(map[string]*index.User, len(rows))
 	for i := range rows {
-		users[i] = resource(&rows[i])
+		byUID[rows[i].UID] = &rows[i]
+	}
+	users := make([]User, 0, len(rows))
+	for i := range rows {
+		if kind != "" && rows[i].Kind != kind {
+			continue
+		}
+		u, err := s.resource(ctx, s.Index, &rows[i], byUID)
+		if err != nil {
+			return nil, fmt.Errorf("auth: list users: %w", err)
+		}
+		users = append(users, *u)
 	}
 	return users, nil
 }
@@ -155,20 +283,25 @@ func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin
 	if err != nil {
 		return err
 	}
-	return s.update(ctx, name, ActionUserPassword, o, func(u *index.User) bool {
+	return s.update(ctx, name, ActionUserPassword, o, func(u *index.User) (bool, error) {
+		if u.Kind == KindService {
+			return false, invalidf("password: user %s is a service account, which has no password: it authenticates with its tokens", name)
+		}
 		u.PasswordHash = hash
-		return true
+		return true, nil
 	})
 }
 
 // Disable disables the user, with one user.disable audit event: its credentials are refused
 // from the next request on. A user that is disabled already is left as it is, without an event.
-// The last enabled user with an admin binding is not disabled (index.ErrConflict).
+// The last enabled user with an admin binding is not disabled (index.ErrConflict). With
+// DisableWithOwner, the enabled service accounts the user owns are disabled in the same
+// transaction, each with a user.disable event of its own (disableOwned).
 func (s *Users) Disable(ctx context.Context, name string, o Origin) error {
-	return s.update(ctx, name, ActionUserDisable, o, func(u *index.User) bool {
+	return s.update(ctx, name, ActionUserDisable, o, func(u *index.User) (bool, error) {
 		changed := !u.Disabled
 		u.Disabled = true
-		return changed
+		return changed, nil
 	})
 }
 
@@ -179,10 +312,10 @@ func (s *Users) Rename(ctx context.Context, name, to string, o Origin) error {
 	if err := CheckName(to); err != nil {
 		return err
 	}
-	err := s.update(ctx, name, ActionUserRename, o, func(u *index.User) bool {
+	err := s.update(ctx, name, ActionUserRename, o, func(u *index.User) (bool, error) {
 		changed := u.Name != to
 		u.Name = to
-		return changed
+		return changed, nil
 	})
 	if errors.Is(err, index.ErrConflict) {
 		return &authError{msg: fmt.Sprintf("user %s already exists", to), err: err}
@@ -193,8 +326,8 @@ func (s *Users) Rename(ctx context.Context, name, to string, o Origin) error {
 // Delete deletes the user called name (docs/spec/rbac.md §1), with one user.delete audit event:
 // in one transaction it revokes the user's live tokens, deletes its bindings, disables it and
 // marks it deleted, its name becoming ~<uid> so that the name is free, the row kept so that its
-// uid resolves to who it was. The last enabled user with an admin binding is not deleted
-// (index.ErrConflict). A deletion is not undone.
+// uid resolves to who it was. The last enabled user with an admin binding is not deleted, and
+// neither is the owner of a live service account (index.ErrConflict). A deletion is not undone.
 func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
 	var ev index.AuditEvent
 	err := s.Index.Tx(ctx, func(w index.Writer) error {
@@ -202,19 +335,13 @@ func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
 		if err != nil {
 			return err
 		}
-		now := s.now()
-		tokens, err := w.ListTokens(ctx, &u.ID, nil)
-		if err != nil {
+		if err := ownsNone(ctx, w, u); err != nil {
 			return err
 		}
-		revoked := 0
-		for _, t := range tokens {
-			if t.RevokedAt == nil {
-				if err := w.RevokeToken(ctx, t.ID, now); err != nil {
-					return err
-				}
-				revoked++
-			}
+		now := s.now()
+		revoked, err := revokeAll(ctx, w, u, now)
+		if err != nil {
+			return err
 		}
 		bindings, err := w.ListBindings(ctx, UserPrincipal(u).String())
 		if err != nil {
@@ -231,7 +358,7 @@ func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
 		if err := w.UpdateUser(ctx, u); err != nil {
 			return err
 		}
-		if admin {
+		if admin && u.Kind != KindService {
 			if err := adminsLeft(ctx, w, u.DeletedName); err != nil {
 				return err
 			}
@@ -249,55 +376,99 @@ func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
 // Enable enables a disabled user, with one user.enable audit event. A user that is enabled
 // already is left as it is, without an event.
 func (s *Users) Enable(ctx context.Context, name string, o Origin) error {
-	return s.update(ctx, name, ActionUserEnable, o, func(u *index.User) bool {
+	return s.update(ctx, name, ActionUserEnable, o, func(u *index.User) (bool, error) {
 		changed := u.Disabled
 		u.Disabled = false
-		return changed
+		return changed, nil
 	})
 }
 
 // update applies change to the user called name in one transaction with one audit event of
-// action, when change reports that it changed something. A change that leaves no enabled user
-// with an admin binding is index.ErrConflict.
-func (s *Users) update(ctx context.Context, name, action string, o Origin, change func(*index.User) bool) error {
-	var ev *index.AuditEvent
+// action, when change reports that it changed something; an error of change is returned as it
+// is. A change that leaves no enabled user with an admin binding is index.ErrConflict; a service
+// account is not such a user (anyAdmin). A disabling with DisableWithOwner adds the events of
+// the service accounts it disables (updated).
+func (s *Users) update(ctx context.Context, name, action string, o Origin, change func(*index.User) (bool, error)) error {
+	var evs []index.AuditEvent
 	err := s.Index.Tx(ctx, func(w index.Writer) error {
+		evs = nil
 		row, err := w.GetUser(ctx, name)
 		if err != nil {
 			return err
 		}
-		if !change(row) {
-			return nil
+		if changed, err := change(row); err != nil || !changed {
+			return err
 		}
 		if err := w.UpdateUser(ctx, row); err != nil {
 			return err
 		}
-		if action == ActionUserDisable {
-			admin, err := hasAdminBinding(ctx, w, row)
-			if err != nil {
-				return err
-			}
-			if admin {
-				if err := adminsLeft(ctx, w, name); err != nil {
-					return err
-				}
-			}
-		}
-		details := map[string]any{}
-		if action == ActionUserRename {
-			details["from"] = name
-		}
-		e, err := s.record(ctx, w, action, row, o, details)
-		ev = &e
+		evs, err = s.updated(ctx, w, name, action, row, o)
 		return err
 	})
 	if err != nil {
 		return userError(action, name, err)
 	}
-	if ev != nil {
-		s.writeAudit(ctx, *ev)
+	for _, ev := range evs {
+		s.writeAudit(ctx, ev)
 	}
 	return nil
+}
+
+// updated finishes on w the change of action that update wrote to row, the user called name
+// before it: it refuses a disabling that leaves no enabled user with an admin binding, records
+// the change's audit event, and with DisableWithOwner disables the service accounts that a
+// disabled row owns (disableOwned). It returns the events, the change's first.
+func (s *Users) updated(ctx context.Context, w index.Writer, name, action string, row *index.User, o Origin) ([]index.AuditEvent, error) {
+	disabling := action == ActionUserDisable && row.Kind != KindService
+	if disabling {
+		admin, err := hasAdminBinding(ctx, w, row)
+		if err != nil {
+			return nil, err
+		}
+		if admin {
+			if err := adminsLeft(ctx, w, name); err != nil {
+				return nil, err
+			}
+		}
+	}
+	details := map[string]any{}
+	if action == ActionUserRename {
+		details["from"] = name
+	}
+	ev, err := s.record(ctx, w, action, row, o, details)
+	if err != nil || !disabling || !s.DisableWithOwner {
+		return []index.AuditEvent{ev}, err
+	}
+	owned, err := s.disableOwned(ctx, w, row, o)
+	return append([]index.AuditEvent{ev}, owned...), err
+}
+
+// disableOwned disables the enabled service accounts whose owner is the user u, on w, and
+// returns their user.disable events, each with u, user:<uid>, as owner in its details
+// (docs/spec/rbac.md §1, §5). A deleted service account is disabled already.
+func (s *Users) disableOwned(ctx context.Context, w index.Writer, u *index.User, o Origin) ([]index.AuditEvent, error) {
+	rows, err := w.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner := UserPrincipal(u).String()
+	var evs []index.AuditEvent
+	for i := range rows {
+		a := &rows[i]
+		if a.Kind != KindService || a.Owner != owner || a.Disabled {
+			continue
+		}
+		a.Disabled = true
+		if err := w.UpdateUser(ctx, a); err != nil {
+			return nil, err
+		}
+		ev, err := s.record(ctx, w, ActionUserDisable, a, o, map[string]any{"owner": owner})
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, ev)
+	}
+	return evs, nil
 }
 
 // record builds the audit event of a change of the user u, its subject user:<uid> and its name in
@@ -340,8 +511,9 @@ func adminsLeft(ctx context.Context, w index.Writer, name string) error {
 	}
 }
 
-// anyAdmin reports whether an enabled, live user has an admin binding on r. A binding whose
-// principal is no live user grants nothing.
+// anyAdmin reports whether an enabled, live user that is not a service account has an admin
+// binding on r. A binding whose principal is no live user grants nothing; a service account
+// cannot make a token once its own expire (docs/spec/rbac.md §1), so it does not count.
 func anyAdmin(ctx context.Context, r index.Reader) (bool, error) {
 	bindings, err := r.ListBindings(ctx, "")
 	if err != nil {
@@ -362,11 +534,56 @@ func anyAdmin(ctx context.Context, r index.Reader) (bool, error) {
 		case err != nil:
 			return false, err
 		}
-		if !u.Disabled {
+		if !u.Disabled && u.Kind != KindService {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// ownsNone returns an error wrapping index.ErrConflict, naming them, when u owns a live service
+// account: the owner of a service account is a live user or a group (docs/spec/rbac.md §1).
+func ownsNone(ctx context.Context, r index.Reader, u *index.User) error {
+	if u.Kind == KindService {
+		return nil
+	}
+	rows, err := r.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	owner := UserPrincipal(u).String()
+	var owned []string
+	for _, a := range rows {
+		if a.Kind == KindService && a.Owner == owner {
+			owned = append(owned, a.Name)
+		}
+	}
+	if len(owned) == 0 {
+		return nil
+	}
+	return &authError{
+		msg: fmt.Sprintf("user %s owns the service accounts %s: give them another owner, or delete them, first",
+			u.Name, strings.Join(owned, ", ")),
+		err: index.ErrConflict,
+	}
+}
+
+// revokeAll revokes the live tokens of the user u at now, on w, and returns how many it revoked.
+func revokeAll(ctx context.Context, w index.Writer, u *index.User, now time.Time) (int, error) {
+	tokens, err := w.ListTokens(ctx, &u.ID, nil)
+	if err != nil {
+		return 0, err
+	}
+	revoked := 0
+	for _, t := range tokens {
+		if t.RevokedAt == nil {
+			if err := w.RevokeToken(ctx, t.ID, now); err != nil {
+				return 0, err
+			}
+			revoked++
+		}
+	}
+	return revoked, nil
 }
 
 // writeAudit passes ev to the audit.Writer, after the commit of its change (writeAuditEvent).
@@ -429,9 +646,29 @@ func userError(op, name string, err error) error {
 	return fmt.Errorf("auth: %s user %s: %w", op, name, err)
 }
 
-// resource returns the User of a users row, with a UTC time.
-func resource(u *index.User) User {
-	return User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC()}
+// resource returns the User of a users row, with a UTC time, and for a service account its
+// owner, with the name of a user owner and whether it is disabled: from byUID, the users by their
+// uid, when it has the owner, else read on r.
+func (s *Users) resource(ctx context.Context, r index.Reader, u *index.User, byUID map[string]*index.User) (*User, error) {
+	out := &User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC(), Owner: u.Owner}
+	p, err := ParsePrincipal(u.Owner)
+	if err != nil || p.Kind != KindUser {
+		return out, nil //nolint:nilerr // no owner, or a group: no name of a user
+	}
+	owner := byUID[p.Name]
+	if owner == nil {
+		switch owner, err = r.GetUserByUID(ctx, p.Name); {
+		case errors.Is(err, index.ErrNotFound):
+			return out, nil
+		case err != nil:
+			return nil, err
+		}
+	}
+	out.OwnerName, out.OwnerDisabled = owner.Name, owner.Disabled
+	if owner.DeletedAt != nil {
+		out.OwnerName, out.OwnerDisabled = owner.DeletedName, true
+	}
+	return out, nil
 }
 
 func (s *Users) now() time.Time {

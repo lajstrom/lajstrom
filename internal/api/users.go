@@ -79,7 +79,7 @@ func (h *handler) listUsers(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err != nil {
 		return 0, nil, err
 	}
-	users, err := h.users.List(r.Context())
+	users, err := h.users.List(r.Context(), "")
 	if err != nil {
 		return 0, nil, err
 	}

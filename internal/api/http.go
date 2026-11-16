@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -25,11 +26,20 @@ type Options struct {
 	// Repos is the service behind /api/v1/repos; required.
 	Repos *Repos
 	// Tokens is the service behind the tokens of a user and the deploy tokens of a repo; nil
-	// means one over the index, the audit writer, the clock and the logger of Repos.
+	// means one over the index, the audit writer, the clock and the logger of Repos, with
+	// ServiceTokenMaxLifetime.
 	Tokens *auth.Tokens
+	// ServiceTokenMaxLifetime bounds the lifetime of a service account's personal access tokens,
+	// auth.serviceAccounts.maxTokenTTL (auth.Tokens.ServiceMaxLifetime), when Tokens is nil;
+	// zero bounds nothing.
+	ServiceTokenMaxLifetime time.Duration
 	// Users is the service behind /api/v1/users; nil means one over the index, the audit
-	// writer, the clock and the logger of Repos.
+	// writer, the clock and the logger of Repos, with ServiceDisableWithOwner.
 	Users *auth.Users
+	// ServiceDisableWithOwner disables the enabled service accounts of a user disabled through
+	// the API, auth.serviceAccounts.onOwnerDisabled disable (auth.Users.DisableWithOwner), when
+	// Users is nil.
+	ServiceDisableWithOwner bool
 	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
 	// formats, the audit writer, the clock and the logger of Repos.
 	Bindings *auth.Bindings
@@ -138,10 +148,12 @@ func New(o Options) http.Handler {
 		h.log = slog.Default()
 	}
 	if h.tokens == nil {
-		h.tokens = &auth.Tokens{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+		h.tokens = &auth.Tokens{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
+			ServiceMaxLifetime: o.ServiceTokenMaxLifetime}
 	}
 	if h.users == nil {
-		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
+			DisableWithOwner: o.ServiceDisableWithOwner}
 	}
 	if h.bindings == nil {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
