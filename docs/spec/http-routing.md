@@ -921,12 +921,13 @@ from elsewhere, object storage behind a CDN for one, exactly as a browser sends 
 
 - a request whose `Origin` is a listed origin gets, on its answer, whatever its status, the
   `401`, `403` and `429` of the middleware included: `Access-Control-Allow-Origin` with that
-  origin, and `Access-Control-Expose-Headers: Retry-After, X-Request-Id`;
+  origin, and `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate, X-Request-Id`
+  (the challenge of a DPoP refusal, RFC 9449 §7.1, is in `WWW-Authenticate`);
 - its preflight, an `OPTIONS` with `Access-Control-Request-Method`, is `204` before
   authentication, whatever the path and the method it asks for, with
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH,
-  DELETE`, `Access-Control-Allow-Headers: Authorization, Content-Type` and
-  `Access-Control-Max-Age: 600`;
+  DELETE`, `Access-Control-Allow-Headers: Authorization, Content-Type, DPoP` (the proof of a
+  web UI's sign-in, #1170) and `Access-Control-Max-Age: 600`;
 - no answer has `Access-Control-Allow-Credentials`: the UI sends its bearer with
   `credentials: "omit"`, and no page of another origin reads an answer that cached Basic
   credentials or a cookie made;
