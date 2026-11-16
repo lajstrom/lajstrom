@@ -519,10 +519,14 @@ func (p *Pipeline) unseal(ctx context.Context, pub *publish) error {
 	for _, l := range pub.manifest.Layers {
 		sizes[l.Digest] = l.Size
 	}
+	newest, err := pub.newestKeys(ctx, pub.digest)
+	if err != nil {
+		return err
+	}
 	plain := make(map[digest.Digest]digest.Digest, len(layers))
 	for _, l := range layers {
 		b := &sealedBlob{stored: l.Stored, size: sizes[l.Stored], wrapped: l.JWE, pubOpts: l.PubOpts}
-		if err := s.openAny(ctx, b); err != nil {
+		if err := s.openNewest(ctx, b, newest); err != nil {
 			return err
 		}
 		b.plain = b.opts.Digest
@@ -538,6 +542,22 @@ func (p *Pipeline) unseal(ctx context.Context, pub *publish) error {
 	}
 	pub.sealer, pub.manifest, pub.raw, pub.digest = s, m, view, digest.FromBytes(view)
 	return nil
+}
+
+// openNewest opens b with the wrapping of the newest keys referrer of its manifest, which names
+// its layer, else its own annotation (openAny), and keeps that wrapping for blob_map.
+func (s *sealer) openNewest(ctx context.Context, b *sealedBlob, newest *profile.Keys) error {
+	if newest != nil {
+		if jwe, ok := newest.Layers[b.stored]; ok {
+			own := b.wrapped
+			b.wrapped, b.fingerprint = jwe, newest.Key
+			if _, _, err := s.open(ctx, b); err == nil {
+				return nil
+			}
+			b.wrapped = own
+		}
+	}
+	return s.openAny(ctx, b)
 }
 
 // openAny opens the wrapping of b with the first key of the repo among its recipients, and keeps

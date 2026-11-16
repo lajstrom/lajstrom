@@ -2,6 +2,7 @@ package profile
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // The layers of an encrypted repo (docs/spec/manifest-profile.md §11): the stored manifest is the
@@ -433,4 +436,39 @@ func (s *scanner) byteAt(i int) byte {
 		return 0
 	}
 	return s.raw[i]
+}
+
+// Keys is the content of the annotation AnnotationKeys of a keys referrer (§11.1): the fingerprint
+// of the key the layers' data keys are wrapped for, and the wrapping of each encrypted layer of the
+// subject, by its stored digest.
+type Keys struct {
+	Key    string                   `json:"key"`
+	Layers map[digest.Digest]string `json:"layers"`
+}
+
+// KeysManifest returns the bytes of the keys referrer of subject, a stored manifest, created at
+// created (RFC 3339): no layers, the empty config, k in AnnotationKeys.
+func KeysManifest(subject ocispec.Descriptor, k Keys, created string) ([]byte, error) {
+	value, err := json.Marshal(k)
+	if err != nil {
+		return nil, fmt.Errorf("profile: keys referrer: %w", err)
+	}
+	m := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+		ArtifactType: ArtifactTypeKeys, Config: EmptyConfig, Layers: []ocispec.Descriptor{}, Subject: &subject,
+		Annotations: map[string]string{AnnotationSchema: SchemaVersion, AnnotationKeys: base64.StdEncoding.EncodeToString(value),
+			ocispec.AnnotationCreated: created}}
+	return json.Marshal(m)
+}
+
+// ParseKeys reads the annotation AnnotationKeys of a keys referrer.
+func ParseKeys(value string) (Keys, error) {
+	b, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return Keys{}, fmt.Errorf("%w: %s is not base64", ErrEncryption, AnnotationKeys)
+	}
+	var k Keys
+	if err := json.Unmarshal(b, &k); err != nil || k.Key == "" {
+		return Keys{}, fmt.Errorf("%w: %s is not a keys document", ErrEncryption, AnnotationKeys)
+	}
+	return k, nil
 }
