@@ -51,12 +51,14 @@ internal/egress/              where an upstream's client may connect (Guard): th
 internal/policy/              policy (#101): rules, the decision over rules and verdicts, the view a render reads through
 internal/policy/denylist/     the deny list: the document, the signed artifact in the registry, the flat JSON
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
-internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
+internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify; the CI token (rbac.md §11)
 internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69); the
                               verification of a Kubernetes service-account token of auth.kubernetes (rbac.md §9)
 internal/auth/clientcert/     client certificates (rbac.md §9): the bundles, a chain verified against them, the name
                               of the leaf, the header an edge forwards a certificate in
 internal/auth/dpop/           the DPoP proofs of a web UI's token (RFC 9449, #1170): verify, used once on any replica
+internal/auth/ci/             token exchange for CI (rbac.md §11): the trust policies and their claims, the exchange
+                              at /-/oidc/token, the CI token as a credential
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020),
                               the keys of encrypted repos and their data keys (ADR 0009)

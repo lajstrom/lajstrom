@@ -11,8 +11,9 @@
   that is a registry: the actors, flow D and the rows O-8 to O-10, from the code of #442 and
   proxy-and-group.md §11 (#871). Updated on 2026-11-15 for node and workload identity (#1019,
   [ADR 0025](../adr/0025-node-and-workload-identity.md)): the rows W-1 to W-9, from rbac.md §9;
-  each is `open` until the pull request of its code names the function. The other rows were not
-  checked again.
+  each is `open` until the pull request of its code names the function. Updated on 2026-11-16 for
+  token exchange for CI (#937, [ADR 0026](../adr/0026-token-exchange-for-ci.md)): the rows C-1 to
+  C-11, from rbac.md §11, `open` in the same way. The other rows were not checked again.
   Review it again when a surface changes: a new endpoint, a new credential, a proxy of another
   format (pypi #67, maven #68), OIDC.
 - Scope: the server of this repository. This means the OCI facade `/v2` and its token
@@ -260,6 +261,27 @@ kubelet's credential provider hands containerd (KEP-4412). Both end in a bearer 
 | W-8 | **The issuer's discovery or JWKS as a lever**: a flood of made-up `kid`s, a slow issuer, a huge document, a redirect, a password that only looks like a token. | The cache of §8: an unknown `kid` reloads the JWKS at most every 30 s, documents through a 1 MiB limit with a 10 s timeout and no redirect, https only but with `server.insecureHTTP`. A password is taken for a token only when its unverified `iss` is a configured issuer, and `/v2/token` is rate-limited per address (A-1): `auth.Kubernetes.Recognizes`, which reads at most 16 KiB, and the `keySet` and `discovery` of `internal/auth/oidc`, shared with the login. Only `/v2/token` takes a token (`server.Server.authenticateSecret`). Tests: `TestVerifier`, `TestKubernetesToken`. | mitigated |
 | W-9 | **A pattern grants more than meant**: `cert:spiffe://cluster-a/*` reaches the workloads of the trust domain as well as its nodes; `k8s:prod/*` every namespace. | By design: a pattern is the operator's, and the narrowest prefix (`/node/*`, `<cluster>/<namespace>/*`) binds only what it names. No pattern can carry `admin`, and none matches across kinds. | accepted (rbac.md §9) |
 
+### Token exchange for CI (#937, [rbac.md](../spec/rbac.md) §11)
+
+The flow: a CI job posts its platform's OIDC token (GitHub Actions, GitLab CI) to
+`POST /-/oidc/token` (RFC 8693), and gets a CI token `ljs_ci_…` of minutes for the principal
+`ci:<issuer>/<project>`, with the grants of the trust policies of `auth.ci` that match the
+token's claims; the CI token is then a credential on every route, as a deploy token is.
+
+| ID | Threat | Mitigation | Status |
+| --- | --- | --- | --- |
+| C-1 | **A forged or replayed CI platform token**: `alg: none`, an HMAC, a key of another algorithm, another issuer or audience, an expired token. | The verification of rbac.md §9, shared with the Kubernetes tokens: asymmetric algorithms only, the key of the `kid` from the issuer's JWKS, `iss` exact and named by discovery, `aud` the issuer's audience, `exp` required, 60 s of leeway. A token of the platform for another audience (GitHub's default, the owner's URL) is refused. A replay within the token's life gets the same grants as its job: accepted, no single use (ADR 0026). | open |
+| C-2 | **A pull request publishes**: a workflow of a pull request, `pull_request_target` that checks out a fork's code, or a GitLab merge request pipeline run in the parent project, gets a token whose claims match a write policy. | A policy that grants `writer` or `maintainer` never matches an `event_name` of a pull request (GitHub) or a `pipeline_source` of a merge request (GitLab), and needs a condition on `ref`, `ref_path` or `environment`, refused at start otherwise; one whose event condition names only such events is refused. GitHub gives a fork's `pull_request` no token at all. What remains is a workflow on a protected ref that runs untrusted code (`workflow_run`, `issue_comment`): the policy's `event_name` and an environment with required reviewers are the levers ([auth.md](../auth.md#token-exchange-for-ci)). | open |
+| C-3 | **A name registered again**: an organization, a user or a GitLab group deleted, and its name taken by someone else, whose repository of the same name matches a policy. | A policy must name its project by an id (`repository_id`, `repository_owner_id`, `project_id`, `namespace_id`), refused at start otherwise; a name beside it is a condition too. The principal carries the name, as a label: it has no bindings, so a name taken again grants nothing through it. | open |
+| C-4 | **A policy wider than meant**: a wildcard that matches more refs than its author read, `**` across `/`, a value that is all `*`, a claim misspelled. | Patterns only in the claims of a ref, an environment and a workflow; `*` stops at `/`; a value made only of `*` and an unknown claim refuse the configuration; ids exact, decimal. Policies are configuration, reviewed in git (ADR 0026). | open |
+| C-5 | **A backdoor policy**: a stolen admin credential, or a mistake in the UI, trusts an attacker's own repository, a credential with no secret that outlives every revocation. | Policies live in the configuration only: no route adds or changes one, and a `ci:` principal takes no binding (`400`), so the API cannot grant one rights either. | open |
+| C-6 | **A CI token turned into a lasting secret**: a job with `maintainer` mints a deploy token of the repo, or a personal access token. | A CI token creates no token: the routes that create a personal access token, a deploy token of a repo and one over a mask answer it `403` before the body is read. It never reaches `system` nor `audit`, and `admin` is refused in a grant. | open |
+| C-7 | **A stolen CI token**, from a job's log or its environment. | It lives 15 minutes by default, 20 at most; its prefix `ljs_ci_` lets secret scanners find it, and the documented job masks it (`::add-mask::`). It is not revoked alone: the levers are the policy removed (at the restart), `lajstrom admin key rotate --token --drop`, and its expiry; a bearer issued on it lives its 20 minutes. | open; no revocation accepted (ADR 0026) |
+| C-8 | **Token confusion**: a CI token presented as a bearer of `/v2`, a bearer presented as a CI token, a CI token of one replica's configuration on another. | The CI token's `aud` is `lajstrom:ci`, never a service, and `typ` `ljs-ci+jwt`; the bearer verifier wants `aud` the service, the CI verifier its `typ` and audience, and the prefix decides the path before either. The grants are those of the policies the serving replica has, by name: a policy unknown there grants nothing. | open |
+| C-9 | **The exchange as a lever**: a flood of tokens from a repository of the attacker's own, which verify and match nothing; made-up `kid`s; huge bodies. | A refused exchange writes no audit row, only an info log; the body is at most 16 KiB; every `POST /-/oidc/token` counts against the rate limit of `/v2/token` per address (A-1); the JWKS cache of §9 reloads at most every 30 s for an unknown `kid`. | open |
+| C-10 | **A self-hosted runner** of the project, compromised or shared, asks for a token in a job of a protected ref. | By design: a runner the project trusts runs its jobs with its identity. A policy may require `runner_environment: github-hosted` (GitHub) or `gitlab-hosted` (GitLab). | accepted (rbac.md §11) |
+| C-11 | **Personal data and secrets in the audit log**: the subject token, the CI token, GitLab's `user_email`. | The `token.exchange` row holds the claims of the platform's list and the run's, cut at 256 bytes each, never a token nor `user_email`; the log of a refusal names the reason, the issuer and the project. | open |
+
 ### The client address ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md))
 
 | ID | Threat | Mitigation | Status |
@@ -298,7 +320,8 @@ configuration, part 1 and part 2. In terms of this document:
 - **The client certificate header from the edge only**, when `auth.clientCertificates.forwardedHeader`
   is set: the edge sets it from the certificate it received and drops the one a client sent
   (Envoy's `forward_client_cert_details: SANITIZE_SET`, nginx's `proxy_set_header`): W-1.
-- **A rate limit on `/v2/token`** per address, and per-connection bandwidth if needed: A-1, T-7.
+- **A rate limit on `/v2/token`** and on `/-/oidc/token` per address, and per-connection
+  bandwidth if needed: A-1, T-7, C-9.
   Not a request count on the rest: a `docker pull` is tens of requests a second.
 - **Never route `server.metricsListen`**: `/metrics` and `/debug/pprof/` stay inside.
 - **Keep `/-/version`** inside if the build should not be public: B-4.
