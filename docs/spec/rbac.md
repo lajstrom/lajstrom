@@ -88,18 +88,21 @@ names of the users, its bindings, a rename, disabling, enabling, deleting, and t
 Its **owner** is required: a live user that is not a service account, given as `user:<name>` or
 `user:<uid>` and kept as `user:<uid>`, or a group, `group:<name>` with a name of §8, which need
 not have members. The owner answers for the account and gets no right on it, nor on its tokens,
-by owning it. The admin role creates a service account and changes its owner. A disabled owner
-changes nothing for its service accounts, which the users API marks `ownerDisabled`; deleting a
-user that owns a live service account is `409`, naming them, so that the owner of a service
-account is a live user or a group.
+by owning it. The admin role creates a service account and changes its owner. What disabling a
+user owner does is `auth.serviceAccounts.onOwnerDisabled`: with `flag`, the default, nothing for
+its service accounts, which the users API marks `ownerDisabled`; with `disable`, the transaction
+that disables the owner disables its enabled service accounts too, each with an audit event of its
+own. Enabling the owner again enables none of them: each is enabled by itself. Deleting a user
+that owns a live service account is `409`, naming them, whatever the setting, so that the owner of
+a service account is a live user or a group.
 
 Its tokens are personal access tokens, whose scopes narrow its bindings as a person's do.
 Creating one takes the admin role and the admin's password, or the command line (§3): the
 account has no password and never mints its own. Their lifetime is bounded by
-`auth.serviceAccounts.maxTokenTTL` instead of a person's year: `0`, the default, bounds nothing,
-and a token created without an expiry then never expires; with a bound, a token created without
-an expiry expires at the bound, and one asked to expire later is `400`. A bound lowered later
-counts for the tokens created after it.
+`auth.serviceAccounts.maxTokenTTL` instead of a person's year, 365 days by default: a token
+created without an expiry expires at the bound, and one asked to expire later is `400`. `0` bounds
+nothing, and a token created without an expiry then never expires. A bound lowered later counts
+for the tokens created after it.
 
 A service account may have any binding, `admin` included. Its `admin` binding does not count for
 the last-admin rule (above, §3) nor for the bootstrap (§6), as a group's does not: without a
@@ -342,8 +345,9 @@ names the credential that created the token, `createdBy` in its details: `passwo
 `token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A service account's
 requests have the principal `user:<uid>` and the name of every user, and the answers of the audit
 log add `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
-`owner` in its details, and a change of its owner is `user.owner`, with `from` and `owner`
-(§1). A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
+`owner` in its details, a change of its owner is `user.owner`, with `from` and `owner`, and a
+service account that its owner's disabling disables (§1) is a `user.disable` of its own, with the
+owner as `owner` in its details. A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
 `webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
 `repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "urlHost", "events",
 "active"}`, the host of its URL and never the URL nor the secret, with the origin's keys of the

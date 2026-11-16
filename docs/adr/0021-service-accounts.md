@@ -1,6 +1,6 @@
 # 0021. Service accounts: users of kind service, with an owner and long-lived tokens
 
-- Status: proposed
+- Status: accepted on #1151 (2026-11-16), with two changes (below, Amendment)
 - Date: 2026-11-15
 - Deciders: gecube
 
@@ -148,3 +148,16 @@ that their scopes narrow and a bound of its own limits, and created by the admin
   delete them.
 - Later, with no change of the schema: the owner of a group managing the group's service accounts
   and their tokens; option B or C of question 5, if the maintainers prefer it.
+
+## Amendment: a default bound, and the owner's disabling a setting (#1151, 2026-11-16)
+
+The maintainer accepted the Decision with two changes:
+
+- **`auth.serviceAccounts.maxTokenTTL` is 365 days by default**, not `0`. A token created without
+  an expiry expires after it; `0`, set by the operator, still bounds nothing.
+- **What disabling a user owner does is a setting**, `auth.serviceAccounts.onOwnerDisabled`:
+  `flag`, the default, is option A of question 5; `disable` disables the owner's enabled service
+  accounts in the transaction that disables the owner, a `user.disable` audit event for each, with
+  the owner in its details. Enabling the owner again enables none of them: who enables a system's
+  account is a decision of its own, and the owner may have been disabled for a reason that holds
+  for its accounts. Deleting the owner of a live service account stays `409` with either value.
