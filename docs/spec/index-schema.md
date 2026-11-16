@@ -33,7 +33,7 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`, `proxy`, `group`; [below](#proxy-and-group-repos)), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, `maven.versionPolicy`, …), `upstream` json null, `group` json null, `created_at` ts, `updated_at` ts, `revision` bigint ([Revisions](#revisions)) | unique `(format, name)` |
-| `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc`, a user made by its first OIDC login, without a password: rbac.md §8; `service`, a service account, without a password: rbac.md §1), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null, `owner` text null (a service account's owner, `user:<uid>` or `group:<name>`; NULL for every other kind; 0026), `revision` bigint ([Revisions](#revisions)) | the first admin is created through the bootstrap token (`bootstrap_token`) or by `lajstrom admin user create --admin`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) `kind` is set on insert and never changes. The service accounts of an owner are found by listing the users; the table is small. Migration `0026_users_owner.sql` only adds the column: a replica of the release before reads the table by named columns and takes a service account for a user without a password, whose tokens with an expiry work, and refuses one without (`401`) as it refuses every personal access token without an expiry |
+| `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc`, a user made by its first OIDC login, without a password: rbac.md §8; `service`, a service account, without a password: rbac.md §1), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null, `owner` text null (a service account's owner, `user:<uid>` or `group:<name>`; NULL for every other kind; 0026), `revision` bigint ([Revisions](#revisions)), `last_seen_at` ts null ([A user's last activity](#a-users-last-activity); 0034) | the first admin is created through the bootstrap token (`bootstrap_token`) or by `lajstrom admin user create --admin`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) `kind` is set on insert and never changes. The service accounts of an owner are found by listing the users; the table is small. Migration `0026_users_owner.sql` only adds the column: a replica of the release before reads the table by named columns and takes a service account for a user without a password, whose tokens with an expiry work, and refuses one without (`401`) as it refuses every personal access token without an expiry |
 | `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `repo_mask` text null (a mask of rbac.md §3, `oci/*`; 0023), `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null (the last request with the token, less than a minute behind: a request writes it when the value read with the token is a minute old or more, and a write only moves it forward, so at most once a minute per token on all replicas together; the idle bound of a web UI's sign-in reads it, rbac.md §10, #1277), `created_at` ts, `revoked_at` ts null, `dpop_jkt` text null (the JWK SHA-256 thumbprint, base64url, of the DPoP key a web UI's token is bound to: rbac.md §10; 0028), `auth_time` ts null and `amr` json null (the `auth_time` and the `amr` of the ID token of the OIDC login a web UI's token was minted for: rbac.md §10; 0033) | unique `hash` (a secret is looked up by its hash). A PAT acts as its user (`user_id`), and has an `expires_at` unless its user is a service account (rbac.md §1); a deploy token is a principal of its own, bound to one repo (`repo_id`, which takes its tokens with it, `ON DELETE CASCADE`) or to a mask (`repo_mask`, which names no row and matches the repos created later too: rbac.md §1), one of the two and never both. The store lists the tokens over a mask with the others (`ListTokens` with no filter); the table is small. Migration `0023_tokens_repo_mask.sql` only adds the column: a replica of the release before it reads the table by named columns, and refuses a mask token as a deploy token without a repo (`401`), so that a mask token works on the replicas that know 0023 and on no other. A PAT with `dpop_jkt` authenticates only with a DPoP proof of that key, on `/api/`. Migration `0028_web_ui_sign_in.sql` only adds the column: a replica of the release before it reads the table by named columns and takes a bound token for a bearer, so a web UI signs in once every replica runs a release that knows 0028. Migration `0033_ci_policies.sql` adds `auth_time` and `amr`: a token minted by a replica of the release before it has neither, and is no fresh sign-in (rbac.md §11) |
 | `bootstrap_token` | `id` int (always 1), `hash` text (sha256 of the secret), `replica` text (host name and process id of the `serve` that made it), `created_at` ts, `expires_at` ts, `used_at` ts null | at most one row (0015): the token that makes the first admin, the same on every replica ([auth.md](../auth.md#bootstrap-the-first-admin)). `serve` makes or replaces it at start while no enabled user has an admin binding, by its old hash only, so that of replicas that start together one makes it; the exchange sets `used_at` in the transaction that creates the admin, by its hash, unused and before `expires_at`, so that it is used once |
 | `identities` | `id`, `user_id` → users, `issuer` text, `subject` text, `created_at` ts, `login_at` ts, `groups_expire_at` ts null | an OIDC identity, the `iss` and `sub` of its ID token, and the user it maps to (rbac.md §8; 0021). Unique `identities_subject` on `(issuer, subject)`; index `identities_user` on `(user_id)`. A login sets `login_at` and `groups_expire_at`, the end of the `auth.oidc.tokenLifetime` of that login; a login that finds the row's user deleted deletes the row and makes a new user and row |
@@ -111,6 +111,25 @@ committed after the read aborts the transaction, which runs again and compares a
 replica of a release before 0032 neither reads nor writes it, and its updates leave it as it is,
 so that a change such a replica makes during a rolling update passes an `If-Match` of the
 revision before it.
+
+### A user's last activity
+
+`users.last_seen_at` (#1283, migration `0034_users_last_seen.sql`) is the user's last activity
+(rbac.md §1, Inactive users). It is written by `TouchUser` only, which only moves it forward, as
+`TouchToken` moves `tokens.last_used_at` (#1277), and moves neither `revision` nor
+`auth_version`: by an authentication that read it NULL or a minute old or more, by an OIDC login,
+and by the enabling of the user. `CreateUser` and `UpdateUser` leave it. The column is control
+plane, in a snapshot with its row.
+
+The migration adds it and fills it for every user that is not deleted: with the time of the
+migration for a user with a password, whose password logins left no record before it; for a user
+without one (a service account, an OIDC user) with the latest of its tokens' `last_used_at`,
+revoked and expired ones included, and of its identities' `login_at`, or NULL when it has
+neither. A NULL counts from `created_at`. Expand: a replica of the release before neither reads
+nor writes the column, so an authentication or an enabling on such a replica, during a rolling
+update or a rollback, records nothing, and a user enabled there whose record is older than
+`auth.disableInactiveUsersAfter` is disabled again at its first authentication on a replica that
+knows 0034.
 
 ## Proxy and group repos
 
@@ -708,7 +727,7 @@ uses and which does not have it.
 
 | Table | In a snapshot |
 | --- | --- |
-| `repos`, `group_members`, `users` (the deleted ones too, with `owner`), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937) | every row, with its id |
+| `repos`, `group_members`, `users` (the deleted ones too, with `owner` and `last_seen_at`), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937) | every row, with its id |
 | `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
 | `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
 | `sessions` | no: their clients start them again, as after a restore of a backup |
@@ -753,7 +772,10 @@ migration, unless this table says why not.
   The restore runs with serve's database user, as every admin command does.
 - **Versions.** A snapshot of a `schema` newer than the newest migration of the binary is refused,
   `ErrSchemaTooNew`, and nothing is written. One of an older `schema` is written as it is: a
-  column added since takes its default, as expand migrations require (Upgrades). The database
+  column added since takes its default, as expand migrations require (Upgrades). The exception is
+  `users.last_seen_at`, which a snapshot of before 0034 does not have: the restore fills it as
+  that migration does, with the time of the restore for a user with a password, so that a
+  restore makes no user inactive that the migration would not (rbac.md §1). The database
   itself must be migrated to the binary's schema first (`lajstrom migrate`), as for every admin
   command.
 - **Not the export of ADR 0015.** That export (its point 15, not built) writes the declarable
@@ -793,7 +815,8 @@ columns `tokens.dpop_jkt` and `oidc_logins.return_to`, `.code_challenge`, `.hand
 policy and `index_cache.expires_at` (#101), `0031_blob_map.sql` the table `blob_map` (#114),
 `0032_revisions.sql` the columns `repos.revision`, `users.revision` and `webhooks.revision`
 (#796), and `0033_ci_policies.sql` the table `ci_policies` and the columns `tokens.auth_time`,
-`tokens.amr`, `oidc_logins.auth_time` and `oidc_logins.amr` (#937); the others are named with
+`tokens.amr`, `oidc_logins.auth_time` and `oidc_logins.amr` (#937), and `0034_users_last_seen.sql`
+the column `users.last_seen_at`, filled (#1283); the others are named with
 their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -896,7 +919,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0032, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0034, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
