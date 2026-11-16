@@ -2069,7 +2069,7 @@ The contract packages grow these, each nil or absent for no policy:
   (`format.CheckVersion`, which writes the audit row of a refusal); `format.VersionSubject`
   makes the subject of a version.
 - `format.VersionComparer`, a `Plugin` with `CompareVersions(a, b string) (int, error)` (npm,
-  maven); `format.Trimmer`, a `Proxier` with `Trim` (proxy-and-group.md §10; npm);
+  maven, pypi, apt, rpm); `format.Trimmer`, a `Proxier` with `Trim` (proxy-and-group.md §10; npm);
   `format.Locator`, a `Plugin` with `DownloadPrefix(repo index.Repo, name, version string)
   (string, bool)`, the path of policy.md §8 (pypi, maven, npm).
 - `index.PolicyRule`, `index.Verdict`, `index.VerdictFilter`, `index.PolicySeen`;
