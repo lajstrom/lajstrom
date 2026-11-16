@@ -190,6 +190,10 @@ type Reader interface {
 	// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore,
 	// with their packages, ordered by package name and version id: the sweep of reindex.
 	ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
+	// ListVersionsWithoutSummary returns at most limit versions rows whose Summary was never
+	// written and whose Metadata is kept, the rows before migration 0029, after the id afterID
+	// in id order (docs/spec/index-schema.md, The summaries of the rows before 0029).
+	ListVersionsWithoutSummary(ctx context.Context, afterID int64, limit int) ([]Version, error)
 
 	// ListFiles returns the files of a version in manifest order.
 	ListFiles(ctx context.Context, versionID int64) ([]File, error)
@@ -485,6 +489,11 @@ type Writer interface {
 	// DeleteEmptyPackages removes the packages of a repo that have no version, and returns how
 	// many it removed.
 	DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error)
+	// SetVersionSummaries writes the summary of each id of summaries, "" for a manifest without
+	// one, to those of the rows whose Summary was never written, in one transaction, and
+	// returns how many it wrote: a row written since, or deleted, is skipped
+	// (docs/spec/index-schema.md, The summaries of the rows before 0029).
+	SetVersionSummaries(ctx context.Context, summaries map[int64]string) (int, error)
 
 	// PutIndexCache inserts c or replaces the row with the same (RepoID, Scope, Kind) when
 	// generation, the IndexCacheGeneration the render read before it began, is still the repo's,

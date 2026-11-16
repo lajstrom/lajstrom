@@ -178,6 +178,7 @@ func newServeCmd(a *app) *cobra.Command {
 				a.log.Info("reconcile loop off (reconcile.interval is 0)")
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
+			runs.wg.Go(func() { fillSummaries(ctx, st, a.log, summaryBatch) })
 			runs.wg.Go(func() { rep.Run(ctx) })
 			hooksMaster := webhookMaster(c, a.lookupEnv, a.log)
 			startWebhooks(ctx, c, hooksMaster, st, rep.row.ID, &runs.wg, a.log)

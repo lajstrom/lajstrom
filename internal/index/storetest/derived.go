@@ -218,7 +218,7 @@ func testVersions(t *testing.T, s index.Store) {
 	versions := []index.Version{
 		{PackageID: pkg.ID, Version: "1.0.0", Tag: "1.0.0", Digest: dg("a"), ArtifactType: artifactType,
 			Attrs: map[string]string{"lajstrom.raw.path": "tool"}, Metadata: json.RawMessage(`{"k": ["v"]}`),
-			CreatedAt: at(10), IndexedAt: at(11)},
+			Summary: "A tool, ünïcode", CreatedAt: at(10), IndexedAt: at(11)},
 		{PackageID: pkg.ID, Version: "1.0.0", Variant: "linux-amd64", Tag: "1.0.0-linux-amd64", Digest: dg("b"),
 			ArtifactType: artifactType, Attrs: map[string]string{}, CreatedAt: at(5)},
 		{PackageID: pkg.ID, Version: "2.0.0", Tag: "2.0.0", Digest: dg("c"), ArtifactType: artifactType, CreatedAt: at(5)},
@@ -243,7 +243,7 @@ func testVersions(t *testing.T, s index.Store) {
 	same(t, "ListVersions by CreatedAt, then ID", []index.Version{versions[1], versions[2], versions[0]}, list)
 
 	again := versions[0]
-	again.ID, again.Attrs, again.Metadata, again.IndexedAt = 0, map[string]string{"lajstrom.raw.path": "tool2"}, nil, at(20)
+	again.ID, again.Attrs, again.Metadata, again.Summary, again.IndexedAt = 0, map[string]string{"lajstrom.raw.path": "tool2"}, nil, "", at(20)
 	must(t, s.UpsertVersion(ctx, &again))
 	if again.ID != versions[0].ID {
 		t.Errorf("re-upsert of the same digest: ID %d, want %d", again.ID, versions[0].ID)
