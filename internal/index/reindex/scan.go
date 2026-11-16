@@ -62,6 +62,7 @@ type scan struct {
 	found       map[digest.Digest][]string // the manifests read, tagged or listed by a sha256-<hex> index, by digest: their package paths; nil unless repairing (prepareRepair)
 	deleted     map[digest.Digest][]string // the manifests deleted through Lajstrom within the grace age, with the OCI repositories they were deleted from, "" for any (recentDeletes); nil on a strong registry
 	legacy      map[string][]legacyRef     // the manifests under cosign's legacy tags read, by package path, for the attachments pass
+	tagged      map[string][]digest.Digest // an oci repo's manifests that its tags name, by package path, for the verdicts pass
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -302,6 +303,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 	}
 	if pkgPath != "" {
 		s.attachments(ctx, rr, cache, pkgPath)
+		s.ociVerdicts(ctx, rr, cache, pkgPath)
 	}
 }
 
@@ -358,6 +360,7 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		return
 	}
 	s.locate(pkgPath, desc.Digest)
+	s.keepTagged(pkgPath, desc.Digest)
 	pkg, known, err := s.row(ctx, rr, pkgPath, tag, desc.Digest)
 	if s.dbErr(err) {
 		return

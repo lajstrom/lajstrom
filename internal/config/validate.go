@@ -76,6 +76,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	validateNesting(&p, c.Registries)
+	c.Policy.validate(&p, c.Registries)
 	upstreams := map[string]int{}
 	for i, u := range c.Upstreams {
 		key := fmt.Sprintf("upstreams[%d]", i)

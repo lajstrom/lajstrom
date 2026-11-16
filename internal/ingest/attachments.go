@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/attest"
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
@@ -35,6 +37,13 @@ func (p *Pipeline) AttachmentTrust() string { return p.trust.Hash() }
 // the pipeline's clock. A layer the registry does not serve, or whose bytes are not its digest,
 // is an error.
 func (p *Pipeline) InspectAttachments(ctx context.Context, repo index.Repo, v index.Version, r Referrer) ([]index.Attachment, error) {
+	return p.inspect(ctx, repo, v.Digest, r)
+}
+
+// inspect is InspectAttachments of a referrer whose subject is the manifest subject, a version's
+// or, on an oci repo, any manifest's. An attachment that verifies as a verdict (policy.md §2) has
+// its Verdict.
+func (p *Pipeline) inspect(ctx context.Context, repo index.Repo, subject digest.Digest, r Referrer) ([]index.Attachment, error) {
 	var m ocispec.Manifest
 	if err := json.Unmarshal(r.Manifest, &m); err != nil {
 		return nil, invalid(fmt.Errorf("the referrer %s is not JSON: %w", r.Desc.Digest, err))
@@ -44,7 +53,7 @@ func (p *Pipeline) InspectAttachments(ctx context.Context, repo index.Repo, v in
 	var rows []index.Attachment
 	for _, a := range profile.Attachments(r.Tag, m) {
 		row := attachmentRow(r, m, a, trust, at)
-		in := attest.Input{Subject: v.Digest, Layer: a.Layer, Annotated: a.PredicateType}
+		in := attest.Input{Subject: subject, Layer: a.Layer, Annotated: a.PredicateType}
 		if attest.Reads(a.Layer.MediaType) && a.Layer.Digest != "" {
 			if a.Layer.Size > p.maxAttachment {
 				row.Verification = index.AttachmentUnsupported
@@ -70,6 +79,7 @@ func (p *Pipeline) InspectAttachments(ctx context.Context, repo index.Repo, v in
 			row.PredicateType, row.Kind = res.PredicateType, profile.StatementKind(res.PredicateType, res.Predicate)
 		}
 		fillTool(&row, res)
+		row.Verdict = verdictOf(r, subject, res)
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -145,12 +155,23 @@ func readLayer(ctx context.Context, rr provider.Repository, desc ocispec.Descrip
 // manifest replace those it had, and for a legacy tag those of the version under the tag
 // (Store.ReplaceAttachments). Best effort: a failure is logged and counted, and the push stays a
 // success; the next reindex of the repo writes the rows (docs/spec/index-schema.md, Attachments).
-func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Referrer) {
+func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) {
 	if repo.Format == ociFormat {
+		p.indexOCIVerdicts(ctx, repo, r, principal)
 		return
 	}
 	rows, v, err := p.attachmentsOf(ctx, repo, r)
-	if err == nil && v != nil {
+	switch {
+	case err != nil || v == nil:
+	case slices.ContainsFunc(rows, func(a index.Attachment) bool { return a.Verdict != nil }):
+		// A verdict's audit row and event go in the transaction of its rows (verdictsWritten).
+		err = p.index.Tx(ctx, func(w index.Writer) error {
+			if err := w.ReplaceAttachments(ctx, v.ID, r.Desc.Digest, rows); err != nil {
+				return err
+			}
+			return p.verdictsWritten(ctx, w, repo, v, rows, principal)
+		})
+	default:
 		err = p.index.ReplaceAttachments(ctx, v.ID, r.Desc.Digest, rows)
 	}
 	switch {

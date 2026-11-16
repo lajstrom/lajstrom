@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -26,7 +27,7 @@ const (
 )
 
 // PredicateType is the in-toto predicate type of a verdict (docs/spec/manifest-profile.md §6.4).
-const PredicateType = "dev.lajstrom.verdict/v1"
+const PredicateType = attest.VerdictPredicateType
 
 // The sources of the verdicts the server makes (docs/spec/policy.md §2).
 const (
