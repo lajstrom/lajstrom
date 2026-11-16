@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -18,10 +19,11 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 )
 
-// serviceCI is auth.ci of the tests of the Service: a GitHub issuer and one policy of the
-// configuration.
+// serviceCI is auth.ci of the tests of the Service: a GitHub issuer, one policy of the
+// configuration, the policies of the API that write within oci/* and pypi/app, approved by a
+// second admin.
 func serviceCI() config.CI {
-	return config.CI{
+	return config.CI{APIWriteRepos: []string{"oci/*", "pypi/app"}, APIWriteApproval: config.CIApprovalSecondAdmin,
 		Issuers: []config.CIIssuer{{Name: "github", Platform: config.CIPlatformGitHub, Issuer: "https://token.actions.example"}},
 		Policies: []config.CIPolicy{{Name: "from-config", Issuer: "github", Claims: map[string]config.CIValues{"repository_owner_id": {"9"}},
 			Grants: []config.CIGrant{{Role: "reader", Mask: "*/*"}}}}}
@@ -52,7 +54,7 @@ func readPolicy(name string) Policy {
 
 // TestService: the policies of the API are made, changed and deleted with an audit row each that
 // holds the policy, by the rules of the configuration's; the configuration's are listed and
-// read-only; a policy that writes is refused (docs/spec/rbac.md §11).
+// read-only; a policy that reads takes no step and no expiry (docs/spec/rbac.md §11).
 func TestService(t *testing.T) {
 	st := newStore(t)
 	s := &Service{Index: st, Config: serviceCI()}
@@ -86,12 +88,15 @@ func checkServiceRefusals(ctx context.Context, t *testing.T, s *Service, o auth.
 		err  error
 		f    func() error
 	}{
-		{"a policy that writes", auth.ErrScope, func() error {
-			w := readPolicy("acme-write")
-			w.Claims["ref"], w.Grants = []string{"refs/heads/main"}, []index.CIGrant{{Role: "writer", Mask: "oci/app"}}
-			_, err := s.Create(ctx, w, o)
+		{"a policy that writes without a sign-in", auth.ErrScope, func() error { _, err := s.Create(ctx, writePolicy("acme-write"), o); return err }},
+		{"an expiry of a policy that reads", auth.ErrInvalid, func() error {
+			p := readPolicy("acme-later")
+			p.ExpiresAt = &testNow
+			_, err := s.Create(ctx, p, o)
 			return err
 		}},
+		{"renewing a policy that reads", index.ErrConflict, func() error { _, err := s.Renew(ctx, "acme-read", nil, o); return err }},
+		{"approving the configuration's", index.ErrConflict, func() error { _, err := s.Approve(ctx, "from-config", o); return err }},
 		{"no id", auth.ErrInvalid, func() error {
 			_, err := s.Create(ctx, Policy{Name: "x", Issuer: "github", Claims: map[string][]string{"repository": {"acme/app"}},
 				Grants: []index.CIGrant{{Role: "reader", Mask: "*/*"}}}, o)
@@ -128,25 +133,62 @@ func checkPolicyRows(t *testing.T, st index.Store) {
 			continue
 		}
 		actions = append(actions, r.Action)
-		var d map[string]any
-		_ = json.Unmarshal(r.Details, &d)
-		if r.Principal != admin.String() || r.Subject != "acme-read" || r.IP != "192.0.2.7" || d["source"] != "api" ||
-			d["requestId"] != "req-1" || d["issuer"] != "github" || d["claims"] == nil || d["grants"] == nil {
-			t.Errorf("%s row %+v details %v", r.Action, r, d)
-		}
-		if _, ok := d["previous"]; ok != (r.Action == ActionPolicyUpdate) {
-			t.Errorf("%s row: previous %v", r.Action, d["previous"])
-		}
+		checkPolicyRow(t, r)
 	}
 	if strings.Join(actions, " ") != "ci.policy.delete ci.policy.update ci.policy.create" {
 		t.Errorf("ci.policy rows %v", actions)
 	}
 }
 
+// liveRows makes the rows of TestLive in st that do not count: one that writes without an
+// expiry, one outside auth.ci.apiWriteRepos, one pending, one past its expiry, one marked expired,
+// one with a name of the configuration; and app-publish, which counts for an hour from testNow.
+func liveRows(t *testing.T, st index.Store) {
+	t.Helper()
+	soon, gone := testNow.Add(time.Hour), testNow.Add(-time.Second)
+	writer := func(name, mask string, state string, exp *time.Time) index.CIPolicy {
+		return index.CIPolicy{Name: name, Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}, "ref": {"main"}},
+			Grants: []index.CIGrant{{Role: "writer", Mask: mask}}, State: state, ExpiresAt: exp, CreatedBy: "user:x"}
+	}
+	for _, r := range []index.CIPolicy{
+		writer("restored-write", "oci/app", index.CIPolicyActive, nil),
+		writer("outside", "raw/app", index.CIPolicyActive, &soon),
+		writer("waits", "oci/app", index.CIPolicyPending, &soon),
+		writer("gone", "oci/app", index.CIPolicyActive, &gone),
+		writer("marked", "oci/app", index.CIPolicyExpired, &soon),
+		writer("app-publish", "oci/app", index.CIPolicyActive, &soon),
+		{Name: "from-config", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
+			Grants: []index.CIGrant{{Role: "reader", Mask: "*/*"}}, CreatedBy: "user:x"},
+	} {
+		if err := st.CreateCIPolicy(context.Background(), &r); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// checkPolicyRow checks one ci.policy.* row of TestService: by the admin, with the origin, the
+// policy that reads, its previous one for a change, no expiry and no sign-in.
+func checkPolicyRow(t *testing.T, r index.AuditEvent) {
+	t.Helper()
+	var d map[string]any
+	_ = json.Unmarshal(r.Details, &d)
+	if r.Principal != admin.String() || r.Subject != "acme-read" || r.IP != "192.0.2.7" || d["source"] != "api" ||
+		d["requestId"] != "req-1" || d["issuer"] != "github" || d["claims"] == nil || d["grants"] == nil {
+		t.Errorf("%s row %+v details %v", r.Action, r, d)
+	}
+	if _, ok := d["previous"]; ok != (r.Action == ActionPolicyUpdate) {
+		t.Errorf("%s row: previous %v", r.Action, d["previous"])
+	}
+	if d["state"] != index.CIPolicyActive || d["expiresAt"] != nil || d["signIn"] != nil {
+		t.Errorf("%s row of a policy that reads: state %v, expiresAt %v, signIn %v", r.Action, d["state"], d["expiresAt"], d["signIn"])
+	}
+}
+
 // TestLive: the policies of the API count beside the configuration's from the next read after a
-// change, on another Live over the same index too; a row that writes, or that has a name of the
-// configuration, is left out with a warning; an index that does not
-// answer is an error.
+// change, on another Live over the same index too; a row that is not active, or whose expiry
+// passed, does not count; one that writes without an expiry or outside auth.ci.apiWriteRepos, or
+// that has a name of the configuration, is left out with a warning; an index that does not answer
+// is an error.
 func TestLive(t *testing.T) {
 	st := newStore(t)
 	ctx := auth.WithPrincipal(context.Background(), admin)
@@ -155,6 +197,7 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	replica.now = func() time.Time { return testNow }
 	names := func() []string {
 		t.Helper()
 		ps, err := replica.Current(ctx)
@@ -177,20 +220,17 @@ func TestLive(t *testing.T) {
 	if got := names(); fmt.Sprint(got) != "[acme-read from-config]" {
 		t.Errorf("after a create on another service: %v", got)
 	}
-	for _, r := range []index.CIPolicy{
-		{Name: "restored-write", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}, "ref": {"main"}},
-			Grants: []index.CIGrant{{Role: "writer", Mask: "*/*"}}, CreatedBy: "user:x"},
-		{Name: "from-config", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
-			Grants: []index.CIGrant{{Role: "reader", Mask: "*/*"}}, CreatedBy: "user:x"},
-	} {
-		if err := st.CreateCIPolicy(ctx, &r); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := names(); fmt.Sprint(got) != "[acme-read from-config]" {
+	liveRows(t, st)
+	if got := names(); fmt.Sprint(got) != "[acme-read app-publish from-config]" {
 		t.Errorf("rows left out: %v", got)
 	}
-	for _, w := range []string{"policy=restored-write", "a policy of the API reads only", "a policy of the configuration has its name"} {
+	later := testNow.Add(time.Hour)
+	replica.now = func() time.Time { return later }
+	if got := names(); fmt.Sprint(got) != "[acme-read from-config]" {
+		t.Errorf("at the expiry of app-publish, without a write: %v", got)
+	}
+	for _, w := range []string{"policy=restored-write", "has no expiry", "policy=outside", "writer on raw/app, outside auth.ci.apiWriteRepos",
+		"a policy of the configuration has its name"} {
 		if !strings.Contains(logs.String(), w) {
 			t.Errorf("no warning with %q:\n%s", w, logs.String())
 		}
