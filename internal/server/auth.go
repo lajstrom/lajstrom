@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/metrics"
@@ -34,6 +36,7 @@ const (
 	msgAuthUnavailable = "Service Unavailable"
 	msgThrottled       = "too many failed logins: try again after Retry-After seconds"
 	msgTooManyRequests = "too many token requests: try again after Retry-After seconds"
+	msgBound           = "the token is bound to a DPoP key: send it as Authorization: DPoP with a proof"
 )
 
 // principalHolder carries the principal the authentication middleware settled on back to the
@@ -81,6 +84,10 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//   - DPoP (RFC 9449 §7.1) on /api/: the token of a web UI's sign-in with a proof of the key it
+//     is bound to (authenticateDPoP, docs/spec/rbac.md §10); refused elsewhere. A token bound to a
+//     key is refused in Basic credentials and as a bearer (auth.ErrBound), on /api/ with the
+//     DPoP challenge.
 //   - The OIDC login (oidcPrefix, docs/spec/http-routing.md §7): the request goes on as
 //     anonymous with the header untouched; its routes take no credential.
 //   - The sign-in of a web UI, POST /api/v1/login (loginPath, docs/spec/http-routing.md §4): the
@@ -115,6 +122,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodPost && r.URL.Path == tokenPath {
 			s.authenticateForm(w, r, next)
+			return
+		}
+		if scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " "); strings.EqualFold(scheme, "DPoP") {
+			s.authenticateDPoP(w, r, next, strings.TrimSpace(value))
 			return
 		}
 		p, cred, ok, err := s.credential(r)
@@ -157,6 +168,9 @@ func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Creden
 func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handler, p auth.Principal, cred auth.Credential, err error) {
 	var throttled *auth.ThrottledError
 	switch {
+	case errors.Is(err, auth.ErrBound) && strings.HasPrefix(r.URL.Path, "/api/"):
+		s.refuseDPoP(w, r, "invalid_token", msgBound)
+		return
 	case errors.Is(err, auth.ErrBadCredentials):
 		s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 		return
@@ -176,6 +190,57 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 	}
 	HoldPrincipal(r.Context(), p)
 	next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
+}
+
+// authenticateDPoP authenticates Authorization: DPoP <secret> (RFC 9449 §7.1), the token of a
+// web UI's sign-in, on /api/ only (docs/spec/http-routing.md §4): the proof of the request first
+// (Options.DPoP, dpop.Verifier.Verify), then the token and the key it is bound to, which must be
+// the proof's (auth.Authenticator.AuthenticateDPoP), and last the proof's jti, used once on any
+// replica (dpop.Verifier.Spend), so that a request with a made-up token writes nothing. A refused
+// proof is 401 with the challenge error="invalid_dpop_proof" and why, a refused token 401 with
+// error="invalid_token". Outside /api/, and on a server without Options.DPoP, the scheme is
+// refused as credentials are.
+func (s *Server) authenticateDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, secret string) {
+	if !strings.HasPrefix(r.URL.Path, "/api/") || s.opts.DPoP == nil {
+		s.log.DebugContext(r.Context(), "authentication refused", "reason", "a DPoP token outside /api/",
+			"requestId", RequestID(r.Context()))
+		s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+		return
+	}
+	proof, err := s.opts.DPoP.Verify(r, secret)
+	if err != nil {
+		s.refuseDPoP(w, r, "invalid_dpop_proof", dpop.Why(err))
+		return
+	}
+	p, cred, err := s.opts.Authenticator.AuthenticateDPoP(r.Context(), secret, proof.JKT)
+	if errors.Is(err, auth.ErrBadCredentials) {
+		s.refuseDPoP(w, r, "invalid_token", "")
+		return
+	}
+	if err == nil {
+		err = s.opts.DPoP.Spend(r.Context(), proof)
+	}
+	if why := dpop.Why(err); why != "" {
+		s.refuseDPoP(w, r, "invalid_dpop_proof", why)
+		return
+	}
+	s.settle(w, r, next, p, cred, err)
+}
+
+// refuseDPoP answers 401 on /api/ with the challenge of RFC 9449 §7.1: WWW-Authenticate: DPoP
+// with the error code, why as error_description when it is not "", and algs ES256. why is fixed
+// text of dpop.Why or of this package, never the client's; the answer is the envelope of /api/,
+// UNAUTHENTICATED with why as its message, or msgBadCredentials.
+func (s *Server) refuseDPoP(w http.ResponseWriter, r *http.Request, code, why string) {
+	s.log.DebugContext(r.Context(), "authentication refused", "reason", cmp.Or(why, "a DPoP token refused"),
+		"requestId", RequestID(r.Context()))
+	challenge := `DPoP error="` + code + `"`
+	if why != "" {
+		challenge += `, error_description="` + why + `"`
+	}
+	w.Header().Set("WWW-Authenticate", challenge+`, algs="`+dpop.Algorithm+`"`)
+	writeJSONRefusal(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "UNAUTHENTICATED",
+		"message": cmp.Or(why, msgBadCredentials)}})
 }
 
 // authenticateForm authenticates POST /v2/token, the token request in the OAuth2 form that
@@ -279,15 +344,22 @@ func retryAfter(d time.Duration) string {
 // /v2/token itself, the one endpoint of /v2 that takes Basic, and everywhere else, it is Basic.
 func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	path := r.URL.Path
-	v2 := path == "/v2" || strings.HasPrefix(path, "/v2/")
 	if status == http.StatusUnauthorized {
 		challenge := basicChallenge
-		if v2 && path != tokenPath {
+		if (path == "/v2" || strings.HasPrefix(path, "/v2/")) && path != tokenPath {
 			realm, service := token.Realm(s.opts.ExternalURL, r)
 			challenge = token.Challenge(realm, service, "", false)
 		}
 		w.Header().Set("WWW-Authenticate", challenge)
 	}
+	writeRefusalBody(w, r, status, msg)
+}
+
+// writeRefusalBody writes the body of a refusal of the middleware, with status, in the error
+// format of the route's family (writeRefusal); the caller has set the challenge of a 401.
+func writeRefusalBody(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	path := r.URL.Path
+	v2 := path == "/v2" || strings.HasPrefix(path, "/v2/")
 	var body any
 	switch {
 	case v2:
@@ -318,6 +390,12 @@ func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int
 		writeText(w, status, msg+"\n")
 		return
 	}
+	writeJSONRefusal(w, status, body)
+}
+
+// writeJSONRefusal writes body, the error document of a refusal of the middleware, as JSON with
+// status.
+func writeJSONRefusal(w http.ResponseWriter, status int, body any) {
 	b, _ := json.Marshal(body) // maps of strings always encode
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

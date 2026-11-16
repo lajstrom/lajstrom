@@ -14,6 +14,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -201,6 +202,8 @@ func newServeCmd(a *app) *cobra.Command {
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
+			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
+			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			edge, err := edgeInputs(c, st, a.log)
 			if err != nil {
@@ -214,7 +217,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime})
+				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, DPoP: proofs})
 			srv, err := server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,
@@ -231,6 +234,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Facade:           v2,
 				OIDC:             edge.login,
 				Authenticator:    authn,
+				DPoP:             proofs,
 				MetricsListen:    c.Server.MetricsListen,
 				Pprof:            c.Server.Pprof,
 				StallTimeout:     c.Server.StallTimeout,

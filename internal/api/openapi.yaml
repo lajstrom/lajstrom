@@ -34,6 +34,7 @@ tags:
 security:
   - basic: []
   - bearer: []
+  - dpop: []
 paths:
   /api/v1/repos:
     get:
@@ -1211,13 +1212,18 @@ paths:
       summary: Sign in a web UI; the answer is a short-lived personal access token, once.
       description: >-
         For a local user's name and password, checked as Basic credentials are, with the same
-        throttles of failed logins. The answer is a personal access token of the user without
-        scopes, named login <time> <4 hex>, that expires after auth.login.tokenLifetime (12
-        hours by default); there is no refresh. The UI sends it as a bearer and revokes it at
-        sign-out with DELETE /api/v1/users/{user}/tokens/{id}. The request takes no credential:
-        its Authorization header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
+        throttles of failed logins, and a DPoP proof (RFC 9449) of the browser's key in the
+        header DPoP, checked before the password. The answer is a personal access token of the
+        user without scopes, bound to that key (dpopJkt, tokenType DPoP), named login <time> <4
+        hex>, that expires after auth.login.tokenLifetime (12 hours by default); there is no
+        refresh. The UI sends it as Authorization: DPoP with a new proof of the key on every
+        request to /api/, where alone it works, and revokes it at sign-out with DELETE
+        /api/v1/users/{user}/tokens/{id}. The request takes no credential: its Authorization
+        header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
       security:
         - {}
+      parameters:
+        - {$ref: "#/components/parameters/dpopProof"}
       requestBody:
         description: The credential of the sign-in.
         required: true
@@ -1231,8 +1237,14 @@ paths:
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/CreatedToken"}
-        "400": {$ref: "#/components/responses/Invalid"}
+              schema: {$ref: "#/components/schemas/LoginToken"}
+        "400":
+          description: >-
+            The body is not a user name and a password, or the DPoP proof is missing, refused or
+            used already; the message says why.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "401":
           description: The user name or the password is wrong, or the user may not sign in; the reason is not told.
           content:
@@ -1270,12 +1282,31 @@ components:
     bearer:
       type: http
       scheme: bearer
-      description: A personal access token (ljs_pat_…) or a deploy token (ljs_dep_…).
+      description: A personal access token (ljs_pat_…) or a deploy token (ljs_dep_…), but one bound to a DPoP key.
+    dpop:
+      type: http
+      scheme: dpop
+      description: >-
+        The token of a web UI's sign-in (POST /api/v1/login), bound to the browser's key, with a
+        DPoP proof of that key in the header DPoP on every request (RFC 9449): typ dpop+jwt, alg
+        ES256, htm and htu of the request (htu with the scheme and host of server.externalURL),
+        iat within 5 minutes, ath the base64url SHA-256 of the token, a jti used once. On /api/
+        only. A refused proof is 401 with WWW-Authenticate DPoP error="invalid_dpop_proof", a
+        refused token error="invalid_token"; there is no DPoP-Nonce.
   headers:
     Location:
       description: The path of the created resource.
       schema: {type: string}
   parameters:
+    dpopProof:
+      name: DPoP
+      in: header
+      required: true
+      description: >-
+        A DPoP proof (RFC 9449 §4): a JWT with typ dpop+jwt, alg ES256 and the public P-256 key
+        in jwk, whose claims are htm POST, htu <server.externalURL>/api/v1/login, iat within 5
+        minutes of the server's clock and a jti used once. The token is bound to its key.
+      schema: {type: string, maxLength: 4096}
     format:
       name: format
       in: path
@@ -1747,6 +1778,12 @@ components:
         createdAt: {type: string, format: date-time}
         revokedAt: {type: [string, "null"], format: date-time}
         hashPrefix: {type: string}
+        dpopJkt:
+          type: string
+          description: >-
+            The JWK SHA-256 thumbprint (RFC 7638) of the DPoP key that the token of a web UI's
+            sign-in is bound to; absent for every other token. A bound token works only as
+            Authorization: DPoP with a proof of that key, on /api/.
     CreatedToken:
       allOf:
         - $ref: "#/components/schemas/Token"
@@ -1754,6 +1791,13 @@ components:
           required: [secret]
           properties:
             secret: {type: string, description: Shown this once.}
+    LoginToken:
+      allOf:
+        - $ref: "#/components/schemas/CreatedToken"
+        - type: object
+          required: [dpopJkt, tokenType]
+          properties:
+            tokenType: {type: string, enum: [DPoP], description: "The token_type of RFC 9449 §5: the token is bound to the proof's key."}
     TokenList:
       type: object
       required: [tokens]

@@ -74,6 +74,9 @@ type Options struct {
 	// LoginLifetime is auth.login.tokenLifetime, the lifetime of the token of POST
 	// /api/v1/login; zero means DefaultLoginLifetime.
 	LoginLifetime time.Duration
+	// DPoP checks the proof of POST /api/v1/login, whose key the token is bound to
+	// (docs/spec/rbac.md §10): serve's dpop.Verifier, the server's too. nil answers a sign-in 501.
+	DPoP Proofs
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -136,7 +139,7 @@ const maxBody = 64 << 10
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
 //	POST   /api/v1/bootstrap                           the first admin, for the bootstrap token; 404 once an admin exists
-//	POST   /api/v1/login                               sign in a web UI with a password: a short-lived personal access token
+//	POST   /api/v1/login                               sign in a web UI with a password and a DPoP proof: a short-lived token bound to its key
 //	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
 //
 // Every other method and path under /api/ is a JSON NOT_FOUND. Answers are JSON;
@@ -147,7 +150,7 @@ func New(o Options) http.Handler {
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
-		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime}
+		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, proofs: o.DPoP}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -263,9 +266,11 @@ type handler struct {
 	info ServerInfo
 	// webhooks is Options.Webhooks.
 	webhooks *webhook.Service
-	// passwords and loginLifetime are Options.Passwords and Options.LoginLifetime, never zero.
+	// passwords and loginLifetime are Options.Passwords and Options.LoginLifetime, never zero;
+	// proofs is Options.DPoP.
 	passwords     Passwords
 	loginLifetime time.Duration
+	proofs        Proofs
 	log           *slog.Logger
 }
 

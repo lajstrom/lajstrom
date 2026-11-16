@@ -1385,19 +1385,24 @@ of `server.corsOrigins`, object storage behind a CDN for one
 
 - **Signing in.** The API sets no cookie and reads none. The UI asks for the person's name and
   password and signs in with them: [`POST /api/v1/login`](#sign-in-post-apiv1login) answers a
-  personal access token for the browser, which expires after `auth.login.tokenLifetime`. A
-  server without that route takes `POST /api/v1/users/<name>/tokens` with Basic,
-  `{"name": "<one name per sign-in>", "expiresIn": "12h"}`. The UI then sends the token as
-  `Authorization: Bearer` on every request. Signing out revokes it:
+  personal access token bound to a key of the browser ([DPoP](#the-dpop-bound-token)), which
+  expires after `auth.login.tokenLifetime`. The UI then sends the token as
+  `Authorization: DPoP` with a new proof of the key on every request. A server without that
+  route takes `POST /api/v1/users/<name>/tokens` with Basic,
+  `{"name": "<one name per sign-in>", "expiresIn": "12h"}`, and that token goes as
+  `Authorization: Bearer`. Signing out revokes the token:
   `DELETE /api/v1/users/<name>/tokens/<id>`, with the token itself. A person may also paste a
-  personal access token they already have. Signing out then only forgets it.
+  personal access token they already have, sent as a bearer. Signing out then only forgets it.
 - **Every sign-in is a token.** Each one appears in the person's token list and as a
   `token.create` row of the audit log, and its sign-out as `token.revoke`. A tab that is closed
   without signing out leaves its token live until it expires.
 - **Where the token is kept** is the UI's choice. Any script of the origin can read it there.
   Every answer of Lajstrom forbids scripts on that origin
   ([operations.md](operations.md#what-lajstrom-answers-browsers)), so a file a writer uploaded
-  as HTML cannot read the token. The UI's own pages carry the UI container's policy.
+  as HTML cannot read the token. The UI's own pages carry the UI container's policy. A bound
+  token read out of the browser is of no use without its key, which the UI keeps
+  non-extractable; a script on the origin can still use the key while the page is open
+  ([threat model](security/threat-model.md) B-5).
 - **No browser login dialog.** The UI sends every request with `credentials: "omit"`. The Basic
   challenge of a `401` then opens no browser dialog, and no cached Basic credentials go along.
 - **No CSRF token.** A browser never adds a bearer to a request by itself. The one credential it
@@ -1430,34 +1435,62 @@ Vary: Origin
 
 ## Sign in: `POST /api/v1/login`
 
-A web UI signs in with the person's name and password, and gets a personal access token for the
-browser ([rbac.md](spec/rbac.md) §10). The request takes no credential: its `Authorization`
-header is ignored, so a UI that still holds a revoked token signs in all the same.
+A web UI signs in with the person's name and password and a DPoP proof (RFC 9449) of a key of
+the browser, and gets a personal access token bound to that key ([rbac.md](spec/rbac.md) §10).
+The request takes no credential: its `Authorization` header is ignored, so a UI that still holds
+a revoked token signs in all the same.
 
 ```sh
-curl -s -X POST -H 'Content-Type: application/json' \
+curl -s -X POST -H 'Content-Type: application/json' -H "DPoP: $PROOF" \
   -d '{"username": "alice", "password": "…"}' "$LAJSTROM/api/v1/login"
 ```
 
 ```json
 {"id": 41, "kind": "pat", "user": "alice", "name": "login 2026-11-15T09:30:00Z 3f9a", "scopes": [],
  "expiresAt": "2026-11-15T21:30:00Z", "lastUsedAt": null, "createdAt": "2026-11-15T09:30:00Z",
- "revokedAt": null, "hashPrefix": "5c1d0e7a", "secret": "ljs_pat_…"}
+ "revokedAt": null, "hashPrefix": "5c1d0e7a", "dpopJkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I",
+ "secret": "ljs_pat_…", "tokenType": "DPoP"}
 ```
 
 `201`, with `Location: /api/v1/users/alice/tokens/41`: the token as
 [`POST /api/v1/users/<user>/tokens`](#create-post-apiv1usersusertokens-post-apiv1reposformatrepodeploy-tokens)
-answers it, its secret shown once. It has no scopes, and expires after
-`auth.login.tokenLifetime` ([configuration.md](configuration.md#auth)), 12 hours by default and
-at most 24; there is no refresh, and the UI signs in again. Signing out is
-`DELETE /api/v1/users/alice/tokens/41` with the token itself. The token is in alice's token list,
-and its creation is a `token.create` row by alice, `createdBy` `password`.
+answers it, its secret shown once, with `dpopJkt`, the thumbprint of the proof's key, and
+`tokenType: "DPoP"`. It has no scopes, and expires after `auth.login.tokenLifetime`
+([configuration.md](configuration.md#auth)), 12 hours by default and at most 24; there is no
+refresh, and the UI signs in again. Signing out is `DELETE /api/v1/users/alice/tokens/41` with
+the token itself. The token is in alice's token list, and its creation is a `token.create` row by
+alice, `createdBy` `password`, with `dpopJkt`.
+
+`$PROOF` is a JWT that the UI signs with its key: the header `{"typ": "dpop+jwt", "alg":
+"ES256", "jwk": <the public P-256 key>}`, the claims `{"jti": <random>, "htm": "POST", "htu":
+"<server.externalURL>/api/v1/login", "iat": <now>}`. A login without a proof, or whose proof is
+refused or was used, is `400` saying why, before the password is checked.
 
 The password is checked as HTTP Basic checks it, with the same
 [throttles of failed logins](auth.md#failed-logins): `401` whatever the reason, an unknown user,
 a disabled one, one without a password (an OIDC user), a wrong password or a token in its place;
 `429` with `Retry-After` for a throttled account or client address. A body that is not
 `{"username", "password"}` is `400`.
+
+### The DPoP-bound token
+
+The token of a sign-in works on `/api/` only, as `Authorization: DPoP <token>` with a new proof
+of its key in the header `DPoP` on every request ([http-routing.md](spec/http-routing.md) §4):
+
+```http
+GET /api/v1/whoami HTTP/1.1
+Authorization: DPoP ljs_pat_…
+DPoP: eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7…
+```
+
+The proof's claims are `htm`, the request's method; `htu`, `server.externalURL` and the
+request's path, without the query; `iat`, within 5 minutes of the server's clock; `ath`, the
+base64url SHA-256 of the token; and a new `jti`: a proof is used once, on any replica. The only
+algorithm is ES256, and the server sends no `DPoP-Nonce`. A refused proof is `401` with
+`WWW-Authenticate: DPoP error="invalid_dpop_proof", error_description="…", algs="ES256"` and
+the reason in the message; a token that is unknown, revoked, expired, or bound to another key is
+`401` with `DPoP error="invalid_token"`. The token is refused as `Authorization: Bearer`, in
+Basic credentials, and everywhere but `/api/`: docker, pip, npm and `/v2/token` cannot use it.
 
 ## Who am I: `GET /api/v1/whoami`
 

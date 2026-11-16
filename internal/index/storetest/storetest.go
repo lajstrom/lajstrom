@@ -91,6 +91,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Identities", testIdentities},
 		{"OIDCLogins", testOIDCLogins},
 		{"OIDCLoginRace", testOIDCLoginRace},
+		{"DPoPProofs", testDPoPProofs},
+		{"DPoPProofRace", testDPoPProofRace},
 		{"Webhooks", testWebhooks},
 		{"WebhookDeliveries", testWebhookDeliveries},
 		{"WebhookClaimRace", testWebhookClaimRace},
