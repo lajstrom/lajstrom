@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,25 +14,32 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// UserList is the answer of GET /api/v1/users: a page of the live users ordered by name, and
-// in Next the cursor of the page after it, absent on the last page.
+// UserList is the answer of GET /api/v1/users: a page of the live users ordered by name, of the
+// kind of ?kind when it is given, and in Next the cursor of the page after it, absent on the last
+// page.
 type UserList struct {
 	Users []auth.User `json:"users"`
 	Next  string      `json:"next,omitempty"`
 }
 
 // UserRequest is the body of POST /api/v1/users. Admin also binds the user to the admin role
-// on */* (docs/spec/rbac.md §6).
+// on */* (docs/spec/rbac.md §6). Kind is local, the default, or service: a service account
+// (docs/spec/rbac.md §1), which has Owner, user:<name>, user:<uid> or group:<name>, and neither
+// a password nor Admin.
 type UserRequest struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
 	Admin    bool   `json:"admin"`
+	Kind     string `json:"kind"`
+	Owner    string `json:"owner"`
 }
 
-// UserPatch is the body of PATCH /api/v1/users/{user}: the fields to change, at least one.
+// UserPatch is the body of PATCH /api/v1/users/{user}: the fields to change, at least one. Owner
+// is a service account's only.
 type UserPatch struct {
 	Name     *string `json:"name"`
 	Disabled *bool   `json:"disabled"`
+	Owner    *string `json:"owner"`
 }
 
 // PasswordRequest is the body of POST /api/v1/users/{user}/password.
@@ -69,8 +77,9 @@ func (h *handler) userName(r *http.Request) (string, error) {
 	return u.Name, nil
 }
 
-// listUsers answers a page of the live users, ordered by name: ?limit of them (100 when
-// absent, 1000 at most), after the user of ?cursor, the Next of the page before.
+// listUsers answers a page of the live users of ?kind, local, oidc or service, or of every
+// kind, ordered by name: ?limit of them (100 when absent, 1000 at most), after the user of
+// ?cursor, the Next of the page before.
 func (h *handler) listUsers(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -79,9 +88,9 @@ func (h *handler) listUsers(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err != nil {
 		return 0, nil, err
 	}
-	users, err := h.users.List(r.Context(), "")
+	users, err := h.users.List(r.Context(), r.URL.Query().Get("kind"))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, serviceError(err)
 	}
 	slices.SortFunc(users, func(a, b auth.User) int { return strings.Compare(a.Name, b.Name) })
 	i, _ := slices.BinarySearchFunc(users, after, func(u auth.User, name string) int {
@@ -118,8 +127,8 @@ func page(r *http.Request) (limit int, after string, err error) {
 // cursor returns the cursor of the page after the one that ends at key: opaque to the client.
 func cursor(key string) string { return base64.RawURLEncoding.EncodeToString([]byte(key)) }
 
-// createUser creates a local user from the UserRequest of the body: 201 with the user and its
-// Location.
+// createUser creates a local user or a service account from the UserRequest of the body: 201
+// with the user and its Location.
 func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -128,7 +137,27 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	u, err := h.users.Create(r.Context(), req.Name, req.Password, req.Admin, auth.Origin(origin(r)))
+	var (
+		u   *auth.User
+		err error
+	)
+	switch req.Kind {
+	case "", auth.KindLocal:
+		if req.Owner != "" {
+			return 0, nil, invalid("owner: only a service account has an owner (kind service)")
+		}
+		u, err = h.users.Create(r.Context(), req.Name, req.Password, req.Admin, auth.Origin(origin(r)))
+	case auth.KindService:
+		switch {
+		case req.Password != "":
+			return 0, nil, invalid("password: a service account has no password: it authenticates with its tokens")
+		case req.Admin:
+			return 0, nil, invalid("admin: a service account is bound with POST /api/v1/bindings, not made an admin here")
+		}
+		u, err = h.users.CreateService(r.Context(), req.Name, req.Owner, auth.Origin(origin(r)))
+	default:
+		return 0, nil, invalid("kind: %q is not local or service; an oidc user is made by its first login", req.Kind)
+	}
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -153,9 +182,9 @@ func (h *handler) getUser(_ http.ResponseWriter, r *http.Request) (int, any, err
 }
 
 // updateUser applies the UserPatch of the body and answers the user as it is then: disabled
-// first, under the old name, then the name; each change is an audit event of its own
-// (user.disable or user.enable, user.rename), and a change to what the user already has is no
-// event.
+// first, then a service account's owner, under the old name, then the name; each change is an
+// audit event of its own (user.disable or user.enable, user.owner, user.rename), and a change to
+// what the user already has is no event.
 func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -168,26 +197,14 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := decodeBody(w, r, &patch); err != nil {
 		return 0, nil, err
 	}
-	if patch.Name == nil && patch.Disabled == nil {
-		return 0, nil, invalid("body: nothing to change; the fields are name and disabled")
+	if patch.Name == nil && patch.Disabled == nil && patch.Owner == nil {
+		return 0, nil, invalid("body: nothing to change; the fields are name, disabled and owner")
 	}
-	ctx, o := r.Context(), auth.Origin(origin(r))
+	ctx := r.Context()
 	if _, err := h.users.Get(ctx, name); err != nil {
 		return 0, nil, err
 	}
-	switch {
-	case patch.Disabled == nil:
-	case *patch.Disabled:
-		err = h.users.Disable(ctx, name, o)
-	default:
-		err = h.users.Enable(ctx, name, o)
-	}
-	if err == nil && patch.Name != nil {
-		if err = h.users.Rename(ctx, name, *patch.Name, o); err == nil {
-			name = *patch.Name
-		}
-	}
-	if err != nil {
+	if name, err = h.patchUser(ctx, name, patch, auth.Origin(origin(r))); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	u, err := h.users.Get(ctx, name)
@@ -195,6 +212,28 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, err
 	}
 	return http.StatusOK, u, nil
+}
+
+// patchUser applies patch to the user called name, in the order of updateUser, and returns the
+// user's name after it; it stops at the first change that fails.
+func (h *handler) patchUser(ctx context.Context, name string, patch UserPatch, o auth.Origin) (string, error) {
+	var err error
+	switch {
+	case patch.Disabled == nil:
+	case *patch.Disabled:
+		err = h.users.Disable(ctx, name, o)
+	default:
+		err = h.users.Enable(ctx, name, o)
+	}
+	if err == nil && patch.Owner != nil {
+		err = h.users.SetOwner(ctx, name, *patch.Owner, o)
+	}
+	if err == nil && patch.Name != nil {
+		if err = h.users.Rename(ctx, name, *patch.Name, o); err == nil {
+			name = *patch.Name
+		}
+	}
+	return name, err
 }
 
 // deleteUser deletes a user (auth.Users.Delete): 204.

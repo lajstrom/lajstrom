@@ -875,6 +875,10 @@ paths:
       operationId: listUsers
       summary: A page of the live users, by name (admin).
       parameters:
+        - name: kind
+          in: query
+          description: Only the users of this kind; service lists the service accounts (docs/spec/rbac.md §1).
+          schema: {type: string, enum: [local, oidc, service]}
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
       responses:
@@ -889,7 +893,7 @@ paths:
     post:
       tags: [users]
       operationId: createUser
-      summary: Create a local user (admin).
+      summary: Create a local user or a service account (admin).
       requestBody:
         required: true
         content:
@@ -926,7 +930,7 @@ paths:
     patch:
       tags: [users]
       operationId: updateUser
-      summary: Change the name and disabled (admin).
+      summary: Change the name, disabled, and a service account's owner (admin).
       requestBody:
         required: true
         content:
@@ -947,6 +951,9 @@ paths:
       tags: [users]
       operationId: deleteUser
       summary: Delete a user (admin); its tokens are revoked and its bindings deleted.
+      description: >-
+        409 for the last enabled user with an admin binding, and for a user that owns a live
+        service account.
       responses:
         "204": {description: Deleted.}
         "401": {$ref: "#/components/responses/Unauthorized"}
@@ -959,7 +966,7 @@ paths:
     post:
       tags: [users]
       operationId: setPassword
-      summary: Set the password of a user (admin).
+      summary: Set the password of a user (admin); a service account has none, 400.
       requestBody:
         required: true
         content:
@@ -993,7 +1000,9 @@ paths:
       summary: Create a personal access token of a user; the answer has its secret, once.
       description: >-
         Only a password creates one: a request whose credential is a personal access token,
-        with scopes or without, or a deploy token is 403.
+        with scopes or without, or a deploy token is 403. A service account's are created by
+        the admin; their expiry is bounded by auth.serviceAccounts.maxTokenTTL, 365 days by
+        default, and with the bound 0 one created without an expiry never expires.
       requestBody:
         required: true
         content:
@@ -1737,9 +1746,12 @@ components:
       properties:
         uid: {type: string, format: uuid}
         name: {type: string}
-        kind: {type: string, enum: [local]}
+        kind: {type: string, enum: [local, oidc, service], description: "service: a service account (docs/spec/rbac.md §1)."}
         disabled: {type: boolean}
         createdAt: {type: string, format: date-time}
+        owner: {type: string, description: "A service account's owner, user:<uid> or group:<name>; absent for every other kind."}
+        ownerName: {type: string, description: The name of a user owner.}
+        ownerDisabled: {type: boolean, description: "A user owner is disabled; the service account is not, for that, unless auth.serviceAccounts.onOwnerDisabled is disable."}
     UserList:
       type: object
       required: [users]
@@ -1750,12 +1762,15 @@ components:
         next: {type: string}
     UserRequest:
       type: object
-      required: [name, password]
+      required: [name]
       additionalProperties: false
+      description: A local user needs a password; a service account (kind service) needs an owner, and has neither a password nor admin.
       properties:
         name: {type: string}
         password: {$ref: "#/components/schemas/Password"}
         admin: {type: boolean}
+        kind: {type: string, enum: [local, service], default: local}
+        owner: {type: string, description: "A service account's owner: user:<name> or user:<uid> of a user that is not a service account, or group:<name>."}
     BootstrapRequest:
       type: object
       required: [token, name, password]
@@ -1771,6 +1786,7 @@ components:
       properties:
         name: {type: string}
         disabled: {type: boolean}
+        owner: {type: string, description: "A service account's new owner, as in UserRequest; 400 for a user of another kind."}
     PasswordRequest:
       type: object
       required: [password]
@@ -1816,6 +1832,7 @@ components:
         at: {type: string, format: date-time}
         principal: {type: string}
         principalName: {type: string}
+        principalKind: {type: string, enum: [service], description: "service when the principal is a service account's user:<uid>; absent otherwise."}
         action: {type: string}
         repo: {type: string}
         subject: {type: string}
