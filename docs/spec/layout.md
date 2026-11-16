@@ -474,7 +474,8 @@ func SetRetryAfter(h http.Header, err error)
 // transaction), and kept under the group with the group's generation, which an invalidation of
 // a member's documents increments (proxy-and-group.md §8.6).
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error)
-// ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt.
+// ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt; the ETag is
+// the one validator: If-Modified-Since is never 304, and an If-Range date gives the whole document.
 func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string)
 
 // ServeBlob is the one read path of blob bytes, for the facade and every frontend (ADR 0009):
