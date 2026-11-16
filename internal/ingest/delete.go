@@ -511,23 +511,29 @@ func (d *deletion) refuseReferenced(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ingest: attachments of %s: %w", subject, err)
 	}
-	names := map[digest.Digest]bool{d.target.Digest: true}
+	if by := referencedBy(rows, d.target.Digest); len(by) > 0 {
+		return &referencedError{name: d.name, digest: d.target.Digest, by: by}
+	}
+	return nil
+}
+
+// referencedBy returns the referrers among the attachment rows of a version, other than target,
+// whose input is target or the layer of one of target's rows, sorted.
+func referencedBy(rows []index.Attachment, target digest.Digest) []digest.Digest {
+	names := map[digest.Digest]bool{target: true}
 	for _, a := range rows {
-		if a.Digest == d.target.Digest && a.Layer != "" {
+		if a.Digest == target && a.Layer != "" {
 			names[a.Layer] = true
 		}
 	}
 	var by []digest.Digest
 	for _, a := range rows {
-		if a.Digest != d.target.Digest && a.Input != "" && names[a.Input] && !slices.Contains(by, a.Digest) {
+		if a.Digest != target && a.Input != "" && names[a.Input] && !slices.Contains(by, a.Digest) {
 			by = append(by, a.Digest)
 		}
 	}
-	if len(by) == 0 {
-		return nil
-	}
 	slices.Sort(by)
-	return &referencedError{name: d.name, digest: d.target.Digest, by: by}
+	return by
 }
 
 // referencedError refuses the delete of a referrer that other attachments of its version name as
