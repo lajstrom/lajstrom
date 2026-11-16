@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/policy/denylist"
@@ -85,6 +86,9 @@ type Options struct {
 	// Locate gives a version's own download path for the deny list (format.Locator); nil gives
 	// none.
 	Locate denylist.Locate
+	// CIPolicies is the service behind /api/v1/ci/policies (docs/spec/rbac.md §11); nil answers
+	// them 501 to the admin role.
+	CIPolicies *ci.Service
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
@@ -174,6 +178,11 @@ const maxBody = 64 << 10
 //	GET    /api/v1/bindings[?principal=&limit=&cursor=]  list the bindings, a page at a time
 //	POST   /api/v1/bindings                            create a binding
 //	DELETE /api/v1/bindings/{id}                       delete one
+//	GET    /api/v1/ci/policies                         the CI trust policies, of the configuration and of the API (admin)
+//	POST   /api/v1/ci/policies                         make one of the API
+//	GET    /api/v1/ci/policies/{name}                  one policy
+//	PUT    /api/v1/ci/policies/{name}                  replace the issuer, claims and grants of one of the API
+//	DELETE /api/v1/ci/policies/{name}                  delete one of the API
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
@@ -193,7 +202,7 @@ func New(o Options) http.Handler {
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
-		locate: o.Locate}
+		locate: o.Locate, ci: o.CIPolicies}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -300,6 +309,11 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/bindings", h.listBindings},
 		{"POST /api/v1/bindings", h.createBinding},
 		{"DELETE /api/v1/bindings/{id}", h.deleteBinding},
+		{"GET /api/v1/ci/policies", h.listCIPolicies},
+		{"POST /api/v1/ci/policies", h.createCIPolicy},
+		{"GET /api/v1/ci/policies/{name}", h.getCIPolicy},
+		{"PUT /api/v1/ci/policies/{name}", h.replaceCIPolicy},
+		{"DELETE /api/v1/ci/policies/{name}", h.deleteCIPolicy},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
@@ -325,7 +339,7 @@ type handler struct {
 	journal    Journaler
 	// info is Options.Info, its Formats never nil.
 	info ServerInfo
-	// webhooks is Options.Webhooks.
+	// webhooks is Options.Webhooks, ci Options.CIPolicies.
 	webhooks *webhook.Service
 	// passwords, loginLifetime, handoffs and proofs are Options.Passwords, Options.LoginLifetime,
 	// never zero, Options.Handoffs and Options.DPoP.
@@ -344,7 +358,9 @@ type handler struct {
 	verdicter Verdicter
 	policyKey PolicyKey
 	locate    denylist.Locate
-	log       *slog.Logger
+	// ci is Options.CIPolicies.
+	ci  *ci.Service
+	log *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
