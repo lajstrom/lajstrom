@@ -223,11 +223,15 @@ and the quick starts log in too.
 | Role | On the repos its mask names |
 | --- | --- |
 | `reader` | `read`: `GET` and `HEAD` on the frontends, `pull` on `/v2`, the repo in the lists |
-| `writer` | `read`, `write`: uploads, `push` |
+| `attacher` | `read`, `attach`: signatures, SBOMs, scan reports and other referrers pushed through `/v2` to the versions of the repo, and no version (#89) |
+| `writer` | `read`, `write`: uploads, `push`; `write` holds `attach` |
 | `maintainer` | `read`, `write`, `delete` and `manage`: deleting versions, changing the repo, its deploy tokens, reindexing it |
 | `admin` | everything on every repo, and the system: users, bindings, creating a repo, every user's tokens, the audit log |
 
 A `maintainer` on `*/*` has every repo but not the system; the system needs the `admin` role.
+`attach` is for a job that signs or scans what others publish: with it alone, `cosign attest`,
+`cosign sign` and `oras attach` go through, and a manifest that is no referrer is `403` naming
+`write` ([rbac.md](spec/rbac.md) §2).
 
 ### Bindings
 
@@ -658,7 +662,8 @@ Two kinds of token stand in for a password ([rbac.md](spec/rbac.md) §1):
   `auth.conf`, `~/.pypirc` and `settings.xml` instead of a password: it expires, it is revoked
   alone, and it tells nothing about the password.
 - A **deploy token** is a principal of its own, `token:<id>`, bound to exactly one repo with
-  `read`, `write` or both: the credential of a CI job. Or bound to a mask of repos, `oci/*` or
+  `read`, `write` and `attach`, one or more: the credential of a CI job; `read` and `attach` that
+  of a scanner ([guides/sbom-and-scans.md](guides/sbom-and-scans.md)). Or bound to a mask of repos, `oci/*` or
   `*/talos`, which only an admin creates: the credential of a fleet of nodes
   ([Over a mask](#a-deploy-token-over-a-mask)).
 
@@ -685,7 +690,7 @@ the lookup of the hash is the check, one query for the token and one for its use
 | --- | --- | --- | --- |
 | principal | `user:<owner's uid>` | `token:<id>` | `token:<id>` |
 | bound to | its user | one repo | a mask (`oci/*`, `*/talos`), the repos created later included |
-| `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` | the same |
+| `scopes` | none (the user's full rights), or `read`, `write` and `attach`, one or more | `read`, `write` and `attach`, one or more, required; `delete`, `manage` and anything else are `400`; a group's deploy token reads only | the same |
 | expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never | the same |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens | the same, among the live tokens over the same mask |
 | created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the password of a user with the `admin` role only (`403` with a token, #911) |
@@ -715,11 +720,11 @@ over a mask, which names no repo.
 The scopes narrow what the bindings give, on every route and at `/v2/token`:
 
 - a PAT without scopes is its user: what the user's bindings allow;
-- a PAT with scopes gets `read` with `read` and `write` with `write`, and never `delete` or
-  `manage`; anything else is `403` (S-03, X-14);
+- a PAT with scopes gets `read` with `read`, `write` with `write`, `attach` with `attach` or
+  `write`, and never `delete` or `manage`; anything else is `403` (S-03, X-14);
 - a deploy token is confined to its repo: on any other it is `404`, the answer of a repo that
-  does not exist, since it has no access there at all (S-04); on its repo it gets `read` and
-  `write` per its scopes, and `403` for an action outside them, `delete` and `manage` above all:
+  does not exist, since it has no access there at all (S-04); on its repo it gets `read`,
+  `write` and `attach` per its scopes, `write` holding `attach`, and `403` for an action outside them, `delete` and `manage` above all:
   `DELETE` of a version, `PATCH` or `DELETE` of the repo, its deploy tokens (X-14).
   `GET /api/v1/repos` lists its repo only;
 - a deploy token over a mask is a deploy token on every repo its mask matches, and `404`
@@ -730,7 +735,9 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   it, and the deploy tokens over a mask the `admin` role, which creates them with its password
   only. A deploy token or a PAT with scopes asking for any of them is `403`;
 - at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
-  takes that token and no other bearer.
+  takes that token and no other bearer. A `push` asked for by a principal that has `attach` and
+  not `write` is granted as `attach`: the token's access lists `pull` and `attach`, and `/v2`
+  takes with it blob uploads and referrers only.
 
 ### Where the secret goes
 

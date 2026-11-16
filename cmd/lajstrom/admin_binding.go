@@ -36,7 +36,7 @@ func newAdminBindingCmd(a *app) *cobra.Command {
 func newBindingCreateCmd(a *app) *cobra.Command {
 	var principal, role, mask string
 	cmd := &cobra.Command{
-		Use:         "create --principal user:<name>|group:<name>|cert:<name>|k8s:<name> --role reader|writer|maintainer|admin --mask <format>/<repo>",
+		Use:         "create --principal user:<name>|group:<name>|cert:<name>|k8s:<name> --role reader|attacher|writer|maintainer|admin --mask <format>/<repo>",
 		Short:       "Give a user a role on the repos a mask matches, and print the binding as JSON",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
@@ -53,7 +53,7 @@ func newBindingCreateCmd(a *app) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&principal, "principal", "", "who: user:<name> of an existing user, group:<name> of an OIDC group (docs/spec/rbac.md §8), "+
 		"or a client certificate cert:<name> or a Kubernetes service account k8s:<name>, a pattern ending in /* too (§9)")
-	f.StringVar(&role, "role", "", "reader (read), writer (and write), maintainer (and delete, manage) or admin (everything, and the system)")
+	f.StringVar(&role, "role", "", "reader (read), attacher (read, attach), writer (read, write, which holds attach), maintainer (and delete, manage) or admin (everything, and the system)")
 	f.StringVar(&mask, "mask", "", "which repos: apt/ubuntu, apt/* (a format), */payments (a name in every format), */* (all); admin is on */*")
 	for _, name := range []string{"principal", "role", "mask"} {
 		_ = cmd.MarkFlagRequired(name) // fails only for a flag that does not exist

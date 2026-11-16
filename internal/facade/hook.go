@@ -37,7 +37,8 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 //     referrer, a signature or an SBOM of a version (profile.IsReferrer), goes to ingest's
 //     referrer path unindexed (putReferrer, manifest-profile.md §6) instead of the steps below.
 //     A proxy repo takes nothing else: any other manifest, valid or not, is 405 UNSUPPORTED
-//     (proxyRefusal) before anything is asked of the backend or of ingest.
+//     (proxyRefusal) before anything is asked of the backend or of ingest. Nor does a
+//     principal without write (write false), which may attach: 403 DENIED (refuseAttachOnly).
 //  2. The package path is the <path> of the name, the tag the reference or, for a push by
 //     digest, the tag of the annotations (manifestTag).
 //  3. The manifest must satisfy the profile (profile.Validate), which needs no backend, else
@@ -51,7 +52,7 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 // The answer is 201 with Location (the digest, or the tag of a push by digest),
 // Docker-Content-Digest (the manifest the tag holds, also for the idempotent repeat) and, when
 // the manifest has a subject, OCI-Subject.
-func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
+func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte, write bool) error {
 	ctx := r.Context()
 	if h.o.Ingest == nil {
 		return fmt.Errorf("facade: a manifest for %s, and Options.Ingest is nil", t.name)
@@ -65,6 +66,8 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 		return err
 	case referrer:
 		return h.putReferrer(w, r, t, ref, refDigest, desc, body, m)
+	case !write:
+		return refuseAttachOnly(t)
 	}
 	tag, err := manifestTag(ref, refDigest, m)
 	if err != nil {

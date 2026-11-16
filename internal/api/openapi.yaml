@@ -1677,7 +1677,7 @@ components:
         name: {type: string}
         scopes:
           type: array
-          items: {type: string, enum: [read, write]}
+          items: {type: string, enum: [read, write, attach]}
         expiresAt: {type: [string, "null"], format: date-time}
         lastUsedAt: {type: [string, "null"], format: date-time}
         createdAt: {type: string, format: date-time}
@@ -1705,7 +1705,7 @@ components:
         name: {type: string}
         scopes:
           type: array
-          items: {type: string, enum: [read, write]}
+          items: {type: string, enum: [read, write, attach]}
         expiresAt: {type: string, format: date-time}
         expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
     MaskTokenRequest:
@@ -1717,7 +1717,7 @@ components:
         name: {type: string}
         scopes:
           type: array
-          items: {type: string, enum: [read, write]}
+          items: {type: string, enum: [read, write, attach]}
         expiresAt: {type: string, format: date-time}
         expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
     User:
@@ -1778,7 +1778,7 @@ components:
         id: {type: integer, format: int64}
         principal: {type: string, description: "user:<uid>, group:<name> (docs/spec/rbac.md §8), or a cert: or k8s: principal or pattern (§9)."}
         name: {type: string, description: "The user's name now; absent for a group."}
-        role: {type: string, enum: [reader, writer, maintainer, admin]}
+        role: {type: string, enum: [reader, attacher, writer, maintainer, admin]}
         repoMask: {type: string}
         createdAt: {type: string, format: date-time}
     BindingList:
@@ -1795,7 +1795,7 @@ components:
       additionalProperties: false
       properties:
         principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern, never with the admin role (§9)."}
-        role: {type: string, enum: [reader, writer, maintainer, admin]}
+        role: {type: string, enum: [reader, attacher, writer, maintainer, admin]}
         repoMask: {type: string}
     AuditEntry:
       type: object

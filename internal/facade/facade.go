@@ -400,6 +400,35 @@ func (h *handler) authorize(ctx context.Context, a auth.Action, t *target) error
 	return nil
 }
 
+// authorizeAttach checks write on t, and attach when the principal lacks write (a 403): the
+// blob uploads and the PUT of a manifest take either (docs/spec/rbac.md §2, #89). write reports
+// that the principal has write; without it, only a referrer may be pushed (refuseAttachOnly).
+// The answer of a principal that has neither is the one of write.
+func (h *handler) authorizeAttach(ctx context.Context, t *target) (write bool, err error) {
+	err = h.authorize(ctx, auth.ActionWrite, t)
+	if err == nil {
+		return true, nil
+	}
+	var denied *apiError
+	if !errors.As(err, &denied) {
+		return false, err
+	}
+	if status, _ := denied.statusOf(); status != http.StatusForbidden {
+		return false, err
+	}
+	if h.authorize(ctx, auth.ActionAttach, t) != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// refuseAttachOnly is the 403 DENIED of a manifest that is no referrer, pushed by a principal
+// that may attach and may not write (docs/spec/http-routing.md §2): nothing is stored.
+func refuseAttachOnly(t *target) error {
+	return &apiError{status: http.StatusForbidden, code: codeDenied,
+		msg: fmt.Sprintf("%s: the manifest is no referrer, and pushing it needs write on %s/%s; attach pushes referrers only", t.name, t.repo.Format, t.repo.Name)}
+}
+
 // registry returns the provider of t's repo.
 func (h *handler) registry(t *target) (provider.Provider, error) {
 	p, ok := h.o.Providers.Provider(t.repo.Registry)

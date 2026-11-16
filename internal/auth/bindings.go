@@ -216,7 +216,7 @@ func (s *Bindings) check(principal, role, mask string) (Principal, error) {
 		return Principal{}, err
 	}
 	if !IsRole(role) {
-		return Principal{}, invalidf("role: %q is not reader, writer, maintainer or admin", role)
+		return Principal{}, invalidf("role: %q is not reader, attacher, writer, maintainer or admin", role)
 	}
 	if err := checkMask(mask, s.Formats); err != nil {
 		return Principal{}, err

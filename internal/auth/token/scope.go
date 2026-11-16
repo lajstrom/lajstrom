@@ -31,6 +31,10 @@ const (
 	ActionPull   = "pull"
 	ActionPush   = "push"
 	ActionDelete = "delete"
+	// ActionAttach is a push granted as attach (docs/spec/rbac.md §4): no client asks for it, and
+	// ParseScopes drops it; Reduce grants it for a push that the principal may not have as write
+	// and may as attach (#89).
+	ActionAttach = "attach"
 )
 
 // Access is a scope a client asks for, and an entry of the access claim of a token: a type, a
@@ -134,7 +138,8 @@ func (sc *scopeSet) access() []Access {
 }
 
 // Reduce returns the scopes with the actions allowed to p on each repository's
-// <format>/<repo> (pull is read, push write, delete delete). A scope with no action left stays,
+// <format>/<repo> (pull is read, push write, delete delete). A push that p may not have as
+// write is granted as attach when p may attach (ActionAttach, #89). A scope with no action left stays,
 // with none (docs/spec/rbac.md §4): the token then names every repository it was asked for, and
 // whether one was granted nothing because it may not be read or because it does not exist is
 // not in it. The credential of the request (auth.CredentialFrom(ctx)) decides first, as
@@ -161,15 +166,15 @@ func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes
 		repo, _, _ := strings.Cut(rest, "/")
 		kept := []string{}
 		for _, a := range s.Actions {
-			if cred.Limit(authAction(a), index.Repo{Format: format, Name: repo}) != nil {
-				continue // outside the credential's scopes or repo: never granted
+			ok, err := allowed(ctx, authz, cred, p, authAction(a), format, repo)
+			if err != nil {
+				return nil, err
 			}
-			ok := authz == nil
-			if !ok {
-				var err error
-				if ok, err = authz.Allowed(ctx, p, authAction(a), format, repo); err != nil {
-					return nil, fmt.Errorf("token: may %s %s %s/%s: %w", p, a, format, repo, err)
+			if !ok && a == ActionPush {
+				if ok, err = allowed(ctx, authz, cred, p, auth.ActionAttach, format, repo); err != nil {
+					return nil, err
 				}
+				a = ActionAttach
 			}
 			if ok {
 				kept = append(kept, a)
@@ -180,25 +185,46 @@ func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes
 	return out, nil
 }
 
+// allowed reports whether the credential cred and then authz allow p the action a on
+// format/repo; a nil authz allows what the credential allows.
+func allowed(ctx context.Context, authz auth.Authorizer, cred auth.Credential, p auth.Principal, a auth.Action, format, repo string) (bool, error) {
+	if cred.Limit(a, index.Repo{Format: format, Name: repo}) != nil {
+		return false, nil // outside the credential's scopes or repo: never granted
+	}
+	if authz == nil {
+		return true, nil
+	}
+	ok, err := authz.Allowed(ctx, p, a, format, repo)
+	if err != nil {
+		return false, fmt.Errorf("token: may %s %s %s/%s: %w", p, a, format, repo, err)
+	}
+	return ok, nil
+}
+
 // authAction is the RBAC action of a scope action.
 func authAction(a string) auth.Action {
 	switch a {
 	case ActionPush:
 		return auth.ActionWrite
+	case ActionAttach:
+		return auth.ActionAttach
 	case ActionDelete:
 		return auth.ActionDelete
 	}
 	return auth.ActionRead
 }
 
-// ScopeAction is the scope action of an RBAC action: pull for read, push for write, delete for
-// delete; manage has none, and no token grants it.
+// ScopeAction is the scope action of an RBAC action: pull for read, push for write, attach for
+// attach, delete for delete; manage has none, and no token grants it. A token's push allows
+// attach too (Grant.AllowsAction).
 func ScopeAction(a auth.Action) string {
 	switch a {
 	case auth.ActionRead:
 		return ActionPull
 	case auth.ActionWrite:
 		return ActionPush
+	case auth.ActionAttach:
+		return ActionAttach
 	case auth.ActionDelete:
 		return ActionDelete
 	case auth.ActionManage:
