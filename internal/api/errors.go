@@ -54,7 +54,8 @@ const (
 
 // codeOf returns the envelope code of an error status, the table of docs/api.md (Errors). 401,
 // credentials needed or refused, is UNAUTHENTICATED (#579), 403, an action the caller lacks,
-// FORBIDDEN. 412, a conditional delete that found the version changed, is CONFLICT as 409 is.
+// FORBIDDEN. 412, a conditional delete that found the version changed or a change whose
+// If-Match names another revision, is CONFLICT as 409 is.
 // 429, the throttle of failed logins that the server's middleware answers, is UNAVAILABLE.
 // Every other 4xx, 413 included, is INVALID; 501, 502 and 503 are UNAVAILABLE, any other 5xx
 // INTERNAL.
@@ -88,8 +89,14 @@ const basicChallenge = `Basic realm="lajstrom"`
 // *format.PartialError deleted before it failed (format.ClientMessage), and its cause is logged
 // with the request id, at debug when the client went away (server.FailLevel). A 401 carries the
 // Basic challenge, and a 503 of a registry whose circuit breaker is open, or of a database that
-// does not answer, Retry-After (format.SetRetryAfter).
+// does not answer, Retry-After (format.SetRetryAfter). A 412 of If-Match (*PreconditionError)
+// answers its own message, whatever wraps it, and the row's ETag now.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var pe *PreconditionError
+	if errors.As(err, &pe) {
+		err = pe
+		w.Header().Set("ETag", pe.ETag)
+	}
 	status := format.StatusOf(err)
 	msg := clientMessage(err)
 	var ce *clientError

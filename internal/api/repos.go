@@ -47,9 +47,13 @@ type Repo struct {
 	Permissions []auth.Action `json:"permissions,omitempty"`
 	Stats       *RepoStats    `json:"stats,omitempty"`
 	SigningKeys *[]SigningKey `json:"signingKeys,omitempty"`
-	// id is the row's, for the reads of withFacts.
-	id int64
+	// id and revision are the row's: id for the reads of withFacts, both for the ETag (docs/api.md,
+	// Revisions); not shown.
+	id, revision int64
 }
+
+// ETag returns the entity tag of the repo as it was read (ETag).
+func (r Repo) ETag() string { return ETag(TableRepos, r.id, r.revision) }
 
 // MarshalJSON writes r as the API shows it: a group has neither a registry nor a policy, and
 // its resource has neither key (docs/spec/proxy-and-group.md §2.3).
@@ -303,7 +307,8 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 // format.ErrForbidden: the result of the merge is compared with the row that the transaction
 // of the write read, so that what was compared is what is written. Other errors wrap
 // format.ErrInvalid (a policy or an upstream that is not an object, a merge that is refused, an
-// upstream on a repo that is not a proxy) or index.ErrNotFound.
+// upstream on a repo that is not a proxy) or index.ErrNotFound. The condition of ctx
+// (index.WithCondition) is checked on the row the transaction read, before the change.
 func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateRequest, o Origin) (*Repo, error) {
 	if _, err := decodePolicy(req.Policy); err != nil {
 		return nil, err
@@ -319,6 +324,9 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 	err := s.Index.Tx(index.WithRepeatableRead(ctx), func(w index.Writer) (err error) {
 		ev = nil
 		if row, err = w.GetRepo(ctx, formatName, name); err != nil {
+			return err
+		}
+		if err := index.CheckCondition(ctx, row.ID, row.Revision); err != nil {
 			return err
 		}
 		changed, err := s.change(ctx, w, row, req)
@@ -420,12 +428,16 @@ func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 // packages, versions, files, the index cache, OCI repositories, tag claims, deploy tokens,
 // keys and sessions), and the registry is untouched, which the audit details say:
 // {"versions": N, "force": true, "registryUntouched": true}. Bindings name repos by mask and
-// stay. A repo that does not exist is an error wrapping index.ErrNotFound.
+// stay. A repo that does not exist is an error wrapping index.ErrNotFound. The condition of ctx
+// (index.WithCondition) is checked on the row the transaction read.
 func (s *Repos) Delete(ctx context.Context, formatName, name string, force bool, o Origin) error {
 	var ev index.AuditEvent
-	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
+	err := s.Index.Tx(index.ConditionContext(ctx), func(w index.Writer) (err error) {
 		row, err := w.GetRepo(ctx, formatName, name)
 		if err != nil {
+			return err
+		}
+		if err := index.CheckCondition(ctx, row.ID, row.Revision); err != nil {
 			return err
 		}
 		if err := notAMember(ctx, w, row); err != nil {
@@ -901,7 +913,8 @@ func repoError(op, formatName, name string, err error) error {
 func resource(ctx context.Context, rd index.Reader, r *index.Repo) (Repo, error) {
 	out := Repo{
 		Format: r.Format, Name: r.Name, Registry: r.Registry, Kind: r.Kind, AnonymousRead: r.AnonymousRead,
-		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), id: r.ID,
+		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
+		id: r.ID, revision: r.Revision,
 	}
 	if r.Kind != index.KindGroup {
 		return out, nil

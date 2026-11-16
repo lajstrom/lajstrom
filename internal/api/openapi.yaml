@@ -69,6 +69,7 @@ paths:
         "201":
           description: The repo.
           headers:
+            ETag: {$ref: "#/components/headers/ETag"}
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
@@ -85,12 +86,18 @@ paths:
       tags: [repos]
       operationId: getRepo
       summary: One repo (read).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The repo.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Repo"}
+        "304": {$ref: "#/components/responses/NotModified"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
     patch:
@@ -106,9 +113,13 @@ paths:
         content:
           application/json:
             schema: {$ref: "#/components/schemas/RepoPatch"}
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The repo as it is then.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Repo"}
@@ -117,6 +128,7 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
         "501": {$ref: "#/components/responses/Unavailable"}
     delete:
       tags: [repos]
@@ -126,6 +138,7 @@ paths:
         - name: force
           in: query
           schema: {type: boolean}
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -133,6 +146,7 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
   /api/v1/repos/{format}/{repo}/reindex:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1729,6 +1743,11 @@ components:
     Location:
       description: The path of the created resource.
       schema: {type: string}
+    ETag:
+      description: >-
+        The revision of the repo, user or webhook, a strong entity tag, opaque: it changes with
+        every change of the resource, and If-Match sends it back (docs/api.md, Revisions).
+      schema: {type: string}
   parameters:
     dpopProof:
       name: DPoP
@@ -1776,6 +1795,21 @@ components:
       in: query
       description: The next of the page before; opaque.
       schema: {type: string}
+    IfMatch:
+      name: If-Match
+      in: header
+      description: >-
+        The ETags of the revisions the client read, separated by commas, or *: the change is made
+        only while the resource has one of them, by strong comparison, else 412. Without it the
+        change is made whatever the revision.
+      schema: {type: string}
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: >-
+        ETags, separated by commas, or *: 304 without a body when the resource has one of them,
+        by weak comparison.
+      schema: {type: string}
   responses:
     Invalid:
       description: The request breaks a rule; the message names the field.
@@ -1810,6 +1844,19 @@ components:
       description: >-
         The version changed since the client read it, or was published after the cut-off; code
         CONFLICT. Nothing was deleted.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotModified:
+      description: The resource has a revision that If-None-Match names; no body.
+      headers:
+        ETag: {$ref: "#/components/headers/ETag"}
+    Changed:
+      description: >-
+        If-Match names no revision the resource has: it changed since the client read it; code
+        CONFLICT. Nothing changed; ETag is the resource's revision now.
+      headers:
+        ETag: {$ref: "#/components/headers/ETag"}
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
