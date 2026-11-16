@@ -184,7 +184,10 @@ passed since its creation.
 **What is shown.** The users API (http-routing.md §4) and `lajstrom admin user list` answer
 `lastSeenAt` for every user, `null` before any record, and, while the setting is not `0`,
 `inactive: true` for an inactive user: before an authentication disables it, and for the last
-enabled admin, whom none disables. The access report (#1279) reads the two. The setting counts from
+enabled admin, whom none disables. The access report (#1279) reads the two. With the setting not
+`0`, `serve` logs at warn at start how many users are inactive, when there are any, the last
+enabled admin among them if it is, so that an operator who sets or lowers it sees whom it reaches
+before their next authentication disables them (as with `beyondMaxTTL` above). The setting counts from
 the start of the `serve` that has it: a lowered one makes the users beyond it inactive at once,
 and a raised one makes active again those it no longer reaches, unless they are disabled
 already.
