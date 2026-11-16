@@ -60,13 +60,15 @@ op         = "==" / "!=" / "<" / "<=" / ">" / ">="
 Spaces around a clause and an operator are ignored. A clause without an operator is `==`; a
 constraint holds when every clause does. `==` and `!=` compare a version as its bytes, and a `*`
 in theirs matches any run of characters (`==2.32.*`). Where the format orders versions
-(`format.VersionComparer`: npm by semver 2.0, maven by Maven's `ComparableVersion`; pypi, apt and
-rpm when their plugins order versions), `==` and `!=` without a `*` compare in that order (`==1.0`
-holds for maven `1.0.0`), and `<`, `<=`, `>` and `>=` compare in it. A version that the order does
-not parse matches no range, and `==` and `!=` compare its bytes.
+(`format.VersionComparer`: npm by semver 2.0, maven by Maven's `ComparableVersion`, pypi by PEP
+440, apt by dpkg's order, rpm by rpmvercmp on `[epoch:]version[-release]`), `==` and `!=` without
+a `*` compare in that order (`==1.0` holds for maven `1.0.0` and pypi `1.0.0`), and `<`, `<=`, `>`
+and `>=` compare in it (pypi `<2.0` holds for `2.0rc1`, apt `>=1.0-1` not for `1.0~rc1-1`). A
+version that the order does not parse (a pypi version that is not PEP 440, a Debian version
+that dpkg refuses) matches no range, and `==` and `!=` compare its bytes.
 
 A range needs the order: a rule with one whose mask's format segment is `*`, or names a format
-without an order (raw, `oci`, and today pypi, apt and rpm), is refused (§1.3).
+without an order (raw, `oci`), is refused (§1.3).
 
 ### 1.3 Validation
 

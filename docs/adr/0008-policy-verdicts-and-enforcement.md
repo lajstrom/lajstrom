@@ -148,12 +148,14 @@ the spec. These are the choices the issue left open, each with the default the s
 
 - **A. Version constraints: one grammar for every format.** `==`, `!=`, `<`, `<=`, `>`, `>=`,
   joined with `,`, a bare version meaning `==`, and `*` as a glob in `==` and `!=`. The ranges
-  compare in the format's order where the plugin has one (`format.VersionComparer`: npm's semver
-  and Maven's `ComparableVersion` today), and a rule with a range on another format is refused.
-  Rejected: each ecosystem's own syntax (PEP 440 specifiers, npm ranges, Debian relations, Maven
-  ranges), four grammars, and no rule over a mask that spans formats. Consequence: `==` and
-  globs work everywhere from the first day; a pypi, apt or rpm range is refused until its plugin
-  orders versions.
+  compare in the format's order where the plugin has one (`format.VersionComparer`: npm's semver,
+  Maven's `ComparableVersion`, PEP 440 for pypi, dpkg's order for apt, rpmvercmp for rpm), and a
+  rule with a range on another format (raw, `oci`) is refused. Rejected: each ecosystem's own
+  syntax (PEP 440 specifiers, npm ranges, Debian relations, Maven ranges), four grammars, and no
+  rule over a mask that spans formats. Consequence: `==` and globs work everywhere, and ranges in
+  every format that orders its versions, the five package formats; the maintainer's decision of
+  2026-11-16 added pypi, apt and rpm, which the first draft refused until their plugins ordered
+  versions (#1245).
 - **B. A rule's mask matches as a binding's**, by whole segments, and a decision is taken in the
   repo that holds the artifact. A mask that names a group exactly also holds for each of its
   members. Rejected: a group's rules applied only when it merges, which would make a member's
