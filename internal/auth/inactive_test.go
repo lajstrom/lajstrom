@@ -345,7 +345,7 @@ func TestLoginOIDCInactive(t *testing.T) {
 	var now time.Time
 	users, st, olga, _ := oidcInactiveFixture(t, &now)
 	now = usersNow.Add(ninetyDays + time.Hour)
-	rows := len(auditRows(t, st))
+	rows := len(listAudit(t, st))
 	if _, err := users.LoginOIDC(ctx, olga, Origin{IP: "192.0.2.8"}); !errors.Is(err, ErrLoginRefused) ||
 		!strings.Contains(err.Error(), "no activity for more than 2160h") {
 		t.Errorf("an inactive user's login = %v, want ErrLoginRefused saying why", err)
@@ -353,7 +353,7 @@ func TestLoginOIDCInactive(t *testing.T) {
 	if u, err := st.GetUser(ctx, "olga"); err != nil || !u.Disabled {
 		t.Errorf("olga after an inactive login: %+v, %v; want disabled", u, err)
 	}
-	evs := auditRows(t, st)
+	evs := listAudit(t, st)
 	if len(evs) != rows+1 || evs[0].Action != ActionUserDisable || evs[0].IP != "192.0.2.8" {
 		t.Errorf("rows of an inactive login: %+v; want one user.disable, no user.login", evs[:len(evs)-rows])
 	}
@@ -371,8 +371,8 @@ func TestLoginOIDCInactiveLastAdmin(t *testing.T) {
 	}
 }
 
-// auditRows returns the audit rows of st, newest first.
-func auditRows(t *testing.T, st index.Reader) []index.AuditEvent {
+// listAudit returns the audit rows of st, newest first.
+func listAudit(t *testing.T, st index.Reader) []index.AuditEvent {
 	t.Helper()
 	evs, err := st.ListAudit(context.Background(), index.AuditFilter{})
 	if err != nil {

@@ -154,16 +154,19 @@ func (t *throttle) take(key string) time.Duration {
 	return 0
 }
 
-// add counts an event of key, in its window, or in a new one when its window has closed.
-func (t *throttle) add(key string) {
+// add counts an event of key, in its window, or in a new one when its window has closed. It
+// reports whether this event filled the window's budget, the trip of the throttle, and when the
+// window closes: once per key and window (login.block, docs/spec/rbac.md §5).
+func (t *throttle) add(key string) (tripped bool, until time.Time) {
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if w := t.lookup(key); w != nil && !t.closed(w, now) {
 		w.n++
-		return
+		return w.n == t.budget, w.start.Add(t.window)
 	}
 	t.open(key, now)
+	return t.budget == 1, now.Add(t.window)
 }
 
 // lookup returns the window of key, nil when it has none; t.mu is held.

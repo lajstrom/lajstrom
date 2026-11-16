@@ -133,7 +133,11 @@ func newServeCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log}
+			// the login.block rows of the throttles of failed logins and of wrong bootstrap tokens,
+			// at most auth.BlockRows a minute on this replica (docs/spec/rbac.md §5)
+			blocks := &auth.Blocks{Index: st, Log: a.log}
+			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log,
+				Blocks: blocks}
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
 			}
@@ -209,7 +213,7 @@ func newServeCmd(a *app) *cobra.Command {
 			// sign-in, the server revokes it with its audit row, /api/v1/info answers the bound.
 			// auth.disableInactiveUsersAfter (rbac.md §1, #1283): users disables the inactive.
 			users := usersOf(c, st, a.log)
-			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users})
+			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users, Blocks: blocks})
 			warnInactiveUsers(ctx, users, a.log)
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}

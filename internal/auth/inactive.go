@@ -235,7 +235,7 @@ func (a *Authenticator) admit(ctx context.Context, cred CredentialKind, u *index
 // of account and addr, as a disabled user's does; it returns the principal user:<uid>.
 func (a *Authenticator) admitPassword(ctx context.Context, u *index.User, account, addr string) (Principal, error) {
 	if err := a.admit(ctx, CredPassword, u); err != nil {
-		a.failed(account, addr)
+		a.failed(ctx, account, addr)
 		return Principal{}, err
 	}
 	return UserPrincipal(u), nil
