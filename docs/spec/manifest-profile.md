@@ -666,8 +666,14 @@ its PKIX DER, with no transparency log entry; the layer titled `sha256-<hex>.sig
 the annotations
 `dev.sigstore.bundle.content: dsse-envelope`, `dev.sigstore.bundle.predicateType:
 https://lajstrom.dev/verdict/v1` and `org.opencontainers.image.created`. `cosign verify-attestation --key
-<the policy key> --type https://lajstrom.dev/verdict/v1 --insecure-ignore-tlog=true` verifies it. A
-producer may sign a verdict in any form of section 6.3.
+<the policy key> --type https://lajstrom.dev/verdict/v1 --insecure-ignore-tlog=true` verifies it.
+The server writes each verdict it signs also as one layer more of cosign's legacy attestation of
+the subject, the manifest under `sha256-<hex>.att` that `cosign attest --new-bundle-format=false`
+writes (a config whose `rootfs.diff_ids` are the layers, each layer a DSSE envelope of media type
+`application/vnd.dsse.envelope.v1+json` with the annotations `predicateType` and
+`dev.cosignproject.cosign/signature: ""`), written again with the tag moved as cosign moves it:
+the Sigstore policy controller reads a key's attestations in that form only. A producer may sign
+a verdict in any form of section 6.3.
 
 ## 7. Repos of type `oci` (passthrough)
 
