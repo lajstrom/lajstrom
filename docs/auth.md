@@ -195,6 +195,12 @@ endpoints (`/-/healthz`, `/-/readyz`, `/-/version`) alike:
 - **`Bearer ljs_pat_…`** and **`Bearer ljs_dep_…`** on every route but `/v2`: a personal access
   token or a deploy token, checked as in Basic credentials, and refused the same way. npm sends
   its `_authToken` so, and yarn its `npmAuthToken` ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)).
+- **`DPoP ljs_pat_…`** on `/api/` only ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449)):
+  the token of a web UI's sign-in, bound to a key of the browser, with a proof of that key in the
+  header `DPoP` ([api.md](api.md#the-dpop-bound-token)). A refused proof or token is `401` with
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof"` or `error="invalid_token"`. Such a token
+  is refused in Basic credentials and as a bearer, on every route; `DPoP` outside `/api/` is
+  refused too.
 - **Any other `Bearer`**, any bearer under `/v2`, and any other scheme: the request goes on as
   anonymous with the header untouched. The OCI facade verifies the bearer of `/v2`, which is
   its own JWT and nothing else ([below](#bearer-tokens-on-v2)).
@@ -704,7 +710,8 @@ token gets `403` on `POST /api/v1/users/<name>/tokens` before its body is read. 
 would otherwise mint tokens that last up to a year and outlive its revocation. An OIDC login
 mints one itself ([OIDC login and groups](#oidc-login-and-groups)); `npm login` checks the password (#308), and
 so does the sign-in of a web UI, [`POST /api/v1/login`](api.md#sign-in-post-apiv1login), whose
-token expires after `auth.login.tokenLifetime` (12 hours); `lajstrom admin token create` needs
+token expires after `auth.login.tokenLifetime` (12 hours) and is bound to a key of the browser
+(DPoP), so that it works nowhere but `/api/` with a proof of that key; `lajstrom admin token create` needs
 no credential, as it runs against the database. A personal
 access token without scopes still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
 for it with a password, or gets a deploy token instead ([In CI](#in-ci)).

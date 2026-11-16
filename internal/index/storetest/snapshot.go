@@ -61,6 +61,7 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 		{Kind: "pat", UserID: &alice.ID, Name: "old", Hash: "hash-revoked", RevokedAt: ptr(at(70))},
 		{Kind: "deploy", RepoMask: "npm/*", Name: "mask", Hash: "hash-mask", Scopes: []string{"read"}},
 		{Kind: "pat", UserID: &robot.ID, Name: "ci", Hash: "hash-robot", Scopes: []string{"read"}},
+		{Kind: "pat", UserID: &alice.ID, Name: "login", Hash: "hash-bound", ExpiresAt: ptr(at(9000)), DPoPJKT: "jkt-of-the-browser"},
 	} {
 		must(t, s.CreateToken(ctx, &tok))
 	}
@@ -127,7 +128,7 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 		"identities": len(cp.Identities), "identity_groups": len(cp.IdentityGroups), "tokens": len(cp.Tokens),
 		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "audit": len(cp.Audit)}
 	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
-		"tokens": 6, "bindings": 3, "keys": 2, "webhooks": 2, "audit": 3}, counts)
+		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "audit": 3}, counts)
 
 	dst := open(t)
 	v0, err := dst.AuthVersion(ctx)

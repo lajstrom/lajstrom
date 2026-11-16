@@ -79,6 +79,9 @@ type Token struct {
 	// each segment a name or "*", as a binding's (oci/*); "" for every other token. A deploy
 	// token has RepoID or RepoMask, never both.
 	RepoMask string
+	// DPoPJKT is the JWK SHA-256 thumbprint, base64url, of the DPoP key that the token of a web
+	// UI's sign-in is bound to (docs/spec/rbac.md §10, 0028); "" for every other token.
+	DPoPJKT string
 }
 
 // Identity is a row of identities (control plane): an OIDC identity, the iss and sub of an ID
@@ -116,15 +119,17 @@ const (
 	// OIDCUsed is a code login whose state was redeemed.
 	OIDCUsed = "used"
 	// OIDCApproved, OIDCDenied and OIDCRedeemed are a device request whose login succeeded,
-	// whose login was refused, and whose token was given out.
+	// whose login was refused, and whose token was given out; and a code login of a web UI whose
+	// callback handed the UI its code, whose code was tried with a wrong verifier, and whose code
+	// was redeemed.
 	OIDCApproved = "approved"
 	OIDCDenied   = "denied"
 	OIDCRedeemed = "redeemed"
 )
 
 // OIDCLogin is a row of oidc_logins (coordination): a login of the code flow or a device
-// request, which lives ten minutes (docs/spec/rbac.md §8). State, Binding and DeviceCode are
-// hex sha256 of the secrets, never the secrets; an empty string is NULL.
+// request, which lives ten minutes (docs/spec/rbac.md §8, §10). State, Binding, DeviceCode and
+// Handoff are hex sha256 of the secrets, never the secrets; an empty string is NULL.
 type OIDCLogin struct {
 	ID   int64
 	Kind string // OIDCLoginCode or OIDCLoginDevice
@@ -135,10 +140,14 @@ type OIDCLogin struct {
 	// A device request: the hash of its device code, its user code without the hyphen, the
 	// user it was approved for and its latest poll.
 	DeviceCode, UserCode string
-	Status               string
-	UserID               *int64
-	PolledAt             *time.Time
-	CreatedAt, ExpiresAt time.Time
+	// A code login that a web UI started: the page of the UI to return to, the S256 challenge of
+	// the UI's PKCE verifier, the hash of the code its callback handed the UI, and the thumbprint
+	// of the DPoP key the code is redeemed with (0028).
+	ReturnTo, CodeChallenge, Handoff, DPoPJKT string
+	Status                                    string
+	UserID                                    *int64
+	PolledAt                                  *time.Time
+	CreatedAt, ExpiresAt                      time.Time
 }
 
 // BootstrapToken is the row of bootstrap_token (control plane): the one-time token that makes

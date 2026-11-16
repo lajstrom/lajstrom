@@ -22,6 +22,11 @@ import (
 // challenge.
 var ErrBadCredentials = errors.New("auth: bad credentials")
 
+// ErrBound means a personal access token bound to a DPoP key (docs/spec/rbac.md §10) was sent
+// without its proof: in Basic credentials or as a bearer. It wraps ErrBadCredentials; on /api/
+// the caller answers 401 with the DPoP challenge (RFC 9449 §7.2).
+var ErrBound = fmt.Errorf("%w: a token bound to a DPoP key, without its proof", ErrBadCredentials)
+
 // Defaults of the verification cache.
 const (
 	// DefaultCacheTTL is how long a verified password is remembered.
@@ -147,7 +152,8 @@ var dummyHash = sync.OnceValue(func() string {
 // credential it authenticated with. The prefix of the secret alone chooses the path:
 //
 //   - PATPrefix: a personal access token of the user username (authenticatePAT); the
-//     principal is user:<username>, the credential a CredPAT.
+//     principal is user:<username>, the credential a CredPAT. A token bound to a DPoP key is
+//     refused with ErrBound (docs/spec/rbac.md §10).
 //   - DeployPrefix: a deploy token, whatever username is (deploy, or anything for the clients
 //     that insist on a user name: authenticateDeploy); the principal is token:<id>, the
 //     credential a CredDeploy.

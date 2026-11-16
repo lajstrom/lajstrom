@@ -143,6 +143,9 @@ type Reader interface {
 	GetOIDCLoginByDeviceCode(ctx context.Context, deviceCode string) (*OIDCLogin, error)
 	// GetOIDCLoginByUserCode returns the device request of the user code, without its hyphen.
 	GetOIDCLoginByUserCode(ctx context.Context, userCode string) (*OIDCLogin, error)
+	// GetOIDCLoginByHandoff returns the code login whose handoff, the code its callback handed a
+	// web UI, hashes to handoff (hex sha256; docs/spec/rbac.md §10).
+	GetOIDCLoginByHandoff(ctx context.Context, handoff string) (*OIDCLogin, error)
 	// LatestReindexRun returns the newest run that covered repoID, its own or a run of every
 	// repo; repoID 0 selects the runs of every repo only.
 	LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
@@ -397,15 +400,22 @@ type Writer interface {
 	// ReleaseFetchClaim removes the claim.
 	ReleaseFetchClaim(ctx context.Context, id int64) error
 
-	// CreateOIDCLogin inserts l and fills ID, and CreatedAt when zero; a state, device code or
-	// user code that another row has wraps ErrConflict.
+	// CreateOIDCLogin inserts l and fills ID, and CreatedAt when zero; a state, device code,
+	// user code or handoff that another row has wraps ErrConflict.
 	CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
-	// UpdateOIDCLogin stores Status, UserID and PolledAt of l while the row's status is from;
-	// a row whose status is not from wraps ErrConflict and nothing changes, so that a state,
-	// an approval and a device code are each used once.
+	// UpdateOIDCLogin stores Status, UserID, PolledAt and Handoff of l while the row's status is
+	// from; a row whose status is not from wraps ErrConflict and nothing changes, so that a
+	// state, an approval, a device code and a handoff are each used once.
 	UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
 	// ExpireOIDCLogins deletes the rows whose ExpiresAt is before before, and returns how many.
 	ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
+	// UseDPoPProof stores key, the sha256 hex of a DPoP proof's key thumbprint and jti
+	// (docs/spec/rbac.md §10, dpop_proofs), until expiresAt, in one statement: a key stored that
+	// expires at now or later wraps ErrConflict, a proof used already, and nothing changes; one
+	// that expired before now is taken over.
+	UseDPoPProof(ctx context.Context, key string, expiresAt, now time.Time) error
+	// ExpireDPoPProofs deletes the keys whose expiresAt is before before, and returns how many.
+	ExpireDPoPProofs(ctx context.Context, before time.Time) (int, error)
 	// ExpireFetchClaims removes the claims whose HeartbeatAt is before before, and returns how
 	// many it removed (reindex and the reconcile loop).
 	ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)

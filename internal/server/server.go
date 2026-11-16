@@ -15,6 +15,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/clientcert"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 )
@@ -79,6 +80,9 @@ type Options struct {
 	// as a bearer outside /v2, into its principal and credential, on every route
 	// (authenticate). nil authenticates nobody: every request is anonymous.
 	Authenticator *auth.Authenticator
+	// DPoP checks the proofs of the token of a web UI's sign-in, Authorization: DPoP on /api/
+	// (docs/spec/rbac.md §10, RFC 9449). nil refuses that scheme.
+	DPoP *dpop.Verifier
 	// MetricsListen is the address of the metrics listener, host:port (server.metricsListen):
 	// GET /metrics, and /debug/pprof/ with Pprof. Empty means no metrics listener. The main
 	// listener never serves them (docs/spec/http-routing.md §5).

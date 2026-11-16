@@ -29,7 +29,7 @@ var ForcedTables = []string{
 	"identity_groups", "oidc_logins", "identities", "group_members", "tokens", "bindings", "keys", "sessions", "audit",
 	"webhook_deliveries", "webhooks", "bootstrap_token", "journal_state", "journal", "attachments", "files", "versions",
 	"packages", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
-	"reindex_runs", "prune_sightings", "repos", "users",
+	"reindex_runs", "prune_sightings", "dpop_proofs", "repos", "users",
 }
 
 // KeptTables are the tables a forced import leaves: the schema's version, the counter it
@@ -250,7 +250,8 @@ func (c *conn) importRows(ctx context.Context, cp *index.ControlPlane) error {
 }
 
 // rowsOf returns the rows of cp in the order importRows inserts them. A column that cp's schema
-// may lack takes its default: a repo's kind hosted, a user's kind local, a token's repo_mask NULL,
+// may lack takes its default: a repo's kind hosted, a user's kind local, a token's repo_mask and
+// dpop_jkt NULL,
 // an audit row's state ok.
 func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	var rows []insertRow
@@ -280,7 +281,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, t := range cp.Tokens {
 		add(fmt.Sprintf("tokens id %d", t.ID), "tokens", tokCols, t.ID, t.Kind, idArg(t.UserID), idArg(t.RepoID), textArg(t.RepoMask),
 			t.Name, t.Hash, scopesArg(t.Scopes), c.d.encodeNullTime(t.ExpiresAt), c.d.encodeNullTime(t.LastUsedAt),
-			c.d.EncodeTime(t.CreatedAt), c.d.encodeNullTime(t.RevokedAt))
+			c.d.EncodeTime(t.CreatedAt), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT))
 	}
 	for _, b := range cp.Bindings {
 		add(fmt.Sprintf("bindings id %d", b.ID), "bindings", bindingCols, b.ID, b.Principal, b.Role, b.RepoMask, c.d.EncodeTime(b.CreatedAt))

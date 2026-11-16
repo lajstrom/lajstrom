@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lajstrom/lajstrom/internal/audit"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
@@ -68,6 +69,9 @@ type Token struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	RevokedAt  *time.Time `json:"revokedAt"`
 	HashPrefix string     `json:"hashPrefix"`
+	// DPoPJKT is the JWK SHA-256 thumbprint of the DPoP key that the token of a web UI's sign-in
+	// is bound to (docs/spec/rbac.md §10); absent for every other token.
+	DPoPJKT string `json:"dpopJkt,omitempty"`
 }
 
 // CreatedToken is the answer of a creation, the one time the secret is shown: the token and its
@@ -130,6 +134,23 @@ type Tokens struct {
 // not be enabled. The credential of ctx must be one that may create it (MayCreatePAT): a
 // service account has no password, so its tokens are created by an admin or on the command line.
 func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
+	return s.createPAT(ctx, user, name, scopes, "", exp, o)
+}
+
+// CreateBoundPAT creates a personal access token of the user called user as CreatePAT does,
+// without scopes, bound to the DPoP key whose JWK SHA-256 thumbprint is jkt (docs/spec/rbac.md
+// §10, RFC 9449): the Authenticator takes it only as Authorization: DPoP with a proof of that key
+// (AuthenticateDPoP), and refuses it as a bearer and in Basic credentials (ErrBound). Its
+// token.create event has dpopJkt. jkt must have the shape of a thumbprint.
+func (s *Tokens) CreateBoundPAT(ctx context.Context, user, name, jkt string, exp Expiry, o Origin) (*Token, string, error) {
+	if !dpop.ValidThumbprint(jkt) {
+		return nil, "", invalidf("dpopJkt: must be a JWK SHA-256 thumbprint, 43 characters of base64url")
+	}
+	return s.createPAT(ctx, user, name, nil, jkt, exp, o)
+}
+
+// createPAT is CreatePAT, the token bound to the DPoP key of the thumbprint jkt unless it is "".
+func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []string, jkt string, exp Expiry, o Origin) (*Token, string, error) {
 	if err := MayCreatePAT(ctx); err != nil {
 		return nil, "", err
 	}
@@ -145,7 +166,7 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 		if err != nil {
 			return nil, tokenOwner{}, err
 		}
-		return &index.Token{UserID: &u.ID}, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
+		return &index.Token{UserID: &u.ID, DPoPJKT: jkt}, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
 	})
 }
 
@@ -305,6 +326,9 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		details := map[string]any{"id": row.ID, "kind": kind, "name": name, "scopes": scopes, "expiresAt": expiresAt}
 		if by := createdBy(CredentialFrom(ctx)); by != "" {
 			details["createdBy"] = by
+		}
+		if row.DPoPJKT != "" {
+			details["dpopJkt"] = row.DPoPJKT
 		}
 		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, details)
 		return err
@@ -634,7 +658,7 @@ func tokenResource(t *index.Token, own tokenOwner) Token {
 	return Token{
 		ID: t.ID, Kind: t.Kind, User: own.user, Repo: own.repo, RepoMask: own.mask, Name: t.Name, Scopes: scopes,
 		ExpiresAt: utc(t.ExpiresAt), LastUsedAt: utc(t.LastUsedAt), CreatedAt: t.CreatedAt.UTC(), RevokedAt: utc(t.RevokedAt),
-		HashPrefix: t.Hash[:min(HashPrefixLen, len(t.Hash))],
+		HashPrefix: t.Hash[:min(HashPrefixLen, len(t.Hash))], DPoPJKT: t.DPoPJKT,
 	}
 }
 

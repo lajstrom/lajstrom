@@ -4,16 +4,23 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop/dpoptest"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
+// loginURL is server.externalURL in the sign-in tests: the scheme and host of a proof's htu.
+const loginURL = "https://lajstrom.test"
+
 // loginFixture returns a fixture whose sign-in checks passwords with an authenticator over its
-// index, and the users alice (password alicePassword) and oidc-bob (no password).
+// index and DPoP proofs with a verifier over it, at testNow, and the users alice (password
+// alicePassword) and oidc-bob (no password).
 func loginFixture(t *testing.T, o Options) *fixture {
 	t.Helper()
 	f := newFixture(t, Options{})
@@ -29,23 +36,61 @@ func loginFixture(t *testing.T, o Options) *fixture {
 	if o.Passwords == nil {
 		o.Passwords = auth.NewAuthenticator(auth.Options{Index: f.st})
 	}
+	if o.DPoP == nil {
+		o.DPoP = loginVerifier(f.st)
+	}
 	o.Repos, o.Log = f.repos, f.repos.Log
 	f.h = recordStatuses(New(o))
 	return f
 }
 
+// loginVerifier is the DPoP verifier of the sign-in tests over st.
+func loginVerifier(st index.Store) *dpop.Verifier {
+	return &dpop.Verifier{ExternalURL: loginURL, Replays: st, Now: func() time.Time { return testNow }}
+}
+
 // loginPassword is alice's password in loginFixture.
 const loginPassword = "correct horse battery staple"
 
+// loginProof returns a proof of key for POST /api/v1/login at testNow.
+func loginProof(t *testing.T, key *dpoptest.Key) string {
+	t.Helper()
+	return key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: loginURL + "/api/v1/login", IAT: testNow})
+}
+
+// signIn posts body to POST /api/v1/login with proof as its DPoP header, unless it is "", as p
+// with c.
+func (f *fixture) signIn(body, proof string, p auth.Principal, c auth.Credential) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/login", strings.NewReader(body))
+	if proof != "" {
+		r.Header.Set("DPoP", proof)
+	}
+	if p.Kind != "" {
+		r = r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), f.asStored(p)), c))
+	}
+	rr := httptest.NewRecorder()
+	f.h.ServeHTTP(rr, r)
+	return rr
+}
+
+// signedIn is the answer of a sign-in.
+type signedIn struct {
+	created
+	TokenType string `json:"tokenType"`
+}
+
 // TestLogin checks POST /api/v1/login with a password (docs/spec/rbac.md §10): 201 with a
-// personal access token of the user without scopes, named login <time> <4 hex>, that expires
-// after the login lifetime, with its Location and a token.create row by the user, createdBy
-// password; the token authenticates as the user. The request's own credential does not count.
+// personal access token of the user without scopes, bound to the key of the request's DPoP
+// proof, named login <time> <4 hex>, that expires after the login lifetime, with tokenType DPoP,
+// its Location and a token.create row by the user, createdBy password and dpopJkt; the token
+// authenticates as the user with a proof of the key, and not as a bearer. The request's own
+// credential does not count.
 func TestLogin(t *testing.T) {
 	f := loginFixture(t, Options{LoginLifetime: 3 * time.Hour})
-	rr := f.doAs(http.MethodPost, "/api/v1/login", fmt.Sprintf(`{"username": "alice", "password": %q}`, loginPassword),
+	key := dpoptest.NewKey(t)
+	rr := f.signIn(fmt.Sprintf(`{"username": "alice", "password": %q}`, loginPassword), loginProof(t, key),
 		auth.Principal{Kind: auth.KindToken, Name: "9"}, auth.Credential{Kind: auth.CredDeploy, TokenID: 9})
-	var c created
+	var c signedIn
 	decodeJSON(t, rr, http.StatusCreated, &c)
 	row, err := f.st.GetTokenByHash(context.Background(), auth.HashSecret(c.Secret))
 	if err != nil {
@@ -54,24 +99,41 @@ func TestLogin(t *testing.T) {
 	if !strings.HasPrefix(c.Name, "login 2026-01-02T12:00:00Z ") || len(c.Name) != len("login 2026-01-02T12:00:00Z 0a1b") {
 		t.Errorf("name = %q, want login <time> <4 hex>", c.Name)
 	}
+	if c.TokenType != "DPoP" || row.DPoPJKT != key.JKT {
+		t.Errorf("tokenType %q, the row bound to %q; want DPoP and %s", c.TokenType, row.DPoPJKT, key.JKT)
+	}
+	if ev := oneAudit(t, f.st, auth.ActionTokenCreate); ev.details["source"] != SourceAPI {
+		t.Errorf("token.create %v, want source api", ev.details)
+	}
 	c.Name = "login"
-	wantJSON(t, "the token of the sign-in", redacted(c), fmt.Sprintf(`{"id": %d, "kind": "pat", "user": "alice", "name": "login",
+	wantJSON(t, "the token of the sign-in", redacted(c.created), fmt.Sprintf(`{"id": %d, "kind": "pat", "user": "alice", "name": "login",
 		"scopes": [], "expiresAt": "2026-01-02T15:00:00Z", "lastUsedAt": null, "createdAt": "2026-01-02T12:00:00Z",
-		"revokedAt": null, "hashPrefix": %q, "secret": "ljs_pat_ and 43 characters"}`, row.ID, row.Hash[:8]))
+		"revokedAt": null, "hashPrefix": %q, "dpopJkt": %q, "secret": "ljs_pat_ and 43 characters"}`, row.ID, row.Hash[:8], key.JKT))
 	if loc := rr.Header().Get("Location"); loc != fmt.Sprintf("/api/v1/users/alice/tokens/%d", c.ID) {
 		t.Errorf("Location = %q", loc)
 	}
 	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
 		t.Errorf("cookies %v, want none", cookies)
 	}
+	wantBoundLogin(t, f, c, key, "password")
+}
+
+// wantBoundLogin checks the token c of a sign-in of alice with key: a token.create row by
+// alice, createdBy by, source api, dpopJkt; the token authenticates as alice with the key, and
+// not as a bearer; the log holds neither the secret nor alice's password.
+func wantBoundLogin(t *testing.T, f *fixture, c signedIn, key *dpoptest.Key, by string) {
+	t.Helper()
 	ev := oneAudit(t, f.st, auth.ActionTokenCreate)
-	if ev.Principal != "user:"+f.uidOf(t, "alice") || ev.details["createdBy"] != "password" || ev.details["source"] != SourceAPI {
-		t.Errorf("token.create = %+v %v, want by alice, createdBy password, source api", ev.AuditEvent, ev.details)
+	if ev.Principal != "user:"+f.uidOf(t, "alice") || ev.details["createdBy"] != by || ev.details["dpopJkt"] != key.JKT {
+		t.Errorf("token.create = %+v %v, want by alice, createdBy %s, dpopJkt", ev.AuditEvent, ev.details, by)
 	}
-	p, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st, Now: func() time.Time { return testNow }}).
-		AuthenticateBearer(context.Background(), c.Secret)
+	authn := auth.NewAuthenticator(auth.Options{Index: f.st, Now: func() time.Time { return testNow }})
+	p, cred, err := authn.AuthenticateDPoP(context.Background(), c.Secret, key.JKT)
 	if err != nil || p.Name != f.uidOf(t, "alice") || cred.Kind != auth.CredPAT {
-		t.Errorf("the token authenticates as %v %v, %v; want alice's personal access token", p, cred, err)
+		t.Errorf("the token authenticates with its key as %v %v, %v; want alice's personal access token", p, cred, err)
+	}
+	if _, _, err := authn.AuthenticateBearer(context.Background(), c.Secret); err == nil {
+		t.Error("the token authenticates as a bearer")
 	}
 	if strings.Contains(f.logs.String(), c.Secret) || strings.Contains(f.logs.String(), loginPassword) {
 		t.Error("the log holds the secret or the password")
@@ -81,9 +143,9 @@ func TestLogin(t *testing.T) {
 // TestLoginDefaultLifetime checks that a sign-in's token expires after 12 hours by default.
 func TestLoginDefaultLifetime(t *testing.T) {
 	f := loginFixture(t, Options{})
-	var c created
-	decodeJSON(t, f.do(http.MethodPost, "/api/v1/login", fmt.Sprintf(`{"username": "alice", "password": %q}`, loginPassword), auth.Principal{}),
-		http.StatusCreated, &c)
+	var c signedIn
+	decodeJSON(t, f.signIn(fmt.Sprintf(`{"username": "alice", "password": %q}`, loginPassword), loginProof(t, dpoptest.NewKey(t)),
+		auth.Principal{}, auth.Credential{}), http.StatusCreated, &c)
 	if want := testNow.Add(12 * time.Hour); c.ExpiresAt == nil || !c.ExpiresAt.Equal(want) {
 		t.Errorf("expiresAt = %v, want %v", c.ExpiresAt, want)
 	}
@@ -93,6 +155,7 @@ func TestLoginDefaultLifetime(t *testing.T) {
 // a body that is not a name and a password, and no token made.
 func TestLoginRefused(t *testing.T) {
 	f := loginFixture(t, Options{})
+	key := dpoptest.NewKey(t)
 	for _, tc := range []struct {
 		body   string
 		status int
@@ -110,10 +173,44 @@ func TestLoginRefused(t *testing.T) {
 		{`{"username": "alice", "password": "x", "expiresIn": "365d"}`, http.StatusBadRequest, codeInvalid, "expiresIn"},
 		{`[]`, http.StatusBadRequest, codeInvalid, "body"},
 	} {
-		wantError(t, f.do(http.MethodPost, "/api/v1/login", tc.body, auth.Principal{}), tc.status, tc.code, tc.msg)
+		wantError(t, f.signIn(tc.body, loginProof(t, key), auth.Principal{}, auth.Credential{}), tc.status, tc.code, tc.msg)
 	}
 	if evs := auditOf(t, f.st, auth.ActionTokenCreate); len(evs) != 0 {
 		t.Errorf("%d token.create rows, want none", len(evs))
+	}
+}
+
+// TestLoginProof checks the DPoP proof of a sign-in (docs/spec/http-routing.md §4): without one,
+// or with one that is refused or used already, the sign-in is 400 saying why before the password
+// is checked, and no token is made; a proof's ath is ignored.
+func TestLoginProof(t *testing.T) {
+	f := loginFixture(t, Options{})
+	key := dpoptest.NewKey(t)
+	body := fmt.Sprintf(`{"username": "alice", "password": %q}`, loginPassword)
+	htu := loginURL + "/api/v1/login"
+	used := loginProof(t, key)
+	wantStatus(t, f.signIn(body, used, auth.Principal{}, auth.Credential{}), http.StatusCreated)
+	for _, tc := range []struct {
+		name, proof, why string
+	}{
+		{"no proof", "", "DPoP: the request has no DPoP header"},
+		{"a proof used already", used, "DPoP: the proof was used already"},
+		{"htm GET", key.Proof(t, dpoptest.Claims{HTM: http.MethodGet, HTU: htu, IAT: testNow}), "htm is not the method"},
+		{"htu of another path", key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: loginURL + "/api/v1/whoami", IAT: testNow}),
+			"htu is not the URI"},
+		{"htu of the edge's upstream", key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: "http://example.com/api/v1/login", IAT: testNow}),
+			"htu is not the URI"},
+		{"iat 10 minutes ago", key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: htu, IAT: testNow.Add(-10 * time.Minute)}),
+			"iat is not within 5 minutes"},
+		{"alg HS256", key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: htu, IAT: testNow, Header: map[string]any{"alg": "HS256"}}),
+			"alg is not ES256"},
+	} {
+		wantError(t, f.signIn(body, tc.proof, auth.Principal{}, auth.Credential{}), http.StatusBadRequest, codeInvalid, tc.why)
+	}
+	withATH := key.Proof(t, dpoptest.Claims{HTM: http.MethodPost, HTU: htu, IAT: testNow, Token: "another token"})
+	wantStatus(t, f.signIn(body, withATH, auth.Principal{}, auth.Credential{}), http.StatusCreated)
+	if evs := auditOf(t, f.st, auth.ActionTokenCreate); len(evs) != 2 {
+		t.Errorf("%d token.create rows, want 2", len(evs))
 	}
 }
 
@@ -125,15 +222,21 @@ func (throttledPasswords) AuthenticatePassword(context.Context, string, string) 
 }
 
 // TestLoginThrottled checks that a throttled account or address is 429 with Retry-After in whole
-// seconds, rounded up, and that a server without passwords answers 501.
+// seconds, rounded up, and that a server without passwords or without a DPoP verifier answers
+// 501.
 func TestLoginThrottled(t *testing.T) {
 	f := loginFixture(t, Options{Passwords: throttledPasswords{}})
-	rr := f.do(http.MethodPost, "/api/v1/login", `{"username": "alice", "password": "x"}`, auth.Principal{})
+	key := dpoptest.NewKey(t)
+	rr := f.signIn(`{"username": "alice", "password": "x"}`, loginProof(t, key), auth.Principal{}, auth.Credential{})
 	wantError(t, rr, http.StatusTooManyRequests, codeUnavailable, "too many failed logins")
 	if got := rr.Header().Get("Retry-After"); got != "2" {
 		t.Errorf("Retry-After = %q, want 2", got)
 	}
 	f = newFixture(t, Options{})
-	wantError(t, f.do(http.MethodPost, "/api/v1/login", `{"username": "alice", "password": "x"}`, auth.Principal{}),
+	wantError(t, f.signIn(`{"username": "alice", "password": "x"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
+		http.StatusNotImplemented, codeUnavailable, "checks no DPoP proofs")
+	f = newFixture(t, Options{})
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, DPoP: loginVerifier(f.st)}))
+	wantError(t, f.signIn(`{"username": "alice", "password": "x"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
 		http.StatusNotImplemented, codeUnavailable, "checks no passwords")
 }
