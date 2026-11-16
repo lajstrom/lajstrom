@@ -223,7 +223,7 @@ func testTokens(t *testing.T, s index.Store) {
 	tokens := []index.Token{
 		{Kind: "pat", UserID: &alice.ID, Name: "laptop", Hash: "h1", Scopes: []string{"read", "write"},
 			ExpiresAt: ptr(at(3600)), LastUsedAt: ptr(at(5)), CreatedAt: at(1)},
-		{Kind: "pat", UserID: &alice.ID, Name: "full", Hash: "h2", Scopes: []string{}},
+		{Kind: "pat", UserID: &alice.ID, Name: "full", Hash: "h2", Scopes: []string{}, DPoPJKT: "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"},
 		{Kind: "deploy", RepoID: &repo.ID, Name: "deploy", Hash: "h3", Scopes: []string{"read"}, RevokedAt: ptr(at(7))},
 		{Kind: "pat", UserID: &alice.ID, Name: "legacy", Hash: "h4"},
 		{Kind: "deploy", RepoMask: "raw/*", Name: "fleet", Hash: "h5", Scopes: []string{"read"}, CreatedAt: at(2)},

@@ -150,6 +150,28 @@ func testOIDCLogins(t *testing.T, s index.Store) {
 	none := index.OIDCLogin{ID: 9999, Status: index.OIDCUsed}
 	wantErr(t, "UpdateOIDCLogin of none", s.UpdateOIDCLogin(ctx, &none, index.OIDCPending), index.ErrNotFound)
 
+	// A web UI's login: its page and challenge from the start, the handoff and the user from its
+	// callback, found by the handoff, which is unique, and redeemed once.
+	ui := index.OIDCLogin{Kind: index.OIDCLoginCode, State: "st3", Binding: "b3", Nonce: "n3", Verifier: "v3",
+		ReturnTo: "https://ui.example.com/ui/sign-in?redirect=%2F", CodeChallenge: "ch3", DPoPJKT: "jkt3", Status: index.OIDCPending,
+		CreatedAt: at(3), ExpiresAt: at(2000)}
+	must(t, s.CreateOIDCLogin(ctx, &ui))
+	got, err = s.GetOIDCLoginByState(ctx, "st3")
+	must(t, err)
+	same(t, "the login of a web UI", ui, *got)
+	wantErr(t, "GetOIDCLoginByHandoff before the callback", second(s.GetOIDCLoginByHandoff(ctx, "h3")), index.ErrNotFound)
+	wantErr(t, "GetOIDCLoginByHandoff of \"\"", second(s.GetOIDCLoginByHandoff(ctx, "")), index.ErrNotFound)
+	ui.Status, ui.UserID, ui.Handoff = index.OIDCApproved, &u.ID, "h3"
+	must(t, s.UpdateOIDCLogin(ctx, &ui, index.OIDCPending))
+	got, err = s.GetOIDCLoginByHandoff(ctx, "h3")
+	must(t, err)
+	same(t, "the login of a web UI by its handoff", ui, *got)
+	taken := index.OIDCLogin{Kind: index.OIDCLoginCode, State: "st4", Handoff: "h3", Status: index.OIDCApproved, ExpiresAt: at(600)}
+	wantErr(t, "CreateOIDCLogin of a taken handoff", s.CreateOIDCLogin(ctx, &taken), index.ErrConflict)
+	ui.Status = index.OIDCRedeemed
+	must(t, s.UpdateOIDCLogin(ctx, &ui, index.OIDCApproved))
+	wantErr(t, "a second redemption", s.UpdateOIDCLogin(ctx, &ui, index.OIDCApproved), index.ErrConflict)
+
 	// Expiry: the device request goes, and the code login of it; the later one stays.
 	n, err := s.ExpireOIDCLogins(ctx, at(601))
 	must(t, err)
@@ -160,6 +182,49 @@ func testOIDCLogins(t *testing.T, s index.Store) {
 	wantErr(t, "the code login of the expired device request", second(s.GetOIDCLogin(ctx, code.ID)), index.ErrNotFound)
 	if _, err := s.GetOIDCLogin(ctx, plain.ID); err != nil {
 		t.Errorf("the login that has not expired: %v", err)
+	}
+}
+
+// testDPoPProofs: a proof's key is stored once until it expires, on any connection; one that
+// expired is taken over; the expired keys are deleted.
+func testDPoPProofs(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	must(t, s.UseDPoPProof(ctx, "k1", at(300), at(0)))
+	wantErr(t, "the same proof again", s.UseDPoPProof(ctx, "k1", at(300), at(10)), index.ErrConflict)
+	wantErr(t, "the same proof as it expires", s.UseDPoPProof(ctx, "k1", at(600), at(300)), index.ErrConflict)
+	must(t, s.UseDPoPProof(ctx, "k2", at(400), at(10)))
+	must(t, s.UseDPoPProof(ctx, "k1", at(900), at(301))) // expired: taken over
+	wantErr(t, "the proof taken over again", s.UseDPoPProof(ctx, "k1", at(900), at(302)), index.ErrConflict)
+	n, err := s.ExpireDPoPProofs(ctx, at(401))
+	must(t, err)
+	if n != 1 {
+		t.Errorf("ExpireDPoPProofs = %d, want 1 (k2)", n)
+	}
+	must(t, s.UseDPoPProof(ctx, "k2", at(1000), at(402)))
+	wantErr(t, "k1 after the expiry of k2", s.UseDPoPProof(ctx, "k1", at(900), at(402)), index.ErrConflict)
+}
+
+// testDPoPProofRace: requests with one proof at once store it once.
+func testDPoPProofRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	const n = 8
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { errs[i] = s.UseDPoPProof(ctx, "race", at(300), at(0)) })
+	}
+	wg.Wait()
+	won := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			won++
+		case !errors.Is(err, index.ErrConflict):
+			t.Errorf("UseDPoPProof: %v", err)
+		}
+	}
+	if won != 1 {
+		t.Errorf("%d of %d uses of one proof stored it, want 1", won, n)
 	}
 }
 

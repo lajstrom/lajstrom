@@ -3,6 +3,7 @@ package auth
 import (
 	"container/list"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"slices"
@@ -54,6 +55,9 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 	if reason != "" {
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
 	}
+	if t.DPoPJKT != "" {
+		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
+	}
 	a.touch(ctx, t.ID)
 	return UserPrincipal(u), patCredential(t), nil
 }
@@ -100,40 +104,81 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 // verifies): a personal access token, as authenticatePAT checks it, without a user name, whose
 // principal is user:<owner>; or a deploy token, as authenticateDeploy checks it, token:<id>,
 // which npm's _authToken and yarn's npmAuthToken send so (ADR 0012, docs/spec/rbac.md §1).
-// Anything else is refused.
+// A personal access token bound to a DPoP key is refused with ErrBound: it is taken only with
+// its proof (AuthenticateDPoP). Anything else is refused.
 //
 // The token names its owner by id, which GetUserByID reads on every call, so that a disabled or
 // deleted owner is refused at once and a renamed one keeps its tokens.
 func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (Principal, Credential, error) {
-	switch {
-	case strings.HasPrefix(secret, DeployPrefix):
+	if strings.HasPrefix(secret, DeployPrefix) {
 		return a.authenticateDeploy(ctx, secret)
-	case !tokenShaped(secret, PATPrefix):
-		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
 	}
-	t, err := a.token(ctx, secret)
+	t, u, err := a.bearerPAT(ctx, secret)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
+	if t.DPoPJKT != "" {
+		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
+	}
+	a.touch(ctx, t.ID)
+	return UserPrincipal(u), patCredential(t), nil
+}
+
+// AuthenticateDPoP returns the principal of Authorization: DPoP <secret> on /api/ (RFC 9449
+// §7.1), whose proof the caller verified: a personal access token, as AuthenticateBearer checks
+// it, bound to the DPoP key whose thumbprint is jkt, the proof's (docs/spec/rbac.md §10). A token
+// bound to another key or to none, and a deploy token, are refused as ErrBadCredentials.
+func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string) (Principal, Credential, error) {
+	t, u, err := a.bearerPAT(ctx, secret)
+	switch {
+	case err != nil:
+		return Principal{}, Credential{}, err
+	case t.DPoPJKT == "":
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to no DPoP key, sent with a proof")
+	case subtle.ConstantTimeCompare([]byte(t.DPoPJKT), []byte(jkt)) != 1:
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to another DPoP key")
+	}
+	a.touch(ctx, t.ID)
+	return UserPrincipal(u), patCredential(t), nil
+}
+
+// bearerPAT returns the personal access token whose secret is secret, of the token's shape, and
+// its owner: a token of kind pat that is not revoked or expired, whose owner exists and is
+// neither deleted nor disabled. A refusal wraps ErrBadCredentials; any other error is a failure
+// of the index.
+func (a *Authenticator) bearerPAT(ctx context.Context, secret string) (*index.Token, *index.User, error) {
+	if !tokenShaped(secret, PATPrefix) {
+		return nil, nil, a.refuse(ctx, nil, "malformed token")
+	}
+	t, err := a.token(ctx, secret)
+	if err != nil {
+		return nil, nil, err
+	}
 	if reason := a.dead(t, TokenPAT); reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
+		return nil, nil, a.refuseToken(ctx, nil, t, reason)
 	}
 	u, err := a.index.GetUserByID(ctx, *t.UserID)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, "unknown user")
+		return nil, nil, a.refuseToken(ctx, nil, t, "unknown user")
 	case err != nil:
-		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
+		return nil, nil, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
 	case u.DeletedAt != nil:
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "deleted")
+		return nil, nil, a.refuseToken(ctx, u, t, "deleted")
 	case u.Disabled:
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "disabled")
+		return nil, nil, a.refuseToken(ctx, u, t, "disabled")
 	}
 	if reason := unbounded(t, u); reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
+		return nil, nil, a.refuseToken(ctx, u, t, reason)
 	}
-	a.touch(ctx, t.ID)
-	return UserPrincipal(u), patCredential(t), nil
+	return t, u, nil
+}
+
+// refuseBound logs the refusal of a token bound to a DPoP key that came without its proof, as
+// refuseToken does, and returns ErrBound.
+func (a *Authenticator) refuseBound(ctx context.Context, u *index.User, t *index.Token) error {
+	_ = a.refuseToken(ctx, u, t, "a token bound to a DPoP key, without its proof")
+	return ErrBound
 }
 
 // unbounded returns why the personal access token t of the user u cannot authenticate for its
