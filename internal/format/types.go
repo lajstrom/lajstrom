@@ -67,7 +67,8 @@ type Origin struct {
 	// query or fragment: lajstrom.origin.url.
 	URL string
 	// Checksum is the upstream's checksum that was verified before the ingest,
-	// <algorithm>:<lowercase hex>: lajstrom.origin.checksum.
+	// <algorithm>:<lowercase hex>: lajstrom.origin.checksum. "" for a file fetched unchecked
+	// (UpstreamFile.Unchecked), whose manifest has no lajstrom.origin.checksum.
 	Checksum string
 	// Published is the upstream's publish time of the version (UpstreamEntry.Published):
 	// org.opencontainers.image.created of the manifest, in whole seconds; zero leaves the time

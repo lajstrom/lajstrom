@@ -31,8 +31,9 @@ var errTooLarge = errors.New("proxy: the file is larger than its bound")
 // download asks the upstream for the file of the entry (npm: the tarball) and returns its body
 // as UploadStream reads it into the registry (§5, steps 7 and 8; ADR 0014): bounded by the
 // repo's maxFileSize and the registry's maxBlobSize, and checked against the strongest checksum
-// the entry gives when it ends. Nothing of it is written to disk; the caller closes the body. A
-// file refused before a byte is read is a proxy.reject audit row, and an upstream 404 or 410
+// the entry gives when it ends, or not at all for a file the plugin takes unchecked
+// (format.UpstreamFile.Unchecked). Nothing of it is written to disk; the caller closes the body.
+// A file refused before a byte is read is a proxy.reject audit row, and an upstream 404 or 410
 // makes the name's row stale (§4.3).
 func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (*checked, error) {
 	if err := c.checkName(ctx, p, a); err != nil {
@@ -49,7 +50,7 @@ func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *form
 	}
 	asked := originURL(target)
 	alg, want := strongest(f.Checksums)
-	if alg == "" {
+	if alg == "" && !f.Unchecked {
 		c.reject(ctx, p, a, asked, "checksum", map[string]any{"error": "the upstream gives no checksum"})
 		return nil, fmt.Errorf("%w: proxy: %s: upstream %s gives no checksum of %s", format.ErrBadGateway, p.id(), p.settings.Upstream, f.Name)
 	}
@@ -68,22 +69,26 @@ func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *form
 		_ = resp.Body.Close()
 		return nil, c.tooLarge(ctx, p, a, asked, limit, bound)
 	}
+	origin := &format.Origin{Upstream: p.settings.Upstream, URL: asked, Published: entry.Published}
+	if alg != "" {
+		origin.Checksum = alg + ":" + want
+	}
 	return &checked{body: resp.Body, r: &bounded{r: resp.Body, left: limit}, h: newHash(alg), name: f.Name, limit: limit, bound: bound,
-		origin: &format.Origin{Upstream: p.settings.Upstream, URL: asked, Checksum: alg + ":" + want, Published: entry.Published}, alg: alg,
-		want: want}, nil
+		origin: origin, alg: alg, want: want}, nil
 }
 
 // checked is the body of a file on its way from the upstream into the registry. It hashes the
 // bytes with the algorithm of the upstream's strongest checksum and, at their end, fails in
 // place of io.EOF when they do not match it (a *mismatch), so that UploadStream cancels the
-// upload session and commits nothing (§5, step 8). A body past its bound fails with errTooLarge;
-// one the upstream cuts short, with an *upstreamError.
+// upload session and commits nothing (§5, step 8); a file taken unchecked has no algorithm, and
+// no hash. A body past its bound fails with errTooLarge; one the upstream cuts short, with an
+// *upstreamError.
 type checked struct {
 	body      io.Closer
 	r         io.Reader // the bounded body
-	h         hash.Hash
-	name      string // the file's name, UploadedFile.Name
-	limit     int64  // the bound, -1 for none, and what it is
+	h         hash.Hash // nil for a file taken unchecked
+	name      string    // the file's name, UploadedFile.Name
+	limit     int64     // the bound, -1 for none, and what it is
 	bound     string
 	origin    *format.Origin
 	alg, want string
@@ -110,10 +115,15 @@ func (c *checked) Read(p []byte) (int, error) {
 		return 0, c.end()
 	}
 	n, err := c.r.Read(p)
-	c.h.Write(p[:n])
+	if c.h != nil {
+		c.h.Write(p[:n])
+	}
 	switch {
 	case errors.Is(err, io.EOF):
-		c.ended, c.got = true, hex.EncodeToString(c.h.Sum(nil))
+		c.ended = true
+		if c.h != nil {
+			c.got = hex.EncodeToString(c.h.Sum(nil))
+		}
 		return n, c.end()
 	case err != nil && !errors.Is(err, errTooLarge):
 		return n, &upstreamError{err: err}
@@ -142,9 +152,12 @@ func (c *checked) finish() *mismatch {
 
 func (c *checked) close() { _ = c.body.Close() }
 
-// newHash returns the hash of an upstream's checksum algorithm of checksumOrder.
+// newHash returns the hash of an upstream's checksum algorithm of checksumOrder, nil for none
+// (a file taken unchecked).
 func newHash(alg string) hash.Hash {
 	switch alg {
+	case "":
+		return nil
 	case "sha512":
 		return sha512.New()
 	case "sha256":
