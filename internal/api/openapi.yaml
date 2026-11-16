@@ -1223,6 +1223,42 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Info"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/search:
+    get:
+      tags: [repos]
+      operationId: search
+      summary: Packages by name and summary, manifests and files by digest, over the repos the caller may read.
+      description: >-
+        A repo the caller may not read adds no hit, and the answer does not tell whether one exists.
+        The hits come in ranks, each in byte order of the repo's format and name and the package's
+        name: when q is a digest's prefix (sha256: or not, 8 to 64 hex digits) the manifests whose
+        digest starts with it, then the file layers whose digest does; then the packages named q,
+        whose name starts with it, whose name contains it, and with a manifest whose summary
+        contains it, ASCII letters in either case. There is no total.
+      security:
+        - {}
+        - basic: []
+        - bearer: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: A name, a part of a name or a summary, or a digest's prefix.
+          schema: {type: string, minLength: 1, maxLength: 256}
+        - name: format
+          in: query
+          description: Only the repos of this format.
+          schema: {type: string}
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page; the cursor holds the place of its last hit.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SearchResult"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/bootstrap:
     post:
       tags: [users]
@@ -2099,6 +2135,50 @@ components:
             type: array
             items: {$ref: "#/components/schemas/FacetValue"}
         next: {type: string}
+    SearchResult:
+      description: A page of the hits of a search, rank after rank.
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items:
+            oneOf:
+              - {$ref: "#/components/schemas/PackageHit"}
+              - {$ref: "#/components/schemas/VersionHit"}
+        next: {type: string}
+    PackageHit:
+      description: A package found by its name or a summary, with the facts of its row of the package list.
+      type: object
+      required: [kind, format, repo, name, latestVersion, summary, updatedAt]
+      properties:
+        kind: {const: package}
+        format: {type: string}
+        repo: {type: string}
+        name: {type: string}
+        latestVersion: {type: [string, "null"]}
+        summary: {type: [string, "null"]}
+        updatedAt: {type: string, format: date-time}
+    VersionHit:
+      description: A manifest found by its digest, or by the digest of one of its file layers.
+      type: object
+      required: [kind, format, repo, name, version, variant, digest, matched]
+      properties:
+        kind: {const: version}
+        format: {type: string}
+        repo: {type: string}
+        name: {type: string}
+        version: {type: string}
+        variant: {type: string, description: Empty for a format without variants.}
+        digest: {type: string, description: The manifest's digest.}
+        matched: {type: string, enum: [manifest, file], description: Whose digest matched.}
+        file:
+          description: The file whose digest matched; with matched file only.
+          type: object
+          required: [name, digest]
+          properties:
+            name: {type: string}
+            digest: {type: string}
     FacetValue:
       description: A value of an attribute in the repo's manifests.
       type: object
