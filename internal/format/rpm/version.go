@@ -3,6 +3,8 @@ package rpm
 import (
 	"cmp"
 	"strings"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // rpm's version order, rpmvercmp and the comparison of [epoch:]version[-release] that rpm
@@ -154,3 +156,15 @@ func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 // isLetter reports whether c is an ASCII letter.
 func isLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
+
+// LatestVersion returns the highest version in rpm's order (format.LatestPicker), the one dnf
+// installs from one repo; versions equal in the order compare by their bytes.
+func (Plugin) LatestVersion(versions []string, _ []index.JournalState) string {
+	best := ""
+	for _, s := range versions {
+		if best == "" || cmp.Or(compareVersions(s, best), strings.Compare(s, best)) > 0 {
+			best = s
+		}
+	}
+	return best
+}

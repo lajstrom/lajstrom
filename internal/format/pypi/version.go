@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // PEP 440's version order, as the version specifiers specification of the Python Packaging
@@ -264,3 +265,46 @@ func isDigits(s string) bool { return s != "" && strings.Trim(s, "0123456789") =
 
 // isLocalSeparator reports whether r separates the segments of a local label.
 func isLocalSeparator(r rune) bool { return r == '.' || r == '-' || r == '_' }
+
+// LatestVersion returns the version that pip installs without a specifier (format.LatestPicker):
+// of the versions that are PEP 440 versions, those that are not pre-releases, or all of them when
+// every one is; of those the highest that is not yanked in the journal state, else the highest
+// yanked one. Versions equal in the order compare by their bytes.
+func (Plugin) LatestVersion(versions []string, state []index.JournalState) string {
+	yanked := map[string]bool{}
+	for _, s := range state {
+		if s.Kind == index.JournalYanked {
+			yanked[s.Key] = true
+		}
+	}
+	var finals, pres []string
+	parsed := map[string]pyVersion{}
+	for _, s := range versions {
+		v, err := parseVersion(s)
+		switch {
+		case err != nil: // pip ignores it
+		case v.isPrerelease():
+			pres = append(pres, s)
+		default:
+			finals = append(finals, s)
+		}
+		parsed[s] = v
+	}
+	candidates := finals
+	if len(candidates) == 0 {
+		candidates = pres
+	}
+	highest := func(keep func(string) bool) string {
+		best := ""
+		for _, s := range candidates {
+			if keep(s) && (best == "" || cmp.Or(parsed[s].compare(parsed[best]), strings.Compare(s, best)) > 0) {
+				best = s
+			}
+		}
+		return best
+	}
+	if best := highest(func(s string) bool { return !yanked[s] }); best != "" {
+		return best
+	}
+	return highest(func(string) bool { return true })
+}
