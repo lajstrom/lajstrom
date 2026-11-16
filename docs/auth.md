@@ -21,6 +21,7 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 | anonymous | `anonymous` | a request without credentials |
 | client certificate | `cert:spiffe://…`, `cert:<bundle>/<name>` | a certificate of a configured CA, on `GET /v2/token` ([Node and workload identity](#node-and-workload-identity)) |
 | Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>` | its token as the password of `/v2/token` ([Node and workload identity](#node-and-workload-identity)) |
+| CI job | `ci:<issuer>/<project>` | a CI token, minted at `/-/oidc/token` for the OIDC token of GitHub Actions or GitLab CI ([Token exchange for CI](#token-exchange-for-ci)) |
 
 A personal access token acts as its user: its principal is the user's, narrowed by the token's
 scopes. A user may come from an OIDC login, and its groups from the login's claims
@@ -780,7 +781,9 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
 
 ### In CI
 
-A pipeline gets a deploy token of its repo with `write`, plus `read` when its client reads
+On GitHub Actions and GitLab CI a job needs no stored secret at all: it trades the OIDC token
+its platform gives it for a CI token of minutes ([Token exchange for CI](#token-exchange-for-ci)).
+Elsewhere, or without `auth.ci`, a pipeline gets a deploy token of its repo with `write`, plus `read` when its client reads
 before it writes: an oras or docker push through `/v2`, which asks for its blobs first, and a
 Maven deploy, which reads `maven-metadata.xml` first; curl and twine need `write` only. It gets
 the token from a secret of the CI system (a GitHub Actions secret, a masked and protected GitLab
@@ -1563,7 +1566,200 @@ Both were measured on a Talos cluster, with Lajstrom terminating TLS and behind 
 **Not yet:** certificates and service-account tokens on any route but `/v2/token`; CRL and OCSP;
 SPIFFE federation.
 
+## Token exchange for CI
+
+A job of GitHub Actions or GitLab CI publishes with no Lajstrom secret stored in CI: it posts the
+OIDC token its platform issues it to `POST /-/oidc/token` (RFC 8693 token exchange) and gets a
+**CI token**, `ljs_ci_…`, that lives 15 minutes, for the principal `ci:<issuer>/<project>`
+([rbac.md](spec/rbac.md) §11, [ADR 0026](adr/0026-token-exchange-for-ci.md)). Trust policies in
+the configuration decide which tokens are taken and what their CI token may do; nothing is
+stored per job but the audit row of the exchange.
+
+### Setting it up
+
+Name the platforms and write a policy per thing a project may do:
+
+```yaml
+server:
+  externalURL: https://art.example.com
+auth:
+  ci:
+    issuers:
+      - name: github                       # the principal is ci:github/<owner>/<repo>
+        platform: github
+        issuer: https://token.actions.githubusercontent.com
+      - name: gitlab                       # ci:gitlab/<group>/…/<project>
+        platform: gitlab
+        issuer: https://gitlab.com         # or your GitLab's URL
+        # audience: https://art.example.com   the default, server.externalURL
+    policies:
+      - name: app-release                  # tags of acme/app, in its release environment
+        issuer: github
+        claims:
+          repository_id: "123456789"       # gh api repos/acme/app --jq .id
+          ref: refs/tags/v*
+          environment: release
+        grants:
+          - {role: writer, mask: pypi/internal}
+          - {role: writer, mask: oci/acme}
+      - name: acme-read                    # every repository of the acme organization, every ref
+        issuer: github
+        claims:
+          repository_owner_id: "987654"    # gh api orgs/acme --jq .id
+        grants:
+          - {role: reader, mask: "*/*"}
+      - name: platform-main                # protected main of the projects of a GitLab group
+        issuer: gitlab
+        claims:
+          namespace_id: "42"               # the group's ID, on its page
+          ref: main
+          ref_protected: "true"
+        grants:
+          - {role: maintainer, mask: "oci/*"}
+```
+
+A token is taken when one or more policies of its issuer match it: every claim a policy names
+must have one of its values. Its CI token gets the grants of every policy that matched. The
+claims a policy may name:
+
+| | GitHub Actions | GitLab CI |
+| --- | --- | --- |
+| the project, by id (one required) | `repository_id`, `repository_owner_id` | `project_id`, `namespace_id` |
+| names, beside an id | `repository`, `repository_owner`, `actor` | `project_path`, `namespace_path`, `user_login` |
+| patterns: `*` any run but `/`, `**` any run | `ref`, `environment`, `workflow_ref`, `job_workflow_ref` | `ref`, `ref_path`, `environment`, `ci_config_ref_uri` |
+| values | `ref_type`, `ref_protected`, `event_name`, `runner_environment`, `repository_visibility`, `actor_id` | `ref_type`, `ref_protected`, `environment_protected`, `pipeline_source`, `runner_environment`, `deployment_tier`, `project_visibility`, `user_id` |
+
+GitHub's `ref` is the full ref, `refs/heads/main` or `refs/tags/v1.2.3`; GitLab's `ref` is the
+short name, `main`, and its `ref_path` the full one. A value may be a list, any of which matches:
+`event_name: [push, workflow_dispatch]`.
+
+The rules that keep a policy from publishing more than you meant, each refused at start with the
+policy and the key named:
+
+- **An id, not only a name.** A deleted organization's, user's or group's name can be registered
+  again by anyone, and their repository of the old name would match. Name the project by its id;
+  a name beside it is checked too.
+- **A ref or an environment to write.** A policy that grants `writer` or `maintainer` names `ref`,
+  `ref_path` or `environment`: without one, every branch, and every pull request of the
+  repository, publishes. A policy that only reads may match every ref, so that the jobs of pull
+  requests read your internal packages.
+- **A pull request never writes.** Whatever its conditions, a policy that writes does not match a
+  GitHub token of `pull_request`, `pull_request_target`, `pull_request_review` or
+  `pull_request_review_comment`, nor a GitLab pipeline of `merge_request_event` or
+  `external_pull_request_event`: such a job may run a fork's code with the base project's
+  identity. GitHub gives a fork's `pull_request` no token at all; `pull_request_target` runs on
+  the base's `ref` and is the one that matters.
+- **No `*` alone,** no `*` outside the claims of a ref, an environment or a workflow, and no claim
+  the table does not list.
+
+What remains is yours to pin: a workflow of a protected ref that runs untrusted code
+(`workflow_run`, `issue_comment`) has the base's ref and event. Use an `environment` with
+required reviewers or deployment branches, `job_workflow_ref` to name the one workflow that
+publishes (`acme/app/.github/workflows/release.yml@refs/tags/*`), and `runner_environment:
+github-hosted` (or `gitlab-hosted`) to keep self-hosted runners out.
+
+The policies are configuration only: no API adds one, and a `ci:` principal takes no binding
+(`400`). They change with a restart, and their history is your configuration's; `serve` logs each
+issuer and each policy with its claims and grants at start. GitHub Enterprise Server is `platform:
+github` with its issuer, `https://<host>/_services/token`; a GitLab of your own behind a private
+CA takes a `caFile`.
+
+### GitHub Actions
+
+The job asks GitHub for a token of Lajstrom's audience, exchanges it, and hands the CI token to
+its clients, masked in the log:
+
+```yaml
+permissions:
+  id-token: write     # the OIDC token
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lajstrom token
+        run: |
+          oidc=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://art.example.com" | jq -r .value)
+          token=$(printf %s "$oidc" | curl -fsS https://art.example.com/-/oidc/token \
+            -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+            -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+            --data-urlencode subject_token@- | jq -r .access_token)
+          echo "::add-mask::$token"
+          echo "LAJSTROM_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: Upload the wheel
+        run: twine upload --repository-url https://art.example.com/pypi/internal/ dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ env.LAJSTROM_TOKEN }}
+      - name: Push the image
+        run: |
+          echo "$LAJSTROM_TOKEN" | docker login art.example.com -u ci --password-stdin
+          docker push art.example.com/oci/acme/app:${GITHUB_REF_NAME}
+```
+
+The audience must be the issuer's `audience`, `server.externalURL` by default: a token of
+GitHub's default audience, the owner's URL, is refused. A failed exchange says why: `no trust
+policy matches the token: issuer github, repository acme/app, ref refs/heads/feature,
+environment none, event_name push`.
+
+### GitLab CI
+
+The job declares the token in `id_tokens`, with Lajstrom's audience:
+
+```yaml
+release:
+  image: python:3.13
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  id_tokens:
+    LAJSTROM_ID_TOKEN:
+      aud: https://art.example.com
+  script:
+    - apt-get update -qq && apt-get install -qq -y jq
+    - |
+      LAJSTROM_TOKEN=$(printf %s "$LAJSTROM_ID_TOKEN" | curl -fsS https://art.example.com/-/oidc/token \
+        -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+        -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+        --data-urlencode subject_token@- | jq -r .access_token)
+    - TWINE_USERNAME=__token__ TWINE_PASSWORD="$LAJSTROM_TOKEN" twine upload --repository-url https://art.example.com/pypi/internal/ dist/*
+    - echo "$LAJSTROM_TOKEN" | docker login art.example.com -u ci --password-stdin
+```
+
+### What a CI token does
+
+- It is a credential wherever a deploy token is: the password under any user name on every route
+  and on `/v2/token` (docker, oras, helm, twine, Maven's `settings.xml`, curl's `-u`), and
+  `Authorization: Bearer` outside `/v2` (npm's `_authToken`).
+- It may do what the grants of its policies give, as a deploy token over a mask does: `404` on a
+  repo no grant's mask matches, `403` for an action its roles lack there. It never reaches the
+  system resources, and it creates no token: a personal access token, a deploy token of a repo
+  (with `maintainer` too) and one over a mask are `403`.
+- It lives `auth.ci.tokenLifetime`, 15 minutes by default and 20 at most; a job that runs longer
+  exchanges again, with a new OIDC token where its platform gives one. It is not revoked alone: remove the policy and restart, or `lajstrom admin key rotate
+  --token --drop`, which ends every bearer of `/v2` too. A bearer `/v2/token` issued on it lives
+  its own 20 minutes.
+
+### Audit
+
+Each exchange that mints a token is a `token.exchange` row of the `ci:` principal: the issuer,
+the policies, the token's id (`details.token`), its expiry, and the claims of the table with the
+run's (`run_id`, `run_attempt`, `sha` on GitHub; `pipeline_id`, `job_id`, `sha` on GitLab), never
+a token nor GitLab's `user_email`. The rows of the job's pushes, deletes and fetches carry
+`details.ciToken`, the same id, through the bearer of `/v2/token` too, and its manifests
+`lajstrom.uploaded-by: ci:<issuer>/<project>`. A refused exchange writes no row, since anyone can
+get a valid token from a repository of their own; it is logged at info with the reason.
+
+```sh
+curl -s -u admin "https://art.example.com/api/v1/audit?principal=ci:github/acme/app" | jq -c '.events[] | [.action, .repo, .details.ciToken // .details.token]'
+```
+
+**Not yet:** narrowing a CI token (`scope`), revoking one alone, other CI platforms, and the
+registries' own routes for trusted publishing (`pypa/gh-action-pypi-publish`, `npm publish`
+without a token), which can sit on the same policies later.
+
 ## What comes next
 
-Token exchange for CI and linking a local user to an identity (#69). Nothing else of
-authentication is open.
+Linking a local user to an identity (#69). Nothing else of authentication is open.
