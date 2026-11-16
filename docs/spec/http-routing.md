@@ -865,7 +865,19 @@ a `403` (the caller lacks the action) `FORBIDDEN` (#579), and so is the `403` of
 registry refuses for a limit or a quota of its own (`provider.ErrLimit`, §2; a prefetch), whose
 message names the limit. A `429` (a throttle of failed logins,
 with `Retry-After`; #130) is `UNAVAILABLE`: try again later. A `412` (a conditional delete that
-found the version changed) is `CONFLICT`, as `409` is. There is no eighth code.
+found the version changed, or an `If-Match` that names no revision the resource has) is
+`CONFLICT`, as `409` is. There is no eighth code.
+
+Revisions (#796): a repo, a user and a webhook have a revision, the `revision` of their row
+(index-schema.md), which every write of the row moves. The `GET` of one answers it as a strong,
+opaque `ETag`, and so do the `201` of its `POST` and the `200` of its `PATCH`. `If-Match` on
+its `PATCH` and `DELETE` makes the change conditional: it is made only while the resource has a
+revision the header lists (strong comparison), or exists (`*`), else `412 CONFLICT` with the
+`ETag` now, and nothing changes; the comparison is in the transaction that writes, so that of
+two changes with one tag one is made. `If-None-Match` on the `GET` answers `304` when it lists
+the `ETag` (weak comparison) or is `*`. Without the headers nothing changes from before; a value
+that does not parse is `400`. Lists, bindings and tokens have no revision, and their routes
+ignore the headers; a version's `DELETE` keeps its own `If-Match` of digests (below).
 
 Lists of a repo's content (`read`): `GET …/packages` pages the packages, by name unless
 `?sort=` says otherwise (below); `GET …/packages/<name>/versions` pages the versions,
