@@ -3,7 +3,8 @@
 Who a request comes from, how Lajstrom finds out, and what the principal may do. This page
 describes local users, their passwords, HTTP Basic on every route, the roles and bindings that
 decide every request ([Authorization](#authorization)), the bearer tokens of the OCI facade,
-personal access tokens and deploy tokens, the bootstrap of the first admin and `whoami`. The
+personal access tokens and deploy tokens, service accounts, the bootstrap of the first admin and
+`whoami`. The
 normative rules are [rbac.md](spec/rbac.md); the model is [ADR 0007](adr/0007-rbac-model.md);
 where the token signing key lives is [ADR 0010](adr/0010-bearer-token-signing-key.md).
 
@@ -15,6 +16,7 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 | Principal | Form | From |
 | --- | --- | --- |
 | local user | `user:<uid>` | HTTP Basic with the user's password; HTTP Basic or a bearer with a personal access token of the user ([Tokens](#tokens)) |
+| service account | `user:<uid>` | HTTP Basic or a bearer with a personal access token of the account only ([Service accounts](#service-accounts)) |
 | deploy token | `token:<id>` | HTTP Basic `deploy:<token>` ([Tokens](#tokens)) |
 | anonymous | `anonymous` | a request without credentials |
 | client certificate | `cert:spiffe://…`, `cert:<bundle>/<name>` | a certificate of a configured CA, on `GET /v2/token` ([Node and workload identity](#node-and-workload-identity)) |
@@ -52,7 +54,8 @@ never, so `user:<s>` is unambiguous.
   user created with it gets another uid and none of the old rights.
 - `delete` and `disable` refuse the last enabled user with an admin binding (exit status 1;
   `409` over the API), so that somebody can still manage the server.
-- `admin user list` shows NAME, UID, KIND, DISABLED, CREATED; `admin binding list` shows the
+- `admin user list` shows NAME, UID, KIND, DISABLED, CREATED, OWNER (a service account's,
+  [Service accounts](#service-accounts)); `admin binding list` shows the
   principal with its USER name. `GET /api/v1/whoami` answers both: `{"principal": "user:<uid>",
   "kind": "user", "name": "<name>", "uid": "<uid>"}`.
 
@@ -691,7 +694,7 @@ the lookup of the hash is the check, one query for the token and one for its use
 | principal | `user:<owner's uid>` | `token:<id>` | `token:<id>` |
 | bound to | its user | one repo | a mask (`oci/*`, `*/talos`), the repos created later included |
 | `scopes` | none (the user's full rights), or `read`, `write` and `attach`, one or more | `read`, `write` and `attach`, one or more, required; `delete`, `manage` and anything else are `400`; a group's deploy token reads only | the same |
-| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never | the same |
+| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound); a service account's by `auth.serviceAccounts.maxTokenTTL` instead ([Service accounts](#service-accounts)) | optional: none is never | the same |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens | the same, among the live tokens over the same mask |
 | created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the password of a user with the `admin` role only (`403` with a token, #911) |
 
@@ -944,6 +947,77 @@ ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu
 ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login deploy password <deploy 6, scopes read>: installed; lastUsedAt 2026-11-07T23:00:13.504948Z
 ```
 
+## Service accounts
+
+A service account (#1020, [ADR 0021](adr/0021-service-accounts.md), [rbac.md](spec/rbac.md) §1) is
+a user for a system: a release pipeline, a mirror job, a deployment controller. Some companies
+require one per system, registered with a person or a team who answers for it, instead of a
+person's account or a deploy token with nobody behind it. It is a user of kind `service`:
+
+- it has **no password** and no OIDC identity, and nothing logs it in. It authenticates with its
+  personal access tokens only, as Basic `<name>:ljs_pat_…` or `Authorization: Bearer ljs_pat_…`,
+  wherever a person's token works: the frontends, `/v2/token`, the management API;
+- its principal is `user:<uid>`, as every user's: it is bound with
+  [Bindings](#bindings) like a person, renamed, disabled, enabled and deleted like one, and the
+  audit log names it;
+- it has an **owner**, required: a person, `user:<name>`, or a group of the OIDC logins,
+  `group:<name>` ([Groups and group bindings](#groups-and-group-bindings)). A group need not have
+  members yet. The owner answers for the account and gets no right on it by owning it: what the
+  account may do is its bindings, and who manages it is the admin role.
+
+```sh
+lajstrom admin user create --name ci-release --service --owner group:platform
+lajstrom admin binding create --principal user:ci-release --role writer --mask 'pypi/*'
+lajstrom admin token create --user ci-release --name github-actions --scopes read,write
+lajstrom admin user list --kind service
+lajstrom admin user set-owner ci-release user:alice
+```
+
+Through the API, `POST /api/v1/users` with `{"name": "ci-release", "kind": "service", "owner":
+"group:platform"}`, `GET /api/v1/users?kind=service`, `PATCH /api/v1/users/ci-release` with
+`{"owner": "user:alice"}` ([api.md](api.md#users)); the tokens as every user's,
+`POST /api/v1/users/ci-release/tokens`.
+
+**Its tokens** are personal access tokens: without scopes they are the account's full rights,
+with `read`, `write` or both they narrow its bindings, so one job gets a read token and another a
+read-write token of the same account. The account has no password, and a personal access token
+is created with a password only ([Rules](#rules)), so its tokens are created by an admin with the
+admin's password, or on the command line; a token of the account lists and revokes the account's
+tokens, when it has no scopes, and never creates one.
+
+**Their lifetime** is bounded by `auth.serviceAccounts.maxTokenTTL`
+([configuration.md](configuration.md)), 365 days by default, instead of a person's 90 days by
+default and 365 at most: a token created without `--expires` or `expiresIn` expires at the bound,
+and an expiry beyond it is `400`, naming the key. `0` bounds nothing: such a token then never
+expires, as a deploy token. Lowering the bound changes nothing for the tokens made before: revoke
+them to apply it.
+
+**The owner.** What disabling the owner does is `auth.serviceAccounts.onOwnerDisabled`. With
+`flag`, the default, it changes nothing for the account, which keeps working: the users API
+answers `ownerDisabled: true`, and `admin user list` shows `user:alice (disabled)`. Give the
+account another owner, or disable it. With `disable`, disabling the owner disables its enabled
+service accounts too, in the same transaction, each a `user.disable` row with `owner` in its
+details. Enabling the owner again does not enable them: enable each one that should run again
+(`lajstrom admin user enable ci-release`), after giving it another owner if the owner left.
+Deleting a user who still owns a live service account is `409` with either value, naming the
+accounts: hand them over with `set-owner`, or delete them, first. A group owner is never
+disabled: it has no state in Lajstrom.
+
+**Admins.** A service account may have the admin role, but it does not count for the rule that
+keeps one enabled admin (a person must remain), nor for the bootstrap: it has no password and
+cannot make itself a token once its own expire. That rule never refuses disabling or deleting a
+service account.
+
+**Audit.** Its requests are rows of `user:<uid>` with its name, and `GET /api/v1/audit` adds
+`"principalKind": "service"` to them. Its creation is `user.create` with `kind` and `owner` in
+the details, and a change of its owner `user.owner`, with `from` and `owner`.
+
+**During a rolling update** to the release that brings service accounts, a replica of the release
+before takes a service account for a user without a password: its tokens with an expiry work
+there, and a token without one, which only the bound `0` makes, is refused (`401`). With the bound
+`0`, create expiring tokens until every replica runs the new release, or update the replicas
+first.
+
 ## Bootstrap: the first admin
 
 There is no admin password in the environment or in the configuration. A password there is
@@ -1063,7 +1137,7 @@ With neither the command fails and names both. `LAJSTROM_ADMIN_PASSWORD` is not 
 that finds it set fails and says to unset it. The other commands:
 
 ```sh
-lajstrom admin user list                    # NAME, UID, KIND, DISABLED, CREATED
+lajstrom admin user list                    # NAME, UID, KIND, DISABLED, CREATED, OWNER; --kind service
 lajstrom admin user disable alice           # refused from the next request on
 lajstrom admin user enable alice
 lajstrom admin user set-password alice      # the same two sources, or --password-file <file>

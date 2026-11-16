@@ -980,7 +980,9 @@ token with scopes and a deploy token never manage users.
 ### `lajstrom admin user`
 
 The same, straight against the database of the configuration: `create`, `list`, `rename`,
-`disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)).
+`disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)), and
+for service accounts `create --service --owner`, `list --kind service` and `set-owner`
+([auth.md](auth.md#service-accounts)).
 
 ### The first admin: `POST /api/v1/bootstrap`
 
