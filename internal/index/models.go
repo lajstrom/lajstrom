@@ -464,6 +464,52 @@ type AttrValue struct {
 	Packages int64
 }
 
+// SearchRank is a rank of the search, in the order of its hits (docs/spec/http-routing.md §4,
+// search).
+type SearchRank int
+
+// The ranks of the search: a manifest, then a file layer, whose digest starts with the text; a
+// package whose name is the text, starts with it, contains it; a package with a versions row
+// whose Summary contains it. A package is in the first of its ranks only.
+const (
+	RankManifest SearchRank = iota
+	RankFile
+	RankExact
+	RankPrefix
+	RankSubstring
+	RankSummary
+)
+
+// SearchQuery is one rank of the search, as Reader.Search reads it.
+type SearchQuery struct {
+	// RepoIDs are the repos searched: nil is every repo, and empty none.
+	RepoIDs []int64
+	Rank    SearchRank
+	// Text is a digest's prefix, sha256: and lowercase hex, for RankManifest and RankFile; for
+	// the others it compares as PackageQuery.Text, ASCII letters in either case.
+	Text string
+	// After is the key of the last hit of the page before in the rank; nil for its first.
+	After *SearchKey
+	// Limit bounds the hits; below 1 there are none.
+	Limit int
+}
+
+// SearchKey is the place of a hit in its rank, whose order is by the repo's format and name
+// and the package's name, then for a digest by the version, the variant and the file's name.
+type SearchKey struct {
+	Format, Repo, Package  string
+	Version, Variant, File string
+}
+
+// SearchHit is a hit of Reader.Search: its key and its package, and for a digest its versions
+// row, without Metadata, and its files row (RankFile).
+type SearchHit struct {
+	Key     SearchKey
+	Package Package
+	Version *Version
+	File    *File
+}
+
 // PackageFacts is what Reader.ListPackageFacts answers of a package: counts and times over
 // its versions rows, its latest and its last published version, and the dist-tags of its journal
 // (docs/spec/index-schema.md, The package list, one package and search).

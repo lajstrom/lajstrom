@@ -184,6 +184,9 @@ type Reader interface {
 	// each with the number of packages that have it, in byte order; none for a key that
 	// PackageQuery.Attrs would match nothing with.
 	ListAttrValues(ctx context.Context, repoID int64, key string) ([]AttrValue, error)
+	// Search returns the hits of one rank of the search, after its key, in its order
+	// (docs/spec/index-schema.md, The package list, one package and search).
+	Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
 
 	// GetVersion returns the version of a package by version and variant ("" when none).
 	GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)

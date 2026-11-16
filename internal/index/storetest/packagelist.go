@@ -276,3 +276,94 @@ func testAttrValues(t *testing.T, s index.Store) {
 		same(t, fmt.Sprintf("ListAttrValues(%q)", tt.key), tt.want, got)
 	}
 }
+
+// testSearch: Search answers each rank in the order of the repo's format and name and the
+// package's name, a package in the first of its ranks only, over the repos asked for; a digest
+// matches by its prefix, manifests and files apart. With every limit the pages of a rank are
+// its hits once.
+func testSearch(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	a, b, c := newRepo(t, s, "raw", "a"), newRepo(t, s, "raw", "b"), newRepo(t, s, "pypi", "c")
+	pkg := func(repo index.Repo, name string) *index.Package {
+		p := newPackage(t, s, repo.ID, name)
+		return &p
+	}
+	tool, zz, aReq := pkg(a, "Requests-Tool"), pkg(a, "zz"), pkg(a, "requests")
+	rows := putRows(t, s, []row{
+		{pkg: aReq, version: "1.0", at: at(1), sizes: []int64{1}},
+		{pkg: tool, version: "1.0", at: at(1), summary: "http client"},
+		{pkg: pkg(a, "my-requests"), version: "1.0", at: at(1)},
+		{pkg: zz, version: "1.0", at: at(1), summary: "Requests for humans"},
+		{pkg: zz, version: "2.0", variant: "x", at: at(2), sizes: []int64{3, 4}},
+		{pkg: pkg(b, "requests"), version: "1.0", at: at(1)},
+		{pkg: pkg(c, "requests"), version: "1.0", at: at(1)},
+	})
+	names := func(hits []index.SearchHit) []string {
+		out := []string{}
+		for _, h := range hits {
+			k := h.Key.Format + "/" + h.Key.Repo + "/" + h.Key.Package
+			if h.Version != nil {
+				k += " " + h.Key.Version + " " + h.Key.Variant
+			}
+			if h.File != nil {
+				k += " " + h.Key.File
+			}
+			out = append(out, k)
+		}
+		return out
+	}
+	search := func(q index.SearchQuery) []string {
+		t.Helper()
+		all := []index.SearchHit{}
+		limit := q.Limit
+		for range 20 {
+			hits, err := s.Search(ctx, q)
+			must(t, err)
+			all = append(all, hits...)
+			if len(hits) < limit {
+				break
+			}
+			q.After = &hits[len(hits)-1].Key
+		}
+		return names(all)
+	}
+	zzDigest := rows["zz/2.0_x"].Digest.String()
+	fileDigest := dg("zz/2.0_xb").String() // the second file of zz 2.0
+	for _, tt := range []struct {
+		name string
+		q    index.SearchQuery
+		want []string
+	}{
+		{"exact", index.SearchQuery{Rank: index.RankExact, Text: "REQUESTS"}, []string{"pypi/c/requests", "raw/a/requests", "raw/b/requests"}},
+		{"prefix", index.SearchQuery{Rank: index.RankPrefix, Text: "requests"}, []string{"raw/a/Requests-Tool"}},
+		{"substring", index.SearchQuery{Rank: index.RankSubstring, Text: "requests"}, []string{"raw/a/my-requests"}},
+		{"summary", index.SearchQuery{Rank: index.RankSummary, Text: "requests"}, []string{"raw/a/zz"}},
+		{"a summary of a name already", index.SearchQuery{Rank: index.RankSummary, Text: "client"}, []string{"raw/a/Requests-Tool"}},
+		{"one repo", index.SearchQuery{Rank: index.RankExact, Text: "requests", RepoIDs: []int64{b.ID}}, []string{"raw/b/requests"}},
+		{"no repo", index.SearchQuery{Rank: index.RankExact, Text: "requests", RepoIDs: []int64{}}, []string{}},
+		{"a wildcard as it is", index.SearchQuery{Rank: index.RankSubstring, Text: "%"}, []string{}},
+		{"a manifest", index.SearchQuery{Rank: index.RankManifest, Text: zzDigest[:15]}, []string{"raw/a/zz 2.0 x"}},
+		{"a whole digest", index.SearchQuery{Rank: index.RankManifest, Text: zzDigest}, []string{"raw/a/zz 2.0 x"}},
+		{"a manifest of another repo", index.SearchQuery{Rank: index.RankManifest, Text: zzDigest[:15], RepoIDs: []int64{b.ID, c.ID}}, []string{}},
+		{"a file", index.SearchQuery{Rank: index.RankFile, Text: fileDigest[:15]}, []string{"raw/a/zz 2.0 x 2.0_x-b"}},
+		{"no manifest is a file", index.SearchQuery{Rank: index.RankFile, Text: zzDigest}, []string{}},
+	} {
+		for limit := 1; limit <= len(tt.want)+1; limit++ {
+			q := tt.q
+			q.Limit = limit
+			same(t, fmt.Sprintf("%s, pages of %d", tt.name, limit), tt.want, search(q))
+		}
+	}
+	hits, err := s.Search(ctx, index.SearchQuery{Rank: index.RankFile, Text: fileDigest, Limit: 1})
+	must(t, err)
+	if len(hits) != 1 || hits[0].File == nil || hits[0].File.Size != 4 || hits[0].Version.Digest != rows["zz/2.0_x"].Digest ||
+		hits[0].Version.Metadata != nil || hits[0].Package.ID != zz.ID {
+		t.Errorf("the hit of a file: %+v", hits)
+	}
+	none, err := s.Search(ctx, index.SearchQuery{Rank: index.RankExact, Text: "requests"})
+	must(t, err)
+	same(t, "a limit of 0", []index.SearchHit{}, none)
+	if _, err := s.Search(ctx, index.SearchQuery{Rank: 99, Text: "x", Limit: 1}); err == nil {
+		t.Error("Search of an unknown rank succeeded")
+	}
+}

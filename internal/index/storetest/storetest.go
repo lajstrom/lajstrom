@@ -60,6 +60,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"PackageFacts", testPackageFacts},
 		{"PackageQuery", testPackageQuery},
 		{"AttrValues", testAttrValues},
+		{"Search", testSearch},
 		{"VersionTagRace", testVersionTagRace},
 		{"VersionOCIRepo", testVersionOCIRepo},
 		{"Files", testFiles},
