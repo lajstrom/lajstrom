@@ -424,8 +424,10 @@ longer than `reconcile.graceAge` is outside them
   never `409` (#1129): `200` with the version that holds them, `201` when it stores them.
 - **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
   `TestVisibilityRetryRebuilt`, `TestUploadRetryUnconfirmed`, `TestSessionCommitUnavailable`,
-  `TestIndexUnavailableAtConfirm` (raw), `TestUploadIndexUnavailableAtConfirm` (pypi); R-02 in
-  `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (acceptance.md E-01).
+  `TestIndexUnavailableAtConfirm` (raw), `TestUploadIndexUnavailableAtConfirm` (pypi),
+  `TestUploadAwaitsClaim`, `TestUploadRetryAfterIntendFailed`, `TestPutSameBytesAtOnce` (raw);
+  R-02 in `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (acceptance.md
+  E-01).
 - **When violated.** Not observed.
 - **Status.** `holds`.
 

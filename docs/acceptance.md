@@ -133,7 +133,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
 | R-01 | `curl -u alice -T file.txt https://art.test/raw/assets/docs/file.txt` | 201, `Location` is the same path, `Docker-Content-Digest` is the manifest digest; `GET` returns the exact bytes with `Content-Length`, `Content-Type` from the metadata layer, `ETag` = blob digest, `Last-Modified`; `HEAD` has the same headers and no body | #13 |
-| R-02 | same `PUT` again with identical bytes | 201, same digest, one version in the index (`Existed`) | #12, #13 |
+| R-02 | same `PUT` again with identical bytes | 200, same digest, one version in the index (`Existed`); never 409, also for `PUT`s of the same bytes at once (#1129) | #12, #13, #1129 |
 | R-03 | `PUT` different bytes to the same path, then `GET`; `GET ?digest=<old manifest digest>` | new bytes; the pinned `GET` returns the old bytes; both versions in the listing | #13 |
 | R-04 | `GET /raw/assets/` and `GET /raw/assets/docs/` | `{"entries":[{"path","size","digest","created"}…]}`, directory prefixes with a trailing `/`, sorted by path | #13 |
 | R-05 | `GET` a 200 MiB file on the `ha` stack (distribution + SeaweedFS) | 307 to a presigned URL that expires in 20 minutes (the s3 driver's `X-Amz-Expires=1200`); the bytes match; on the `single` stack (Zot) the body streams, and a `Range` of one byte range is `206` with that range: Zot sends no `Accept-Ranges` on `GET`, and Lajstrom passes on the backend's header and adds none (http-routing.md §2; docs/registries/zot.md) | #13, #27 |

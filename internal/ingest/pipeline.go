@@ -46,6 +46,9 @@ type Pipeline struct {
 
 	// webhooks is Options.Webhooks: nil writes no event.
 	webhooks *webhook.Outbox
+
+	// later holds the claims that the database did not release (releaseLater).
+	later laterReleases
 }
 
 // Options configures a Pipeline.
@@ -365,7 +368,7 @@ func (p *Pipeline) store(ctx context.Context, t *target, built *format.Built, or
 		return nil, err
 	}
 	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal,
-		repeatOnFiles: true, origin: origin})
+		repeatOnFiles: true, contentTag: built.ContentTag, origin: origin})
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +419,11 @@ type publish struct {
 
 	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
 	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it
+	// contentTag is format.Built.ContentTag: a claim of the tag by another digest is a publish
+	// of the same file, which claimTag waits for (awaitClaim).
+	contentTag bool
+	adopted    bool // the manifest is another publish's, taken over (adopt)
+	sent       bool // the manifest was sent to the registry (pushManifest)
 
 	// origin is set on the proxy fetcher's upload: the origin annotations and proxy.fetch.
 	origin *format.Origin

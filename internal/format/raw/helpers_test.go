@@ -153,9 +153,22 @@ func (e *env) do(method, target string, body io.Reader, hdr ...string) *httptest
 // put uploads content to path p and returns the response, which must be 201.
 func (e *env) put(p, content string, hdr ...string) putResponse {
 	e.t.Helper()
+	return e.putStatus(http.StatusCreated, p, content, hdr...)
+}
+
+// putAgain uploads content to path p, which holds it already, and returns the response, which
+// must be 200 (#1129).
+func (e *env) putAgain(p, content string, hdr ...string) putResponse {
+	e.t.Helper()
+	return e.putStatus(http.StatusOK, p, content, hdr...)
+}
+
+// putStatus uploads content to path p and returns the response, which must be status.
+func (e *env) putStatus(status int, p, content string, hdr ...string) putResponse {
+	e.t.Helper()
 	rr := e.do(http.MethodPut, target(p), strings.NewReader(content), hdr...)
-	if rr.Code != http.StatusCreated {
-		e.t.Fatalf("PUT %s = %d %s", p, rr.Code, rr.Body)
+	if rr.Code != status {
+		e.t.Fatalf("PUT %s = %d %s, want %d", p, rr.Code, rr.Body, status)
 	}
 	var resp putResponse
 	must(e.t, json.Unmarshal(rr.Body.Bytes(), &resp))
