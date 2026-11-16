@@ -167,3 +167,55 @@ func TestAllTokensAuthorization(t *testing.T) {
 		})
 	}
 }
+
+// TestAllTokensBeyondMaxTTL: with auth.deployTokens.maxTTL, GET /api/v1/tokens and a repo's
+// deploy tokens answer beyondMaxTTL on each live deploy token beyond the bound, made before it,
+// and leave it out on the others; without the bound no token has it (docs/spec/rbac.md §1,
+// #1286).
+func TestAllTokensBeyondMaxTTL(t *testing.T) {
+	f := allTokensFixture(t)
+	scratch, err := f.st.GetRepo(context.Background(), "raw", "scratch")
+	must(t, err)
+	short := index.Token{Kind: auth.TokenDeploy, RepoID: &scratch.ID, Name: "short", Scopes: []string{"read"},
+		ExpiresAt: new(testNow.Add(30 * 24 * time.Hour)), CreatedAt: testNow, Hash: "cdcdcdcd" + fmt.Sprintf("%056x", "short")}
+	must(t, f.st.CreateToken(context.Background(), &short))
+	root := auth.Principal{Kind: auth.KindUser, Name: "root"}
+	beyond := func(target string) string { // the names of the tokens answered with beyondMaxTTL true
+		t.Helper()
+		var page struct {
+			Tokens []struct {
+				Name         string
+				BeyondMaxTTL *bool `json:"beyondMaxTTL"`
+			}
+		}
+		decodeJSON(t, f.doAs(http.MethodGet, target, "", root, rootPassword), http.StatusOK, &page)
+		var names []string
+		for _, tok := range page.Tokens {
+			switch {
+			case tok.BeyondMaxTTL == nil:
+			case *tok.BeyondMaxTTL:
+				names = append(names, tok.Name)
+			default:
+				t.Errorf("%s: %s has beyondMaxTTL false, want the field left out", target, tok.Name)
+			}
+		}
+		return strings.Join(names, " ")
+	}
+	if got := beyond("/api/v1/tokens"); got != "" {
+		t.Errorf("without a bound, beyondMaxTTL on %q", got)
+	}
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, DeployTokenMaxLifetime: 90 * 24 * time.Hour,
+		Auth: auth.NewRBAC(auth.RBACOptions{Index: f.st, AnonymousRead: true, Log: f.repos.Log})}))
+	for target, want := range map[string]string{
+		"/api/v1/tokens":                            "ci nodes mirror",
+		"/api/v1/tokens?kind=deploy&live=true":      "ci nodes mirror",
+		"/api/v1/tokens?kind=pat":                   "",
+		"/api/v1/repos/raw/scratch/deploy-tokens":   "ci",
+		"/api/v1/deploy-tokens?repoMask=oci/*":      "nodes",
+		"/api/v1/tokens?repo=raw/scratch&live=true": "ci",
+	} {
+		if got := beyond(target); got != want {
+			t.Errorf("%s: beyondMaxTTL on %q, want %q", target, got, want)
+		}
+	}
+}

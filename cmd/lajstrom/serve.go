@@ -199,6 +199,7 @@ func newServeCmd(a *app) *cobra.Command {
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
 				Proxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
+			warnBeyondMaxTTL(ctx, c.Auth, st, a.log)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
@@ -381,6 +382,28 @@ func (b *backgroundReindex) Start(ctx context.Context, req reindex.Request) (*in
 		}
 	})
 	return run, nil
+}
+
+// warnBeyondMaxTTL logs at warn, at start, how many live tokens are beyond the bound of their
+// kind in a (docs/spec/rbac.md §1, #1286): deploy tokens beyond auth.deployTokens.maxTTL and
+// service accounts' tokens beyond auth.serviceAccounts.maxTokenTTL, made before the bound was set
+// or lowered. Nothing when there are none; a count that fails is logged and refuses nothing.
+func warnBeyondMaxTTL(ctx context.Context, a config.Auth, st index.Store, log *slog.Logger) {
+	tokens := &auth.Tokens{Index: st, Log: log, DeployMaxLifetime: a.DeployTokens.MaxTTL, ServiceMaxLifetime: a.ServiceAccounts.MaxTokenTTL}
+	deploy, service, err := tokens.CountBeyondMaxTTL(ctx)
+	if err != nil {
+		log.WarnContext(ctx, "live tokens beyond the bound of their kind not counted", "error", err.Error())
+		return
+	}
+	const hint = "; replace them: GET /api/v1/tokens?live=true marks them beyondMaxTTL"
+	if deploy > 0 {
+		log.WarnContext(ctx, "live deploy tokens beyond auth.deployTokens.maxTTL, made before it"+hint,
+			"count", deploy, "maxTTL", a.DeployTokens.MaxTTL.String())
+	}
+	if service > 0 {
+		log.WarnContext(ctx, "live tokens of service accounts beyond auth.serviceAccounts.maxTokenTTL, made before it"+hint,
+			"count", service, "maxTokenTTL", a.ServiceAccounts.MaxTokenTTL.String())
+	}
 }
 
 // sessionExpiryInterval is how often serve marks the sessions whose time is up as expired.

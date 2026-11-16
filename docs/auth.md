@@ -729,8 +729,11 @@ or over a mask created without `--expires`, `expiresAt` or `expiresIn` expires a
 an expiry beyond it is `400`, naming the field, the key and the latest expiry it allows, through
 the API and on the command line alike, which reads the bound of the configuration it is given.
 The bound counts when a token is created: a token made before it was set or lowered keeps its
-expiry, or none, until it is revoked; raising it lengthens no token. Without a bound, a deploy
-token created without an expiry never expires.
+expiry, or none, until it is revoked; raising it lengthens no token. Such a token, live, with no
+expiry or expiring more than the bound after its creation, is answered with `beyondMaxTTL: true`
+in every view of the API, so that `GET /api/v1/tokens?kind=deploy&live=true` lists what is left
+to replace ([api.md](api.md#every-token-get-apiv1tokens)), and `serve` logs at warn at start how
+many there are. Without a bound, a deploy token created without an expiry never expires.
 
 Expiry and revocation count at the next request, on every replica: the token is read from the
 database on every request. A token is expired once `expiresAt` is past, without leeway.
@@ -1015,7 +1018,8 @@ tokens, when it has no scopes, and never creates one.
 default and 365 at most: a token created without `--expires` or `expiresIn` expires at the bound,
 and an expiry beyond it is `400`, naming the key. `0` bounds nothing: such a token then never
 expires, as a deploy token without `auth.deployTokens.maxTTL`. Lowering the bound changes
-nothing for the tokens made before: revoke them to apply it.
+nothing for the tokens made before: revoke them to apply it. Those beyond the bound are marked
+`beyondMaxTTL` and counted at start, as deploy tokens are ([Rules](#rules)).
 
 **The owner.** What disabling the owner does is `auth.serviceAccounts.onOwnerDisabled`. With
 `flag`, the default, it changes nothing for the account, which keeps working: the users API

@@ -144,8 +144,10 @@ To make the rotation mandatory, as PCI DSS 8.6.3 asks ([compliance.md](complianc
 `auth.deployTokens.maxTTL` to the period of the risk analysis, `2160h` for 90 days: a deploy
 token created without `--expires` then expires at it, and one asked to expire later is refused,
 on the command line and through the API (#1286). The bound counts at creation: the tokens made
-before keep their expiry, or none, until they are replaced as above. A token over a mask that a
-node fleet shares is replaced on every node within the bound.
+before keep their expiry, or none, until they are replaced as above. `serve` logs at warn at
+start how many live ones are beyond the bound, and `GET /api/v1/tokens?kind=deploy&live=true`
+marks each `beyondMaxTTL` ([api.md](api.md#every-token-get-apiv1tokens)). A token over a mask that
+a node fleet shares is replaced on every node within the bound.
 
 ### Failed logins and the edge
 
