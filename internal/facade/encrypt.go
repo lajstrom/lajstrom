@@ -557,16 +557,11 @@ func (h *handler) mountEncrypted(w http.ResponseWriter, r *http.Request, t *targ
 // checkPushedLayers checks the layers of a manifest pushed to a managed repo before ingest: none
 // that the client encrypted itself, and each in the backend (checkLayers), encrypted on an
 // encrypted repo (checkEncryptedLayers).
-func (h *handler) checkPushedLayers(ctx context.Context, t *target, parsed *profile.Parsed) error {
-	infos := make([]profile.LayerInfo, 0, len(parsed.Files)+1)
-	descs := make([]ocispec.Descriptor, 0, len(parsed.Files)+1)
-	all := parsed.Files
-	if parsed.Metadata != nil {
-		all = append(all[:len(all):len(all)], *parsed.Metadata)
-	}
-	for _, l := range all {
-		ann := l.Annotations
-		infos = append(infos, profile.LayerInfo{MediaType: l.MediaType, Digest: l.Digest, Annotations: ann})
+func (h *handler) checkPushedLayers(ctx context.Context, t *target, layers []ocispec.Descriptor) error {
+	infos := make([]profile.LayerInfo, 0, len(layers))
+	descs := make([]ocispec.Descriptor, 0, len(layers))
+	for _, l := range layers {
+		infos = append(infos, profile.LayerInfo{MediaType: l.MediaType, Digest: l.Digest, Annotations: l.Annotations})
 		descs = append(descs, ocispec.Descriptor{MediaType: l.MediaType, Digest: l.Digest, Size: l.Size})
 	}
 	if err := profile.CheckPlainLayers(infos); err != nil {

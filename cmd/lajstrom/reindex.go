@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
@@ -83,18 +84,18 @@ func newReindexCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ptrust, err := policyTrust(ctx, st)
+			trust, err := a.reindexTrust(ctx, st)
 			if err != nil {
 				return err
 			}
-			trust, err := attachmentTrust(c.Attachments, a.log, ptrust...)
+			encryption, err := newEncryption(c, a.lookupEnv, st, a.log)
 			if err != nil {
 				return err
 			}
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
-				Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize})
+				Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize, Encryption: asEncryption(encryption)})
 			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log,
-				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})
+				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge, Keys: asKeyChecker(encryption)})
 			run, err := w.Start(ctx, req)
 			var conflict *index.ReindexConflictError
 			if errors.As(err, &conflict) {
@@ -211,4 +212,14 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 	}
 	_, err := out.Write(buf.Bytes())
 	return err
+}
+
+// reindexTrust is the trust of the attachments a reindex verifies: attachments.trust, and the
+// server's policy key (policyTrust), which signs the verdicts.
+func (a *app) reindexTrust(ctx context.Context, st index.Reader) (*attest.Trust, error) {
+	ptrust, err := policyTrust(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	return attachmentTrust(a.cfg.Attachments, a.log, ptrust...)
 }

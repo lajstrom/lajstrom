@@ -83,7 +83,7 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	if err := h.checkCreated(ctx, t, desc.Digest, parsed.Annotations.Created); err != nil {
 		return err
 	}
-	if err := h.checkPushedLayers(ctx, t, parsed); err != nil {
+	if err := h.checkPushedLayers(ctx, t, m.Layers); err != nil {
 		return err
 	}
 	res, err := h.o.Ingest.Ingest(ctx, t.repo, t.path, tag, m, body, auth.PrincipalFrom(ctx))

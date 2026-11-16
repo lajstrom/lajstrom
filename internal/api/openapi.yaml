@@ -2116,7 +2116,7 @@ components:
             entries, after which truncated is true; the counts stay exact. In the report of a run
             of an earlier release, a count it did not write is 0 and a list it did not write null.
           type: [object, "null"]
-          required: [repo, ociRepositories, manifests, added, updated, unchanged, removed, pending, deletedPending, degraded, referrers, attachments, foreign, orphanReferrers, orphanJournal, drift, split, repositoryUnknown, repairedReferrers, errors, truncated]
+          required: [repo, ociRepositories, manifests, added, updated, unchanged, removed, pending, deletedPending, degraded, referrers, attachments, foreign, orphanReferrers, orphanJournal, drift, split, repositoryUnknown, repairedReferrers, blobMap, skipped, errors, truncated]
           properties:
             repo: {type: string, description: "The repo, <format>/<name>."}
             ociRepositories: {type: integer, description: "The OCI repositories under the repo's path."}
@@ -2178,6 +2178,14 @@ components:
                 the reconcile loop and with verify, on a registry without the referrers API.
               type: [array, "null"]
               items: {$ref: "#/components/schemas/RepairedReferrersIndex"}
+            blobMap:
+              type: integer
+              description: The rows of blob_map of an encrypted repo written or seen.
+            skipped:
+              type: string
+              description: >-
+                Why the run skipped the repo whole, an encrypted repo whose keys do not open (no master
+                key, a seal that does not open); empty otherwise.
             errors:
               description: What the run could not read, check or write, each with its error.
               type: array

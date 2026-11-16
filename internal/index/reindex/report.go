@@ -46,8 +46,13 @@ type RepoReport struct {
 	// pushed and the registry still has, or were missing, and that ingest pushed again with them
 	// (#628): runs of the reconcile loop and with Verify, on a registry without the referrers API.
 	RepairedReferrers []RepairedIndex `json:"repairedReferrers"`
-	Errors            []Finding       `json:"errors"`
-	Truncated         bool            `json:"truncated"` // a list stopped at maxFindings entries
+	// BlobMap counts the rows of blob_map of an encrypted repo written or seen (#114).
+	BlobMap int `json:"blobMap"`
+	// Skipped says why the run skipped the repo whole: an encrypted repo whose keys do not open
+	// (docs/spec/index-schema.md, The mapping of an encrypted repo); "" otherwise.
+	Skipped   string    `json:"skipped"`
+	Errors    []Finding `json:"errors"`
+	Truncated bool      `json:"truncated"` // a list stopped at maxFindings entries
 }
 
 // RepairedIndex is a subject's sha256-<hex> index that ingest pushed again for a run, with the
