@@ -32,7 +32,8 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test -race ./...
+        # internal/facade alone takes 6 minutes under -race, near go test's default 10 per package
+        run: go test -race -timeout 20m ./...
 
   changes:
     name: changes
@@ -79,7 +80,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25 # the suite takes 11 to 15 minutes since train 2 (#1290)
     strategy:
       fail-fast: false
       matrix:
@@ -191,7 +192,8 @@ jobs:
         with:
           go-version: stable
       - name: Integration tests
-        run: go test -race -tags integration ./...
+        # internal/facade takes 6 to 10 minutes here (#1269), go test's default per package is 10
+        run: go test -race -tags integration -timeout 20m ./...
 
   integration-result:
     name: integration-result
