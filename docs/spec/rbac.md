@@ -384,9 +384,11 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 names the credential that created the token, `createdBy` in its details: `password`,
 `token:<id>` for a token, or `oidc` for the token of an OIDC login (§8); and, for a deploy token
 or a service account's token created under a bound of §1, `maxTTL`, the seconds of that bound,
-so that the log shows the bound of each creation (#1286); a creation refused writes no row. A
-service account's requests have the principal `user:<uid>` and the name of every user, and the
-answers of the audit log add `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
+so that the log shows the bound of each creation (#1286); a creation refused writes no row. The
+token of a web UI's sign-in refused as idle (§10) is revoked by the server: a `token.revoke` row by
+`anonymous`, with `source` `idle` and `reason` `idle`. A service account's requests have the
+principal `user:<uid>` and the name of every user, and the answers of the audit log add
+`principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
 `owner` in its details, a change of its owner is `user.owner`, with `from` and `owner`, and a
 service account that its owner's disabling disables (§1) is a `user.disable` of its own, with the
 owner as `owner` in its details. A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
@@ -739,7 +741,8 @@ a password or for an OIDC login. The token is a personal access token of the use
 scopes, as one that the user makes, and everything of §1 and §3 holds for it: it is listed with
 the user's tokens, revoked with `DELETE …/tokens/<id>` (the UI's sign-out, with the token
 itself), ended by disabling or deleting the user, and creates no token. It expires after
-`auth.login.tokenLifetime` (12h by default, at most 24h); there is no refresh token.
+`auth.login.tokenLifetime` (12h by default, at most 24h); there is no refresh token. With
+`auth.login.idleTimeout`, it also ends once unused for that long (Idle, below).
 
 **Bound to a key (DPoP, RFC 9449; decided on #1170, 2026-11-16).** Every login takes a DPoP
 proof, a JWT that the UI signs with a key of its own, an ES256 (P-256) key that the browser keeps
@@ -789,6 +792,44 @@ the IdP to authenticate the person again, `prompt=login` and `max_age=600` on it
 request; its token is a token of a sign-in as any other, of the same lifetime, and its sign-in is
 fresh for the 10 minutes after `auth_time`. A token of a password, of a login of §8 and of an ID
 token without `auth_time` keeps none.
+
+**Idle (decided on #1277, 2026-11-16).** With `auth.login.idleTimeout` (configuration.md; `0`,
+the default, is off; `15m` for PCI DSS 8.2.8), a token bound to a key whose last use is more than
+that before a request is refused, and the person signs in again. It holds for the tokens of
+`POST /api/v1/login` only, those with `dpop_jkt`: the sessions of a web UI. A token the person
+makes, the token of an OIDC login of §8 (its token page, `lajstrom login`), a deploy token, a
+service account's token and a CI token are the credentials of a client, which authenticates every
+request and holds no session: a job that runs once a day would be refused, and their expiry bounds
+them. Every request that the token authenticates is a use, whatever it asks, so a request that a UI
+makes on a timer keeps its sign-in alive: a UI makes none with the token while the person does
+nothing (lajstrom-ui), and asks `GET /api/v1/info` without it.
+
+- **The last use** is `tokens.last_used_at`, or `created_at` for a token not used yet. A request
+  with a token of any kind writes it when the value read with the token, which every request reads, is a minute old or
+  more, or null; the write only moves it forward. So it is written at most once a minute per
+  token on all replicas together (but for replicas that read the same value at once), and is less
+  than a minute behind the last use. A token is refused after between `idleTimeout` less a minute
+  and `idleTimeout` without use, never later, in the clocks of the replicas (guarantees.md, clocks
+  agree). A write that fails is logged and refuses nothing; the next request writes again.
+- **The refusal** comes after the proof of the token's key verified and after the token passed
+  the checks of revocation, expiry and its user: `401 UNAUTHENTICATED` with
+  `WWW-Authenticate: DPoP error="invalid_token", error_description="idle", algs="ES256"`
+  (http-routing.md §4). A UI tells it from a token revoked or expired, whose challenge has no
+  `error_description`; whoever sends the token without its key never learns it.
+- **The refusal revokes the token**, once on any replica, with its `token.revoke` row (§5), by
+  `anonymous`, `source` `idle`, the request's id, and in its details `reason` `idle`, `lastUsedAt`
+  and `idleTimeout` (seconds) beside `id`, `kind` and `name`. An idle sign-in so ends for good: a
+  later change of `idleTimeout` does not bring it back, and the sign-out of a UI whose own timer
+  ran out (`DELETE …/tokens/<id>`, with the token) revokes it all the same. A token never sent
+  again, a tab closed, stays unrevoked until it expires, refused as idle by every replica.
+- **Its lifetime and a fresh sign-in.** `idleTimeout` is `0`, or from `5m` to less than
+  `auth.login.tokenLifetime`; the token ends at the earlier of its expiry and its idle bound. A
+  use moves no `auth_time`: a step that needs a fresh sign-in (§11) still needs one of the last 10
+  minutes, and the token of a login with `prompt=login` is bound as any other. `GET /api/v1/info`
+  answers the value (`login.idleTimeout`, http-routing.md §4), so that a UI warns the person
+  before the server refuses.
+- A replica of a release before it refuses nothing as idle: the bound counts once every replica
+  knows it.
 
 ## 11. Token exchange for CI (after the MVP, #937)
 

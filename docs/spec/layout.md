@@ -1135,6 +1135,8 @@ type Writer interface {
     UpdateUser(ctx context.Context, u *User) error
     CreateToken(ctx context.Context, t *Token) error
     RevokeToken(ctx context.Context, id int64, at time.Time) error
+    // TouchToken sets LastUsedAt to lastUsed when it is null or earlier, else changes nothing:
+    // it only moves forward (#1277); no token ErrNotFound
     TouchToken(ctx context.Context, id int64, lastUsed time.Time) error
     // PutBootstrapToken makes t the bootstrap token while the stored one is the one of hash old
     // ("": none), UsedAt cleared; another row there wraps ErrConflict, so that replicas that

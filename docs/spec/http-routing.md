@@ -1072,10 +1072,12 @@ signs in:
 - `authModes`: how a person signs in. `password` is a local user's password, over Basic and to
   `POST /api/v1/login`; `token` is a personal access token; `oidc`, while `auth.oidc` is on, the
   OIDC login (#69);
-- `login`: `{"tokenLifetime"}`, the seconds of `auth.login.tokenLifetime`: the server has
-  `POST /api/v1/login`, whose token is DPoP-bound, and with `oidc` in `authModes` its
-  `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` (§7). A server without them
-  answers no `login`;
+- `login`: `{"tokenLifetime", "idleTimeout"}`, the seconds of `auth.login.tokenLifetime` and of
+  `auth.login.idleTimeout` (`0`: off; #1277): the server has `POST /api/v1/login`, whose token is
+  DPoP-bound, and with `oidc` in `authModes` its `/-/oidc/login` takes `return_to`,
+  `code_challenge` and `dpop_jkt` (§7). A server without them answers no `login`, and one of a
+  release before #1277 no `idleTimeout`, which is off. A UI warns the person before the idle bound
+  (rbac.md §10): the server may refuse up to a minute before it;
 - `caller`: the request's principal, as `GET /api/v1/whoami` answers it, and `admin`, whether
   the request's credential reaches the admin role (a personal access token with scopes does not).
 
@@ -1191,7 +1193,12 @@ A refused proof is `401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP
 error="invalid_dpop_proof", error_description="<why>", algs="ES256"`; a token that is unknown,
 revoked, expired, of a disabled user, bound to another key or to none (a token that is not a
 sign-in's, sent as `DPoP`) is `401` with `WWW-Authenticate: DPoP error="invalid_token",
-algs="ES256"`. A bound token is refused everywhere else, `401` as credentials refused: as
+algs="ES256"`. A token that passes those and whose proof verifies, but that is idle (rbac.md §10,
+`auth.login.idleTimeout`, #1277), is `401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP
+error="invalid_token", error_description="idle", algs="ES256"`, the message saying that the
+sign-in was idle, and the server revokes it; `idle` is the one `error_description` of
+`invalid_token`, which the UI reads to say why it signs the person out. A bound token is refused
+everywhere else, `401` as credentials refused: as
 `Authorization: Bearer` or in Basic credentials on `/api/`, with
 `WWW-Authenticate: DPoP error="invalid_token", …` (RFC 9449 §7.2); on the frontends, `/v2` and
 `/v2/token`, in any form, with the route's challenge. `Authorization: DPoP` outside `/api/` is
