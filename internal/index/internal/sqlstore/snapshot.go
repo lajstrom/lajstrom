@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -167,11 +168,13 @@ func (s *Store) ImportControlPlane(ctx context.Context, cp *index.ControlPlane, 
 		return fmt.Errorf("%w: the snapshot is of migration %d, and this binary knows %d at the newest: restore it with a binary "+
 			"that knows %d", index.ErrSchemaTooNew, cp.Schema, newest, cp.Schema)
 	}
+	filled := *cp
+	filled.Users = lastSeenOf(cp, now())
 	return s.withTx(ctx, func(c *conn) error {
 		if err := c.emptyControlPlane(ctx, opts.Force); err != nil {
 			return err
 		}
-		if err := c.importRows(ctx, cp); err != nil {
+		if err := c.importRows(ctx, &filled); err != nil {
 			return err
 		}
 		if err := c.moveSequences(ctx); err != nil {
@@ -189,6 +192,49 @@ func (s *Store) ImportControlPlane(ctx context.Context, cp *index.ControlPlane, 
 		}
 		return nil
 	})
+}
+
+// lastSeenMigration is the migration that adds users.last_seen_at (#1283).
+const lastSeenMigration = 34
+
+// lastSeenOf returns the users of cp, with LastSeenAt filled as migration 0034 fills it when cp
+// is of a schema before it, which has none (docs/spec/index-schema.md, Snapshots of the control
+// plane): a user that is not deleted gets at, the time of the restore, when it has a password,
+// whose logins left no record, and otherwise the latest LastUsedAt of its tokens and LoginAt of
+// its identities, or none. So a restore makes no user inactive that the migration would not.
+func lastSeenOf(cp *index.ControlPlane, at time.Time) []index.User {
+	if cp.Schema >= lastSeenMigration {
+		return cp.Users
+	}
+	latest := map[int64]time.Time{}
+	seen := func(id int64, t time.Time) {
+		if t.After(latest[id]) {
+			latest[id] = t
+		}
+	}
+	for _, t := range cp.Tokens {
+		if t.UserID != nil && t.LastUsedAt != nil {
+			seen(*t.UserID, *t.LastUsedAt)
+		}
+	}
+	for _, i := range cp.Identities {
+		seen(i.UserID, i.LoginAt)
+	}
+	users := slices.Clone(cp.Users)
+	for i := range users {
+		u := &users[i]
+		if u.DeletedAt != nil || u.LastSeenAt != nil {
+			continue
+		}
+		t, ok := at, true
+		if u.PasswordHash == "" {
+			t, ok = latest[u.ID]
+		}
+		if ok {
+			u.LastSeenAt = &t
+		}
+	}
+	return users
 }
 
 // moveSequences moves the sequence of the id of each table of sequenced past the greatest id it
@@ -280,7 +326,8 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	}
 	for _, u := range cp.Users {
 		add("users "+u.Name, "users", userCols, u.ID, u.UID, u.Name, textArg(u.PasswordHash), cmp.Or(u.Kind, "local"), u.Disabled,
-			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner), cmp.Or(u.Revision, 1))
+			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner), cmp.Or(u.Revision, 1),
+			c.d.encodeNullTime(u.LastSeenAt))
 	}
 	for _, i := range cp.Identities {
 		add(fmt.Sprintf("identities id %d", i.ID), "identities", identityCols, i.ID, i.UserID, i.Issuer, i.Subject,

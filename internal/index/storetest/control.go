@@ -235,6 +235,66 @@ func testTokenRevokeOnce(t *testing.T, s index.Store) {
 	wantErr(t, "RevokeToken missing", s.RevokeToken(ctx, 999999, at(1)), index.ErrNotFound)
 }
 
+// testUsersLastSeen: TouchUser records a user's last activity (docs/spec/rbac.md §1, Inactive
+// users) and only moves it forward; it moves neither the revision nor auth_version, and
+// UpdateUser leaves it (#1283).
+func testUsersLastSeen(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	bob := newUser(t, s, "bob")
+	if bob.LastSeenAt != nil {
+		t.Errorf("a new user's LastSeenAt = %v, want none", bob.LastSeenAt)
+	}
+	version, err := s.AuthVersion(ctx)
+	must(t, err)
+	for _, tt := range []struct {
+		name   string
+		seenAt time.Time
+		want   time.Time
+	}{
+		{"the first", at(20), at(20)},
+		{"earlier", at(15), at(20)},
+		{"the same", at(20), at(20)},
+		{"later", at(80), at(80)},
+		{"earlier than the later", at(79), at(80)},
+	} {
+		must(t, s.TouchUser(ctx, bob.ID, tt.seenAt))
+		got, err := s.GetUserByID(ctx, bob.ID)
+		must(t, err)
+		if got.LastSeenAt == nil || !got.LastSeenAt.Equal(tt.want) {
+			t.Errorf("TouchUser %s: LastSeenAt = %v, want %v", tt.name, got.LastSeenAt, tt.want)
+		}
+		if got.Revision != bob.Revision {
+			t.Errorf("TouchUser %s: Revision = %d, want %d: a record of an activity is no change", tt.name, got.Revision, bob.Revision)
+		}
+	}
+	if v, err := s.AuthVersion(ctx); err != nil || v != version {
+		t.Errorf("AuthVersion after TouchUser = %d, %v, want %d", v, err, version)
+	}
+
+	// UpdateUser stores what it stores and leaves LastSeenAt, whatever the struct holds.
+	bob.Name, bob.LastSeenAt = "robert", nil
+	must(t, s.UpdateUser(ctx, &bob))
+	got, err := s.GetUser(ctx, "robert")
+	must(t, err)
+	if got.LastSeenAt == nil || !got.LastSeenAt.Equal(at(80)) {
+		t.Errorf("LastSeenAt after UpdateUser = %v, want %v", got.LastSeenAt, at(80))
+	}
+	all, err := s.ListUsers(ctx)
+	must(t, err)
+	if len(all) != 1 || all[0].LastSeenAt == nil || !all[0].LastSeenAt.Equal(at(80)) {
+		t.Errorf("ListUsers = %+v, want robert seen at %v", all, at(80))
+	}
+
+	// In a transaction, as the enabling of a user does.
+	must(t, s.Tx(ctx, func(w index.Writer) error { return w.TouchUser(ctx, bob.ID, at(90)) }))
+	got, err = s.GetUserByID(ctx, bob.ID)
+	must(t, err)
+	if got.LastSeenAt == nil || !got.LastSeenAt.Equal(at(90)) {
+		t.Errorf("LastSeenAt after TouchUser in Tx = %v, want %v", got.LastSeenAt, at(90))
+	}
+	wantErr(t, "TouchUser missing", s.TouchUser(ctx, 999999, at(1)), index.ErrNotFound)
+}
+
 func testTokens(t *testing.T, s index.Store) {
 	ctx := t.Context()
 	alice := newUser(t, s, "alice")
