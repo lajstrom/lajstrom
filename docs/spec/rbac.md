@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days), but a service account's (below); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
-| deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional | yes |
+| deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional, within `auth.deployTokens.maxTTL` when it is set (below, #1286) | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
 | Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>`; a service-account token of a configured cluster, on `/v2/token` only (§9) | #1019 |
@@ -51,8 +51,24 @@ admin role creates one, with its password and with no token (§3, the routes; de
 2026-11-14), and on the command line the operator: `lajstrom admin token create --mask` writes
 the database as every `lajstrom admin` command of §6 does, with no HTTP and no password, for
 whoever holds the database's credentials is the operator. Everything else is a deploy token's:
-its scopes, its optional expiry, how it authenticates, its revocation, its audit, its hash, its
-secret shown once.
+its scopes, its expiry and its bound (below), how it authenticates, its revocation, its audit,
+its hash, its secret shown once.
+
+**The lifetime of a deploy token** (#1286, decided 2026-11-16) is bounded by
+`auth.deployTokens.maxTTL` (configuration.md), a duration, `0` by default: no bound, and a deploy
+token created without an expiry never expires. With a bound, a repo's token and a token over a
+mask alike, made through the API or on the command line: one created without an expiry expires at
+the bound, and one asked to expire later is `400` naming the field (`expiresAt`, `expiresIn`, or
+`--expires` on the command line), the bound and the latest expiry it allows. The command line
+reads the bound of the configuration it is given. The bound counts when a token is created, as a
+service account's does (below): a token created before it was set or lowered keeps its expiry, or
+none, until it is revoked, and raising it or setting `0` lengthens no token. A live deploy token
+beyond the bound in force, one without an expiry or whose `expiresAt` is more than the bound after
+its `createdAt`, is answered with `beyondMaxTTL: true` in every view of a token (http-routing.md
+§4), worked out when it is answered and stored nowhere, and `serve` logs at warn at start how many
+there are, when there are any. The bound is configuration: a change takes a restart, and each
+replica applies its own. It bounds no personal access token, a service account's included (below),
+and no CI token (§11): each has its own.
 
 ### Users: the uid and the name
 
@@ -103,7 +119,8 @@ account has no password and never mints its own. Their lifetime is bounded by
 `auth.serviceAccounts.maxTokenTTL` instead of a person's year, 365 days by default: a token
 created without an expiry expires at the bound, and one asked to expire later is `400`. `0` bounds
 nothing, and a token created without an expiry then never expires. A bound lowered later counts
-for the tokens created after it.
+for the tokens created after it; a live token beyond it is answered with `beyondMaxTTL: true` and
+counted at start, as a deploy token beyond `auth.deployTokens.maxTTL` is (above).
 
 A service account may have any binding, `admin` included. Its `admin` binding does not count for
 the last-admin rule (above, §3) nor for the bootstrap (§6), as a group's does not: without a
@@ -365,9 +382,11 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 ([index-schema.md](index-schema.md#the-audit-row-of-a-registry-write),
 [guarantees.md](guarantees.md) INV-14). The creation's row also
 names the credential that created the token, `createdBy` in its details: `password`,
-`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A service account's
-requests have the principal `user:<uid>` and the name of every user, and the answers of the audit
-log add `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
+`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8); and, for a deploy token
+or a service account's token created under a bound of §1, `maxTTL`, the seconds of that bound,
+so that the log shows the bound of each creation (#1286); a creation refused writes no row. A
+service account's requests have the principal `user:<uid>` and the name of every user, and the
+answers of the audit log add `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
 `owner` in its details, a change of its owner is `user.owner`, with `from` and `owner`, and a
 service account that its owner's disabling disables (§1) is a `user.disable` of its own, with the
 owner as `owner` in its details. A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
