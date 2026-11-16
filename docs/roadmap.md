@@ -147,7 +147,7 @@ the README's [What works](../README.md#what-works)).
   [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui), built as a static bundle that an nginx
   container serves at `/ui/` behind the same edge as Lajstrom: one origin (#136). The Go server
   never serves `/ui/` and never uses cookies; the UI signs in with a personal access token, sent
-  as a bearer. Object storage behind a CDN is another origin and needs the API's CORS allowlist
+  as a bearer. Object storage behind a CDN is another origin, which `server.corsOrigins` lists
   (#949). The UI is post-MVP; `GET /api/v1/info` and the version detail, the browsing set of
   #136, come before v0.1.0.
 

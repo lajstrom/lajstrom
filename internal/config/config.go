@@ -82,6 +82,10 @@ type Server struct {
 	// TrustedProxies are the peers whose X-Forwarded-For is believed, as CIDR prefixes; a bare
 	// address is one host (ADR 0011). Empty: the peer of the connection is the client.
 	TrustedProxies []string `yaml:"trustedProxies"`
+	// CORSOrigins are the origins of a web UI that reads /api/v1 from another origin
+	// (docs/spec/http-routing.md §4, #949), each exactly as a browser sends it in Origin:
+	// https://<host>[:port] in lower case, http only for a loopback host. Empty: same origin only.
+	CORSOrigins []string `yaml:"corsOrigins"`
 }
 
 // UploadSessions bounds the live upload sessions of /v2 that one principal holds on one replica
