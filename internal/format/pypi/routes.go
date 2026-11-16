@@ -272,8 +272,14 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(name, SdistTarGz) {
 		contentType = contentTypeTarGz
 	}
+	key, err := format.Decryption(r.Context(), h.deps, repo, index.ManifestPath(m.Package, m.Version), m.File)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
 		Subject:     format.VersionSubject(repo, m.Package, m.Version),
+		Decrypt:     key,
 		ContentType: contentType, LastModified: m.Version.CreatedAt, ManifestDigest: m.Version.Digest,
 		Redirect: format.BlobRedirect(repo), Filename: name,
 		Fail: func(w http.ResponseWriter, err error) { h.fail(w, r, err) },
