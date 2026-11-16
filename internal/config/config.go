@@ -509,6 +509,8 @@ type Auth struct {
 	// Kubernetes are the clusters whose service-account tokens are a credential of /v2/token
 	// (docs/spec/rbac.md §9, KEP-4412); off while it has no cluster.
 	Kubernetes Kubernetes `yaml:"kubernetes"`
+	// DeployTokens is the policy of the deploy tokens (docs/spec/rbac.md §1, #1286).
+	DeployTokens DeployTokens `yaml:"deployTokens"`
 	// ServiceAccounts is the policy of the service accounts (docs/spec/rbac.md §1, #1020).
 	ServiceAccounts ServiceAccounts `yaml:"serviceAccounts"`
 	// Login is the sign-in of a web UI, POST /api/v1/login (docs/spec/rbac.md §10, #70).
@@ -590,6 +592,16 @@ const (
 // XForwardedClientCert is the header of Envoy and Istio, read as Envoy writes it when it is
 // auth.clientCertificates.forwardedHeader.
 const XForwardedClientCert = "X-Forwarded-Client-Cert"
+
+// DeployTokens configures the deploy tokens, of a repo and over a mask (docs/spec/rbac.md §1).
+type DeployTokens struct {
+	// MaxTTL bounds the lifetime of a deploy token, through the API and on the command line: a
+	// token created without an expiry expires at it, and one asked to expire later is refused. It
+	// counts at the creation: a token created before keeps its expiry, or none. 0, the default,
+	// bounds nothing, and a token created without an expiry then never expires. Must not be
+	// negative.
+	MaxTTL time.Duration `yaml:"maxTTL"`
+}
 
 // ServiceAccounts configures the service accounts: users of kind service, for systems, which
 // authenticate with their personal access tokens only (docs/spec/rbac.md §1).

@@ -92,6 +92,23 @@ func TestLoadWebhooks(t *testing.T) {
 	}
 }
 
+// TestLoadDeployTokens: auth.deployTokens.maxTTL bounds nothing by default; a file sets it as a
+// duration, 0 for none (docs/spec/rbac.md §1, #1286).
+func TestLoadDeployTokens(t *testing.T) {
+	for file, want := range map[string]DeployTokens{
+		minimal: {},
+		minimal + "auth: {deployTokens: {maxTTL: 2160h}}\n": {MaxTTL: 2160 * time.Hour},
+		minimal + "auth: {deployTokens: {maxTTL: 0s}}\n":    {},
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.DeployTokens != want {
+			t.Errorf("Load(%q): deployTokens %+v, want %+v", file, c.Auth.DeployTokens, want)
+		}
+	}
+}
+
 // TestLoadServiceAccounts: auth.serviceAccounts.maxTokenTTL is 365 days and onOwnerDisabled flag
 // by default; a file sets the bound as a duration, 0 for none, and the other key to disable
 // (docs/spec/rbac.md §1).
@@ -310,6 +327,8 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"ingest.claimTTL: must not be negative", "ingest.visibilityTimeout: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
 		{name: "zero bootstrap ttl", file: minimal + "auth: {bootstrap: {ttl: 0s}}\n", want: []string{"auth.bootstrap.ttl: must be positive"}},
+		{name: "negative deploy token ttl", file: minimal + "auth: {deployTokens: {maxTTL: -1h}}\n",
+			want: []string{"auth.deployTokens.maxTTL: must not be negative; 0 bounds nothing"}},
 		{name: "negative service token ttl", file: minimal + "auth: {serviceAccounts: {maxTokenTTL: -1h}}\n",
 			want: []string{"auth.serviceAccounts.maxTokenTTL: must not be negative; 0 bounds nothing"}},
 		{name: "unknown onOwnerDisabled", file: minimal + "auth: {serviceAccounts: {onOwnerDisabled: delete}}\n",
