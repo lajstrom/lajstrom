@@ -25,6 +25,8 @@ tags:
     description: Local users.
   - name: bindings
     description: Roles of users on the repos of a mask.
+  - name: ci
+    description: The CI trust policies of the token exchange for CI (docs/spec/rbac.md §11).
   - name: audit
     description: The audit log.
   - name: webhooks
@@ -1526,6 +1528,95 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/ci/policies:
+    get:
+      tags: [ci]
+      operationId: listCIPolicies
+      summary: The CI trust policies, of the configuration in its order, then those of the API by id (admin).
+      responses:
+        "200":
+          description: Every policy.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicyList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [ci]
+      operationId: createCIPolicy
+      summary: Make a CI trust policy of the API (admin); one that writes takes the steps of docs/spec/rbac.md §11.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CIPolicy"}
+      responses:
+        "201":
+          description: The policy.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicy"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/ci/policies/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: The policy's name.
+        schema: {type: string}
+    get:
+      tags: [ci]
+      operationId: getCIPolicy
+      summary: One CI trust policy, of the configuration or of the API (admin).
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicy"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    put:
+      tags: [ci]
+      operationId: replaceCIPolicy
+      summary: Replace the issuer, claims and grants of a CI trust policy of the API (admin); 409 for one of the configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CIPolicy"}
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicy"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [ci]
+      operationId: deleteCIPolicy
+      summary: Delete a CI trust policy of the API (admin); 409 for one of the configuration.
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/audit:
     get:
       tags: [audit]
@@ -2545,6 +2636,39 @@ components:
       minLength: 8
       maxLength: 1024
       description: A password of 8 to 1024 bytes of UTF-8; the server counts bytes, and the lengths here count characters.
+    CIPolicy:
+      type: object
+      description: A CI trust policy (docs/spec/rbac.md §11). In a body, source, createdBy, createdAt and updatedAt are ignored, and the name of a PUT, when present, is the path's.
+      required: [name, issuer, claims, grants]
+      properties:
+        name: {type: string, description: "Lowercase letters and digits with single hyphens, at most 63 bytes."}
+        issuer: {type: string, description: The name of an issuer of auth.ci.issuers.}
+        claims:
+          type: object
+          description: Each claim to its values, any of which matches; every claim must match. An id (repository_id or repository_owner_id, project_id or namespace_id) is required.
+          additionalProperties:
+            type: array
+            items: {type: string}
+        grants:
+          type: array
+          items: {$ref: "#/components/schemas/CIGrant"}
+        source: {type: string, enum: [config, api], description: "Its owner: config is read-only through the API."}
+        createdBy: {type: string, description: The principal that made a policy of the API.}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CIGrant:
+      type: object
+      required: [role, mask]
+      properties:
+        role: {type: string, enum: [reader, writer, maintainer]}
+        mask: {type: string, description: "<format>/<repo>, each a name or *."}
+    CIPolicyList:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items: {$ref: "#/components/schemas/CIPolicy"}
     Binding:
       type: object
       required: [id, principal, role, repoMask, createdAt]
