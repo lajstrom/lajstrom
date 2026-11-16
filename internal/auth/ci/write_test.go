@@ -301,3 +301,68 @@ func TestApprovalNone(t *testing.T) {
 		t.Errorf("an approval with nothing that waits: %v", err)
 	}
 }
+
+// TestExpire: a policy past its expiry grants nothing at once; the passes of two replicas mark it
+// expired once, with one audit row and one event; a renewal of it waits pending.
+func TestExpire(t *testing.T) {
+	f := newWriteFixture(t, config.CIApprovalSecondAdmin)
+	o := auth.Origin{Source: "api"}
+	soon := testNow.Add(time.Hour)
+	p := writePolicy("app-publish")
+	p.ExpiresAt = &soon
+	made, err := f.s.Create(signedIn(alice, time.Minute, "mfa"), p, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.Approve(at(signedIn(bob, time.Minute, "mfa"), made), "app-publish", o); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.s.Expire(context.Background(), auth.Origin{Source: "expiry"}); n != 0 || err != nil {
+		t.Errorf("Expire before the expiry = %d, %v", n, err)
+	}
+	f.now = soon
+	if f.counts(t, "app-publish") {
+		t.Error("a policy at its expiry counts")
+	}
+	if got, _ := f.s.Get(context.Background(), "app-publish"); got.State != index.CIPolicyExpired {
+		t.Errorf("Get at the expiry: state %s", got.State)
+	}
+	if marked := expireOnReplicas(t, f); marked != 1 {
+		t.Errorf("the passes marked %d, want 1", marked)
+	}
+	checkExpired(t, f)
+	renewed, err := f.s.Renew(signedIn(alice, time.Minute-time.Hour, "mfa"), "app-publish", nil, o)
+	if err != nil || renewed.State != index.CIPolicyPending || renewed.Renewal != nil || !renewed.ExpiresAt.Equal(soon.Add(WriteLifetime)) {
+		t.Errorf("Renew of an expired policy = %+v, %v", renewed, err)
+	}
+}
+
+// expireOnReplicas runs a pass of the expiry on the Service of f, on another over the same index,
+// and on the first again, and returns how many policies they marked in all.
+func expireOnReplicas(t *testing.T, f *writeFixture) int {
+	t.Helper()
+	other := &Service{Index: f.st, Config: f.s.Config, Webhooks: f.s.Webhooks, Now: f.s.Now}
+	var marked int
+	for _, s := range []*Service{f.s, other, f.s} {
+		n, err := s.Expire(context.Background(), auth.Origin{Source: "expiry"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		marked += n
+	}
+	return marked
+}
+
+// checkExpired checks the expiry of TestExpire: one ci.policy.expire row, anonymous with the
+// source expiry, and one event.
+func checkExpired(t *testing.T, f *writeFixture) {
+	t.Helper()
+	rows, _ := f.st.ListAudit(context.Background(), index.AuditFilter{Action: ActionPolicyExpire})
+	if len(rows) != 1 || rows[0].Principal != "anonymous" || !strings.Contains(string(rows[0].Details), `"source":"expiry"`) {
+		t.Errorf("the ci.policy.expire rows: %+v", rows)
+	}
+	want := []string{webhook.TypeCIPolicyCreated, webhook.TypeCIPolicyApproved, webhook.TypeCIPolicyExpired}
+	if got := f.events(t); !slices.Equal(got, want) {
+		t.Errorf("the events: %v, want %v", got, want)
+	}
+}

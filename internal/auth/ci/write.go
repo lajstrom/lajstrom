@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 // fresh sign-in with a second factor of whoever makes, changes, renews or approves it, and, with
 // auth.ci.apiWriteApproval second-admin, the approval of another admin, until which it waits
 // pending and grants nothing.
+
+// ExpiryInterval is how often each replica looks for the policies whose expiry has passed
+// (RunExpiry).
+const ExpiryInterval = time.Minute
 
 // steps sets on r, a policy as a create or a change by the principal of ctx leaves it, what its
 // grants take at now. One that grants write: the steps of writeSteps, its expiry, expiresAt or
@@ -214,4 +219,57 @@ func (s *Service) Approve(ctx context.Context, name string, o auth.Origin) (*Pol
 	}
 	pol := fromRow(r, now)
 	return &pol, nil
+}
+
+// Expire marks expired the policies of the API whose expiry has passed, active or pending, each
+// with its ci.policy.expire row and event by the principal of ctx (anonymous for a replica's own
+// pass), and returns how many it marked. Each mark is an update at the revision read: of the
+// replicas that find one policy expired at once, one marks it, so that its row and its event are
+// written once. A policy changed since the read is left for the next pass.
+func (s *Service) Expire(ctx context.Context, o auth.Origin) (int, error) {
+	rows, err := s.Index.ListCIPolicies(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("ci: the trust policies that expire: %w", err)
+	}
+	now, n := s.now(), 0
+	for _, row := range rows {
+		if row.State == index.CIPolicyExpired || row.ExpiresAt == nil || row.ExpiresAt.After(now) {
+			continue
+		}
+		err := s.Index.Tx(ctx, func(w index.Writer) error {
+			r := row
+			r.State = index.CIPolicyExpired
+			if err := w.UpdateCIPolicy(ctx, &r); err != nil {
+				return err
+			}
+			return s.changed(ctx, w, ActionPolicyExpire, webhook.TypeCIPolicyExpired, r, nil, o)
+		})
+		switch {
+		case errors.Is(err, index.ErrConflict), errors.Is(err, index.ErrNotFound): // another replica, or a change
+		case err != nil:
+			return n, fmt.Errorf("ci: expire the trust policy %s: %w", row.Name, err)
+		default:
+			n++
+		}
+	}
+	return n, nil
+}
+
+// RunExpiry runs Expire every ExpiryInterval until ctx ends, with the origin source expiry and
+// the anonymous principal; a pass that fails is logged at warn, and the next one tries again.
+func (s *Service) RunExpiry(ctx context.Context, log *slog.Logger) {
+	t := time.NewTicker(ExpiryInterval)
+	defer t.Stop()
+	for {
+		if n, err := s.Expire(ctx, auth.Origin{Source: "expiry"}); err != nil && ctx.Err() == nil {
+			log.WarnContext(ctx, "ci: the expiry of the trust policies of the API", "error", err.Error())
+		} else if n > 0 {
+			log.InfoContext(ctx, "ci: trust policies of the API expired", "policies", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

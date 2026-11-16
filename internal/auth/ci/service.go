@@ -22,6 +22,7 @@ const (
 	ActionPolicyUpdate  = "ci.policy.update"
 	ActionPolicyRenew   = "ci.policy.renew"
 	ActionPolicyApprove = "ci.policy.approve"
+	ActionPolicyExpire  = "ci.policy.expire"
 	ActionPolicyDelete  = "ci.policy.delete"
 )
 
@@ -70,9 +71,10 @@ type Renewal struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// Service makes, changes, renews, approves and deletes the CI trust policies of the API, and
-// lists them with those of the configuration (docs/spec/rbac.md §11): the API and lajstrom admin
-// ci-policy go through it, so that the rules, the audit rows and the events exist once. Who may call it (the admin role) is the caller's to decide; the steps of a policy that
+// Service makes, changes, renews, approves, expires and deletes the CI trust policies of the
+// API, and lists them with those of the configuration (docs/spec/rbac.md §11): the API and
+// lajstrom admin ci-policy go through it, so that the rules, the audit rows and the events exist
+// once. Who may call it (the admin role) is the caller's to decide; the steps of a policy that
 // grants write (a fresh sign-in with a second factor, a second admin, auth.ci.apiWriteRepos, an
 // expiry) are its own, read from the principal and the credential of the context. Create it as a
 // struct literal; its methods may be called concurrently.
@@ -344,7 +346,8 @@ func fromConfig(p config.CIPolicy) Policy {
 	return pol
 }
 
-// fromRow is the row r as the API shows it at now: a policy whose expiry has passed is expired.
+// fromRow is the row r as the API shows it at now: a policy whose expiry has passed is expired,
+// whether a replica marked it so yet or not (Expire).
 func fromRow(r index.CIPolicy, now time.Time) Policy {
 	created, updated := r.CreatedAt.UTC(), r.UpdatedAt.UTC()
 	pol := Policy{Name: r.Name, Issuer: r.Issuer, Claims: r.Claims, Grants: r.Grants, ExpiresAt: utc(r.ExpiresAt), Source: SourceAPI,
@@ -360,7 +363,7 @@ func fromRow(r index.CIPolicy, now time.Time) Policy {
 }
 
 // expired reports whether the policy r grants nothing for its expiry at now: marked expired, or
-// past its expiry.
+// past an expiry that a replica has not marked yet.
 func expired(r index.CIPolicy, now time.Time) bool {
 	return r.State == index.CIPolicyExpired || (r.ExpiresAt != nil && !r.ExpiresAt.After(now))
 }
