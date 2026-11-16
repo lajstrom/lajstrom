@@ -86,8 +86,11 @@ type Token struct {
 	Raw string
 	// KeyID is the kid: the fingerprint of the key that signed it.
 	KeyID string
-	// IssuedAt is iat, to the second; ExpiresAt is exp, Lifetime later.
+	// IssuedAt is iat, to the second; ExpiresAt is exp, Lifetime later (a CI token's lifetime
+	// later for IssueCI).
 	IssuedAt, ExpiresAt time.Time
+	// ID is the jti.
+	ID string
 }
 
 // String describes t without the JWT.
@@ -123,6 +126,19 @@ func NewIssuer(o Options) *Issuer {
 // and name. The key is the active one, read for every token (Keys.TokenSigner), and the
 // Verifier of Options learns it before Issue returns.
 func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, access []Access) (*Token, error) {
+	sorted := append([]Access{}, access...)
+	slices.SortFunc(sorted, compareAccess)
+	return i.sign(ctx, "", Lifetime, func(rc jwt.RegisteredClaims) jwt.Claims {
+		rc.Issuer, rc.Subject, rc.Audience = service, p.String(), jwt.ClaimStrings{service}
+		return Claims{RegisteredClaims: rc, Access: sorted}
+	})
+}
+
+// sign signs the claims that claims makes of the registered ones it is given (iat and nbf now,
+// to the second, exp lifetime later, jti 16 random bytes in base64url) with the active key, read
+// for every token (Keys.TokenSigner): header alg the key's, kid its fingerprint, and typ when it
+// is not empty. The Verifier of Options learns the key before sign returns.
+func (i *Issuer) sign(ctx context.Context, typ string, lifetime time.Duration, claims func(jwt.RegisteredClaims) jwt.Claims) (*Token, error) {
 	var read time.Time
 	if i.verifier != nil {
 		read = i.verifier.now() // before the key is read, on the verifier's clock: see learn
@@ -136,24 +152,20 @@ func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, ac
 		return nil, fmt.Errorf("token: %s has the algorithm %q, which signs no token", k, k.Algorithm)
 	}
 	iat := i.now().UTC().Truncate(time.Second)
-	exp := iat.Add(Lifetime)
-	jti := make([]byte, 16)
-	_, _ = rand.Read(jti) // crypto/rand.Read never returns an error; it crashes the program instead
-	sorted := append([]Access{}, access...)
-	slices.SortFunc(sorted, compareAccess)
-	t := jwt.NewWithClaims(method, Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    service,
-			Subject:   p.String(),
-			Audience:  jwt.ClaimStrings{service},
-			ExpiresAt: jwt.NewNumericDate(exp),
-			NotBefore: jwt.NewNumericDate(iat),
-			IssuedAt:  jwt.NewNumericDate(iat),
-			ID:        base64.RawURLEncoding.EncodeToString(jti),
-		},
-		Access: sorted,
-	})
+	exp := iat.Add(lifetime)
+	b := make([]byte, 16)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error; it crashes the program instead
+	jti := base64.RawURLEncoding.EncodeToString(b)
+	t := jwt.NewWithClaims(method, claims(jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(exp),
+		NotBefore: jwt.NewNumericDate(iat),
+		IssuedAt:  jwt.NewNumericDate(iat),
+		ID:        jti,
+	}))
 	t.Header["kid"] = k.ID()
+	if typ != "" {
+		t.Header["typ"] = typ
+	}
 	raw, err := t.SignedString(k.Private)
 	if err != nil {
 		return nil, fmt.Errorf("token: sign with %s: %w", k, err)
@@ -161,7 +173,7 @@ func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, ac
 	if i.verifier != nil {
 		i.verifier.learn(k, read)
 	}
-	return &Token{Raw: raw, KeyID: k.ID(), IssuedAt: iat, ExpiresAt: exp}, nil
+	return &Token{Raw: raw, KeyID: k.ID(), IssuedAt: iat, ExpiresAt: exp, ID: jti}, nil
 }
 
 // signingMethods are the methods of the key algorithms.
