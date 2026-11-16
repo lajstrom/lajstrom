@@ -1,6 +1,7 @@
 package maven
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"os"
@@ -108,9 +109,26 @@ func TestRenderIndexGolden(t *testing.T) {
 			t.Errorf("RenderIndex(%q) = %d documents, %v; want none", scope, len(docs), err)
 		}
 	}
-	for _, scope := range []format.IndexScope{"", "com.example", "com.example/lib-core/1.0", "com..example/lib-core", "com.example:lib-core"} {
+	keyed, err := Plugin{}.RenderIndex(ctx, r, "com.example:lib-core", st)
+	must(t, err)
+	sameDocuments(t, "RenderIndex of the key", keyed, docs[:1])
+	for _, scope := range []format.IndexScope{"", "com.example", "com.example/lib-core/1.0", "com..example/lib-core", "com..example:lib-core", "com.example:"} {
 		if _, err := (Plugin{}).RenderIndex(ctx, r, scope, st); !errors.Is(err, index.ErrNotFound) {
 			t.Errorf("RenderIndex(%q): %v, want index.ErrNotFound", scope, err)
+		}
+	}
+}
+
+// sameDocuments fails the test unless got are the documents want, kind and bytes.
+func sameDocuments(t *testing.T, what string, got, want []format.Document) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: %d documents, want %d", what, len(got), len(want))
+		return
+	}
+	for i := range got {
+		if got[i].Kind != want[i].Kind || !bytes.Equal(got[i].Content, want[i].Content) {
+			t.Errorf("%s: document %d is %s of %d bytes, want %s of %d", what, i, got[i].Kind, len(got[i].Content), want[i].Kind, len(want[i].Content))
 		}
 	}
 }

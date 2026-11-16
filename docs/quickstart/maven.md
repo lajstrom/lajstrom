@@ -708,6 +708,55 @@ until they are deleted, through the API as every version is; a scheduled
 `lajstrom admin retention --repo maven/snapshots --keep-builds 3` keeps the three newest builds of
 each SNAPSHOT version ([operations.md](../operations.md#retention)).
 
+## A proxy of Maven Central, and a group
+
+A proxy repo serves an upstream Maven repository and keeps every file it fetched as an artifact
+in the registry, so that builds keep resolving when the upstream is slow or gone; a group serves a
+hosted repo and the proxy under one URL ([http-routing.md](../spec/http-routing.md), maven, Proxy
+and Group). The upstream is the operator's, in the configuration (`deploy/compose/lajstrom.yaml`,
+as in the npm quick start's section 9):
+
+```yaml
+upstreams:
+  - name: central
+    format: maven
+    url: "https://repo.maven.apache.org/maven2/"
+```
+
+Restart `make run`, then on the host:
+
+```sh
+cfg=deploy/compose/lajstrom.yaml
+bin/lajstrom admin repo create maven/central --registry local --kind proxy --upstream '{"name": "central", "deny": ["com.example:*"]}' --config $cfg
+bin/lajstrom admin repo create maven/all --kind group --group '{"members": ["releases", "central"]}' --config $cfg
+bin/lajstrom admin binding create --principal user:alice --role reader --mask maven/all --config $cfg
+```
+
+`deny: ["com.example:*"]` keeps the proxy from asking Maven Central for your own groupId, so a
+public artifact under one of your names is never resolved in its place; through the group, an
+artifact `maven/releases` holds hides the upstream's versions of it anyway. A build points at the
+group alone, as a `<mirror>` of everything in `settings.xml` with the `<server>` of section 3:
+
+```xml
+<mirrors>
+  <mirror>
+    <id>lajstrom</id>
+    <mirrorOf>*</mirrorOf>
+    <url>http://localhost:8080/maven/all</url>
+  </mirror>
+</mirrors>
+```
+
+A Maven repository lists no files of a version, so the proxy fetches the file a client asks for,
+alone, checks it against the upstream's `.sha1`, and keeps it as a version of its own beside the
+others of that version (`1.2.0__jar`, `1.2.0__jar_3asources`: manifest-profile.md §4.2): the
+registry holds what your builds used, not every file of every version. A signature whose upstream
+has no `.sha1` (Maven Central's recent `.asc` files) is fetched and served unchecked: a forged
+signature fails its verification anyway, so a build that verifies signatures checks it, and its
+version has no `lajstrom.origin.checksum`. Any other file without a `.sha1` is `404`. `mvn deploy`
+to the group deploys to `maven/releases`. A proxy of a snapshot repository needs `policy.maven.versionPolicy: snapshot`,
+as a hosted one does.
+
 ## The end-to-end script
 
 `test/e2e/maven.sh` runs the same clients in the same images with checks: `mvn deploy` of two

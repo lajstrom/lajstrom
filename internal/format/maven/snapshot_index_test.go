@@ -2,6 +2,7 @@ package maven
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,19 @@ func TestRenderSnapshot(t *testing.T) {
 			t.Errorf("RenderIndex(%q) = %d documents, %v; want %d", tt.scope, len(docs), err, tt.docs)
 		}
 	}
+	keyed, err := Plugin{}.RenderIndex(t.Context(), r, "com.example:lib-core", st)
+	must(t, err)
+	var kinds []string
+	for _, d := range keyed {
+		kinds = append(kinds, d.Kind)
+		if d.Kind == "maven-metadata:1.0-SNAPSHOT" && string(d.Content) != string(docs[0].Content) {
+			t.Errorf("the keyed document of 1.0-SNAPSHOT is not the one of its own scope:\n%s", d.Content)
+		}
+	}
+	slices.Sort(kinds[1:])
+	expect(t, "the kinds of the keyed documents, as a group reads its hosted member", kinds,
+		[]string{kindMetadata, "maven-metadata:1.0-SNAPSHOT", "maven-metadata:2.0-SNAPSHOT"})
+
 	for _, scope := range []format.IndexScope{"com.example/lib-core/1.0", "com.example/lib-core/1.0-snapshot",
 		"com.example/lib-core/1.0-20261114.101112-1", "com.example/lib-core/1.0-SNAPSHOT/x"} {
 		if _, err := (Plugin{}).RenderIndex(t.Context(), r, scope, st); err == nil {
