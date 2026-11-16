@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/config"
 )
 
 // TestServeCannotListen checks that serve returns the error of a listener that cannot bind, at
@@ -89,5 +94,32 @@ func TestServeWarnsPlainHTTPBeyondLoopback(t *testing.T) {
 				t.Errorf("the warning does not name server.listen=%s; stderr:\n%s", tt.listen, stderr)
 			}
 		})
+	}
+}
+
+// TestServeWarnsBeyondMaxTTL checks the warning of serve at start about the live tokens beyond
+// the bound of their kind (docs/spec/rbac.md §1, #1286): a deploy token made without an expiry
+// before auth.deployTokens.maxTTL is counted once the bound is set, and nothing is logged
+// without a bound or with none beyond it.
+func TestServeWarnsBeyondMaxTTL(t *testing.T) {
+	cfg, dsn := tokenCLI(t)
+	cliCreate(t, cfg, "--repo", "raw/scratch", "--name", "ci", "--scopes", "write")
+	cliCreate(t, cfg, "--mask", "oci/*", "--name", "nodes", "--scopes", "read", "--expires", "30d")
+	st := openTestStore(t, dsn)
+	for _, tt := range []struct {
+		deploy time.Duration
+		want   string // "" for nothing logged
+	}{
+		{0, ""},
+		{90 * 24 * time.Hour, `level=WARN msg="live deploy tokens beyond auth.deployTokens.maxTTL, made before it; replace them: ` +
+			`GET /api/v1/tokens?live=true marks them beyondMaxTTL" count=1 maxTTL=2160h0m0s`},
+		{24 * time.Hour, "count=2 maxTTL=24h0m0s"},
+	} {
+		var logs bytes.Buffer
+		warnBeyondMaxTTL(context.Background(), config.Auth{DeployTokens: config.DeployTokens{MaxTTL: tt.deploy}}, st,
+			slog.New(slog.NewTextHandler(&logs, nil)))
+		if got := logs.String(); (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
+			t.Errorf("maxTTL %s logged %q, want %q", tt.deploy, got, tt.want)
+		}
 	}
 }

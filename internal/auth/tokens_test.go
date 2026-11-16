@@ -807,3 +807,106 @@ func TestTokensMaxTTLAudit(t *testing.T) {
 		})
 	}
 }
+
+// TestTokensBeyondMaxTTL: once a bound is set, every view marks the live tokens made before it
+// beyond it, a deploy token's and a service account's, and CountBeyondMaxTTL counts them
+// (docs/spec/rbac.md §1, #1286); a token made under the bound, a token within it, a revoked or
+// expired one and a person's are never marked, and without a bound none is.
+func TestTokensBeyondMaxTTL(t *testing.T) {
+	ctx := context.Background()
+	tokens, forever, within := beyondFixture(t)
+	if got, want := markedBeyond(t, tokens, forever.ID), "repo: \nmasks: \nrobot: \nalice: \nlive: \nall: \nget: "; got != want {
+		t.Errorf("without a bound, marked:\n%s", got)
+	}
+	if d, s, err := tokens.CountBeyondMaxTTL(ctx); d != 0 || s != 0 || err != nil {
+		t.Errorf("CountBeyondMaxTTL without a bound = %d, %d, %v; want none", d, s, err)
+	}
+
+	tokens.DeployMaxLifetime, tokens.ServiceMaxLifetime = 90*24*time.Hour, 30*24*time.Hour
+	under, _, err := tokens.CreateDeploy(ctx, "raw/scratch", "under", []string{ScopeRead}, Expiry{}, cli)
+	if err != nil || under.BeyondMaxTTL || under.ExpiresAt == nil {
+		t.Errorf("a token made under the bound: %+v, %v", under, err)
+	}
+	want := "repo: forever,long\nmasks: nodes\nrobot: ci\nalice: \nlive: forever,long,nodes,ci\nall: forever,long,nodes,ci\nget: forever"
+	if got := markedBeyond(t, tokens, forever.ID); got != want {
+		t.Errorf("marked:\n%s\nwant:\n%s", got, want)
+	}
+	if d, s, err := tokens.CountBeyondMaxTTL(ctx); d != 3 || s != 1 || err != nil {
+		t.Errorf("CountBeyondMaxTTL = %d deploy, %d service, %v; want 3 and 1", d, s, err)
+	}
+	if b, _ := json.Marshal(within); strings.Contains(string(b), "beyondMaxTTL") {
+		t.Errorf("a token within the bound answers %s, want no beyondMaxTTL", b)
+	}
+}
+
+// beyondFixture is the service-account fixture with the repo raw/scratch, tokens made without a
+// bound, and its clock two hours later: deploy tokens forever (no expiry), long (400 days),
+// within (30 days), expired (an hour) and revoked, nodes over raw/* (no expiry), robot's ci (no
+// expiry) and alice's tablet (300 days). It returns the service, forever and within.
+func beyondFixture(t *testing.T) (*Tokens, *Token, *Token) {
+	t.Helper()
+	ctx := context.Background()
+	f, _ := newServiceFixture(t)
+	r := index.Repo{Format: "raw", Name: "scratch", Registry: "local", Prefix: "raw/scratch", Kind: "hosted"}
+	if err := f.st.CreateRepo(ctx, &r); err != nil {
+		t.Fatal(err)
+	}
+	clock := usersNow
+	tokens := &Tokens{Index: f.st, Now: func() time.Time { return clock }, Log: f.users.Log}
+	day, read := 24*time.Hour, []string{ScopeRead}
+	made := func(tok *Token, _ string, err error) *Token {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	forever := made(tokens.CreateDeploy(ctx, "raw/scratch", "forever", read, Expiry{}, cli))
+	made(tokens.CreateDeploy(ctx, "raw/scratch", "long", read, Expiry{In: 400 * day}, cli))
+	within := made(tokens.CreateDeploy(ctx, "raw/scratch", "within", read, Expiry{In: 30 * day}, cli))
+	made(tokens.CreateDeploy(ctx, "raw/scratch", "expired", read, Expiry{In: time.Hour}, cli))
+	gone := made(tokens.CreateDeploy(ctx, "raw/scratch", "revoked", read, Expiry{}, cli))
+	made(tokens.CreateMaskDeploy(ctx, "raw/*", "nodes", read, Expiry{}, cli))
+	made(tokens.CreatePAT(ctx, "robot", "ci", nil, Expiry{}, cli))
+	made(tokens.CreatePAT(ctx, "alice", "tablet", nil, Expiry{In: 300 * day}, cli))
+	if err := tokens.Revoke(ctx, gone.ID, cli); err != nil {
+		t.Fatal(err)
+	}
+	clock = usersNow.Add(2 * time.Hour)
+	return tokens, forever, within
+}
+
+// markedBeyond returns the names of the tokens each view of tokens marks BeyondMaxTTL, a line per
+// view: the repo raw/scratch, every mask, robot's, alice's, every live token, every token, and
+// the token id.
+func markedBeyond(t *testing.T, tokens *Tokens, id int64) string {
+	t.Helper()
+	ctx := context.Background()
+	var out []string
+	mark := func(view string) func([]Token, error) {
+		return func(list []Token, err error) {
+			if err != nil {
+				t.Fatalf("%s: %v", view, err)
+			}
+			names := []string{}
+			for _, tok := range list {
+				if tok.BeyondMaxTTL {
+					names = append(names, tok.Name)
+				}
+			}
+			out = append(out, view+": "+strings.Join(names, ","))
+		}
+	}
+	mark("repo")(tokens.ListDeploy(ctx, "raw/scratch"))
+	mark("masks")(tokens.ListMaskDeploy(ctx, ""))
+	mark("robot")(tokens.List(ctx, "robot"))
+	mark("alice")(tokens.List(ctx, "alice"))
+	mark("live")(tokens.Page(ctx, TokenQuery{Live: true, Limit: 100}))
+	mark("all")(tokens.Page(ctx, TokenQuery{Limit: 100}))
+	got, err := tokens.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark("get")([]Token{*got}, nil)
+	return strings.Join(out, "\n")
+}
