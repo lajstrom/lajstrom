@@ -112,6 +112,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"DPoPProofs", testDPoPProofs},
 		{"DPoPProofRace", testDPoPProofRace},
 		{"Webhooks", testWebhooks},
+		{"CIPolicies", testCIPolicies},
 		{"WebhookDeliveries", testWebhookDeliveries},
 		{"WebhookClaimRace", testWebhookClaimRace},
 		{"SnapshotAudit", testSnapshotAudit},

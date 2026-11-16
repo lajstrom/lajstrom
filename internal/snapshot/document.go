@@ -41,8 +41,22 @@ type document struct {
 	Webhooks []webhookRow `json:"webhooks"`
 	// PolicyRules is absent from a document written before migration 0030: no rule (#101).
 	PolicyRules []policyRuleRow `json:"policyRules"`
+	// CIPolicies is absent from a document written before migration 0033: no policy of the API.
+	CIPolicies []ciPolicyRow `json:"ciPolicies"`
 	// Audit is nil when the snapshot was made without audit rows, and absent then.
 	Audit *[]auditRow `json:"audit,omitempty"`
+}
+
+// ciPolicyRow is a row of ci_policies; claims and grants are the JSON of their columns.
+type ciPolicyRow struct {
+	ID        int64               `json:"id"`
+	Name      string              `json:"name"`
+	Issuer    string              `json:"issuer"`
+	Claims    map[string][]string `json:"claims"`
+	Grants    []index.CIGrant     `json:"grants"`
+	CreatedBy string              `json:"createdBy"`
+	CreatedAt time.Time           `json:"createdAt"`
+	UpdatedAt time.Time           `json:"updatedAt"`
 }
 
 type repoRow struct {
@@ -223,7 +237,8 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 		Users: make([]userRow, 0, len(cp.Users)), Identities: make([]identityRow, 0, len(cp.Identities)),
 		IdentityGroups: make([]identityGroupRow, 0, len(cp.IdentityGroups)), Tokens: make([]tokenRow, 0, len(cp.Tokens)),
 		Bindings: make([]bindingRow, 0, len(cp.Bindings)), Keys: make([]keyRow, 0, len(cp.Keys)),
-		Webhooks: make([]webhookRow, 0, len(cp.Webhooks)), PolicyRules: make([]policyRuleRow, 0, len(cp.PolicyRules))}
+		Webhooks: make([]webhookRow, 0, len(cp.Webhooks)), PolicyRules: make([]policyRuleRow, 0, len(cp.PolicyRules)),
+		CIPolicies: make([]ciPolicyRow, 0, len(cp.CIPolicies))}
 	for _, r := range cp.Repos {
 		doc.Repos = append(doc.Repos, repoRow{ID: r.ID, Format: r.Format, Name: r.Name, Registry: r.Registry, Prefix: r.Prefix,
 			Kind: r.Kind, AnonymousRead: r.AnonymousRead, Policy: r.Policy, Upstream: r.Upstream, Group: r.Group,
@@ -266,6 +281,10 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 		doc.PolicyRules = append(doc.PolicyRules, policyRuleRow{ID: r.ID, RepoMask: r.RepoMask, Name: r.Name, Version: r.Version,
 			Variant: r.Variant, Effect: r.Effect, Reason: r.Reason, CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt})
 	}
+	for _, p := range cp.CIPolicies {
+		doc.CIPolicies = append(doc.CIPolicies, ciPolicyRow{ID: p.ID, Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants,
+			CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
+	}
 	if cp.WithAudit {
 		rows := make([]auditRow, 0, len(cp.Audit))
 		for _, e := range cp.Audit {
@@ -288,7 +307,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 		Identities: make([]index.Identity, 0, len(doc.Identities)), IdentityGroups: make([]index.IdentityGroup, 0, len(doc.IdentityGroups)),
 		Tokens: make([]index.Token, 0, len(doc.Tokens)), Bindings: make([]index.Binding, 0, len(doc.Bindings)),
 		Keys: make([]index.Key, 0, len(doc.Keys)), Webhooks: make([]index.Webhook, 0, len(doc.Webhooks)),
-		PolicyRules: make([]index.PolicyRule, 0, len(doc.PolicyRules))}
+		PolicyRules: make([]index.PolicyRule, 0, len(doc.PolicyRules)), CIPolicies: make([]index.CIPolicy, 0, len(doc.CIPolicies))}
 	for _, r := range doc.Repos {
 		cp.Repos = append(cp.Repos, index.Repo{ID: r.ID, Format: r.Format, Name: r.Name, Registry: r.Registry, Prefix: r.Prefix,
 			Kind: r.Kind, AnonymousRead: r.AnonymousRead, Policy: r.Policy, Upstream: r.Upstream, Group: r.Group,
@@ -330,6 +349,10 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, r := range doc.PolicyRules {
 		cp.PolicyRules = append(cp.PolicyRules, index.PolicyRule{ID: r.ID, RepoMask: r.RepoMask, Name: r.Name, Version: r.Version,
 			Variant: r.Variant, Effect: r.Effect, Reason: r.Reason, CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt})
+	}
+	for _, p := range doc.CIPolicies {
+		cp.CIPolicies = append(cp.CIPolicies, index.CIPolicy{ID: p.ID, Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants,
+			CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
 	}
 	if doc.Audit != nil {
 		cp.WithAudit, cp.Audit = true, []index.AuditEvent{}

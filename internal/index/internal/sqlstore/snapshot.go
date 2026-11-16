@@ -20,7 +20,7 @@ var _ index.Snapshotter = (*Store)(nil)
 // SnapshotTables are the tables ImportControlPlane writes, in the order of their references; each
 // must be empty unless the import is forced.
 var SnapshotTables = []string{"repos", "group_members", "users", "identities", "identity_groups", "tokens", "bindings", "keys",
-	"webhooks", "policy_rules", "audit"}
+	"webhooks", "policy_rules", "ci_policies", "audit"}
 
 // ForcedTables are the tables a forced import empties, every row that refers to another before
 // it: every table but KeptTables. A test of each engine lists the tables of the schema and fails
@@ -30,7 +30,7 @@ var ForcedTables = []string{
 	"webhook_deliveries", "webhooks", "policy_rules", "policy_seen", "bootstrap_token", "journal_state", "journal", "verdicts",
 	"attachments", "files", "versions",
 	"packages", "blob_map", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
-	"reindex_runs", "prune_sightings", "dpop_proofs", "repos", "users",
+	"reindex_runs", "prune_sightings", "dpop_proofs", "ci_policies", "repos", "users",
 }
 
 // KeptTables are the tables a forced import leaves: the schema's version, the counter it
@@ -39,7 +39,7 @@ var KeptTables = []string{"schema_migrations", "auth_version", "policy_state", "
 
 // sequenced are the tables of a snapshot with an id of their own, whose sequence an import moves
 // past the ids it writes.
-var sequenced = []string{"repos", "users", "identities", "tokens", "bindings", "keys", "webhooks", "policy_rules", "audit"}
+var sequenced = []string{"repos", "users", "identities", "tokens", "bindings", "keys", "webhooks", "policy_rules", "ci_policies", "audit"}
 
 // ExportControlPlane reads the control plane in one transaction that reads one snapshot
 // (Dialect.ReadSnapshot), run again when the database aborts it all the same, up to TxAttempts
@@ -121,6 +121,10 @@ func (c *conn) exportControlPlane(ctx context.Context, opts index.ExportOptions)
 		},
 		func() (err error) {
 			cp.PolicyRules, err = c.ListPolicyRules(ctx)
+			return err
+		},
+		func() (err error) {
+			cp.CIPolicies, err = c.ListCIPolicies(ctx)
 			return err
 		},
 		func() error { return c.exportAudit(ctx, cp, opts) },
@@ -305,6 +309,10 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, r := range cp.PolicyRules {
 		add(fmt.Sprintf("policy_rules id %d", r.ID), "policy_rules", policyRuleCols, r.ID, r.RepoMask, r.Name, r.Version, r.Variant,
 			r.Effect, r.Reason, r.CreatedBy, c.d.EncodeTime(r.CreatedAt), c.d.encodeNullTime(r.ExpiresAt))
+	}
+	for _, p := range cp.CIPolicies {
+		add("ci_policies "+p.Name, "ci_policies", ciPolicyCols, p.ID, p.Name, p.Issuer, claimsArg(p.Claims), grantsArg(p.Grants),
+			p.CreatedBy, c.d.EncodeTime(p.CreatedAt), c.d.EncodeTime(cmp.Or(p.UpdatedAt, p.CreatedAt)))
 	}
 	for _, e := range cp.Audit {
 		add(fmt.Sprintf("audit id %d", e.ID), "audit", auditCols, e.ID, c.d.EncodeTime(e.At), e.Principal, textArg(e.PrincipalName),
