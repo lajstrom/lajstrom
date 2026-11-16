@@ -181,6 +181,22 @@ type BootstrapToken struct {
 	UsedAt    *time.Time // when it made the admin; it is never valid again
 }
 
+// ConfigState is the row of config_state: the configuration that serve last recorded with a
+// config.change audit row (docs/spec/rbac.md §5, docs/spec/index-schema.md). It holds no secret.
+type ConfigState struct {
+	// Fingerprint is sha256:<hex> of the canonical JSON of the configuration's keys and values.
+	Fingerprint string
+	// Config is each key of the configuration that counts, to its value as JSON. A database
+	// may return a value in another spelling of the same JSON (jsonb orders an object's keys):
+	// compare decoded values.
+	Config map[string]json.RawMessage
+	// Release is the version of the serve that recorded it, Host its host name.
+	Release string
+	Host    string
+	// RecordedAt is when; PutConfigState sets it to now when zero.
+	RecordedAt time.Time
+}
+
 // Binding is a row of bindings (control plane): a role on a repo mask (docs/spec/rbac.md §3).
 type Binding struct {
 	ID        int64
