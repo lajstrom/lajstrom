@@ -45,6 +45,7 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	must(t, s.SetGroupMembers(ctx, group.ID, []int64{hosted.ID, proxy.ID}))
 
 	alice := newUser(t, s, "alice")
+	must(t, s.TouchUser(ctx, alice.ID, at(65)))
 	gone := newUser(t, s, "gone")
 	gone.Name, gone.DeletedName, gone.DeletedAt = "~"+gone.UID, "gone", ptr(at(50))
 	must(t, s.UpdateUser(ctx, &gone))
@@ -392,6 +393,68 @@ func testSnapshotConsistent(t *testing.T, s index.Store) {
 			if tok.RepoID != nil && !repos[*tok.RepoID] {
 				t.Fatalf("an export has the token %d of the repo %d and not the repo", tok.ID, *tok.RepoID)
 			}
+		}
+	}
+}
+
+// testSnapshotLastSeenBefore0034: a snapshot of a schema before migration 0034 has no
+// users.last_seen_at, and the restore fills it as the migration does (docs/spec/index-schema.md,
+// Snapshots of the control plane; #1283): the time of the restore for a user with a password,
+// the latest use of its tokens and login of its identities for one without, nothing for one
+// without either or deleted. A snapshot of 0034 or later is written as it is.
+func testSnapshotLastSeenBefore0034(t *testing.T, open func(*testing.T) index.Store) {
+	ctx := t.Context()
+	user := func(id int64, name, kind, password string) index.User {
+		return index.User{ID: id, UID: index.NewUID(at(int(id))), Name: name, Kind: kind, PasswordHash: password, CreatedAt: at(1),
+			Revision: 1}
+	}
+	gone := user(5, "~gone", "local", passwordHash("gone"))
+	gone.DeletedAt, gone.DeletedName, gone.Disabled = ptr(at(9)), "gone", true
+	cp := index.ControlPlane{
+		Schema: 33,
+		Users: []index.User{user(1, "pw", "local", passwordHash("pw")), user(2, "svc", "service", ""), user(3, "sso", "oidc", ""),
+			user(4, "idle", "service", ""), gone},
+		Tokens: []index.Token{
+			{ID: 1, Kind: "pat", UserID: ptr(int64(2)), Name: "a", Hash: "h1", ExpiresAt: ptr(at(9000)), LastUsedAt: ptr(at(40)), CreatedAt: at(2)},
+			{ID: 2, Kind: "pat", UserID: ptr(int64(2)), Name: "b", Hash: "h2", RevokedAt: ptr(at(35)), LastUsedAt: ptr(at(30)), CreatedAt: at(2)},
+			{ID: 3, Kind: "pat", UserID: ptr(int64(3)), Name: "c", Hash: "h3", ExpiresAt: ptr(at(9000)), LastUsedAt: ptr(at(50)), CreatedAt: at(2)},
+			{ID: 4, Kind: "pat", UserID: ptr(int64(4)), Name: "d", Hash: "h4", ExpiresAt: ptr(at(9000)), CreatedAt: at(2)},
+		},
+		Identities: []index.Identity{{ID: 1, UserID: 3, Issuer: "https://idp.example.com", Subject: "sso", CreatedAt: at(2), LoginAt: at(70)}},
+	}
+	before := time.Now().Add(-time.Second)
+	old := open(t)
+	must(t, snapshotter(t, old).ImportControlPlane(ctx, &cp, index.ImportOptions{}))
+	after := time.Now().Add(time.Second)
+	for _, tt := range []struct {
+		id   int64
+		want *time.Time // nil: none; t0: the time of the restore
+	}{
+		{1, &t0}, {2, ptr(at(40))}, {3, ptr(at(70))}, {4, nil}, {5, nil},
+	} {
+		got, err := old.GetUserByID(ctx, tt.id)
+		must(t, err)
+		switch {
+		case tt.want == nil && got.LastSeenAt != nil:
+			t.Errorf("user %d of a snapshot before 0034: LastSeenAt = %v, want none", tt.id, got.LastSeenAt)
+		case tt.want == &t0 && (got.LastSeenAt == nil || got.LastSeenAt.Before(before) || got.LastSeenAt.After(after)):
+			t.Errorf("user %d with a password, of a snapshot before 0034: LastSeenAt = %v, want the time of the restore", tt.id, got.LastSeenAt)
+		case tt.want != nil && tt.want != &t0 && (got.LastSeenAt == nil || !got.LastSeenAt.Equal(*tt.want)):
+			t.Errorf("user %d without a password, of a snapshot before 0034: LastSeenAt = %v, want %v", tt.id, got.LastSeenAt, *tt.want)
+		}
+	}
+	if cp.Users[0].LastSeenAt != nil {
+		t.Errorf("ImportControlPlane filled the caller's users")
+	}
+
+	cp.Schema = 34
+	current := open(t)
+	must(t, snapshotter(t, current).ImportControlPlane(ctx, &cp, index.ImportOptions{}))
+	for _, u := range cp.Users {
+		got, err := current.GetUserByID(ctx, u.ID)
+		must(t, err)
+		if got.LastSeenAt != nil {
+			t.Errorf("user %d of a snapshot of 0034: LastSeenAt = %v, want none, as the snapshot has it", u.ID, got.LastSeenAt)
 		}
 	}
 }

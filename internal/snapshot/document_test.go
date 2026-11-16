@@ -90,6 +90,7 @@ func filled(t *testing.T, st index.Store, m *keys.Master) secrets {
 	at := time.Now().UTC().Truncate(time.Second)
 	alice, err := st.GetUser(ctx, "alice")
 	must(t, err)
+	must(t, st.TouchUser(ctx, alice.ID, at)) // her last activity, users.last_seen_at (#1283)
 	must(t, st.CreateToken(ctx, &index.Token{Kind: auth.TokenPAT, UserID: &alice.ID, Name: "oidc", Hash: strings.Repeat("0", 64),
 		DPoPJKT: "jkt", AuthTime: &at, AMR: []string{"pwd", "otp"}}))
 	must(t, st.CreateCIPolicy(ctx, &index.CIPolicy{Name: "app-publish", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},

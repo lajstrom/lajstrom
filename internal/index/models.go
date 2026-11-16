@@ -67,6 +67,10 @@ type User struct {
 	// Revision is the row's revision, as Repo.Revision: UpdateUser moves it, a new password
 	// and a deletion too.
 	Revision int64
+	// LastSeenAt is the user's last activity, its last successful authentication
+	// (users.last_seen_at; docs/spec/rbac.md §1, Inactive users); nil when none is recorded.
+	// TouchUser writes it, and ImportControlPlane; CreateUser and UpdateUser leave it.
+	LastSeenAt *time.Time
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.
