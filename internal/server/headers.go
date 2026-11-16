@@ -1,6 +1,9 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // contentSecurityPolicy is the policy of every answer of the main listener. Lajstrom answers
 // JSON, plain text, package indexes and files, and none of them is a page that needs to run or
@@ -28,13 +31,31 @@ func setSecurityHeaders(h http.Header) {
 // API decodes as JSON: without this, a page an admin visits could create a user. net/http's
 // CrossOriginProtection tells such a request by Sec-Fetch-Site, or by an Origin whose host is
 // not the request's; a request with neither, which is what curl, pip, twine, Maven, apt,
-// docker and oras send, passes. The refusal is a 403 in the route's error format.
+// docker and oras send, passes. The refusal is a 403 in the route's error format. An origin of
+// Options.CORSOrigins passes on /api/ of the main host, as the server's own does (#949); on
+// every other path it is refused as another site.
 func (s *Server) crossOrigin(next http.Handler) http.Handler {
 	c := http.NewCrossOriginProtection()
-	c.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c.SetDenyHandler(s.refuseCrossOrigin())
+	other := c.Handler(next)
+	if s.listed == nil {
+		return other
+	}
+	api := s.listed.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && onMainHost(r.Context()) {
+			api.ServeHTTP(w, r)
+			return
+		}
+		other.ServeHTTP(w, r)
+	})
+}
+
+// refuseCrossOrigin is the deny handler of crossOrigin.
+func (s *Server) refuseCrossOrigin() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, http.StatusForbidden, "cross-origin request refused: a browser may not send it from another site")
-	}))
-	return c.Handler(next)
+	})
 }
 
 // securityHeaders sets the security headers before the request is handled, so that every

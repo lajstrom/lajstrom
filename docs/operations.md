@@ -30,7 +30,10 @@ carries, whatever its route or status (#63):
 and no `Server` header. A request that changes something (not `GET`, `HEAD` or `OPTIONS`) and
 that a browser sends from another site, by its `Sec-Fetch-Site` or `Origin`, is refused with
 `403` before its credentials are checked: a page an admin visits cannot submit a form to
-`/api/v1` with the admin's cached credentials. Package clients send neither header and pass.
+`/api/v1` with the admin's cached credentials. Package clients send neither header and pass. An
+origin of `server.corsOrigins`, a web UI served from elsewhere, passes on `/api/` as the
+server's own, and gets CORS there and on `/-/version`, never with credentials
+([api.md](api.md#a-web-ui-in-a-browser)); everywhere else it is refused as any other site.
 `Strict-Transport-Security` is the edge's to set, with the certificate. The threat model is
 [security/threat-model.md](security/threat-model.md).
 

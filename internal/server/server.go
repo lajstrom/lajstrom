@@ -105,6 +105,11 @@ type Options struct {
 	// ClientCertHeader is the header in which a trusted proxy forwards the client certificate
 	// (auth.clientCertificates.forwardedHeader); empty reads none. It needs ClientCerts.
 	ClientCertHeader string
+	// CORSOrigins are the origins of a web UI on another origin (server.corsOrigins,
+	// docs/spec/http-routing.md §4, #949), each exactly as a browser sends it in Origin: they get
+	// CORS on /api/ and /-/version, and pass the cross-origin refusal on /api/. Empty: same
+	// origin only.
+	CORSOrigins []string
 	// FQDNDomain turns on the FQDN mode (server.fqdn.domain, docs/spec/http-routing.md §1.1):
 	// every repo also has the host <repo>.<domain>, and <repo>.<format>.<domain>, whose requests
 	// are served as the path form of the repo (repoHosts). It needs ExternalURL. Empty: off.
@@ -123,6 +128,9 @@ type Server struct {
 	byAddress bool
 	// fqdn is the FQDN mode; nil when it is off.
 	fqdn *fqdn
+	// listed is the cross-origin protection of /api/ that trusts Options.CORSOrigins; nil
+	// without them.
+	listed *http.CrossOriginProtection
 
 	running     atomic.Bool
 	draining    atomic.Bool  // set when Run's context ends; /-/readyz answers 503 from then on
@@ -165,9 +173,12 @@ func New(o Options) (*Server, error) {
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{}),
 		byAddress: len(o.TrustedProxies) > 0 || tlsConfig != nil, fqdn: hosts}
 	s.baseCtx, s.abort = context.WithCancelCause(context.Background())
+	if s.listed, err = listedProtection(o.CORSOrigins, s.refuseCrossOrigin()); err != nil {
+		return nil, err
+	}
 	s.routes()
-	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.repoHosts(s.accessLog(s.crossOrigin(
-		s.authenticate(s.refuseHost(s.limitUploads(s.stall(s.mux))))))))))))
+	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.repoHosts(s.accessLog(s.cors(s.crossOrigin(
+		s.authenticate(s.refuseHost(s.limitUploads(s.stall(s.mux)))))))))))))
 	s.srv = &http.Server{
 		Handler:     s.handler,
 		BaseContext: func(net.Listener) context.Context { return s.baseCtx },
@@ -261,6 +272,9 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL, "tls", s.srv.TLSConfig != nil)
 	s.logTrust()
 	s.logFQDN()
+	if len(s.opts.CORSOrigins) > 0 {
+		s.log.Info("CORS on /api/ and /-/version", "origins", s.opts.CORSOrigins)
+	}
 	if metricsLn != nil {
 		msrv := &http.Server{Handler: metrics.Handler(s.opts.Pprof), ReadHeaderTimeout: readHeaderTimeout,
 			ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}

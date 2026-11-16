@@ -36,6 +36,7 @@ server:
     perRepo: 256                      # in one repo; a new session beyond is 429 TOOMANYREQUESTS
     perPrincipal: 1024                # in all repos
   trustedProxies: []                 # CIDRs of the edge whose X-Forwarded-For is believed; empty: the peer is the client
+  corsOrigins: []                    # origins of a web UI served elsewhere, https://ui.example.com; empty: same origin only
 
 log:
   level: info                         # debug | info | warn | error

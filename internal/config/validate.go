@@ -143,6 +143,54 @@ func (s Server) validate(p *problems) {
 			p.add(fmt.Sprintf("server.trustedProxies[%d]", i), "%q is not an address or a CIDR prefix", e)
 		}
 	}
+	seen := make(map[string]bool, len(s.CORSOrigins))
+	for i, o := range s.CORSOrigins {
+		key := fmt.Sprintf("server.corsOrigins[%d]", i)
+		switch why := originProblem(o); {
+		case why != "":
+			p.add(key, "%q %s", o, why)
+		case seen[o]:
+			p.add(key, "%q is listed twice", o)
+		}
+		seen[o] = true
+	}
+}
+
+// originProblem returns why o is not an origin of server.corsOrigins, or "" when it is one: an
+// origin exactly as a browser sends it in Origin (RFC 6454 §6.2), https://<host>[:port] in lower
+// case ASCII, without a path, a trailing /, a query, a fragment, credentials or the default
+// port; http only for a loopback host, a web UI on a developer's machine. A wildcard and null
+// are not origins: each origin is listed as it is.
+func originProblem(o string) string {
+	u, err := url.Parse(o)
+	switch {
+	case o == "null" || strings.Contains(o, "*"):
+		return "is not an origin: list each origin exactly, without a wildcard"
+	case err != nil || !bareOrigin(u) || strings.HasSuffix(o, "#"):
+		return "is not an origin, https://<host>[:port] without a path or a trailing /"
+	case o != strings.ToLower(o) || !isASCII(o):
+		return "must be lowercase ASCII, as a browser sends it (an internationalized host in punycode, xn--…)"
+	case u.Scheme == "https" && u.Port() == "443", u.Scheme == "http" && u.Port() == "80":
+		return "must not name the default port: a browser sends the origin without it"
+	case u.Scheme == "http" && !isLoopback(u.Hostname()):
+		return "must be https: http is for a loopback host only (localhost, 127.0.0.1, [::1])"
+	}
+	return ""
+}
+
+// bareOrigin reports whether u is an http(s) URL of a scheme, a host and a port alone.
+func bareOrigin(u *url.URL) bool {
+	return isHTTP(u) && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
+}
+
+// isASCII reports whether s is printable ASCII.
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // validateLimits checks the bounds of server: none may be negative, and zero means the default or
