@@ -84,6 +84,9 @@ type Options struct {
 	// auth.disableInactiveUsersAfter (docs/spec/rbac.md §1, Inactive users; DisableInactive),
 	// whose credentials are then refused. Nil, or an InactiveAfter of zero, disables nobody.
 	Users *Users
+	// Blocks writes the login.block row of a throttle that trips (docs/spec/rbac.md §5); nil
+	// writes none. Serve gives the Bootstrap the same one.
+	Blocks *Blocks
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -129,6 +132,9 @@ type Authenticator struct {
 	seen  *bounded[int64, time.Time]
 	users *Users
 
+	// blocks writes the rows of the throttles that trip.
+	blocks *Blocks
+
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
 	logins, addresses, tokens *throttle
@@ -166,6 +172,7 @@ func NewAuthenticator(o Options) *Authenticator {
 	if a.now == nil {
 		a.now = time.Now
 	}
+	a.blocks = o.Blocks
 	if a.ttl <= 0 {
 		a.ttl = DefaultCacheTTL
 	}
@@ -327,7 +334,7 @@ func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret
 	}
 	if reason := unusable(u); reason != "" {
 		a.dummyVerify(secret)
-		a.failed(account, addr)
+		a.failed(ctx, account, addr)
 		return Principal{}, a.refuse(ctx, CredPassword, u, reason)
 	}
 	ok, err := a.verify(u.PasswordHash, secret)
@@ -335,7 +342,7 @@ func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret
 	case err != nil:
 		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", UserPrincipal(u), err)
 	case !ok:
-		a.failed(account, addr)
+		a.failed(ctx, account, addr)
 		return Principal{}, a.refuse(ctx, CredPassword, u, "wrong password")
 	}
 	return UserPrincipal(u), nil
@@ -399,11 +406,19 @@ func unusable(u *index.User) string {
 	return ""
 }
 
-// failed counts a failed login against the account and, unless it is "", the address.
-func (a *Authenticator) failed(account, addr string) {
-	a.logins.add(account)
-	if addr != "" {
-		a.addresses.add(addr)
+// failed counts a failed login against the account and, unless it is "", the address, and writes
+// the login.block row of a throttle that this failure trips (Options.Blocks).
+func (a *Authenticator) failed(ctx context.Context, account, addr string) {
+	if tripped, until := a.logins.add(account); tripped {
+		a.blocks.record(ctx, block{limit: LimitAccount, credential: string(CredPassword), subject: accountSubject(account),
+			failures: LoginFailures, window: LoginWindow, until: until})
+	}
+	if addr == "" {
+		return
+	}
+	if tripped, until := a.addresses.add(addr); tripped {
+		a.blocks.record(ctx, block{limit: LimitAddress, credential: string(CredPassword), subject: addr,
+			failures: AddressFailures, window: LoginWindow, until: until})
 	}
 }
 
