@@ -56,3 +56,9 @@ func ciExchange(c *config.Config, st index.Store, keys token.Keys, log *slog.Log
 		Tokens: token.NewIssuer(token.Options{Keys: keys, Verifier: verifier, Log: log}), ExternalURL: c.Server.ExternalURL, Log: log}
 	return exchange, &ci.Tokens{Policies: policies, Verifier: verifier, Log: log}, nil
 }
+
+// newCIPolicies returns the service of the CI trust policies of the API (docs/spec/rbac.md §11),
+// whose changes write their events to the outbox of the webhooks.
+func newCIPolicies(c *config.Config, st index.Store) *ci.Service {
+	return &ci.Service{Index: st, Config: c.Auth.CI, Webhooks: newOutbox(c)}
+}
