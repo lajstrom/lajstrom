@@ -192,6 +192,15 @@ found, the reason, the client address and the request id:
 A bearer token of `/v2` that only expired stays at debug: every client gets a new one each 20
 minutes. These lines are the record of each failed attempt (PCI DSS 10.2.1.4).
 
+A throttle that trips is also an audit row, `login.block`, by `anonymous`: the 10th failed
+password of an account in its minute, the 30th of an address, the 10th wrong bootstrap token of
+an address. Its subject is the account's `user:<uid>`, `unknown` for a name that no user has, or
+the address; its details the throttle (`limit`), the failures, the window and `until`, when
+credentials are checked again. A replica writes at most 60 a minute, and the next row after the
+bound counts in `suppressed` the trips it left out, so a flood from many addresses costs the
+database little: `GET /api/v1/audit?action=login.block` lists the accounts and addresses being
+guessed.
+
 ## Keys and apt signing
 
 Every apt repo is signed with a key of its own: `InRelease` is the `Release` clearsigned,
@@ -1483,6 +1492,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
+| `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 

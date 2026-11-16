@@ -57,6 +57,9 @@ type Bootstrap struct {
 	// Replica names this process in the row it makes, for the log of the others; empty means
 	// the host name and the process id.
 	Replica string
+	// Blocks writes the login.block row when the throttle of wrong tokens of an address trips
+	// (docs/spec/rbac.md §5); nil writes none. Serve gives it the Authenticator's.
+	Blocks *Blocks
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
@@ -208,7 +211,7 @@ func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string,
 		return nil, fmt.Errorf("auth: bootstrap: %w", err)
 	}
 	if cur == nil || subtle.ConstantTimeCompare([]byte(hash), []byte(cur.Hash)) != 1 {
-		b.failed(addr)
+		b.failed(ctx, addr)
 		LogRefusal(ctx, b.log(), RefusedBootstrap, AccountUnknown, 0, "not the token")
 		return nil, &authError{msg: "the bootstrap token is refused", err: ErrBootstrapToken}
 	}
@@ -261,10 +264,15 @@ func (b *Bootstrap) throttled(addr string) error {
 	return nil
 }
 
-// failed counts a wrong token against the client address addr, unless it is "".
-func (b *Bootstrap) failed(addr string) {
-	if addr != "" {
-		b.throttle().add(addr)
+// failed counts a wrong token against the client address addr, unless it is "", and writes the
+// login.block row when the address's throttle trips.
+func (b *Bootstrap) failed(ctx context.Context, addr string) {
+	if addr == "" {
+		return
+	}
+	if tripped, until := b.throttle().add(addr); tripped {
+		b.Blocks.record(ctx, block{limit: LimitBootstrap, credential: RefusedBootstrap, subject: addr,
+			failures: BootstrapFailures, window: LoginWindow, until: until})
 	}
 }
 
