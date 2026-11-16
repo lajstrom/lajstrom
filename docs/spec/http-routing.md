@@ -854,7 +854,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&q=&attr=&facet=&sort=&order=&limit=&cursor=]`, `GET …/packages/<name>`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `GET …/packages/<name>/versions/<version>/manifest[?variant=]`, `GET …/packages/<name>/versions/<version>/referrers[?variant=&artifactType=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi) |
 | search | `GET /api/v1/search?q=[&format=&limit=&cursor=]` (#956) |
 | users | `GET /api/v1/users[?kind=&limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password`; a service account is a user of kind `service` (rbac.md §1) |
-| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>` |
+| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>`. A deploy token's expiry is within `auth.deployTokens.maxTTL` when it is set, a service account's within `auth.serviceAccounts.maxTokenTTL` (rbac.md §1, #1286): created without an expiry, it expires at the bound; an `expiresAt` or `expiresIn` beyond is `400` naming the field, the bound and the latest expiry. Every view of a token answers a live one beyond the bound of its kind with `beyondMaxTTL: true`, and leaves the field out otherwise |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>`, `group:<name>`, or a `cert:` or `k8s:` principal or pattern (rbac.md §3, §8, §9); a `ci:` principal has none (rbac.md §11) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
 | publication sessions | `GET /api/v1/repos/<format>/<repo>/sessions[?limit=&cursor=]` |
@@ -1298,7 +1298,9 @@ its secret, and of its hash `hashPrefix` only. `kind` keeps `pat` or `deploy`; `
 personal access tokens of the live user of that name or uid; `repo`, `<format>/<repo>`, that
 repo's own deploy tokens, not those over a mask that matches it; `repoMask` the deploy tokens
 over that mask as it was written (`oci/*` does not list a token over `*/*`); `live=true` those
-neither revoked nor expired when the request is answered. The filters add up. A user or a repo
+neither revoked nor expired when the request is answered; with `beyondMaxTTL` on each live token
+beyond the bound of its kind (rbac.md §1, #1286), `kind=deploy&live=true` lists what a new
+`auth.deployTokens.maxTTL` leaves to replace. The filters add up. A user or a repo
 that does not exist has none; a `kind` that is neither, a `live` that is not a boolean and a
 `repo` or `repoMask` that is not two segments are `400`. The personal access token a web UI
 creates at a sign-in (above) is listed as any other: the server does not tell them apart.
