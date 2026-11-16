@@ -20,25 +20,26 @@ var _ index.Snapshotter = (*Store)(nil)
 // SnapshotTables are the tables ImportControlPlane writes, in the order of their references; each
 // must be empty unless the import is forced.
 var SnapshotTables = []string{"repos", "group_members", "users", "identities", "identity_groups", "tokens", "bindings", "keys",
-	"webhooks", "audit"}
+	"webhooks", "policy_rules", "audit"}
 
 // ForcedTables are the tables a forced import empties, every row that refers to another before
 // it: every table but KeptTables. A test of each engine lists the tables of the schema and fails
 // when a migration adds one that neither list names.
 var ForcedTables = []string{
 	"identity_groups", "oidc_logins", "identities", "group_members", "tokens", "bindings", "keys", "sessions", "audit",
-	"webhook_deliveries", "webhooks", "bootstrap_token", "journal_state", "journal", "attachments", "files", "versions",
+	"webhook_deliveries", "webhooks", "policy_rules", "policy_seen", "bootstrap_token", "journal_state", "journal", "verdicts",
+	"attachments", "files", "versions",
 	"packages", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
 	"reindex_runs", "prune_sightings", "dpop_proofs", "repos", "users",
 }
 
 // KeptTables are the tables a forced import leaves: the schema's version, the counter it
 // increments, and the rows of the serve processes, which the restore checks before it runs.
-var KeptTables = []string{"schema_migrations", "auth_version", "replicas"}
+var KeptTables = []string{"schema_migrations", "auth_version", "policy_state", "replicas"}
 
 // sequenced are the tables of a snapshot with an id of their own, whose sequence an import moves
 // past the ids it writes.
-var sequenced = []string{"repos", "users", "identities", "tokens", "bindings", "keys", "webhooks", "audit"}
+var sequenced = []string{"repos", "users", "identities", "tokens", "bindings", "keys", "webhooks", "policy_rules", "audit"}
 
 // ExportControlPlane reads the control plane in one transaction that reads one snapshot
 // (Dialect.ReadSnapshot), run again when the database aborts it all the same, up to TxAttempts
@@ -118,6 +119,10 @@ func (c *conn) exportControlPlane(ctx context.Context, opts index.ExportOptions)
 			cp.Webhooks, err = getAll(ctx, c, "webhooks", webhookDests, "SELECT "+webhookCols+" FROM webhooks ORDER BY id")
 			return err
 		},
+		func() (err error) {
+			cp.PolicyRules, err = c.ListPolicyRules(ctx)
+			return err
+		},
 		func() error { return c.exportAudit(ctx, cp, opts) },
 	}
 	for _, read := range reads {
@@ -170,6 +175,9 @@ func (s *Store) ImportControlPlane(ctx context.Context, cp *index.ControlPlane, 
 		}
 		if err := c.execOne(ctx, "auth_version", "UPDATE auth_version SET version = version + 1, updated_at = ? WHERE id = 1",
 			c.d.EncodeTime(now())); err != nil {
+			return err
+		}
+		if err := c.nextPolicyGeneration(ctx); err != nil {
 			return err
 		}
 		if opts.Event != nil {
@@ -294,6 +302,10 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 		add(fmt.Sprintf("webhooks id %d", h.ID), "webhooks", webhookCols, h.ID, h.UID, h.Mask, h.URL, eventsArg(h.Events),
 			blobArg(h.SecretEnc), h.Active, h.Description, h.CreatedBy, c.d.EncodeTime(h.CreatedAt),
 			c.d.EncodeTime(cmp.Or(h.UpdatedAt, h.CreatedAt)))
+	}
+	for _, r := range cp.PolicyRules {
+		add(fmt.Sprintf("policy_rules id %d", r.ID), "policy_rules", policyRuleCols, r.ID, r.RepoMask, r.Name, r.Version, r.Variant,
+			r.Effect, r.Reason, r.CreatedBy, c.d.EncodeTime(r.CreatedAt), c.d.encodeNullTime(r.ExpiresAt))
 	}
 	for _, e := range cp.Audit {
 		add(fmt.Sprintf("audit id %d", e.ID), "audit", auditCols, e.ID, c.d.EncodeTime(e.At), e.Principal, textArg(e.PrincipalName),

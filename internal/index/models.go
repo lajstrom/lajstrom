@@ -599,7 +599,13 @@ type Cache struct {
 	SHA256     string // hex sha256 of Content
 	RenderedAt time.Time
 	SignedAt   *time.Time
+	// ExpiresAt is when the document stops being served from the cache: the earliest time a
+	// policy decision of its render holds until (docs/spec/policy.md §6.1); nil: never.
+	ExpiresAt *time.Time
 }
+
+// Expired reports whether the document's ExpiresAt is at or before now.
+func (ca *Cache) Expired(now time.Time) bool { return ca.ExpiresAt != nil && !ca.ExpiresAt.After(now) }
 
 // OCIRepo is a row of oci_repos (derived): an OCI repository seen under a repo's path, for
 // backends without a catalog and for reconcile.
@@ -687,6 +693,80 @@ type Attachment struct {
 	Trust         string            // the hash of the trust that labelled it (attest.Trust.Hash)
 	CreatedAt     *time.Time        // the manifest's org.opencontainers.image.created; nil without one
 	IndexedAt     time.Time         // when ingest or reindex last wrote or saw the row
+	// Verdict is the verdict this attachment is, when it is one that verifies
+	// (docs/spec/policy.md §2): ReplaceAttachments writes its verdicts row with it. Not read
+	// back by ListAttachments.
+	Verdict *Verdict
+}
+
+// The effects of a policy rule and the verdicts of a verdict (docs/spec/policy.md).
+const (
+	PolicyAllow      = "allow"
+	PolicyDeny       = "deny"
+	PolicyQuarantine = "quarantine" // a verdict's only
+)
+
+// PolicyRule is a row of policy_rules (control plane, docs/spec/policy.md §1): a pattern over
+// coordinates that denies or allows. A rule never changes.
+type PolicyRule struct {
+	ID        int64
+	RepoMask  string     // a repo mask of docs/spec/rbac.md §3
+	Name      string     // a pattern of the package name; * any run of characters
+	Version   string     // a version constraint (policy.md §1.2) as written; "*" every version
+	Variant   string     // a pattern of the variant; "*" every variant
+	Effect    string     // PolicyDeny or PolicyAllow
+	Reason    string     // shown to clients
+	CreatedBy string     // the principal that created it
+	CreatedAt time.Time  // when
+	ExpiresAt *time.Time // when it stops holding; nil: never
+}
+
+// Expired reports whether the rule's ExpiresAt is at or before now.
+func (r *PolicyRule) Expired(now time.Time) bool {
+	return r.ExpiresAt != nil && !r.ExpiresAt.After(now)
+}
+
+// Verdict is a row of verdicts (derived, docs/spec/policy.md §2): one verdict attestation that
+// verifies, a layer of a referrer of the manifest Subject. On a managed repo it belongs to its
+// attachments row (AttachmentID), on an oci repo to no row (AttachmentID 0).
+type Verdict struct {
+	ID           int64
+	RepoID       int64
+	AttachmentID int64         // the attachments row; 0 on an oci repo
+	Path         string        // the package path of the OCI repository that holds the referrer
+	Subject      digest.Digest // the judged manifest
+	Referrer     digest.Digest // the referrer manifest
+	Layer        digest.Digest // the attachment's layer; "" for a manifest without layers
+	Verdict      string        // PolicyAllow, PolicyDeny or PolicyQuarantine
+	Reason       string
+	Source       string
+	Scope        string     // a repo mask; "" the repo itself
+	ValidUntil   *time.Time // nil: no end
+	SignedBy     string     // the trust entry that verified it
+	CreatedAt    *time.Time // the referrer manifest's org.opencontainers.image.created; nil without one
+	IndexedAt    time.Time  // when ingest or reindex last wrote or saw the row
+}
+
+// Expired reports whether the verdict's ValidUntil is at or before now.
+func (v *Verdict) Expired(now time.Time) bool { return v.ValidUntil != nil && !v.ValidUntil.After(now) }
+
+// VerdictFilter selects verdicts for Reader.ListVerdicts. RepoID 0 and Subject "" do not
+// filter; Scoped also selects, whatever RepoID says, the rows of any repo whose Scope is not
+// "", which may hold in another repo than their own.
+type VerdictFilter struct {
+	RepoID  int64
+	Subject digest.Digest
+	Scoped  bool
+}
+
+// PolicySeen is a row of policy_seen (a cache, docs/spec/policy.md §4): when a proxy repo with a
+// quarantine first saw a version in its upstream's document without a publish time.
+type PolicySeen struct {
+	RepoID  int64
+	Name    string // the plugin's key of the name
+	Version string
+	Variant string
+	SeenAt  time.Time
 }
 
 // VersionFacts is what Reader.ListVersionFacts answers of a versions row, one manifest, beyond

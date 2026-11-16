@@ -475,11 +475,11 @@ func (c *conn) ReplaceFiles(ctx context.Context, versionID int64, files []index.
 	})
 }
 
-const cacheCols = "id, repo_id, scope, kind, content, sha256, rendered_at, signed_at"
+const cacheCols = "id, repo_id, scope, kind, content, sha256, rendered_at, signed_at, expires_at"
 
 func cacheDests(ca *index.Cache) []any {
 	return []any{&ca.ID, &ca.RepoID, &ca.Scope, &ca.Kind, blobDest{&ca.Content}, &ca.SHA256,
-		timeDest{&ca.RenderedAt}, nullTimeDest{&ca.SignedAt}}
+		timeDest{&ca.RenderedAt}, nullTimeDest{&ca.SignedAt}, nullTimeDest{&ca.ExpiresAt}}
 }
 
 // GetIndexCache returns the cached document of kind for a scope of a repo.
@@ -515,14 +515,15 @@ func (c *conn) PutIndexCache(ctx context.Context, ca *index.Cache, generation in
 		if err != nil || cur != generation {
 			return err
 		}
-		ca.SignedAt = stampNull(ca.SignedAt)
+		ca.SignedAt, ca.ExpiresAt = stampNull(ca.SignedAt), stampNull(ca.ExpiresAt)
 		stored = true
 		return c.scanRow(ctx, fmt.Sprintf("index_cache %q %q in repo %d", ca.Scope, ca.Kind, ca.RepoID),
-			"INSERT INTO index_cache (repo_id, scope, kind, content, sha256, rendered_at, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"+
+			"INSERT INTO index_cache (repo_id, scope, kind, content, sha256, rendered_at, signed_at, expires_at)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?)"+
 				" ON CONFLICT (repo_id, scope, kind) DO UPDATE SET content = excluded.content, sha256 = excluded.sha256,"+
-				" rendered_at = excluded.rendered_at, signed_at = excluded.signed_at RETURNING id",
+				" rendered_at = excluded.rendered_at, signed_at = excluded.signed_at, expires_at = excluded.expires_at RETURNING id",
 			[]any{ca.RepoID, ca.Scope, ca.Kind, blobArg(ca.Content), ca.SHA256,
-				c.d.EncodeTime(stamp(&ca.RenderedAt, now())), c.d.encodeNullTime(ca.SignedAt)},
+				c.d.EncodeTime(stamp(&ca.RenderedAt, now())), c.d.encodeNullTime(ca.SignedAt), c.d.encodeNullTime(ca.ExpiresAt)},
 			&ca.ID)
 	})
 	return stored && err == nil, err
@@ -603,8 +604,8 @@ func (c *conn) PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.
 }
 
 // derivedTables are the tables ResetDerived empties; the foreign keys of packages cascade to
-// versions and files.
-var derivedTables = []string{"packages", "index_cache", "oci_repos"}
+// versions, files and attachments, and those of attachments to their verdicts.
+var derivedTables = []string{"verdicts", "packages", "index_cache", "oci_repos"}
 
 // ResetDerived removes the derived rows of a repo, or of every repo when repoID is 0, after it
 // incremented their generations as InvalidateIndexCache does; of a repo, the documents of the
