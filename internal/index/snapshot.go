@@ -23,7 +23,7 @@ type Snapshotter interface {
 
 	// ImportControlPlane inserts the rows of cp with their ids, in one transaction. The tables
 	// it writes (repos, group_members, users, identities, identity_groups, tokens, bindings,
-	// keys, webhooks and audit) must be empty: otherwise the error wraps ErrNotEmpty and names
+	// keys, webhooks, ci_policies and audit) must be empty: otherwise the error wraps ErrNotEmpty and names
 	// the tables that have rows, and nothing changes. With opts.Force it first empties every
 	// table but schema_migrations, auth_version and replicas, in the same transaction. The
 	// sequence of each id is moved past the greatest id of cp and never back, with the data
@@ -84,6 +84,8 @@ type ControlPlane struct {
 	// Webhooks are the rows of webhooks, each with its SecretEnc as the table has it; their
 	// deliveries, the outbox and the delivery log, are not in a snapshot.
 	Webhooks []Webhook
+	// CIPolicies are the CI trust policies made through the API (docs/spec/rbac.md §11).
+	CIPolicies []CIPolicy
 
 	// PolicyRules are the rows of policy_rules (#101); nil in a snapshot of a database before
 	// migration 0030.

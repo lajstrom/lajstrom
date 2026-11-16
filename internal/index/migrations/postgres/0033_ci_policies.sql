@@ -1,0 +1,18 @@
+-- 0033: ci_policies (#937; docs/spec/rbac.md §11, docs/spec/index-schema.md). The CI trust
+-- policies an admin makes through the API, beside those of the configuration, which are not in
+-- it: a name, an issuer of auth.ci.issuers, the claims and the grants as JSON. Control plane,
+-- backed up and in a snapshot, never rebuilt; every write moves auth_version. Expand only: the
+-- binaries before it do not read the table (PostgreSQL).
+
+CREATE TABLE ci_policies (
+    id         bigserial   PRIMARY KEY,
+    name       text        COLLATE "C" NOT NULL,
+    issuer     text        COLLATE "C" NOT NULL,
+    claims     jsonb       NOT NULL,
+    grants     jsonb       NOT NULL,
+    created_by text        COLLATE "C" NOT NULL,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+);
+
+CREATE UNIQUE INDEX ci_policies_name ON ci_policies (name);

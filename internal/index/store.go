@@ -125,6 +125,13 @@ type Reader interface {
 	// ListAudit returns the audit events matching f, newest first.
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
 
+	// CI trust policies (docs/spec/rbac.md §11, docs/spec/index-schema.md, ci_policies).
+
+	// ListCIPolicies returns the CI trust policies made through the API, ordered by id.
+	ListCIPolicies(ctx context.Context) ([]CIPolicy, error)
+	// GetCIPolicy returns the CI trust policy called name; ErrNotFound when there is none.
+	GetCIPolicy(ctx context.Context, name string) (*CIPolicy, error)
+
 	// Webhooks (docs/spec/webhooks.md, docs/spec/index-schema.md, Webhooks).
 
 	// GetWebhook returns the webhook with the given id.
@@ -406,6 +413,18 @@ type Writer interface {
 	// AuditUnknown, and returns how many it changed (reindex and the reconcile loop, with
 	// ingest.claimTTL).
 	ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
+
+	// CI trust policies (docs/spec/rbac.md §11): control plane. Each write increments
+	// AuthVersion in its transaction, as a write of bindings does.
+
+	// CreateCIPolicy inserts p, whose name must be new (ErrConflict), and fills ID, CreatedAt
+	// when it is zero, and UpdatedAt, CreatedAt.
+	CreateCIPolicy(ctx context.Context, p *CIPolicy) error
+	// UpdateCIPolicy stores Issuer, Claims and Grants of p by p.ID, sets UpdatedAt, and fills
+	// Name, CreatedBy and CreatedAt from the row: they never change.
+	UpdateCIPolicy(ctx context.Context, p *CIPolicy) error
+	// DeleteCIPolicy removes the policy.
+	DeleteCIPolicy(ctx context.Context, id int64) error
 
 	// Webhooks (docs/spec/webhooks.md, docs/spec/index-schema.md, Webhooks): control plane.
 

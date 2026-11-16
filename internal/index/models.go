@@ -321,6 +321,29 @@ const (
 	AuditUnknown = "unknown" // the writer stopped while pending: the registry may or may not have the write
 )
 
+// CIPolicy is a row of ci_policies: a CI trust policy made through the API (docs/spec/rbac.md
+// §11). The policies of the configuration are not rows.
+type CIPolicy struct {
+	ID int64
+	// Name is unique, and never changes.
+	Name string
+	// Issuer is the name of an issuer of auth.ci.issuers.
+	Issuer string
+	// Claims maps each claim the policy names to its values.
+	Claims map[string][]string
+	// Grants are its roles on masks.
+	Grants []CIGrant
+	// CreatedBy is the principal that made it; it never changes.
+	CreatedBy            string
+	CreatedAt, UpdatedAt time.Time
+}
+
+// CIGrant is a role on the repos of a mask, a grant of a CI trust policy.
+type CIGrant struct {
+	Role string `json:"role"`
+	Mask string `json:"mask"`
+}
+
 // Webhook is a row of webhooks (control plane; docs/spec/webhooks.md §5): a URL that gets the
 // events of the repos its mask matches.
 type Webhook struct {
