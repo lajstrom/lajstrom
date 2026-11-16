@@ -267,11 +267,14 @@ The routes are http-routing.md §4's, their shapes api.md's.
 - `POST /api/v1/repos/<format>/<repo>/packages/<name>/versions/<version>/deny[?variant=]` with
   `{"reason", "validUntil"}` (`validUntil` optional) signs a verdict `deny`, source
   `lajstrom:manual`, scope the repo, for the manifest of each variant of the version (or of the one
-  `variant` names), and pushes each as a referrer through `ingest.PutReferrer` as the request's
-  principal; `201` with the verdicts. On an `oci` repo `<name>` is the path below the repo and
+  `variant` names), and pushes each through `ingest.PutReferrer` as the request's principal, as a
+  bundle referrer and as a layer of cosign's legacy attestation (manifest-profile.md §6.4); `201`
+  with the verdicts. On an `oci` repo `<name>` is the path below the repo and
   `<version>` a tag or a digest. `manage` on the repo. `501` without the policy key.
-- `DELETE …/versions/<version>/deny[?variant=]` deletes the referrers of the verdicts of source
-  `lajstrom:manual` of those manifests, through `ingest.Delete`; `204`, `404` when there is none.
+- `DELETE …/versions/<version>/deny[?variant=]` removes the verdicts of source `lajstrom:manual`
+  of those manifests: their bundle referrers are deleted through `ingest.Delete`, and the legacy
+  attestation is written again without their layers, keeping another producer's, or deleted when
+  none is left; `204`, `404` when there is none.
   `manage` on the repo.
 - `GET /api/v1/policy/denylist` answers the deny list of §8 as one flat JSON document, with the
   entries of the repos the caller may read.
