@@ -177,6 +177,7 @@ func checkLayers(ds []ocispec.Descriptor, typ Type, known bool) ([]Layer, *Layer
 	)
 	metaType := MetadataMediaType(typ.Name)
 	for i, d := range ds {
+		d.MediaType = strings.TrimSuffix(d.MediaType, EncryptedSuffix) // the role of an encrypted layer (§11)
 		errs = append(errs, checkDescriptor(i, d), checkTitle(i, d, typ.Name))
 		switch {
 		case !known:
@@ -200,6 +201,7 @@ func checkLayers(ds []ocispec.Descriptor, typ Type, known bool) ([]Layer, *Layer
 		return files, nil, errs
 	}
 	md := layerOf(ds[metadata[0]])
+	md.MediaType = strings.TrimSuffix(md.MediaType, EncryptedSuffix)
 	return files, &md, errs
 }
 

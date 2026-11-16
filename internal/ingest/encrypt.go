@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -116,7 +117,7 @@ func (s *sealer) open(ctx context.Context, b *sealedBlob) (blobcrypt.Private, []
 		if err != nil {
 			return blobcrypt.Private{}, nil, fmt.Errorf("ingest: the public options of %s: %w", b.plain, err)
 		}
-		if opts.Digest != b.plain {
+		if b.plain != "" && opts.Digest != b.plain {
 			return blobcrypt.Private{}, nil, fmt.Errorf("%w: the wrapped options of %s name the plaintext %s", ErrInvalid, b.stored, opts.Digest)
 		}
 		b.opts, b.mac = &opts, mac
@@ -493,4 +494,73 @@ func (t *target) sealHeld(ctx context.Context, layers []ocispec.Descriptor) erro
 		}}
 	}
 	return nil
+}
+
+// ErrNoKeys is the error of Inspect on a stored manifest whose encrypted layers the repo's keys do
+// not open: a server without the master key, a key the index does not have, a KMS that refuses.
+// Reindex skips such a repo (docs/spec/index-schema.md, The mapping of an encrypted repo).
+var ErrNoKeys = errors.New("ingest: the encrypted layers do not open with the repo's keys")
+
+// unseal turns pub, a stored manifest that Inspect reads, into the manifest as the client had it,
+// when its layers are encrypted (manifest-profile.md §11): each layer's wrapping, the newest keys
+// referrer's or its own annotation (wrappings), opened with a key of the repo, gives its plaintext
+// digest, and the checks of Inspect run on the manifest undone; seal then keeps the stored one.
+func (p *Pipeline) unseal(ctx context.Context, pub *publish) error {
+	layers, _, err := profile.EncryptedLayers(pub.raw)
+	if err != nil || len(layers) == 0 {
+		return nil //nolint:nilerr // not a manifest the change touches: Inspect's checks say what it is
+	}
+	if p.enc == nil {
+		return fmt.Errorf("%w: %w", ErrNoKeys, errNoMasterKey)
+	}
+	s := &sealer{enc: p.enc, st: p.index, repo: pub.repo, path: pub.pkgPath, blobs: map[digest.Digest]*sealedBlob{},
+		ready: map[digest.Digest]bool{}, stored: pub.raw}
+	sizes := map[digest.Digest]int64{}
+	for _, l := range pub.manifest.Layers {
+		sizes[l.Digest] = l.Size
+	}
+	plain := make(map[digest.Digest]digest.Digest, len(layers))
+	for _, l := range layers {
+		b := &sealedBlob{stored: l.Stored, size: sizes[l.Stored], wrapped: l.JWE, pubOpts: l.PubOpts}
+		if err := s.openAny(ctx, b); err != nil {
+			return err
+		}
+		b.plain = b.opts.Digest
+		s.blobs[b.plain], plain[l.Stored] = b, b.plain
+	}
+	view, err := profile.DecryptManifest(pub.raw, func(d digest.Digest) (digest.Digest, bool) { v, ok := plain[d]; return v, ok }, "")
+	if err != nil {
+		return invalid(fmt.Errorf("ingest: %w", err))
+	}
+	var m ocispec.Manifest
+	if err := json.Unmarshal(view, &m); err != nil {
+		return invalid(fmt.Errorf("ingest: the manifest undone: %w", err))
+	}
+	pub.sealer, pub.manifest, pub.raw, pub.digest = s, m, view, digest.FromBytes(view)
+	return nil
+}
+
+// openAny opens the wrapping of b with the first key of the repo among its recipients, and keeps
+// its fingerprint and options.
+func (s *sealer) openAny(ctx context.Context, b *sealedBlob) error {
+	kids, err := blobcrypt.KIDs(b.wrapped)
+	if err != nil {
+		return invalid(fmt.Errorf("ingest: the wrapping of %s: %w", b.stored, err))
+	}
+	var errs []error
+	for _, kid := range kids {
+		b.fingerprint = kid
+		_, _, err := s.open(ctx, b)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, format.ErrUnavailable):
+			return err
+		}
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		return fmt.Errorf("%w: layer %s names no recipient", ErrNoKeys, b.stored)
+	}
+	return fmt.Errorf("%w: layer %s: %w", ErrNoKeys, b.stored, errors.Join(errs...))
 }

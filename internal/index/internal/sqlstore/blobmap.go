@@ -84,10 +84,20 @@ func (c *conn) DeleteBlobMap(ctx context.Context, repoID int64, path string, d d
 	return err
 }
 
-// SweepBlobMap removes the rows at the package path whose IndexedAt is before seenBefore, but the
-// blobs indexed after keepBlobsAfter.
+// SweepBlobMap removes the rows of the repo at the package path, or at every path when path is "",
+// whose IndexedAt is before seenBefore and whose stored digest no version, file or attachment of
+// the repo names, but the blobs indexed after keepBlobsAfter.
 func (c *conn) SweepBlobMap(ctx context.Context, repoID int64, path string, seenBefore, keepBlobsAfter time.Time) (int, error) {
-	return c.exec(ctx, fmt.Sprintf("blob_map at %q of repo %d", path, repoID),
-		"DELETE FROM blob_map WHERE repo_id = ? AND path = ? AND indexed_at < ? AND NOT (kind = ? AND indexed_at > ?)",
-		repoID, path, c.d.EncodeTime(seenBefore), index.BlobMapBlob, c.d.EncodeTime(keepBlobsAfter))
+	q := "DELETE FROM blob_map WHERE repo_id = ? AND indexed_at < ? AND NOT (kind = ? AND indexed_at > ?)" +
+		" AND stored_digest NOT IN (SELECT v.digest FROM versions v JOIN packages p ON p.id = v.package_id WHERE p.repo_id = ?)" +
+		" AND stored_digest NOT IN (SELECT f.digest FROM files f JOIN versions v ON v.id = f.version_id" +
+		" JOIN packages p ON p.id = v.package_id WHERE p.repo_id = ?)" +
+		" AND stored_digest NOT IN (SELECT a.digest FROM attachments a JOIN versions v ON v.id = a.version_id" +
+		" JOIN packages p ON p.id = v.package_id WHERE p.repo_id = ?)"
+	args := []any{repoID, c.d.EncodeTime(seenBefore), index.BlobMapBlob, c.d.EncodeTime(keepBlobsAfter), repoID, repoID, repoID}
+	if path != "" {
+		q += " AND path = ?"
+		args = append(args, path)
+	}
+	return c.exec(ctx, fmt.Sprintf("blob_map at %q of repo %d", path, repoID), q, args...)
 }

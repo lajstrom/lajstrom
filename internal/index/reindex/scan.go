@@ -78,6 +78,9 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 		return s.rep, nil
 	}
 	s.prov = prov
+	if s.skipped(ctx) {
+		return s.rep, nil
+	}
 	s.prepareRepair(ctx)
 	s.recentDeletes(ctx)
 	names, listed := s.list(ctx)
@@ -91,20 +94,28 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 	s.orphans(ctx)
 	s.repairReferrers(ctx)
 	s.reportSplits(ctx)
+	s.finish(ctx, listed)
+	s.logDone(ctx)
+	return s.rep, s.fatal
+}
+
+// finish writes what a scan learned once it read the registry: the versions it saw, the sweep of
+// what it did not when the run prunes and the listing went through, the repo's documents
+// dropped; and keeps ctx's error as the scan's own.
+func (s *scan) finish(ctx context.Context, listed bool) {
 	if s.fatal == nil && ctx.Err() == nil {
-		s.dbErr(w.index.TouchVersions(ctx, s.seen, w.now()))
+		s.dbErr(s.w.index.TouchVersions(ctx, s.seen, s.w.now()))
 	}
-	if s.fatal == nil && ctx.Err() == nil && req.Prune && listed && !s.unsupported {
+	if s.fatal == nil && ctx.Err() == nil && s.req.Prune && listed && !s.unsupported {
 		s.sweep(ctx)
+		s.sweepBlobMap(ctx)
 	}
 	if s.fatal == nil && ctx.Err() == nil {
-		s.dbErr(w.index.InvalidateIndexCache(ctx, repo.ID, ""))
+		s.dbErr(s.w.index.InvalidateIndexCache(ctx, s.repo.ID, ""))
 	}
 	if s.fatal == nil {
 		s.fatal = ctx.Err()
 	}
-	s.logDone(ctx)
-	return s.rep, s.fatal
 }
 
 // logDone logs the counts of the scan, and once the manifests deleted that it did not index
@@ -599,6 +610,7 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.rep.BlobMap += len(rows.BlobMap)
 	if reread {
 		s.rep.Updated++
 	} else {

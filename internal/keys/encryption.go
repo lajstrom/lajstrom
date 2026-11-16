@@ -362,3 +362,21 @@ func (c *dataKeys) put(id dataKeyID, p blobcrypt.Private, now time.Time) {
 	}
 	c.m[id] = cached{p: p, expires: now.Add(c.ttl)}
 }
+
+// CanOpen reports whether the repo's enc keys open: the seal of each with the master key, and a
+// client for the KMS of a key held in one. It asks no KMS anything.
+func (e *Encryption) CanOpen(ctx context.Context, repo index.Repo) error {
+	all, err := e.st.ListKeys(ctx, &repo.ID)
+	if err != nil {
+		return fmt.Errorf("keys: the keys of %s: %w", repoName(repo), err)
+	}
+	for _, k := range all {
+		if k.Kind != KindEnc {
+			continue
+		}
+		if _, err := e.decrypter(ctx, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
