@@ -61,13 +61,61 @@ Every error is answered with one envelope:
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
-| 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted |
+| 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted. Or `If-Match` names no revision the repo, user or webhook has ([Revisions](#revisions)): the answer's `ETag` is its revision now, and nothing changed |
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | a version delete on a registry that does not delete manifests (`capabilities.deleteManifest: false`); the message names the registry, and nothing was deleted |
 | 502 | `UNAVAILABLE` | a version delete that the registry refused: it rejected Lajstrom's credentials or the request; the message is the status text and names the variants deleted before, the cause is in the server log with the request id |
 | 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)); or the registry took a write (a prefetch) and does not serve it yet, `Retry-After: 30`, and the message names what it does not serve after the status text ([operations.md](operations.md#an-eventually-consistent-registry)) |
 | 500 | `INTERNAL` | anything else, a panic of a handler too; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
+
+### Revisions
+
+A repo, a user and a webhook have a revision, which every change of the resource moves (#796).
+`GET` of one answers it as `ETag: "…"`, a strong entity tag, and so do the `201` of its `POST`
+and the `200` of its `PATCH`, with the revision the change left. The tag is opaque: a client
+keeps it as it got it and sends it back. Two resources never have the same tag, a repo deleted
+and created again under its name included.
+
+- **`If-Match`** on the `PATCH` or the `DELETE` of one makes the change conditional: it is made
+  only while the resource has a revision whose tag the header lists (`If-Match: "…"`, or several
+  separated by commas), or exists at all (`*`). Otherwise the answer is `412 CONFLICT` with the
+  resource's tag now in `ETag`, and nothing changed: the client reads the resource again, makes
+  its change on what it read, and sends it again. The server compares in the transaction that
+  writes, so that of two changes sent with one tag, one is made and the other is `412`. Tags
+  compare strongly ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3.2)): `W/"…"`
+  never matches. A resource that does not exist is `404`, with the header or without.
+- **Without `If-Match`** a change is made whatever the revision, as before.
+- **`If-None-Match`** on the `GET` of one answers `304 Not Modified`, without a body and with the
+  `ETag`, when the resource has a tag the header lists (weak comparison: `W/"…"` matches too), or
+  with `*`.
+- A value of either that is not `*` or a list of entity tags is `400`, never ignored.
+- A list has no tag, nor have its items: a client that changes a resource reads it with the
+  `GET` of the one first.
+
+Every write of the resource's row moves the revision: a `PATCH` that changes something (one
+that changes nothing moves nothing, but for a webhook's, which always writes), a proxy that
+becomes hosted, a group's members, a user's password and its deletion, a webhook's new secret,
+and the same changes by `lajstrom admin`. The password and the secret move it though the
+resource shows neither. A binding and a token have no revision: they never change (a binding is
+replaced by a delete and a create, a token is only revoked, and revoked again is `204`), and their
+`DELETE` takes no condition and ignores `If-Match`, as do the routes that are no resource of
+their own, `POST …/reindex`, `DELETE …/upstream-cache`, a yank. The `DELETE` of a version has
+conditions of its own, the digests of its variants
+([below](#delete-a-version-delete-apiv1reposformatnamepackagespackageversionsversion)).
+
+```sh
+etag=$(curl -s -o /dev/null -D - "$LAJSTROM/api/v1/repos/maven/releases" | tr -d '\r' | awk 'tolower($1) == "etag:" {print $2}')
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" -H "If-Match: $etag" \
+  -H 'Content-Type: application/json' -d '{"anonymousRead": true}'
+# the same tag again: the repo has moved on
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" -H "If-Match: $etag" \
+  -H 'Content-Type: application/json' -d '{"anonymousRead": false}'
+```
+
+```json
+{"error": {"code": "CONFLICT", "message": "repo maven/releases changed since it was read: its ETag is now \"Ehh0XZy2vbs8XxQm\"; read it again and send the change again"}}
+```
 
 ## Repos
 
@@ -194,7 +242,7 @@ curl -s "$LAJSTROM/api/v1/repos?format=raw"
 
 The body has `format`, `name` and `registry`, and optionally `kind`, `anonymousRead` and
 `policy`, and `upstream` for a proxy; a group has `group` and neither `registry` nor `policy`.
-`201` with the resource and
+`201` with the resource, its `ETag` and
 `Location: /api/v1/repos/<format>/<name>`; `400` for a field that breaks its rule, `409` when the
 repo exists. A `registry` that takes none of the repo's names is a `400` too: one whose names are
 shallower than three components below its prefix (Docker Hub, or a lower
@@ -220,7 +268,8 @@ curl -s -X POST "$LAJSTROM/api/v1/repos" \
 
 ### Get: `GET /api/v1/repos/<format>/<name>`
 
-`200` with the resource, `404` when there is no such repo.
+`200` with the resource and its `ETag` ([Revisions](#revisions)), `404` when there is no such
+repo.
 
 ```sh
 curl -s "$LAJSTROM/api/v1/repos/raw/scratch"
@@ -247,15 +296,18 @@ not for the key: a body that sends back the `upstream.name` or the `group.member
 as a body that sends back what `GET` answered does, needs `manage` alone. Another name, or other
 members, the same members in another order included, since a group reads its members in order,
 is `403` for a caller without the admin role, and nothing of the body changes.
-`200` with the resource as it is now; a body that changes nothing changes nothing, not even
-`updatedAt`. The audit row has the policy as the merge left it.
+`200` with the resource as it is now and its `ETag`; a body that changes nothing changes
+nothing, not even `updatedAt` or the revision. The audit row has the policy as the merge left
+it. With `If-Match`, the change is made only while the repo has the revision the client read,
+else `412` ([Revisions](#revisions)); the examples send the `ETag` of a `GET` of the repo,
+`$etag`, and each answer's `ETag` is the next one's.
 
 ```sh
 # the policy is {"blobRedirect": "never", "maven": {"sessionTimeout": "45m"}}
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" -H "If-Match: $etag" \
   -H 'Content-Type: application/json' \
   -d '{"anonymousRead": true, "policy": {"maxFileSize": 104857600}}'
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" -H "If-Match: $etag" \
   -H 'Content-Type: application/json' \
   -d '{"policy": {"blobRedirect": null, "maven": {"sessionTimeout": "2h"}}}' | jq -c .policy
 ```
@@ -266,11 +318,11 @@ curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
 
 ```sh
 # a proxy that serves only what it holds, and fetches nothing of the scope @acme or @corp
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/npmjs" \
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/npmjs" -H "If-Match: $etag" \
   -H 'Content-Type: application/json' \
   -d '{"upstream": {"offline": true, "deny": ["@acme/*", "@corp/*"]}}' | jq -c .upstream
 # the versions of lodash merged across the members, though the hosted repo has its own lodash
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/all" \
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/all" -H "If-Match: $etag" \
   -H 'Content-Type: application/json' \
   -d '{"group": {"merge": ["lodash"]}}' | jq -c .group
 ```
@@ -294,7 +346,8 @@ their date. The repo then takes publishes, and its upstream settings and cached 
 gone. One audit row `repo.convert` has the upstream it had, the packages it held, the journal ops
 written and what was left out.
 
-`200` with the resource, now `hosted`. `400` on a group, beside another key, or for another kind;
+`200` with the resource, now `hosted`, and its `ETag`; with `If-Match`, the conversion starts
+only while the repo has that revision ([Revisions](#revisions)). `400` on a group, beside another key, or for another kind;
 `409` while a fetch from the upstream runs, and when the repo is a member of a group that has a
 hosted member already (a group has one). A failure after the kind changed (the registry during the
 journal) leaves a hosted repo with the documents not yet written: the same request resumes it. On a
@@ -321,10 +374,12 @@ the audit row says how many versions the repo had. Role bindings name repos by m
 `404` when there is no such repo. A repo that is a member of a group is `409` naming the groups,
 `force` or not: change the group's members first. A proxy's cached documents of its upstream go
 with it, and what it fetched stays in the registry like a hosted repo's artifacts. A group has
-no versions: its delete needs no `force`, and its members stay as they are.
+no versions: its delete needs no `force`, and its members stay as they are. With `If-Match`, the
+repo is deleted only while it has the revision the client read, else `412`
+([Revisions](#revisions)).
 
 ```sh
-curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true"
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true" -H "If-Match: $etag"
 ```
 
 ### Reindex: `POST` and `GET /api/v1/repos/<format>/<name>/reindex`
@@ -1118,11 +1173,16 @@ lajstrom admin repo create raw/scratch --registry local [--anonymous-read] [--po
 lajstrom admin repo create npm/npmjs --registry local --kind proxy --upstream '{"name": "npmjs", "deny": ["@acme/*"]}'
 lajstrom admin repo create npm/all --kind group --group '{"members": ["internal", "npmjs"]}'
 lajstrom admin repo list [--format raw] [--json]
-lajstrom admin repo delete raw/scratch [--force]
+lajstrom admin repo delete raw/scratch [--force] [--if-match '"Ehh0XZy2vbs8XxQm"']
 ```
 
 `create` prints the resource as JSON on one line, `list` a table (`--json`: the document of
 `GET /api/v1/repos`), `delete` nothing. An error goes to standard error with exit status 1.
+`--if-match` takes the `ETag` that a `GET` of the repo answered, quotes included, and deletes the
+repo only while it has that revision, as `If-Match` does ([Revisions](#revisions)); otherwise the
+command says so, `repo raw/scratch changed since it was read: its ETag is now "…"; read it again
+and send the change again`, with exit status 1, and nothing changes. The commands of users and
+webhooks below take it too.
 
 `prefetch` is the exception: a client of the server's API, `POST …/prefetch` above, since only
 the server reaches the upstream with its credentials. It reads no configuration; the server
@@ -1221,7 +1281,7 @@ those kinds; another kind is `400`.
 ### Create: `POST /api/v1/users`
 
 The body has `name`, `password` (8 to 1024 bytes) and optionally `admin`, `true` to bind the
-user to the admin role on `*/*` in the same transaction. `201` with the resource and `Location:
+user to the admin role on `*/*` in the same transaction. `201` with the resource, its `ETag` and `Location:
 /api/v1/users/<name>`; a name that a live user has is `409`.
 
 A service account has `"kind": "service"` and `owner`, and neither `password` nor `admin`:
@@ -1238,19 +1298,22 @@ curl -s -u admin -X POST "$LAJSTROM/api/v1/users" \
 
 ### Get: `GET /api/v1/users/<user>`
 
-The resource; `404` for a user that does not exist or was deleted.
+The resource and its `ETag` ([Revisions](#revisions)); `404` for a user that does not exist or
+was deleted.
 
 ### Change: `PATCH /api/v1/users/<user>`
 
-The body has `name`, `disabled`, a service account's `owner`, or several of them. `disabled`
-changes first, then the owner, then the name; each change is an audit event of its own
-(`user.owner` for the owner), and a value the user has already is none. `200` with the resource.
-A new name that another live user has is `409`; disabling the last enabled user with an admin
-binding is `409` (a service account's admin binding does not count); an owner given to a user
-that is not a service account is `400`. With `auth.serviceAccounts.onOwnerDisabled: disable`,
-disabling a user disables the enabled service accounts it owns in the same transaction, a
-`user.disable` event each with `owner` in its details; `"disabled": false` on the owner later
-enables none of them.
+The body has `name`, `disabled`, a service account's `owner`, or several of them, changed in one
+transaction. `disabled` changes first, then the owner, then the name; each change is an audit
+event of its own (`user.owner` for the owner), and a value the user has already is none. `200`
+with the resource and its `ETag`. A new name that another live user has is `409`; disabling the
+last enabled user with an admin binding is `409` (a service account's admin binding does not
+count); an owner given to a user that is not a service account is `400`; each changes nothing of
+the body. With `auth.serviceAccounts.onOwnerDisabled: disable`, disabling a user disables the
+enabled service accounts it owns in the same transaction, a `user.disable` event each with
+`owner` in its details; `"disabled": false` on the owner later enables none of them. With
+`If-Match`, only while the user has the revision the client read, else `412`
+([Revisions](#revisions)).
 
 ### Password: `POST /api/v1/users/<user>/password`
 
@@ -1263,7 +1326,8 @@ service account has no password: `400`.
 `~<uid>`, so that the audit log still names it, and the name is free at once
 ([auth.md](auth.md#the-uid-and-the-name)). Deleting the last enabled user with an admin binding
 is `409`, and so is deleting a user that owns a live service account, naming the accounts: give
-them another owner, or delete them, first. A deletion is not undone.
+them another owner, or delete them, first. A deletion is not undone. With `If-Match`, only while
+the user has the revision the client read, else `412`.
 
 ### Who may
 
@@ -1277,6 +1341,7 @@ The same, straight against the database of the configuration: `create`, `list`, 
 `disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)), and
 for service accounts `create --service --owner`, `list --kind service` and `set-owner`
 ([auth.md](auth.md#service-accounts)).
+`rename`, `disable`, `enable` and `delete` take `--if-match`, as `admin repo delete` does.
 
 ### The first admin: `POST /api/v1/bootstrap`
 
@@ -1654,7 +1719,7 @@ rotation, the one time it is shown.
 
 The body has `url`, and optionally `events`, `active` and `description`; under
 `/api/v1/webhooks`, `mask` too. `201` with the resource, `secret` (`whsec_` and base64, the key
-of the `webhook-signature` HMAC) and `Location`; `400` naming a field that breaks its rule, a
+of the `webhook-signature` HMAC), its `ETag` and `Location`; `400` naming a field that breaks its rule, a
 `mask` under a repo other than the repo; `404` for a repo that does not exist; `501
 UNAVAILABLE` without a master key (`keys.masterKeyEnv` or `keys.masterKeyFile`), which every
 secret is encrypted with.
@@ -1666,18 +1731,22 @@ curl -s -u alice -X POST "$LAJSTROM/api/v1/repos/raw/assets/webhooks" \
 
 ### List, get: `GET …/webhooks`, `GET …/webhooks/<id>`
 
-`200` with `{"webhooks": [...]}` by id, or one resource; never a secret. Under a repo, the
+`200` with `{"webhooks": [...]}` by id, or one resource with its `ETag`
+([Revisions](#revisions)); never a secret. Under a repo, the
 webhooks whose mask is exactly the repo; under `/api/v1/webhooks`, every one. An id that is not
 of the repo's mask is `404` under the repo.
 
 ### Change: `PATCH …/webhooks/<id>`
 
 The fields given of `url`, `events`, `active` and `description` change; `mask` is `400`. `200`
-with the resource as it is now.
+with the resource as it is now and its `ETag`; the change is written, and moves `updatedAt` and
+the revision, even with the values the webhook has. With `If-Match`, only while the webhook has
+the revision the client read, else `412` ([Revisions](#revisions)).
 
 ### Delete: `DELETE …/webhooks/<id>`
 
-`204`; the webhook and its delivery log go, and its pending deliveries are not sent.
+`204`; the webhook and its delivery log go, and its pending deliveries are not sent. With
+`If-Match`, only while the webhook has the revision the client read, else `412`.
 
 ### A new secret: `POST …/webhooks/<id>/secret`
 
@@ -1722,8 +1791,8 @@ of the configuration, and `test` sends from the host it runs on:
 ```sh
 lajstrom admin webhook create --mask <format>/<repo> --url https://… [--events version.published,…] [--description …] [--inactive]
 lajstrom admin webhook list [--mask <format>/<repo>]
-lajstrom admin webhook update <id> [--url …] [--events …] [--active=false] [--description …]
-lajstrom admin webhook delete <id>
+lajstrom admin webhook update <id> [--url …] [--events …] [--active=false] [--description …] [--if-match <etag>]
+lajstrom admin webhook delete <id> [--if-match <etag>]
 lajstrom admin webhook rotate <id>
 lajstrom admin webhook test <id>
 lajstrom admin webhook deliveries <id> [--limit 20]
