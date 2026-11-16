@@ -373,11 +373,13 @@ curl -s "$LAJSTROM/api/v1/repos/apt/ubuntu-internal/packages?attr=lajstrom.deb.s
       "updatedAt": "2026-11-02T09:00:00Z",
       "latestVersion": "2.5.0",
       "latestVariants": ["jammy/main/amd64", "jammy/main/arm64"],
+      "lastPublished": "2.5.0",
       "versions": 14,
       "manifests": 28,
       "size": 48213004,
       "summary": "Acme monitoring agent",
-      "attrs": {"lajstrom.deb.arch": "amd64", "lajstrom.deb.component": "main", "lajstrom.deb.suite": "jammy"}
+      "attrs": {"lajstrom.deb.arch": "amd64", "lajstrom.deb.component": "main", "lajstrom.deb.suite": "jammy"},
+      "pointers": []
     }
   ],
   "facets": {"lajstrom.deb.arch": [{"value": "amd64", "count": 41}, {"value": "arm64", "count": 17}]},
@@ -400,17 +402,33 @@ cursor of another sort.
 
 - **`createdAt` and `updatedAt`** are the publish times of the package's first and newest
   manifest.
-- **`latestVersion`** is the first version of [its versions list](#list-versions-get-apiv1reposformatnamepackagespackageversions):
-  the newest by the publish time of its first variant. `latestVariants` are that version's
-  variants, `[]` for a format without them.
+- **`latestVersion`** is the version the format's client installs by default, `null` when it
+  would install none: npm the `latest` dist-tag, as the packument has it (the journal's, else the
+  highest release by SemVer, else the highest version); maven the `release` of its
+  `maven-metadata.xml`, the highest version in Maven's order that is not a pre-release, `null`
+  when every version is one; pypi the highest version by PEP 440 that is not a pre-release and
+  not yanked, as pip picks it: a pre-release only when the package has no other version, a
+  yanked one only when every candidate is yanked, never a version that is not PEP 440; apt and
+  rpm the highest by dpkg's and by rpm's order; raw, whose client has none, the newest by
+  publish time. `latestVariants` are its variants, `[]` for a format without them and when
+  `latestVersion` is `null`.
+- **`lastPublished`** is the first version of [its versions list](#list-versions-get-apiv1reposformatnamepackagespackageversions):
+  the newest by the publish time of its first variant; `null` without versions.
 - **`versions` and `manifests`** count the package's versions and its manifests, one per variant
   of each version; **`size`** adds up the sizes of the file layers of all of them, a blob that
   two share twice.
-- **`summary` and `attrs`** are those of the head manifest, the latest version's first variant
-  by name: `attrs` its `lajstrom.*` annotations, as a version has them; `summary` one line of
-  its metadata layer (pypi `summary`, deb `Description`, npm `description`, rpm `summary`),
-  `null` when it has none: maven and raw, or a version written before the release that added
-  it, until a reindex with `verify`.
+- **`summary` and `attrs`** are those of the head manifest, the first variant by name of
+  `latestVersion`, or of `lastPublished` when it is `null`: `attrs` its `lajstrom.*`
+  annotations, as a version has them; `summary` one line of its metadata layer (pypi `summary`,
+  deb `Description`, npm `description`, rpm `summary`), `null` when it has none: maven and raw.
+  A version written before the release that added it gets its summary when `serve` starts, in
+  the background, or, when its metadata layer was too large to keep, at a reindex with
+  `verify`; it has none until then.
+- **`pointers`** are the package's pointers that name one of its versions, as the
+  [versions list](#list-versions-get-apiv1reposformatnamepackagespackageversions) shows them on
+  each version, with that version: npm's dist-tags as the journal has them,
+  `{"kind": "dist-tag", "name": "next", "version": "3.0.0-rc.1"}`, by kind and name; `[]` for
+  the other formats.
 
 A group has no packages: the list is empty, its facets too. The sorts other than `name`, `q`,
 `attr` and `facet` read every package of the repo, and take longer on a large one.
@@ -428,8 +446,9 @@ a group. `<package>` is one path segment, as for the delete below.
   "name": "requests", "nameOci": "requests",
   "createdAt": "2026-03-02T10:00:00Z", "updatedAt": "2026-11-02T09:00:00Z",
   "latestVersion": "2.32.3", "latestVariants": ["py3-none-any", "sdist"],
+  "lastPublished": "2.33.0rc1",
   "versions": 12, "manifests": 24, "size": 2481034,
-  "summary": "Python HTTP for Humans.", "attrs": {},
+  "summary": "Python HTTP for Humans.", "attrs": {}, "pointers": [],
   "ociRepository": "pypi/internal/requests",
   "latestMetadata": {"name": "requests", "version": "2.32.3", "summary": "Python HTTP for Humans."}
 }

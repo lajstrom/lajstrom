@@ -857,13 +857,31 @@ At most 16 `attr` and 16 `facet`. A key that is not `lajstrom.` followed by lett
 cursor of another sort are `400`.
 
 A package of the list has `name`, `nameOci` (`packages.name_oci`), `createdAt` and `updatedAt`
-(the publish times of its first and its newest manifest), `latestVersion` (the first version of
-its versions list), `latestVariants` (the variants of that version but `""`, in byte order),
-`versions` and `manifests` (how many of each it has), `size` (the sizes of the file layers of
-all its manifests added up, a blob two manifests share twice), and `summary` and `attrs` of its
-head manifest: the latest version's first variant in byte order. `summary` is `null` when that
-manifest has none. It is all read from the derived tables, so reindex rebuilds it. A group has
-no packages: its list is empty, its facets too.
+(the publish times of its first and its newest manifest), `latestVersion` (below),
+`latestVariants` (the variants of that version but `""`, in byte order; `[]` when it is `null`),
+`lastPublished` (the first version of its versions list, `null` without versions), `versions`
+and `manifests` (how many of each it has), `size` (the sizes of the file layers of all its
+manifests added up, a blob two manifests share twice), `summary` and `attrs` of its head
+manifest, the first variant in byte order of `latestVersion`, or of `lastPublished` when it is
+`null`, and `pointers`: the pointers of its journal state that name one of its versions, each
+`{"kind", "name", "version"}`, by kind and name (npm's dist-tags; `[]` for the other formats).
+`summary` is `null` when the head manifest has none. It is all read from the derived tables, so
+reindex rebuilds it. A group has no packages: its list is empty, its facets too.
+
+`latestVersion` is the version that the format's client installs by default, among the
+package's versions, and `null` when it installs none:
+
+- npm: the `latest` dist-tag as the packument has it (§3, npm): the journal's when the package
+  has its version, else the highest release by SemVer precedence, else the highest version;
+- maven: the `release` of the artifact's `maven-metadata.xml` (§3, maven), the highest version
+  in Maven's order that is not a pre-release; `null` when every version is one;
+- pypi: the highest by PEP 440 of the versions that are PEP 440 versions, as pip picks one: of
+  those that are not pre-releases (a pre- or a development release), or of all of them when
+  every one is; then the highest that is not yanked (the journal's state), or the highest
+  yanked one when all are;
+- apt and rpm: the highest by dpkg's order and by rpm's (`[epoch:]version[-release]` by
+  rpmvercmp) of the versions they read;
+- raw, whose client has none: `lastPublished`.
 
 One package (`read`, #958): `GET …/packages/<name>`, with `<name>` as the delete below has it,
 answers the package's row of that list, `ociRepository` (as for one version, below) and

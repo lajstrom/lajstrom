@@ -143,6 +143,15 @@ type Admitter interface {
     Admit(repo index.Repo, e Entry) error
 }
 
+// LatestPicker is a Plugin whose format's client installs one version of a package by default,
+// the package's latestVersion (http-routing.md §4): LatestVersion returns it among versions, the
+// package's distinct versions newest first by VersionKey, with state, its journal state; "" when
+// the client installs none. npm, maven, pypi, apt and rpm; without it (raw), the newest.
+type LatestPicker interface {
+    Plugin
+    LatestVersion(versions []string, state []index.JournalState) string
+}
+
 // Router takes ServeMux patterns relative to /<format>/, e.g. "GET /{repo}/simple/{project}/".
 type Router interface {                     // implementation: NewRouter
     Handle(pattern string, h http.Handler)
@@ -985,6 +994,15 @@ type Reader interface {
     // ListPackagesAfter: a page of ListPackages, the names after `after` in byte order ("": from
     // the first), at most limit (index-schema.md, Pages of packages and versions)
     ListPackagesAfter(ctx context.Context, repoID int64, prefix, after string, limit int) ([]Package, error)
+    // the package list, one package and search (index-schema.md, The package list, one package
+    // and search): the facts of packages, one per id in their order, the latest version picked by
+    // latest (nil: the newest by VersionKey); a page of a repo's packages that q keeps, in its
+    // order after its key; the values of an attr key with their counts of packages; one rank of
+    // the search after its key
+    ListPackageFacts(ctx context.Context, packageIDs []int64, latest LatestFunc) ([]PackageFacts, error)
+    ListPackagePage(ctx context.Context, repoID int64, q PackageQuery) ([]PackagePlace, error)
+    ListAttrValues(ctx context.Context, repoID int64, key string) ([]AttrValue, error)
+    Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
     GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)
     GetVersionByTag(ctx context.Context, packageID int64, tag string) (*Version, error)
     GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
@@ -996,6 +1014,10 @@ type Reader interface {
     // ListUnseenVersions: the versions of a repo whose IndexedAt is before seenBefore, with
     // their packages (the sweep of reindex)
     ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
+    // ListVersionsWithoutSummary: at most limit rows after the id afterID, in id order, whose
+    // summary is NULL and whose metadata is not (index-schema.md, The summaries of the rows
+    // before 0029)
+    ListVersionsWithoutSummary(ctx context.Context, afterID int64, limit int) ([]Version, error)
     ListFiles(ctx context.Context, versionID int64) ([]File, error)
     FindFiles(ctx context.Context, repoID int64, name string) ([]FileMatch, error)
     GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
@@ -1143,6 +1165,9 @@ type Writer interface {
     DeleteVersion(ctx context.Context, id int64) error
     DeletePackage(ctx context.Context, id int64) error
     DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) // packages without versions
+    // SetVersionSummaries writes the summary of each id, "" as '', to those of the rows whose
+    // summary is still NULL, in one transaction, and returns how many it wrote
+    SetVersionSummaries(ctx context.Context, summaries map[int64]string) (int, error)
     // PutIndexCache stores c only while generation, read before the render, is the repo's, and
     // says whether it did; InvalidateIndexCache increments the generation, then deletes, of the
     // repo and of every group it is a member of (index-schema.md), as ResetDerived does
@@ -1192,6 +1217,8 @@ type Writer interface {
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
+// PackageFacts, PackageQuery, PackageSort, PackageKey, PackagePlace, AttrValue, SearchQuery,
+// SearchRank, SearchKey, SearchHit (index-schema.md, The package list, one package and search),
 // IdentityGroup (a row of identity_groups with its identity's UserID and GroupsExpireAt and its
 // user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers,
 // but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
@@ -1215,6 +1242,10 @@ type VersionKey struct {
     CreatedAt time.Time                     // the earliest CreatedAt of the version's rows: its first variant
     Version   string
 }
+
+// LatestFunc picks the latest version of a package for ListPackageFacts among versions, its
+// distinct versions newest first by VersionKey, with state, its journal state; "" for none.
+type LatestFunc func(packageID int64, versions []string, state []JournalState) string
 
 // Repo, for ADR 0013 (repos.upstream, repos.group):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
