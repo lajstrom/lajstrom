@@ -166,6 +166,17 @@ type Adopter interface {
 	AdoptOps(name string, kept []byte, held []string) (ops []JournalOp, skipped []string, err error)
 }
 
+// Trimmer is a Proxier whose kept documents can lose versions (docs/spec/policy.md §6.1,
+// docs/spec/proxy-and-group.md §10): the proxy core leaves out of a proxy's document the versions
+// the policy refuses before RenderProxy reads it. A format whose plugin lacks it renders its
+// upstream's versions whatever the policy says, and their files are refused when asked for.
+type Trimmer interface {
+	Proxier
+	// Trim returns kept, the document of kind of name as ParseMetadata kept it, without the
+	// versions for which drop is true; kept as it is when it drops none.
+	Trim(name, kind string, kept []byte, drop func(version, variant string) bool) ([]byte, error)
+}
+
 // Prefetcher is implemented by a plugin whose proxy repos take a prefetch (docs/spec/
 // proxy-and-group.md §5.1, #441): the core fetches the entries of a list of names before a
 // client asks for them, as a miss would. A format whose plugin lacks it has no prefetch.

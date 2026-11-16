@@ -12,6 +12,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -68,6 +69,13 @@ type Options struct {
 	// proxy's path before the completion of a manifest there fetches one (proxy-and-group.md
 	// §11.5, step 5); zero means 10 s, and a negative value does not wait.
 	CompleteQuiet time.Duration
+	// Policy decides the versions of a proxy repo at step 3 of a fetch and the versions of its
+	// documents (docs/spec/policy.md §6.1, §6.4); nil refuses nothing.
+	Policy *policy.Decider
+	// Lifted is called, on the fetch's context, for a version of a repo with a quarantine
+	// fetched after its quarantine is over (docs/spec/policy.md §4): it attaches the allow
+	// verdict. nil attaches none.
+	Lifted func(ctx context.Context, repo index.Repo, m index.FileMatch)
 }
 
 // The defaults of the claims (docs/spec/index-schema.md, Proxy and group repos) and of the

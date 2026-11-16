@@ -194,7 +194,7 @@ func newServeCmd(a *app) *cobra.Command {
 			defer endFetches()
 			proxyCore := proxy.New(proxy.Options{Index: st, Ingest: pipe, Providers: providers, Upstreams: upstreams,
 				Plugins: lookupIn(servedPlugins(c.Server.ExternalURL, nil)), ExternalURL: c.Server.ExternalURL, Context: fetches, Log: a.log,
-				OCIUpstreams: ociUpstreams, Mirror: pipe, MaxManifestSize: c.Server.MaxManifestSize})
+				OCIUpstreams: ociUpstreams, Mirror: pipe, MaxManifestSize: c.Server.MaxManifestSize, Policy: decider})
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,

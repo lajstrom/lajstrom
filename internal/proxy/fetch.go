@@ -12,6 +12,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 )
 
 // The results of lajstrom_proxy_fetches_total.
@@ -73,20 +74,15 @@ func (c *Core) proxyFile(ctx context.Context, repo index.Repo, path string) (*in
 // artifact's entry in the name's document and that document's row when the caller has read
 // them (a prefetch); nil looks them up (§5, step 5) once the artifact is found missing.
 func (c *Core) proxyArtifact(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (*index.FileMatch, string, error) {
-	if m, err := c.held(ctx, p, a); m != nil || err != nil {
-		if m != nil {
-			countFetch(p, fetchHeld)
-		}
+	if m, err := c.heldArtifact(ctx, p, a); m != nil || err != nil {
 		return m, fetchHeld, err
 	}
 	if p.up == nil {
 		return nil, "", fmt.Errorf("%w: proxy: %s is offline and does not hold %s", index.ErrNotFound, p.id(), a.ref.File)
 	}
-	if entry == nil {
-		var err error
-		if entry, row, err = c.entry(ctx, p, a); err != nil {
-			return nil, "", err
-		}
+	entry, row, err := c.entryOf(ctx, p, a, entry, row)
+	if err != nil {
+		return nil, "", err
 	}
 	fl, joined := c.flights.join(fmt.Sprintf("%d/%s:%s", p.repo.ID, a.pkgPath, a.tag), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
@@ -113,7 +109,53 @@ func (c *Core) proxyArtifact(ctx context.Context, p *proxied, a artifact, entry 
 		return m, fetchShared, nil
 	}
 	countFetch(p, fetchFetched)
+	c.lifted(ctx, p, m)
 	return m, fetchFetched, nil
+}
+
+// lifted hands a version fetched into a repo with a quarantine, after the policy let it through,
+// to Options.Lifted, on a context of its own, without waiting (docs/spec/policy.md §4).
+func (c *Core) lifted(ctx context.Context, p *proxied, m *index.FileMatch) {
+	if c.o.Lifted == nil || policy.Quarantine(p.repo) <= 0 {
+		return
+	}
+	lctx, cancel := c.detach(ctx)
+	go func() {
+		defer cancel()
+		c.o.Lifted(lctx, p.repo, *m)
+	}()
+}
+
+// heldArtifact is step 3 for a version the repo holds: its file, decided by the policy; nil when
+// the repo does not hold the version.
+func (c *Core) heldArtifact(ctx context.Context, p *proxied, a artifact) (*index.FileMatch, error) {
+	m, err := c.held(ctx, p, a)
+	if m == nil || err != nil {
+		return m, err
+	}
+	if err := c.decideHeld(ctx, p, m); err != nil {
+		return nil, err
+	}
+	countFetch(p, fetchHeld)
+	return m, nil
+}
+
+// entryOf returns the artifact's entry and row, looked up (step 5) when the caller has not read
+// them, once the policy decided the version on its entry (step 3): a prefetch's when it has.
+func (c *Core) entryOf(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta,
+) (*format.UpstreamEntry, *index.ProxyMeta, error) {
+	surface := policy.SurfacePrefetch
+	if entry == nil {
+		var err error
+		if entry, row, err = c.entry(ctx, p, a); err != nil {
+			return nil, nil, err
+		}
+		surface = policy.SurfaceFetch
+	}
+	if err := c.decideEntry(ctx, p, a, entry, surface); err != nil {
+		return nil, nil, err
+	}
+	return entry, row, nil
 }
 
 // artifact maps a request path to the artifact, after the lists.
