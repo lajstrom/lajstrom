@@ -98,7 +98,7 @@ func TestPutRefusedStoresNothing(t *testing.T) {
 		e := newEnv(t, envOptions{})
 		e.prov.ChunkSize = 64
 		first := e.put("big/refused.txt", body)
-		if again := e.put("big/refused.txt", body); again.Digest != first.Digest {
+		if again := e.putAgain("big/refused.txt", body); again.Digest != first.Digest {
 			t.Errorf("repeat = %+v, want the digest %s", again, first.Digest)
 		}
 		if n, open := len(e.prov.PushReferences()), e.prov.OpenUploads(); n != 1 || open != 0 {

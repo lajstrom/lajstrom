@@ -90,12 +90,13 @@ req() {
 # hdr NAME prints the value of the response header NAME (lower case), the last one sent.
 hdr() { awk -F': ' -v n="$1" '$1 == n { sub(/^[^:]*: /, ""); v = $0 } END { print v }' "$work/headers"; }
 
-# put FILE PATH: PUT FILE to PATH, check 201, Location and the body; the digest goes to $digest.
+# put FILE PATH [STATUS]: PUT FILE to PATH, check STATUS (201; 200 for bytes the path holds),
+# Location and the body; the digest goes to $digest.
 put() {
-	local file="$1" path="$2" encoded
+	local file="$1" path="$2" want="${3:-201}" encoded
 	encoded="$(urlpath "$path")"
 	req PUT "$encoded" -T "$file" -H 'Content-Type: text/plain'
-	expect "PUT $path status" 201 "$status"
+	expect "PUT $path status" "$want" "$status"
 	expect "PUT $path Location" "/raw/$repo/$encoded" "$(hdr location)"
 	expect "PUT $path body path" "$path" "$(jq -r .path "$work/body")"
 	digest="$(hdr docker-content-digest)"
@@ -151,10 +152,10 @@ req GET "$(urlpath "$file")" -H "If-None-Match: $etag"
 expect "R-01 GET with If-None-Match status" 304 "$status"
 ok "R-01 PUT $file: 201 with $d1; GET returns the bytes; HEAD has the headers; If-None-Match is 304"
 
-# R-02: the same bytes again are 201 with the same digest.
-put "$work/v1" "$file"
+# R-02: the same bytes again are 200 with the same digest (#1129).
+put "$work/v1" "$file" 200
 expect "R-02 digest of the repeat" "$d1" "$digest"
-ok "R-02 PUT of the same bytes: 201, the same digest"
+ok "R-02 PUT of the same bytes: 200, the same digest"
 
 # R-03: new bytes are a new version; ?digest= pins the old one.
 put "$work/v2" "$file"

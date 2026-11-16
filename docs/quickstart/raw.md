@@ -96,7 +96,7 @@ download URLs (distribution on S3, for example), `GET` answers `307` to the blob
 
 ```sh
 first=$(curl -u "$u" -s -T file.txt $base/docs/file.txt | jq -r .digest)
-echo "$first"                                                      # the same digest: 201, nothing new is stored
+echo "$first"                                                      # the same digest: 200, nothing new is stored
 printf 'hello again\n' > file.txt
 curl -u "$u" -s -T file.txt $base/docs/file.txt | jq -r .digest    # a new digest: a new version
 curl -u "$u" $base/docs/file.txt                                   # hello again
@@ -105,8 +105,8 @@ curl -u "$u" "$base/docs/file.txt?digest=$first"                   # hello raw: 
 
 A path resolves to its newest version, the most recently created one. Every version stays in
 the registry under its own tag; tags are never moved. Uploading bytes that an older version
-already holds is the idempotent repeat of that version, not a new one, so it does not become
-the newest: to roll back, pin `?digest=`, or delete the newer version with the management API
+already holds is the idempotent repeat of that version, `200` with its digest, not a new one, so
+it does not become the newest: to roll back, pin `?digest=`, or delete the newer version with the management API
 ([api.md](../api.md)); `d9a4c6676a62cb3b` is the `version` of `hello again`, and the listing of
 section 5 then shows one version:
 

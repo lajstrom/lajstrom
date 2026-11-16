@@ -199,11 +199,12 @@ for r in a b; do
 	curl -sS -K "$E2E_CURLRC" -T "$work/big" -o "$work/h02-$r.json" -w '%{http_code}' "$u/raw/$repo/big" >"$work/h02-$r.code" &
 done
 wait
-assert_eq "201 201" "$(cat "$work/h02-a.code") $(cat "$work/h02-b.code")" "H-02: the statuses of A and B"
+# One stores the file, 201; the other is the same bytes, 200 with the same digest (#1129).
+assert_eq "200 201" "$(sort "$work/h02-a.code" "$work/h02-b.code" | tr '\n' ' ' | sed 's/ $//')" "H-02: the statuses of A and B"
 assert_eq "$(jq -r .digest "$work/h02-a.json")" "$(jq -r .digest "$work/h02-b.json")" "H-02: the digests of A and B"
 assert_eq 1 "$(psql "SELECT count(*) FROM versions v JOIN packages p ON p.id = v.package_id JOIN repos r ON r.id = p.repo_id WHERE r.name = '$repo' AND p.name = 'big'")" "H-02: versions of big in the index"
 assert_eq 1 "$(curl -fsS "$backend/v2/raw/$repo/big/tags/list" | jq '.tags | length')" "H-02: tags of big in the backend"
-step "H-02: 100 MiB PUT through A and B at once: 201 and 201, $(jq -r .digest "$work/h02-a.json"), one version, one tag"
+step "H-02: 100 MiB PUT through A and B at once: A $(cat "$work/h02-a.code"), B $(cat "$work/h02-b.code"), $(jq -r .digest "$work/h02-a.json"), one version, one tag"
 
 # H-03: one tag, two manifests (the same file, another created time), through A and B at once,
 # 20 times.
@@ -390,7 +391,8 @@ step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; 
 # new file each through the edge, and A's /-/readyz (the loads, $work/ID.reads, .puts, .ready).
 # A probe of the wheel or a PUT must be answered one of STATUSES, a load 200 (201 for a PUT) or
 # one of STATUSES, and every load sent once both replicas serve again 200 or 201. Then: neither
-# replica restarted, every PUT that failed is 201 again, and the index is whole. A read and a
+# replica restarted, every PUT that failed is 201 again, or 200 when its first PUT stored the
+# file though its client got an error (#1129), and the index is whole. A read and a
 # PUT start their line with "during" or "after", whether $work/ID.served, made once both
 # replicas served, was there when they were sent: curl writes the statuses of a run when it
 # exits, so a run sent during the outage, whose second request waited for the database, would
@@ -458,21 +460,23 @@ outage() {
 	assert_eq "" "$seen" "$id: the loads, statuses other than 200, 201 and $ok (all: $got)"
 	assert_eq "" "$(awk '$1 == "after" && $2 != 200 { print $2 }' "$work/$id.reads" | sort | uniq -c | tr '\n' ' ')" "$id: the reads sent once both replicas served again"
 	assert_eq "" "$(awk '$1 == "after" && $3 != 201 { print $2, $3 }' "$work/$id.puts" | tr '\n' ' ')" "$id: the PUTs sent once both replicas served again"
+	again=""
 	for f in $(awk '$1 !~ /^(wheel|readyz)-/ && $NF != 201 { print $(NF - 1) }' "$work/$id.puts" "$work/$id.probes"); do
-		assert_status 201 -K "$E2E_CURLRC" -T "$work/$id/$f" -o /dev/null "$edge/raw/$repo/$id/$f"
+		r="$(curl -sS -K "$E2E_CURLRC" -T "$work/$id/$f" -o "$work/$id.again" -w '%{http_code}' "$edge/raw/$repo/$id/$f")" || fail "$id: the PUT again of $f: curl exit $?"
+		case "$r" in 200 | 201) again+="${again:+ }$f $r" ;; *) fail "$id: the PUT again of $f: status $r, want 201, or 200 for a file its first PUT stored: $(head -c 300 "$work/$id.again")" ;; esac
 	done
 	whole "$id" "$id/"
-	outage_summary="probes $(grep -v '^readyz-' "$work/$id.probes" | tr '\n' ' ' | sed 's/ $//'), readyz $(awk '/^readyz-/ { printf "%s%s", sep, $2; sep = " " }' "$work/$id.probes"); loads: $(wc -l <"$work/$id.reads" | tr -d ' ') reads and $(wc -l <"$work/$id.puts" | tr -d ' ') PUTs ($got), A's readyz $(sort "$work/$id.ready" | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }'); both served again $t0 s after the start"
+	outage_summary="probes $(grep -v '^readyz-' "$work/$id.probes" | tr '\n' ' ' | sed 's/ $//'), readyz $(awk '/^readyz-/ { printf "%s%s", sep, $2; sep = " " }' "$work/$id.probes"); loads: $(wc -l <"$work/$id.reads" | tr -d ' ') reads and $(wc -l <"$work/$id.puts" | tr -d ' ') PUTs ($got), A's readyz $(sort "$work/$id.ready" | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }'); the failed PUTs again: ${again:-none}; both served again $t0 s after the start"
 }
 
 # H-06: Postgres out under load: requests are 503 (index.ErrUnavailable, #560), and readyz is 503.
 outage H-06 ha-postgres 503
 assert_eq "readyz-a 503 readyz-b 503" "$(grep '^readyz-' "$work/H-06.probes" | tr '\n' ' ' | sed 's/ $//')" "H-06: readyz of A and B while ha-postgres was out"
-step "H-06: ha-postgres stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
+step "H-06: ha-postgres stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201 or 200; one version each, no claim, reindex finds nothing missing"
 
 # H-07: the registry out under load: 502 or 503, a name that does not resolve included (#561).
 outage H-07 ha-distribution '502 503'
-step "H-07: ha-distribution stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
+step "H-07: ha-distribution stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201 or 200; one version each, no claim, reindex finds nothing missing"
 
 # H-08: a maven deploy of com.example.ha:lib:1.0.0 to a maven repo of the run, in the order of
 # mvn deploy (M-01), each PUT to the other replica, as the round robin of the edge sends them:

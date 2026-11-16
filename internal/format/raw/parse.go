@@ -160,8 +160,9 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
 		Entry: format.Entry{Name: p, Version: version, Attrs: attrs, Metadata: md,
 			Files: []format.FileEntry{{Name: p, MediaType: file.MediaType, Digest: d, Size: size}}},
-		Tag:      profile.Tag(version, ""),
-		RepoPath: name,
+		Tag:        profile.Tag(version, ""),
+		RepoPath:   name,
+		ContentTag: true,
 	}, nil
 }
 
