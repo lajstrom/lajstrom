@@ -214,15 +214,43 @@ func distTags(all []packed, j journalView) (map[string]string, packed) {
 	if latest, ok := byVersion[tags["latest"]]; ok {
 		return tags, latest
 	}
-	latest := all[len(all)-1]
-	for _, pv := range slices.Backward(all) {
-		if pv.semver.pre == nil {
-			latest = pv
-			break
-		}
-	}
+	latest := defaultLatest(all)
 	tags["latest"] = latest.version
 	return tags, latest
+}
+
+// defaultLatest is latest of the versions all, in SemVer order, when the journal names none of
+// them: the highest release, else the highest version.
+func defaultLatest(all []packed) packed {
+	for _, pv := range slices.Backward(all) {
+		if pv.semver.pre == nil {
+			return pv
+		}
+	}
+	return all[len(all)-1]
+}
+
+// LatestVersion returns the latest dist-tag of the package's packument (format.LatestPicker,
+// distTags): the journal state's when the package has its version, else the highest release by
+// SemVer precedence, else the highest version; versions of one precedence by their bytes.
+func (Plugin) LatestVersion(versions []string, state []index.JournalState) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	for _, s := range state {
+		if s.Kind == index.JournalDistTag && s.Key == "latest" && slices.Contains(versions, s.Value) {
+			return s.Value
+		}
+	}
+	all := make([]packed, len(versions))
+	for i, v := range versions {
+		sv, _ := parseVersion(v) // Validate took it
+		all[i] = packed{version: v, semver: sv}
+	}
+	slices.SortFunc(all, func(a, b packed) int {
+		return cmp.Or(a.semver.compare(b.semver), strings.Compare(a.version, b.version))
+	})
+	return defaultLatest(all).version
 }
 
 // packuments returns the full and the abbreviated packument of the versions, in SemVer order,

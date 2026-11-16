@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // The vectors of this file are those of the reference implementation, the tests of pypa's
@@ -170,6 +171,40 @@ func TestIsPrerelease(t *testing.T) {
 		}
 		if got := v.isPrerelease(); got != want {
 			t.Errorf("parseVersion(%q).isPrerelease() = %v, want %v", s, got, want)
+		}
+	}
+}
+
+// TestLatestVersion: the version pip installs without a specifier, given the versions and the
+// journal state's yanks.
+func TestLatestVersion(t *testing.T) {
+	yank := func(versions ...string) []index.JournalState {
+		var out []index.JournalState
+		for _, v := range versions {
+			out = append(out, index.JournalState{Kind: index.JournalYanked, Key: v})
+		}
+		return out
+	}
+	for _, tt := range []struct {
+		name     string
+		versions []string
+		state    []index.JournalState
+		want     string
+	}{
+		{"by PEP 440, not by bytes", []string{"1.10", "1.9", "1.2"}, nil, "1.10"},
+		{"no pre-release", []string{"2.0rc1", "1.9", "2.0.dev3", "1.9.post1"}, nil, "1.9.post1"},
+		{"pre-releases when there is nothing else", []string{"2.0b1", "2.0a2", "2.0.dev9"}, nil, "2.0b1"},
+		{"not yanked", []string{"1.0", "1.1", "1.2"}, yank("1.2"), "1.1"},
+		{"a yanked one when all are", []string{"1.0", "1.1"}, yank("1.0", "1.1"), "1.1"},
+		{"the releases even when all are yanked", []string{"1.0", "2.0a1"}, yank("1.0"), "1.0"},
+		{"not a PEP 440 version", []string{"1.0", "latest", "2.0-SNAPSHOT"}, nil, "1.0"},
+		{"none", []string{"latest"}, nil, ""},
+		{"no versions", nil, nil, ""},
+		{"equal in the order: by bytes", []string{"1.0", "1.0.0"}, nil, "1.0.0"},
+		{"a deprecation is no yank", []string{"1.0", "1.1"}, []index.JournalState{{Kind: index.JournalDeprecated, Key: "1.1"}}, "1.1"},
+	} {
+		if got := (Plugin{}).LatestVersion(tt.versions, tt.state); got != tt.want {
+			t.Errorf("%s: LatestVersion(%q) = %q, want %q", tt.name, tt.versions, got, tt.want)
 		}
 	}
 }

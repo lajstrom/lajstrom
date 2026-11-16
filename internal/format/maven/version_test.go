@@ -143,3 +143,23 @@ func TestSortVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestLatestVersion: the release of the maven-metadata.xml of the versions, a SNAPSHOT build
+// never, and none when every version is a pre-release.
+func TestLatestVersion(t *testing.T) {
+	for _, tt := range []struct {
+		versions []string
+		want     string
+	}{
+		{[]string{"1.9", "1.10", "1.10-rc1", "2.0-M1"}, "1.10"},
+		{[]string{"1.0", "1.1-20261114.101112-3", "1.0-sp1"}, "1.0-sp1"},
+		{[]string{"31.1-jre", "31.1-android", "32.0-rc1"}, "31.1-jre"},
+		{[]string{"2.0-M1", "1.0-20261114.101112-3"}, ""},
+		{[]string{"1.0", "1.0.0"}, "1.0.0"},
+		{nil, ""},
+	} {
+		if got := (Plugin{}).LatestVersion(tt.versions, nil); got != tt.want {
+			t.Errorf("LatestVersion(%q) = %q, want %q", tt.versions, got, tt.want)
+		}
+	}
+}

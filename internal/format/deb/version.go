@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // dpkg's version order, as Debian Policy §5.6.12 specifies it, written from that text:
@@ -172,4 +173,18 @@ func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 // isAlnum reports whether r is an ASCII letter or digit.
 func isAlnum(r rune) bool {
 	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9'
+}
+
+// LatestVersion returns the highest version in dpkg's order (format.LatestPicker), the one apt
+// installs from one repo; a version dpkg does not read is skipped, and versions equal in the
+// order compare by their bytes.
+func (Plugin) LatestVersion(versions []string, _ []index.JournalState) string {
+	best, bestV := "", debVersion{}
+	for _, s := range versions {
+		v, err := parseVersion(s)
+		if err == nil && (best == "" || cmp.Or(v.compare(bestV), strings.Compare(s, best)) > 0) {
+			best, bestV = s, v
+		}
+	}
+	return best
 }

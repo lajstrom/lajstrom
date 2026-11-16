@@ -78,6 +78,17 @@ type Admitter interface {
 	Admit(repo index.Repo, e Entry) error
 }
 
+// LatestPicker is a Plugin whose format's client installs one version of a package by default,
+// the latestVersion of the package list and of one package (docs/spec/http-routing.md §4).
+// LatestVersion returns it among versions, the package's distinct versions newest first by
+// index.VersionKey, with state, the package's journal state (index.Reader.ListJournalState);
+// "" when the client installs none. npm, maven, pypi, apt and rpm pick one; raw, whose client
+// has none, is not a LatestPicker, and its latest version is the newest.
+type LatestPicker interface {
+	Plugin
+	LatestVersion(versions []string, state []index.JournalState) string
+}
+
 // Router is what a plugin mounts its handlers on. Patterns are net/http ServeMux patterns
 // relative to /<format>/, for example "GET /{repo}/simple/{project}/"; the implementation,
 // NewRouter, prefixes them with the plugin name and resolves {repo}.

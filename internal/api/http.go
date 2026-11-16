@@ -201,6 +201,7 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/repos/{format}/{repo}/reindex", h.reindexRepo},
 		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
 		{"GET /api/v1/repos/{format}/{repo}/packages", h.listPackages},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}", h.getPackage},
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions", h.listVersions},
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.getVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},

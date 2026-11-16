@@ -409,6 +409,35 @@ type File struct {
 	Attrs     map[string]string // layer annotations
 }
 
+// PackageFacts is what Reader.ListPackageFacts answers of a package: counts and times over
+// its versions rows, its latest and its last published version, and the dist-tags of its journal
+// (docs/spec/index-schema.md, The package list, one package and search).
+type PackageFacts struct {
+	PackageID int64
+	Versions  int64     // distinct versions
+	Manifests int64     // versions rows, one per variant of each version
+	Size      int64     // the sizes of the files rows of all its manifests, added up
+	UpdatedAt time.Time // the newest CreatedAt of its manifests; zero without versions
+	// Latest is the version that the LatestFunc of ListPackageFacts picked, "" for none, and
+	// LatestVariants its variants in byte order.
+	Latest         string
+	LatestVariants []string
+	// LastPublished is the first version by VersionKey, the newest by the publish time of its
+	// first variant; "" without versions.
+	LastPublished string
+	// Tags are the dist-tags of its journal state that name one of its versions, by Key.
+	Tags []JournalState
+	// Head is the first variant in byte order of Latest, or of LastPublished when Latest is "",
+	// without its Metadata; nil without versions.
+	Head *Version
+}
+
+// LatestFunc picks the latest version of a package for Reader.ListPackageFacts among versions,
+// its distinct versions newest first by VersionKey, with state, its journal state
+// (Reader.ListJournalState); "" for none. The order of a format's versions is its plugin's
+// (format.LatestPicker).
+type LatestFunc func(packageID int64, versions []string, state []JournalState) string
+
 // VersionMatch is a version together with its package, as Reader.ListUnseenVersions returns it.
 type VersionMatch struct {
 	Version Version

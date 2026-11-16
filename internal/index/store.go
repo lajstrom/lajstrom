@@ -171,6 +171,11 @@ type Reader interface {
 	// after after in byte order ("" = from the first), ordered by name, at most limit of them;
 	// none when limit is below 1 (docs/spec/index-schema.md, Pages of packages and versions).
 	ListPackagesAfter(ctx context.Context, repoID int64, prefix, after string, limit int) ([]Package, error)
+	// ListPackageFacts returns the facts of the packages with the given distinct ids, one per
+	// id in their order; the zero facts but PackageID for a package without versions. latest
+	// picks each package's latest version; nil picks the first by VersionKey
+	// (docs/spec/index-schema.md, The package list, one package and search).
+	ListPackageFacts(ctx context.Context, packageIDs []int64, latest LatestFunc) ([]PackageFacts, error)
 
 	// GetVersion returns the version of a package by version and variant ("" when none).
 	GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)

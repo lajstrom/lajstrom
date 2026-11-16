@@ -179,6 +179,9 @@ type Repos struct {
 	// members, any number of them, and take no merge pattern (docs/spec/proxy-and-group.md §8.6);
 	// nil means format.Lookup and the plugin's format.IndexGrouper.
 	IndexGroupers func(formatName string) bool
+	// Latest returns the hook of a format's plugin that picks a package's latest version, and
+	// whether it has one; nil means format.Lookup and the plugin's format.LatestPicker.
+	Latest func(formatName string) (format.LatestPicker, bool)
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
@@ -756,6 +759,19 @@ func (s *Repos) checkUpstreamName(formatName string, settings proxy.Settings) er
 }
 
 // proxier returns the proxy hooks of the plugin of formatName, when it has proxy repos.
+// latestPicker returns the format.LatestPicker of the plugin of formatName, and whether it is one.
+func (s *Repos) latestPicker(formatName string) (format.LatestPicker, bool) {
+	if s.Latest != nil {
+		return s.Latest(formatName)
+	}
+	p, ok := format.Lookup(formatName)
+	if !ok {
+		return nil, false
+	}
+	lp, ok := p.(format.LatestPicker)
+	return lp, ok
+}
+
 func (s *Repos) proxier(formatName string) (format.Proxier, bool) {
 	if s.Proxiers != nil {
 		return s.Proxiers(formatName)
