@@ -1,6 +1,7 @@
 # 0009. Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom
 
-- Status: accepted; amended by #114 (below, Amendment; proposed)
+- Status: accepted; amended by #114 (below, Amendment; accepted on #114 on 2026-11-16, with a
+  recovery recipient required)
 - Date: 2026-11-08
 - Deciders: gecube
 
@@ -166,7 +167,11 @@ repo, made on the repo's first encrypted write.
 and a key Lajstrom made never leaves Lajstrom. `policy.encryption.recipients` lists public keys
 (RSA of 2048 bits or more, or EC P-256, P-384, P-521, as PEM) that every new data key is wrapped
 for as well: the key a team gives `skopeo` or `ctr-enc`, and a way to recover the blobs without
-Lajstrom or its keys. Without recipients only Lajstrom decrypts.
+Lajstrom or its keys. The maintainer decided on #114 (2026-11-16) that an `at-rest` repo needs at
+least one, the recovery recipient, so that losing the master key or the KMS key does not lose the
+data: creating a repo with `at-rest` and no recipient, changing one to it, removing the last
+recipient of one, and a repo of the configuration with it are refused (`400`, or an error of the
+configuration).
 
 ### The library: go-jose, and the cipher from the standard library
 
@@ -265,6 +270,8 @@ Consequences: an OCI client keeps decrypting with the recipient keys of the mani
 rotation does not change. A rotation does not protect a blob from an old key that leaked, since
 the manifest keeps the old wrapping; only a new upload of the file would. It lets the old key
 retire: once every manifest has a keys referrer for the new key, nothing needs the old one.
+Re-encrypting the blobs under a new key, which an old key that leaked does not open, is a separate
+issue, #1244, later.
 
 ### Which repos
 
