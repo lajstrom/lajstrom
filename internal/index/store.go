@@ -260,8 +260,8 @@ type Writer interface {
 
 	// CreateUser inserts u; the name must be new. UID is made (NewUID) when it is empty.
 	CreateUser(ctx context.Context, u *User) error
-	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt and DeletedName of u by
-	// u.ID and fills UID and CreatedAt from the row. A name another user has is ErrConflict.
+	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt, DeletedName and Owner of
+	// u by u.ID and fills UID and CreatedAt from the row. A name another user has is ErrConflict.
 	UpdateUser(ctx context.Context, u *User) error
 
 	// CreateToken inserts t; the hash must be new.

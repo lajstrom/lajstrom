@@ -74,6 +74,7 @@ type userRow struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 	DeletedAt    *time.Time `json:"deletedAt,omitempty"`
 	DeletedName  string     `json:"deletedName,omitempty"`
+	Owner        string     `json:"owner,omitempty"`
 }
 
 type identityRow struct {
@@ -214,7 +215,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	}
 	for _, u := range cp.Users {
 		doc.Users = append(doc.Users, userRow{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
-			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName})
+			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner})
 	}
 	for _, i := range cp.Identities {
 		doc.Identities = append(doc.Identities, identityRow{ID: i.ID, User: i.UserID, Issuer: i.Issuer, Subject: i.Subject,
@@ -273,7 +274,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	}
 	for _, u := range doc.Users {
 		cp.Users = append(cp.Users, index.User{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
-			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName})
+			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner})
 	}
 	for _, i := range doc.Identities {
 		cp.Identities = append(cp.Identities, index.Identity{ID: i.ID, UserID: i.User, Issuer: i.Issuer, Subject: i.Subject,

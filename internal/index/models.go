@@ -50,13 +50,16 @@ type User struct {
 	// Name is unique among the users; a deleted user's is ~<uid>, which no name can be.
 	Name         string
 	PasswordHash string // argon2id; empty for users without a password
-	Kind         string // local; oidc after the MVP
+	Kind         string // local, oidc or service (docs/spec/rbac.md §1)
 	Disabled     bool
 	CreatedAt    time.Time
 	// DeletedAt is when the user was deleted; nil for a live user. DeletedName is the name it
 	// had then.
 	DeletedAt   *time.Time
 	DeletedName string
+	// Owner is the owner of a service account, user:<uid> or group:<name> (docs/spec/rbac.md
+	// §1); "" for every other kind.
+	Owner string
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.

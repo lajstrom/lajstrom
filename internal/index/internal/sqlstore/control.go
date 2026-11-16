@@ -182,11 +182,11 @@ func prefixed(p, cols string) string {
 	return strings.Join(parts, ", ")
 }
 
-const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name"
+const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner"
 
 func userDests(u *index.User) []any {
 	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
-		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}}
+		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}}
 }
 
 // GetUser returns the live user with the given name.
@@ -221,19 +221,20 @@ func (c *conn) CreateUser(ctx context.Context, u *index.User) error {
 		u.UID = index.NewUID(u.CreatedAt)
 	}
 	return c.scanRow(ctx, "users "+u.Name,
-		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
 		[]any{u.UID, u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.EncodeTime(u.CreatedAt),
-			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName)},
+			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), textArg(u.Owner)},
 		&u.ID)
 }
 
 // UpdateUser stores u by u.ID and fills UID and CreatedAt from the row.
 func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 	return c.scanRow(ctx, fmt.Sprintf("users id %d", u.ID),
-		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?"+
+		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?, owner = ?"+
 			" WHERE id = ? RETURNING uid, created_at",
-		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), u.ID},
+		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName),
+			textArg(u.Owner), u.ID},
 		textDest{&u.UID}, timeDest{&u.CreatedAt})
 }
 

@@ -52,12 +52,15 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	id := index.Identity{UserID: dora.ID, Issuer: "https://idp.example.com", Subject: "dora-sub", CreatedAt: at(3)}
 	must(t, s.CreateIdentity(ctx, &id))
 	must(t, s.SetIdentityGroups(ctx, id.ID, []string{"ops", "dev"}, at(4), at(4000)))
+	robot := index.User{Name: "robot", Kind: "service", Owner: "user:" + alice.UID, CreatedAt: at(2)}
+	must(t, s.CreateUser(ctx, &robot))
 
 	for _, tok := range []index.Token{
 		{Kind: "pat", UserID: &alice.ID, Name: "laptop", Hash: "hash-pat", ExpiresAt: ptr(at(9000)), LastUsedAt: ptr(at(60))},
 		{Kind: "deploy", RepoID: &hosted.ID, Name: "ci", Hash: "hash-deploy", Scopes: []string{"read", "write"}},
 		{Kind: "pat", UserID: &alice.ID, Name: "old", Hash: "hash-revoked", RevokedAt: ptr(at(70))},
 		{Kind: "deploy", RepoMask: "npm/*", Name: "mask", Hash: "hash-mask", Scopes: []string{"read"}},
+		{Kind: "pat", UserID: &robot.ID, Name: "ci", Hash: "hash-robot", Scopes: []string{"read"}},
 	} {
 		must(t, s.CreateToken(ctx, &tok))
 	}
@@ -116,15 +119,15 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	src := open(t)
 	f := fullControlPlane(t, src)
 	cp := export(t, src)
-	if cp.Schema < 25 || cp.ReadAt.IsZero() || !cp.WithAudit {
+	if cp.Schema < 26 || cp.ReadAt.IsZero() || !cp.WithAudit {
 		t.Errorf("Schema %d, ReadAt %v, WithAudit %v: want the newest migration, the database's time and the audit rows",
 			cp.Schema, cp.ReadAt, cp.WithAudit)
 	}
 	counts := map[string]int{"repos": len(cp.Repos), "group_members": len(cp.GroupMembers), "users": len(cp.Users),
 		"identities": len(cp.Identities), "identity_groups": len(cp.IdentityGroups), "tokens": len(cp.Tokens),
 		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "audit": len(cp.Audit)}
-	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 3, "identities": 1, "identity_groups": 2,
-		"tokens": 5, "bindings": 3, "keys": 2, "webhooks": 2, "audit": 3}, counts)
+	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
+		"tokens": 6, "bindings": 3, "keys": 2, "webhooks": 2, "audit": 3}, counts)
 
 	dst := open(t)
 	v0, err := dst.AuthVersion(ctx)
@@ -143,6 +146,17 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	}
 
 	checkImported(t, dst, cp, f)
+}
+
+// checkServiceAccount checks the service account of fullControlPlane in dst: its kind, and its
+// owner, alice by her uid.
+func checkServiceAccount(t *testing.T, dst index.Store) {
+	t.Helper()
+	alice, err := dst.GetUser(t.Context(), "alice")
+	must(t, err)
+	if robot, err := dst.GetUser(t.Context(), "robot"); err != nil || robot.Kind != "service" || robot.Owner != "user:"+alice.UID {
+		t.Errorf("the service account after the import: %+v, %v; want kind service, owned by alice", robot, err)
+	}
 }
 
 // checkImported checks dst after the import of cp, the snapshot of a fullControlPlane whose
@@ -173,6 +187,7 @@ func checkImported(t *testing.T, dst index.Store, cp *index.ControlPlane, f fixt
 	if _, err := dst.GetUser(ctx, "gone"); err == nil {
 		t.Error("the deleted user is live after the import")
 	}
+	checkServiceAccount(t, dst)
 	groups, err := dst.ListIdentityGroups(ctx)
 	must(t, err)
 	same(t, "identity groups", 2, len(groups))
