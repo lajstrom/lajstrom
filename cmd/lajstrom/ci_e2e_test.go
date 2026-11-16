@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -258,6 +260,56 @@ func TestCIPolicyThroughTheAPI(t *testing.T) {
 	}
 	if rr := getOn(other, "/v2/token?scope=repository:oci/acme/app:pull", "ci", secret); rr.Code != http.StatusUnauthorized {
 		t.Errorf("the CI token of a deleted policy: %d", rr.Code)
+	}
+}
+
+// TestCIWritePolicyThroughTheAPI: a policy that writes, made through the API with a fresh sign-in
+// with a second factor, matches no token while it waits for a second admin; approved, its CI token
+// publishes; expired, marked once by a pass of the expiry, its CI token is refused at its next
+// request on another replica (docs/spec/rbac.md §11).
+func TestCIWritePolicyThroughTheAPI(t *testing.T) {
+	cs := newCIServer(t)
+	cs.cfg.Auth.CI.APIWriteRepos = []string{"oci/acme"}
+	other := cs.replica(t, cs.open(t))
+	lib := cs.token(t, cs.gh, map[string]any{"repository": "acme/lib", "repository_id": "555", "ref": "refs/heads/main", "event_name": "push"}, nil)
+	signedIn := func(uid string) context.Context {
+		ctx := auth.WithPrincipal(t.Context(), auth.Principal{Kind: auth.KindUser, Name: uid})
+		return auth.WithCredential(ctx, auth.Credential{Kind: auth.CredPAT, TokenID: 1,
+			SignIn: &auth.SignIn{At: time.Now().Add(-time.Minute), AMR: []string{"mfa"}}})
+	}
+	s := &ci.Service{Index: cs.open(t), Config: cs.cfg.Auth.CI}
+	made, err := s.Create(signedIn("019a6c3e-7b1e-7c3d-8e2f-0000000000a1"), ci.Policy{Name: "lib-publish", Issuer: "github",
+		Claims: map[string][]string{"repository_id": {"555"}, "ref": {"refs/heads/main"}},
+		Grants: []index.CIGrant{{Role: "writer", Mask: "oci/acme"}}}, auth.Origin{Source: "api"})
+	if err != nil || made.State != index.CIPolicyPending {
+		t.Fatalf("Create = %+v, %v", made, err)
+	}
+	if status, _ := exchangeOn(other, lib); status != http.StatusBadRequest {
+		t.Errorf("while the policy waits: %d", status)
+	}
+	approver := index.WithCondition(signedIn("019a6c3e-7b1e-7c3d-8e2f-0000000000b0"), func(_, revision int64) error {
+		if revision != made.Revision {
+			return errors.New("stale")
+		}
+		return nil
+	})
+	if _, err := s.Approve(approver, "lib-publish", auth.Origin{Source: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	status, body := exchangeOn(other, lib)
+	secret, _ := body["access_token"].(string)
+	if status != http.StatusOK || fmt.Sprint(body["policies"]) != "[lib-publish]" {
+		t.Fatalf("after the approval: %d %v", status, body)
+	}
+	if access, _ := bearerOf(t, getOn(other, "/v2/token?scope=repository:oci/acme/app:pull,push", "ci", secret).Body.Bytes()); access != "oci/acme/app:pull,push" {
+		t.Errorf("the bearer of the approved policy grants %q", access)
+	}
+	s.Now = func() time.Time { return time.Now().Add(ci.WriteLifetime + time.Hour) }
+	if n, err := s.Expire(t.Context(), auth.Origin{Source: "expiry"}); n != 1 || err != nil {
+		t.Fatalf("Expire = %d, %v", n, err)
+	}
+	if rr := getOn(other, "/v2/token?scope=repository:oci/acme/app:pull", "ci", secret); rr.Code != http.StatusUnauthorized {
+		t.Errorf("the CI token of an expired policy: %d", rr.Code)
 	}
 }
 
