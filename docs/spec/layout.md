@@ -286,6 +286,9 @@ type Built struct {
     Entry    Entry
     Tag      string
     RepoPath string                         // <format>/<repo>/<package path>, no instance prefix
+    // ContentTag: Tag is made of the bytes of the one file (raw), so a claim of Tag by another
+    // digest publishes the same file, and Upload waits for it (index-schema.md, Coordination).
+    ContentTag bool
 }
 type BlobSource struct {
     Descriptor ocispec.Descriptor

@@ -193,12 +193,25 @@ that name. A publish refused by a claim or by the package pushes no manifest. An
 frontend whose tag a fresh claim of another digest holds takes that claim's manifest over when
 the registry has it with the same name and file layers: the retry of a publish that the
 visibility barrier answered `503`, which keeps its claims, built again with another
-`org.opencontainers.image.created`.
+`org.opencontainers.image.created`. An upload whose tag is made of its file's bytes (raw, the
+first 16 hex digits of the sha256; `format.Built.ContentTag`) is a publish of the same file as
+any fresh claim of its tag. When the registry does not serve the claim's manifest, the claim's
+publish is on its way or stopped before its push, and the upload waits for it, up to
+`ingest.visibilityTimeout` (or the registry's `consistencyBound` when that is longer), reading
+the claim and the registry again: a version of the tag with the same files is the idempotent
+repeat, a claim released or stale is the upload's to take, a claimed manifest that the registry
+serves is taken over as above (one of other files is the `409`). A claim still held at the end
+is `503` with `Retry-After: 30`, and the upload pushes nothing. Any other upload refused by a
+claim whose manifest the registry does not serve gets the `409` at once.
 
 The transaction that writes the derived rows releases both claims; from then on the package
 row holds the package path. A publish that stops before that releases the claim on its tag and
 leaves the claim on the package path to go stale, for another publish of the spelling may share
-it. A publish that shares a stale claim on a package path makes it again (deletes the row and
+it. A publish that stops before it sends its manifest to the registry, and whose release the
+database fails (a database out, which also failed its pending audit row), leaves its claim to
+its process, which releases it again every second until the database answers or the claim is
+half `ingest.claimTTL` old; a process that stops before that leaves it to go stale. A claim
+whose manifest was sent, or that was taken over from another publish, is not released again. A publish that shares a stale claim on a package path makes it again (deletes the row and
 inserts its own, in its transaction), so that the claim is not taken over while the publish
 runs. `ResetDerived` does not touch claims. A replica of an earlier version keys its claims by
 the spelling and takes no claim on the package path. Its rows are released or go stale as
