@@ -975,6 +975,10 @@ func (a Auth) validate(p *problems, s Server) {
 	if a.Login.TokenLifetime <= 0 || a.Login.TokenLifetime > MaxLoginTokenLifetime {
 		p.add("auth.login.tokenLifetime", "must be positive and at most 24h: a token for longer is a personal access token the person makes")
 	}
+	if i := a.Login.IdleTimeout; i != 0 && (i < MinLoginIdleTimeout || i >= a.Login.TokenLifetime) {
+		p.add("auth.login.idleTimeout", "must be 0 (off), or at least %s and less than auth.login.tokenLifetime (%s)",
+			MinLoginIdleTimeout, a.Login.TokenLifetime)
+	}
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
 	a.Kubernetes.validate(p, s)

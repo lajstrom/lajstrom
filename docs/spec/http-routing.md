@@ -1197,8 +1197,8 @@ sign-in's, sent as `DPoP`) is `401` with `WWW-Authenticate: DPoP error="invalid_
 algs="ES256"`. A token that passes those and whose proof verifies, but that is idle (rbac.md §10,
 `auth.login.idleTimeout`, #1277), is `401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP
 error="invalid_token", error_description="idle", algs="ES256"`, the message saying that the
-sign-in was idle, and the server revokes it; `idle` is the one `error_description` of
-`invalid_token`, which the UI reads to say why it signs the person out. A bound token is refused
+sign-in was idle, and the server revokes it. The UI reads `idle` to say why it signs the person
+out: a token that is unknown, revoked or expired, sent as `DPoP`, has no `error_description`. A bound token is refused
 everywhere else, `401` as credentials refused: as
 `Authorization: Bearer` or in Basic credentials on `/api/`, with
 `WWW-Authenticate: DPoP error="invalid_token", …` (RFC 9449 §7.2); on the frontends, `/v2` and

@@ -127,6 +127,25 @@ func TestLoadServiceAccounts(t *testing.T) {
 	}
 }
 
+// TestLoadLoginIdle: auth.login.idleTimeout is off by default; a file sets it from 5m to less
+// than auth.login.tokenLifetime, 15m for PCI DSS (docs/spec/rbac.md §10, #1277).
+func TestLoadLoginIdle(t *testing.T) {
+	for file, want := range map[string]Login{
+		minimal: {TokenLifetime: 12 * time.Hour},
+		minimal + "auth: {login: {idleTimeout: 15m}}\n":                    {TokenLifetime: 12 * time.Hour, IdleTimeout: 15 * time.Minute},
+		minimal + "auth: {login: {idleTimeout: 5m}}\n":                     {TokenLifetime: 12 * time.Hour, IdleTimeout: 5 * time.Minute},
+		minimal + "auth: {login: {tokenLifetime: 1h, idleTimeout: 59m}}\n": {TokenLifetime: time.Hour, IdleTimeout: 59 * time.Minute},
+		minimal + "auth: {login: {idleTimeout: 0s}}\n":                     {TokenLifetime: 12 * time.Hour},
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.Login != want {
+			t.Errorf("Load(%q): login %+v, want %+v", file, c.Auth.Login, want)
+		}
+	}
+}
+
 // TestLoadUploadSessions: server.uploadSessions is 256 and 1024 by default, a key the file
 // sets replaces its default, and 0 turns a bound off (#246).
 func TestLoadUploadSessions(t *testing.T) {
@@ -337,6 +356,12 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"auth.login.tokenLifetime: must be positive and at most 24h"}},
 		{name: "zero login token lifetime", file: minimal + "auth: {login: {tokenLifetime: 0s}}\n",
 			want: []string{"auth.login.tokenLifetime: must be positive"}},
+		{name: "login idle timeout too short", file: minimal + "auth: {login: {idleTimeout: 4m}}\n",
+			want: []string{"auth.login.idleTimeout: must be 0 (off), or at least 5m0s and less than auth.login.tokenLifetime (12h0m0s)"}},
+		{name: "login idle timeout of the lifetime", file: minimal + "auth: {login: {tokenLifetime: 1h, idleTimeout: 1h}}\n",
+			want: []string{"auth.login.idleTimeout: must be 0 (off), or at least 5m0s and less than auth.login.tokenLifetime (1h0m0s)"}},
+		{name: "negative login idle timeout", file: minimal + "auth: {login: {idleTimeout: -15m}}\n",
+			want: []string{"auth.login.idleTimeout: must be 0 (off)"}},
 		{name: "oidc without its keys", file: minimal + "auth: {oidc: {issuer: \"http://idp.example\", usernameClaim: \"\", tokenLifetime: 9000h}}\n",
 			want: []string{"auth.oidc.issuer: must be https", "auth.oidc.clientID: must be set", "auth.oidc.clientSecretFile: must be set",
 				"auth.oidc.usernameClaim: must not be empty", "auth.oidc.tokenLifetime: must be positive and at most 8760h"}},

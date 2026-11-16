@@ -98,6 +98,7 @@ auth:
   #   ttl: 24h
   login:
     tokenLifetime: 12h                # the token of a web UI's sign-in, POST /api/v1/login; at most 24h
+    idleTimeout: 0s                   # refuse and revoke that token once unused this long; 0s off, 15m for PCI DSS 8.2.8
 
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts the apt keys and the bearer-token key; unset: apt repos are unsigned, tokens use an ephemeral key

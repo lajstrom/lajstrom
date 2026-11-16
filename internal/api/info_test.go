@@ -94,22 +94,22 @@ func TestInfo(t *testing.T) {
 // seconds.
 func TestInfoLogin(t *testing.T) {
 	for _, tc := range []struct {
-		oidc     bool
-		lifetime time.Duration
-		modes    []string
-		seconds  int64
+		oidc           bool
+		lifetime, idle time.Duration
+		modes          []string
+		seconds, idleS int64
 	}{
-		{false, 0, []string{"password", "token"}, 43200},
-		{true, 3 * time.Hour, []string{"password", "token", "oidc"}, 10800},
+		{false, 0, 0, []string{"password", "token"}, 43200, 0},
+		{true, 3 * time.Hour, 15 * time.Minute, []string{"password", "token", "oidc"}, 10800, 900},
 	} {
 		info := testInfo
 		info.OIDC = tc.oidc
-		f := newFixture(t, Options{Info: info, LoginLifetime: tc.lifetime})
+		f := newFixture(t, Options{Info: info, LoginLifetime: tc.lifetime, LoginIdle: tc.idle})
 		var got Info
 		decodeJSON(t, f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous), http.StatusOK, &got)
-		if !slices.Equal(got.AuthModes, tc.modes) || got.Login.TokenLifetime != tc.seconds {
-			t.Errorf("OIDC %v, lifetime %v: authModes %q, login %+v; want %q, %d", tc.oidc, tc.lifetime, got.AuthModes, got.Login,
-				tc.modes, tc.seconds)
+		if !slices.Equal(got.AuthModes, tc.modes) || got.Login.TokenLifetime != tc.seconds || got.Login.IdleTimeout != tc.idleS {
+			t.Errorf("OIDC %v, lifetime %v, idle %v: authModes %q, login %+v; want %q, %d, %d", tc.oidc, tc.lifetime, tc.idle,
+				got.AuthModes, got.Login, tc.modes, tc.seconds, tc.idleS)
 		}
 	}
 }
@@ -120,7 +120,7 @@ func TestInfoZero(t *testing.T) {
 	rr := f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous)
 	wantStatus(t, rr, http.StatusOK)
 	for _, want := range []string{`"externalURL":""`, `"anonymousRead":false`, `"formats":[]`, `"admin":false`,
-		`"login":{"tokenLifetime":43200}`} {
+		`"login":{"tokenLifetime":43200,"idleTimeout":0}`} {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Errorf("body %s does not contain %s", rr.Body, want)
 		}

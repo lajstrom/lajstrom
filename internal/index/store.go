@@ -346,7 +346,9 @@ type Writer interface {
 
 	// CreateToken inserts t; the hash must be new.
 	CreateToken(ctx context.Context, t *Token) error
-	// RevokeToken sets RevokedAt of the token.
+	// RevokeToken sets RevokedAt of the token while it is null; a token revoked already keeps
+	// its time and wraps ErrConflict, so that of callers that revoke it at once one does (#1277).
+	// No token wraps ErrNotFound.
 	RevokeToken(ctx context.Context, id int64, at time.Time) error
 	// TouchToken sets LastUsedAt of the token to lastUsed when it is null or earlier, else
 	// changes nothing: it only moves forward (#1277). No token wraps ErrNotFound.

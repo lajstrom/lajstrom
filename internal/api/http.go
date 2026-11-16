@@ -102,6 +102,9 @@ type Options struct {
 	// LoginLifetime is auth.login.tokenLifetime, the lifetime of the token of POST
 	// /api/v1/login; zero means DefaultLoginLifetime.
 	LoginLifetime time.Duration
+	// LoginIdle is auth.login.idleTimeout, which GET /api/v1/info answers so that a web UI warns
+	// before the server refuses an idle sign-in (docs/spec/rbac.md §10, #1277); zero is off.
+	LoginIdle time.Duration
 	// Handoffs redeems the codes of OIDC logins of POST /api/v1/login (internal/auth/oidc); nil
 	// while auth.oidc is off, when every code is unknown.
 	Handoffs Handoffs
@@ -205,7 +208,7 @@ func New(o Options) http.Handler {
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
-		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
+		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, loginIdle: o.LoginIdle, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
 		locate: o.Locate, ci: o.CIPolicies}
@@ -349,10 +352,11 @@ type handler struct {
 	info ServerInfo
 	// webhooks is Options.Webhooks, ci Options.CIPolicies.
 	webhooks *webhook.Service
-	// passwords, loginLifetime, handoffs and proofs are Options.Passwords, Options.LoginLifetime,
-	// never zero, Options.Handoffs and Options.DPoP.
+	// passwords, loginLifetime, loginIdle, handoffs and proofs are Options.Passwords,
+	// Options.LoginLifetime, never zero, Options.LoginIdle, Options.Handoffs and Options.DPoP.
 	passwords     Passwords
 	loginLifetime time.Duration
+	loginIdle     time.Duration
 	handoffs      Handoffs
 	proofs        Proofs
 	// registries is Options.Registries.

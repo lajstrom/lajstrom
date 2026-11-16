@@ -311,10 +311,22 @@ func (c *conn) CreateToken(ctx context.Context, t *index.Token) error {
 		&t.ID)
 }
 
-// RevokeToken sets RevokedAt of the token; a zero at means now.
+// RevokeToken sets RevokedAt of the token while it is NULL; a zero at means now. A token revoked
+// already keeps its time and wraps index.ErrConflict, so that of callers that revoke it at once,
+// one does and writes its audit row (docs/spec/rbac.md §10, #1277). Only when nothing changed
+// does it read the row, to tell a revoked token from no token.
 func (c *conn) RevokeToken(ctx context.Context, id int64, at time.Time) error {
-	return c.execOne(ctx, fmt.Sprintf("tokens id %d", id),
-		"UPDATE tokens SET revoked_at = ? WHERE id = ?", c.d.EncodeTime(stamp(&at, now())), id)
+	what := fmt.Sprintf("tokens id %d", id)
+	n, err := c.exec(ctx, what,
+		"UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", c.d.EncodeTime(stamp(&at, now())), id)
+	if err != nil || n > 0 {
+		return err
+	}
+	var one int
+	if err := c.scanRow(ctx, what, "SELECT 1 FROM tokens WHERE id = ?", []any{id}, &one); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s is revoked already", index.ErrConflict, what)
 }
 
 // TouchToken sets LastUsedAt of the token to lastUsed when it is NULL or earlier, and changes

@@ -633,6 +633,10 @@ type Login struct {
 	// TokenLifetime is the lifetime of the personal access token a sign-in answers;
 	// DefaultLoginTokenLifetime when the file leaves it out, at most MaxLoginTokenLifetime.
 	TokenLifetime time.Duration `yaml:"tokenLifetime"`
+	// IdleTimeout is how long the token of a sign-in may go unused before it is refused and
+	// revoked (docs/spec/rbac.md §10, #1277); zero, the default, is off. Otherwise at least
+	// MinLoginIdleTimeout and less than TokenLifetime: 15m for PCI DSS 8.2.8.
+	IdleTimeout time.Duration `yaml:"idleTimeout"`
 }
 
 // Bounds of auth.login.tokenLifetime: a web UI's token is short-lived, and one for longer is a
@@ -641,6 +645,10 @@ const (
 	DefaultLoginTokenLifetime = 12 * time.Hour
 	MaxLoginTokenLifetime     = 24 * time.Hour
 )
+
+// MinLoginIdleTimeout is the least auth.login.idleTimeout that is not off: the last use of a
+// token is recorded to the minute, so a bound near that would refuse a token in use.
+const MinLoginIdleTimeout = 5 * time.Minute
 
 // OIDC configures the OIDC login (docs/spec/rbac.md §8): one IdP, whose relying party Lajstrom
 // is, a confidential client with the redirect URI <server.externalURL>/-/oidc/callback.

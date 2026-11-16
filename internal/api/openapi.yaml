@@ -1882,8 +1882,10 @@ paths:
         auth.oidc.tokenLifetime when that is shorter; there is no refresh. The UI sends it as
         Authorization: DPoP with a new proof of the key on every request to /api/, where alone
         it works, and revokes it at sign-out with DELETE
-        /api/v1/users/{user}/tokens/{id}. The request takes no credential: its Authorization
-        header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
+        /api/v1/users/{user}/tokens/{id}. With auth.login.idleTimeout, a token unused for
+        longer is refused, 401 with WWW-Authenticate DPoP error="invalid_token",
+        error_description="idle", and revoked. The request takes no credential: its
+        Authorization header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
       security:
         - {}
       parameters:
@@ -3551,6 +3553,12 @@ components:
           required: [tokenLifetime]
           properties:
             tokenLifetime: {type: integer, description: "The seconds of auth.login.tokenLifetime."}
+            idleTimeout:
+              type: integer
+              description: >-
+                The seconds of auth.login.idleTimeout, 0 when off: a sign-in token unused for
+                longer is refused (401, error_description="idle") and revoked; the server may
+                refuse up to a minute before. A server before it answers none, which is off.
         caller: {$ref: "#/components/schemas/Caller"}
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."
