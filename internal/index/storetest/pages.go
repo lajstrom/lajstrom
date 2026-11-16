@@ -201,3 +201,49 @@ func lastKey(rows []index.Version) *index.VersionKey {
 	}
 	return k
 }
+
+// testVersionPagesWithout: ListVersionPage with attachment kinds keeps the rows without an
+// attachment of any of them (#89, ?without=): a version is listed with those of its variants, at
+// the key of the first of them, and each kind given is one more condition; the cursor pages the
+// filtered list.
+func testVersionPagesWithout(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	pkg := newPackage(t, s, repo.ID, "tool")
+	put := func(version, variant string, created time.Time, kinds ...string) index.Version {
+		t.Helper()
+		v := index.Version{PackageID: pkg.ID, Version: version, Variant: variant, Tag: version + "_" + variant,
+			Digest: dg(version + variant), ArtifactType: "application/vnd.lajstrom.raw.v1", CreatedAt: created}
+		must(t, s.UpsertVersion(ctx, &v))
+		for _, k := range kinds {
+			a := attachment(version+variant+k, k+" layer", 1, 1)
+			a.Kind = k
+			must(t, s.ReplaceAttachments(ctx, v.ID, a.Digest, []index.Attachment{a}))
+		}
+		return v
+	}
+	put("1.0", "", at(10), index.AttachmentSBOM, index.AttachmentSignature)
+	put("2.0", "a", at(20), index.AttachmentSBOM)
+	put("2.0", "b", at(25))
+	put("3.0", "", at(30), index.AttachmentSignature)
+	put("4.0", "", at(40))
+	rowsOf := func(after *index.VersionKey, limit int, without ...string) []string {
+		t.Helper()
+		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit, without...)
+		must(t, err)
+		out := []string{}
+		for _, v := range list {
+			out = append(out, v.Version+"/"+v.Variant)
+		}
+		return out
+	}
+	same(t, "without", []string{"4.0/", "3.0/", "2.0/a", "2.0/b", "1.0/"}, rowsOf(nil, 10))
+	same(t, "without sbom", []string{"4.0/", "3.0/", "2.0/b"}, rowsOf(nil, 10, index.AttachmentSBOM))
+	same(t, "without a signature", []string{"4.0/", "2.0/a", "2.0/b"}, rowsOf(nil, 10, index.AttachmentSignature))
+	same(t, "without sbom and signature", []string{"4.0/", "2.0/b"}, rowsOf(nil, 10, index.AttachmentSBOM, index.AttachmentSignature))
+	same(t, "without a scan", []string{"4.0/", "3.0/", "2.0/a", "2.0/b", "1.0/"}, rowsOf(nil, 10, index.AttachmentScan))
+	same(t, "the first page without sbom", []string{"4.0/", "3.0/"}, rowsOf(nil, 2, index.AttachmentSBOM))
+	// 2.0 without an SBOM is its variant b alone, at 25: its key is b's.
+	same(t, "the next page without sbom", []string{"2.0/b"}, rowsOf(&index.VersionKey{CreatedAt: at(30), Version: "3.0"}, 2, index.AttachmentSBOM))
+	same(t, "after 2.0 without sbom", []string{}, rowsOf(&index.VersionKey{CreatedAt: at(25), Version: "2.0"}, 2, index.AttachmentSBOM))
+}

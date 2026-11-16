@@ -206,7 +206,9 @@ func (h *handler) listPackages(_ http.ResponseWriter, r *http.Request) (int, any
 
 // listVersions answers GET /api/v1/repos/{format}/{repo}/packages/{name}/versions: a page of the
 // package's versions, newest first (versionKey), ?limit of them after the version of ?cursor.
-// It needs read; a repo or a package that does not exist is 404.
+// Each ?without=<kind> keeps the variants without an attachment of that kind (#89); a kind that
+// is none of attachmentKinds is 400. It needs read; a repo or a package that does not exist is
+// 404.
 func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
@@ -224,6 +226,12 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 		}
 		from = &index.VersionKey{CreatedAt: k.At, Version: k.Version}
 	}
+	without := r.URL.Query()["without"]
+	for _, k := range without {
+		if !slices.Contains(attachmentKinds, k) {
+			return 0, nil, invalid("without: %q is not one of %v", k, attachmentKinds)
+		}
+	}
 	ctx := r.Context()
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
 	if err != nil {
@@ -233,7 +241,7 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, err
 	}
-	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg, from, limit+1)
+	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg, from, limit+1, without...)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -263,9 +271,11 @@ func (h *handler) packageOf(r *http.Request, repo *index.Repo) (*index.Package, 
 }
 
 // listedVersions returns limit versions of pkg after the key from (nil: from the newest), newest
-// first, with their variants and pointers.
-func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int) ([]VersionEntry, error) {
-	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit)
+// first, with their variants and pointers; with without, attachment kinds, the variants without
+// an attachment of any of them.
+func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int,
+	without ...string) ([]VersionEntry, error) {
+	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, without...)
 	if err != nil {
 		return nil, fmt.Errorf("api: versions of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}

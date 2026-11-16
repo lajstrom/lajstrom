@@ -179,7 +179,8 @@ the repo; deleting a version deletes its attachments first. Nothing prunes old s
 ## Not there yet
 
 - **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
-- **Finding the versions without a fresh scan** (`?without=` on the versions list, option D).
+- **Finding the versions without a fresh scan**: `?without=scan` lists the versions without any
+  scan; a scan of an older vulnerability database still counts as one.
 - **Keeping the SBOM a kept report names**, and pruning old reports (option E, with #72).
 - **A reference scan job** under `deploy/jobs/scan/` (option F).
 - **Refusing to serve a version without a verified attachment**: #101.

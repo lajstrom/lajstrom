@@ -405,6 +405,17 @@ package does not exist. `<package>` is one path segment, as for the delete below
 - **`yanked`** is on a yanked pypi version only: `{"reason": "…"}`, the reason `""` when the
   yank gave none (Yank a pypi version, below). A version without it is not yanked; no other
   format has it.
+- **`?without=<kind>`** keeps the variants that have no attachment of that kind, `signature`,
+  `sbom`, `scan`, `provenance`, `attestation` or `other`, whatever its label (#89): the versions
+  a scanner has not seen yet. Given again, a variant must lack every kind given:
+  `?without=sbom&without=signature`. A version is listed with those of its variants, at their
+  times, so the cursor of such a page continues the same filter. Another value is `400`. It is
+  read from the index: an attachment pushed past Lajstrom counts after the next reindex.
+
+```sh
+curl -s -u "$USER:$TOKEN" "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions?without=sbom" |
+  jq -r '.versions[] | .version as $v | .variants[] | "\($v) \(.variant) \(.digest)"'
+```
 
 ### Get a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 

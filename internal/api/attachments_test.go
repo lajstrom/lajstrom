@@ -97,3 +97,44 @@ func TestListAttachments(t *testing.T) {
 		wantError(t, f.do(http.MethodGet, tt.target, "", admin), http.StatusNotFound, "NOT_FOUND", tt.want)
 	}
 }
+
+// TestListVersionsWithout (#89): ?without=<kind> on the versions list keeps the variants without
+// an attachment of that kind, each one more condition; a kind that is none of the values is 400.
+func TestListVersionsWithout(t *testing.T) {
+	f := newFixture(t, Options{})
+	repo := f.create(t, "pypi", "libs")
+	publishDetailed(t, f.st, repo.ID)
+	attachDetailed(t, f.st, repo.ID)
+	target := "/api/v1/repos/pypi/libs/packages/requests/versions"
+	variants := func(query string) string {
+		t.Helper()
+		var got struct {
+			Versions []struct {
+				Version  string `json:"version"`
+				Variants []struct {
+					Variant string `json:"variant"`
+				} `json:"variants"`
+			} `json:"versions"`
+		}
+		decodeJSON(t, f.do(http.MethodGet, target+query, "", admin), http.StatusOK, &got)
+		var out []string
+		for _, v := range got.Versions {
+			for _, va := range v.Variants {
+				out = append(out, v.Version+"/"+va.Variant)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, tt := range []struct{ query, want string }{
+		{"", "1.0/py3-none-any 1.0/sdist"},
+		{"?without=scan", "1.0/sdist"},
+		{"?without=sbom", ""},
+		{"?without=signature", "1.0/py3-none-any 1.0/sdist"},
+		{"?without=signature&without=scan", "1.0/sdist"},
+	} {
+		if got := variants(tt.query); got != tt.want {
+			t.Errorf("versions%s: %q, want %q", tt.query, got, tt.want)
+		}
+	}
+	wantError(t, f.do(http.MethodGet, target+"?without=report", "", admin), http.StatusBadRequest, "INVALID", `without: "report" is not one of`)
+}
