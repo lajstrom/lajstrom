@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -154,5 +155,29 @@ func TestCIWriteConditions(t *testing.T) {
 `), nil)
 	if err != nil {
 		t.Errorf("Load = %v", err)
+	}
+}
+
+// TestCheckCIPolicy: a policy of the API is checked by the rules of the configuration's, each
+// problem named by its field; an issuer the configuration lacks is the only problem told then.
+func TestCheckCIPolicy(t *testing.T) {
+	issuers := []CIIssuer{{Name: "github", Platform: CIPlatformGitHub, Issuer: "https://token.actions.githubusercontent.com"}}
+	good := CIPolicy{Name: "app", Issuer: "github", Claims: map[string]CIValues{"repository_id": {"1"}, "ref": {"refs/heads/main"}},
+		Grants: []CIGrant{{Role: "writer", Mask: "oci/app"}}}
+	if errs := CheckCIPolicy(issuers, good); len(errs) != 0 {
+		t.Errorf("CheckCIPolicy(good) = %v", errs)
+	}
+	bad := CIPolicy{Name: "App", Issuer: "github", Claims: map[string]CIValues{"repository": {"acme/app"}, "ref": {"*"}},
+		Grants: []CIGrant{{Role: "admin", Mask: "oci"}}}
+	got := fmt.Sprint(CheckCIPolicy(issuers, bad))
+	for _, w := range []string{`name: "App" is not lowercase`, `claims.ref: "*" is only *`, "claims: must name the project by an id",
+		"grants[0].role: admin is not for a CI token", `grants[0].mask: "oci" is not <format>/<repo>`} {
+		if !strings.Contains(got, w) {
+			t.Errorf("CheckCIPolicy(bad) = %s\nwant %q", got, w)
+		}
+	}
+	if errs := CheckCIPolicy(issuers, CIPolicy{Name: "x", Issuer: "gitlab"}); len(errs) != 1 ||
+		errs[0].Error() != `issuer: "gitlab" is no issuer of auth.ci.issuers` {
+		t.Errorf("an unknown issuer: %v", errs)
 	}
 }

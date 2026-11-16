@@ -21,8 +21,8 @@ type CI struct {
 	TokenLifetime time.Duration `yaml:"tokenLifetime"`
 	// Issuers are the CI platforms whose tokens are exchanged. Empty exchanges none.
 	Issuers []CIIssuer `yaml:"issuers"`
-	// Policies are the trust policies; a token is exchanged when one or more policies of its
-	// issuer match it.
+	// Policies are the trust policies of the configuration; a token is exchanged when one or
+	// more policies of its issuer, of the configuration or of the API, match it.
 	Policies []CIPolicy `yaml:"policies"`
 }
 
@@ -252,6 +252,34 @@ func (c CI) validateIssuers(p *problems, s Server) map[string]string {
 		}
 	}
 	return platforms
+}
+
+// CheckCIPolicy checks p, a policy made through the API, by the rules of a policy of
+// auth.ci.policies (docs/spec/rbac.md §11) against issuers, those of the configuration, and
+// returns one error per problem, each starting with the field it is about: name, issuer,
+// claims.<claim>, grants[<i>].role or .mask. Whether the name is free, and whether a policy that
+// writes is allowed, are the caller's.
+func CheckCIPolicy(issuers []CIIssuer, p CIPolicy) []error {
+	var errs problems
+	if err := CheckIdentitySource(p.Name); err != nil {
+		errs.add("name", "%s", err)
+	}
+	platform := ""
+	for _, is := range issuers {
+		if is.Name == p.Issuer {
+			platform = is.Platform
+		}
+	}
+	if _, ok := CIPlatforms[platform]; !ok {
+		errs.add("issuer", "%q is no issuer of auth.ci.issuers", p.Issuer)
+		return errs
+	}
+	var inner problems
+	validatePolicy(&inner, "", p, platform)
+	for _, e := range inner {
+		errs = append(errs, errors.New(strings.TrimPrefix(e.Error(), ".")))
+	}
+	return errs
 }
 
 // validatePolicy checks the policy pol of the platform under key with the safe defaults of
