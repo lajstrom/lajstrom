@@ -10,8 +10,8 @@
 #     ([trusted=yes] when the server has no master key), the credentials in /etc/apt/auth.conf.d:
 #     apt-get update and install of both through the group, the first package the first member's
 #     bytes, and apt-cache policy naming the group;
-#   - a third package published to the second member: the next apt-get update through the group
-#     has it, and it installs;
+#   - a third package published to the second member right after: the next apt-get update
+#     through the group has it, and it installs;
 #   - the group and its members deleted through the API.
 #
 #   test/e2e/aptgroup.sh [<base url>]     default: http://localhost:8080
@@ -134,9 +134,8 @@ grep -qxF "greeting: from $first / hello from $two" "$work/update.log" || { cat 
 grep -qF " 500 $base/apt/$group jammy/main amd64 Packages" "$work/update.log" || { cat "$work/update.log" >&2; fail "apt-cache policy does not name the group"; }
 step "apt-get update && apt-get install $one $two through apt/$group [$source_opts]: $one is the first member's, apt-cache policy names the group"
 
-# A document rendered again within the second of the render apt holds has its Last-Modified,
-# and apt, which asks with If-Modified-Since, keeps the old one (#1255): publish a second later.
-sleep 1
+# Published at once: on a fast host the next render falls within the second of the one apt holds
+# and has its Last-Modified, and apt, which asks with If-Modified-Since alone, gets it (#1255).
 put "$deb3" "$second"
 expect "PUT $(basename "$deb3") to apt/$second ($(cat "$work/body"))" 201 "$status"
 in_client late.log "

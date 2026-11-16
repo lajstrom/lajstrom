@@ -287,6 +287,37 @@ func TestRoutesNewRender(t *testing.T) {
 	}
 }
 
+// TestRoutesNewRenderSameSecond: a publish within the second of the render a client holds
+// (#1255). apt asks for the Release with If-Modified-Since alone, the Last-Modified it got,
+// which the render after the publish may share; it gets the new Release all the same, and the
+// new Packages. The test publishes again until two renders share their second, which a render
+// in a later second does not test.
+func TestRoutesNewRenderSameSecond(t *testing.T) {
+	e := newAptEnv(t, envOptions{})
+	fixtureSet(t, e.pipeline)
+	for minor := 2; ; minor++ {
+		held := e.get("dists/jammy/Release")
+		since := held.Header().Get("Last-Modified")
+		version := fmt.Sprintf("1.%d.0-1", minor)
+		deb, _ := testutil.Deb(testutil.DebOptions{Version: version})
+		e.uploadTo(t, deb, "jammy", "main")
+		rel := e.do(http.MethodGet, "dists/jammy/Release", "If-Modified-Since", since)
+		if rel.Code != http.StatusOK || bytes.Equal(rel.Body.Bytes(), held.Body.Bytes()) {
+			t.Fatalf("Release after the publish of %s, If-Modified-Since %s: %d, want 200 and a new render", version, since, rel.Code)
+		}
+		pkgs := e.do(http.MethodGet, "dists/jammy/main/binary-amd64/Packages", "If-Modified-Since", since)
+		if pkgs.Code != http.StatusOK || !strings.Contains(pkgs.Body.String(), "Version: "+version+"\n") {
+			t.Fatalf("Packages after the publish of %s, If-Modified-Since %s: %d, want 200 with it", version, since, pkgs.Code)
+		}
+		if rel.Header().Get("Last-Modified") == since {
+			return
+		}
+		if minor == 5 {
+			t.Fatal("four publishes, each rendered in a later second than the render before it")
+		}
+	}
+}
+
 // TestRoutesCache checks index_cache: after the first GET, every document of the suite is
 // served without reading a package or a version row, by name and by hash, with HEAD and with
 // If-None-Match; an invalidation, which ingest and delete do, makes the next GET render again.

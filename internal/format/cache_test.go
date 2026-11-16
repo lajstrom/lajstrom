@@ -127,10 +127,15 @@ func TestCachedDocumentErrors(t *testing.T) {
 	}
 }
 
+// TestServeDocument checks the headers of a document and its conditional requests: the ETag is
+// the one validator. A document rendered again within the second of the render a client holds
+// has the same Last-Modified (#1255), so a date validates nothing: If-Modified-Since is 200, an
+// If-Range with a date gives the whole document, and If-Unmodified-Since is not read.
 func TestServeDocument(t *testing.T) {
 	renderedAt := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	c := &index.Cache{Content: []byte("Package: nginx\n"), SHA256: "abc123", RenderedAt: renderedAt}
+	c := &index.Cache{Content: []byte("Package: nginx\n"), SHA256: "abc123", RenderedAt: renderedAt.Add(400 * time.Millisecond)}
 	lastModified := renderedAt.Format(http.TimeFormat)
+	earlier := renderedAt.Add(-time.Hour).Format(http.TimeFormat)
 	tests := []struct {
 		name   string
 		header map[string]string
@@ -140,8 +145,12 @@ func TestServeDocument(t *testing.T) {
 		{name: "full", status: 200, body: "Package: nginx\n"},
 		{name: "If-None-Match", header: map[string]string{"If-None-Match": `"abc123"`}, status: 304},
 		{name: "If-None-Match other", header: map[string]string{"If-None-Match": `"def"`}, status: 200, body: "Package: nginx\n"},
-		{name: "If-Modified-Since", header: map[string]string{"If-Modified-Since": lastModified}, status: 304},
+		{name: "If-None-Match and If-Modified-Since", header: map[string]string{"If-None-Match": `"abc123"`, "If-Modified-Since": earlier}, status: 304},
+		{name: "If-Modified-Since", header: map[string]string{"If-Modified-Since": lastModified}, status: 200, body: "Package: nginx\n"},
+		{name: "If-Unmodified-Since", header: map[string]string{"If-Unmodified-Since": earlier}, status: 200, body: "Package: nginx\n"},
 		{name: "Range", header: map[string]string{"Range": "bytes=0-6"}, status: 206, body: "Package"},
+		{name: "If-Range with the ETag", header: map[string]string{"Range": "bytes=0-6", "If-Range": `"abc123"`}, status: 206, body: "Package"},
+		{name: "If-Range with a date", header: map[string]string{"Range": "bytes=0-6", "If-Range": lastModified}, status: 200, body: "Package: nginx\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
