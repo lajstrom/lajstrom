@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -31,18 +32,18 @@ var terminal = struct {
 	readPassword func(fd int) ([]byte, error)
 }{term.IsTerminal, term.ReadPassword}
 
-// newAdminUserCmd returns admin user: create, list, disable, enable local users and set their
-// passwords in the index database, without HTTP, through the users service (auth.Users), so
-// that the validation and the audit events are those the users API (#47) will have. A change is
-// made by the anonymous principal with the source cli. Like admin repo it assumes that
-// lajstrom migrate ran.
+// newAdminUserCmd returns admin user: create, list, disable, enable local users and service
+// accounts, set the passwords of local users and the owners of service accounts in the index
+// database, without HTTP, through the users service (auth.Users), so that the validation and the
+// audit events are those of the users API (#47). A change is made by the anonymous principal
+// with the source cli. Like admin repo it assumes that lajstrom migrate ran.
 func newAdminUserCmd(a *app) *cobra.Command {
 	user := &cobra.Command{
 		Use:   "user",
-		Short: "Manage local users",
+		Short: "Manage local users and service accounts",
 	}
 	user.AddCommand(newUserCreateCmd(a), newUserListCmd(a), newUserDisableCmd(a), newUserEnableCmd(a), newUserSetPasswordCmd(a),
-		newUserRenameCmd(a), newUserDeleteCmd(a))
+		newUserRenameCmd(a), newUserDeleteCmd(a), newUserSetOwnerCmd(a))
 	return user
 }
 
@@ -50,20 +51,35 @@ func newAdminUserCmd(a *app) *cobra.Command {
 const passwordSources = "the password comes from standard input with --password-stdin, else from a prompt on the terminal"
 
 // newUserCreateCmd returns admin user create: create a local user, with --admin the admin
-// binding too (the bootstrap of docs/spec/rbac.md §6), and print it as JSON on one line.
+// binding too (the bootstrap of docs/spec/rbac.md §6), or with --service and --owner a service
+// account, which has no password (docs/spec/rbac.md §1), and print it as JSON on one line.
 func newUserCreateCmd(a *app) *cobra.Command {
 	var (
-		name     string
-		admin    bool
-		useStdin bool
+		name, owner     string
+		admin, useStdin bool
+		service         bool
 	)
 	cmd := &cobra.Command{
-		Use:         "create --name <name> [--admin] [--password-stdin]",
-		Short:       "Create a local user and print it as JSON; " + passwordSources,
+		Use: "create --name <name> [--admin] [--password-stdin] | --name <name> --service --owner user:<name>|group:<name>",
+		Short: "Create a local user, or a service account with --service, and print it as JSON; " + passwordSources +
+			"; a service account has none",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch {
+			case service && owner == "":
+				return errors.New("--service needs --owner: user:<name> of a person, or group:<name>")
+			case !service && owner != "":
+				return errors.New("--owner is a service account's: add --service")
+			}
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				if service {
+					u, err := users.CreateService(ctx, name, owner, auth.Origin(cliOrigin()))
+					if err != nil {
+						return err
+					}
+					return writeJSONLine(cmd.OutOrStdout(), u)
+				}
 				if err := auth.CheckName(name); err != nil {
 					return err
 				}
@@ -86,24 +102,48 @@ func newUserCreateCmd(a *app) *cobra.Command {
 	f.StringVar(&name, "name", "", "the user name: lowercase letters, digits, '.', '_' and '-', at most 64 bytes")
 	f.BoolVar(&admin, "admin", false, "also bind the admin role on */*: everything on every repo, the system and the audit log")
 	f.BoolVar(&useStdin, "password-stdin", false, "read the password from standard input, without the trailing newline")
+	f.BoolVar(&service, "service", false, "create a service account: a user for a system, without a password, which authenticates "+
+		"with the tokens of admin token create --user")
+	f.StringVar(&owner, "owner", "", "the owner of the service account: user:<name> of a person, or group:<name> of the OIDC logins")
+	cmd.MarkFlagsMutuallyExclusive("service", "admin")
+	cmd.MarkFlagsMutuallyExclusive("service", "password-stdin")
 	_ = cmd.MarkFlagRequired("name") // fails only for a flag that does not exist
 	return cmd
 }
 
-// newUserListCmd returns admin user list: the users as a table.
+// newUserListCmd returns admin user list: the users, or those of --kind, as a table.
 func newUserListCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "list",
-		Short:       "List the users",
+	var kind string
+	cmd := &cobra.Command{
+		Use:         "list [--kind local|oidc|service]",
+		Short:       "List the users, or the users of a kind: --kind service lists the service accounts",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				list, err := users.List(ctx, "")
+				list, err := users.List(ctx, kind)
 				if err != nil {
 					return err
 				}
 				return writeUserTable(cmd.OutOrStdout(), list)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&kind, "kind", "", "only the users of this kind: local, oidc or service")
+	return cmd
+}
+
+// newUserSetOwnerCmd returns admin user set-owner: a service account gets another owner
+// (docs/spec/rbac.md §1).
+func newUserSetOwnerCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:         "set-owner <name> user:<name>|group:<name>",
+		Short:       "Give a service account another owner: a person, user:<name>, or a group, group:<name>",
+		Args:        cobra.ExactArgs(2),
+		Annotations: needsConfig,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				return users.SetOwner(ctx, args[0], args[1], auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -185,8 +225,13 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				if _, err := users.Get(ctx, args[0]); err != nil {
+				u, err := users.Get(ctx, args[0])
+				if err != nil {
 					return err
+				}
+				if u.Kind == auth.KindService { // before the prompt
+					return fmt.Errorf("user %s is a service account, which has no password: it authenticates with the tokens "+
+						"of admin token create --user %s", u.Name, u.Name)
 				}
 				password, err := a.readPassword(cmd, useStdin, passwordFile)
 				if err != nil {
@@ -284,13 +329,22 @@ func promptPassword(out io.Writer, fd int, label string) (string, error) {
 	return string(b), nil
 }
 
-// writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED and CREATED.
+// writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED, CREATED and
+// OWNER: a service account's, user:<name> of a person, with (disabled) while that user is, or
+// group:<name>; - for every other kind.
 func writeUserTable(out io.Writer, users []auth.User) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = io.WriteString(tw, "NAME\tUID\tKIND\tDISABLED\tCREATED\n") // a bytes.Buffer does not fail
+	_, _ = io.WriteString(tw, "NAME\tUID\tKIND\tDISABLED\tCREATED\tOWNER\n") // a bytes.Buffer does not fail
 	for _, u := range users {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339))
+		owner := cmp.Or(u.Owner, "-")
+		if u.OwnerName != "" {
+			owner = "user:" + u.OwnerName
+		}
+		if u.OwnerDisabled {
+			owner += " (disabled)"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339), owner)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

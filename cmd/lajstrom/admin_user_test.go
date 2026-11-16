@@ -107,7 +107,7 @@ func TestAdminUser(t *testing.T) {
 		{stdin: "alice-password\n", args: []string{"admin", "user", "create", "--name", "alice", "--password-stdin"},
 			wantOut: `","name":"alice","kind":"local","disabled":false,`},
 		{args: []string{"admin", "user", "disable", "alice"}},
-		{args: []string{"admin", "user", "list"}, wantOut: "NAME   UID                                   KIND   DISABLED  CREATED\nadmin  0"},
+		{args: []string{"admin", "user", "list"}, wantOut: "NAME   UID                                   KIND   DISABLED  CREATED               OWNER\nadmin  0"},
 		{args: []string{"admin", "user", "list"}, wantOut: "  local  true      20"},
 		{args: []string{"admin", "user", "enable", "alice"}},
 		{args: []string{"admin", "user", "list"}, wantOut: "\nalice  0"},
@@ -158,6 +158,52 @@ func TestAdminUser(t *testing.T) {
 	wantCLIAudit(t, dsn, auth.ActionUserEnable, 1)
 	wantCLIAudit(t, dsn, auth.ActionUserPassword, 2)
 	wantCLIAudit(t, dsn, auth.ActionUserRename, 2)
+}
+
+// TestAdminUserService runs the life of a service account on the command line (docs/spec/rbac.md
+// §1): created with an owner and no password, listed by kind with its owner, its owner changed;
+// its password refused before any prompt; disabled with its owner, and left disabled when the
+// owner is enabled, by auth.serviceAccounts.onOwnerDisabled disable; its token bounded by
+// auth.serviceAccounts.maxTokenTTL of the configuration.
+func TestAdminUserService(t *testing.T) {
+	cfg, dsn := writeRepoConfig(t, t.TempDir())
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0) // #nosec G304 -- the test's own configuration
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("auth:\n  serviceAccounts:\n    maxTokenTTL: 720h\n    onOwnerDisabled: disable\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if _, _, err := run(t, nil, "migrate", "--config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (userCLI{cfg: cfg, dsn: dsn}).create(t, nil, strings.NewReader("alice-password"), "alice", "--password-stdin"); err != nil {
+		t.Fatal(err)
+	}
+	runSteps(t, cfg, []step{
+		{args: []string{"admin", "user", "create", "--name", "robot", "--service", "--owner", "user:alice"},
+			wantOut: `","name":"robot","kind":"service","disabled":false,`},
+		{args: []string{"admin", "user", "create", "--name", "bot", "--service"}, wantErr: "--service needs --owner"},
+		{args: []string{"admin", "user", "create", "--name", "bot", "--owner", "user:alice"}, wantErr: "--owner is a service account's: add --service"},
+		{args: []string{"admin", "user", "create", "--name", "bot", "--service", "--admin", "--owner", "user:alice"}, wantErr: "[service admin]"},
+		{args: []string{"admin", "user", "create", "--name", "bot", "--service", "--owner", "user:robot"}, wantErr: "owner: robot is a service account"},
+		{args: []string{"admin", "user", "list", "--kind", "service"}, wantOut: "  service  false     "},
+		{args: []string{"admin", "user", "list", "--kind", "service"}, wantOut: "  user:alice\n"},
+		{args: []string{"admin", "user", "list", "--kind", "robot"}, wantErr: `kind: "robot" is not local, oidc or service`},
+		{args: []string{"admin", "user", "set-password", "robot"}, wantErr: "user robot is a service account, which has no password"},
+		{args: []string{"admin", "user", "delete", "alice"}, wantErr: "user alice owns the service accounts robot"},
+		{args: []string{"admin", "user", "disable", "alice"}},
+		{args: []string{"admin", "user", "enable", "alice"}},
+		{args: []string{"admin", "user", "list", "--kind", "service"}, wantOut: "  service  true      "},
+		{args: []string{"admin", "user", "set-owner", "robot", "group:platform"}},
+		{args: []string{"admin", "user", "list"}, wantOut: "  group:platform\n"},
+		{args: []string{"admin", "user", "set-owner", "alice", "group:platform"}, wantErr: "user alice is not a service account"},
+		{args: []string{"admin", "token", "create", "--user", "robot", "--name", "ci", "--scopes", "read"}, wantOut: `"expiresAt":"20`},
+		{args: []string{"admin", "token", "create", "--user", "robot", "--name", "long", "--expires", "60d"},
+			wantErr: "auth.serviceAccounts.maxTokenTTL"},
+	})
+	wantCLIAudit(t, dsn, auth.ActionUserOwner, 1)
 }
 
 // userCLI is a migrated SQLite database and its configuration, for admin user.

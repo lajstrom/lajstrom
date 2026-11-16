@@ -89,7 +89,8 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&name, "name", "", "a label for the token, unique among the owner's live tokens, at most 64 bytes")
 	f.StringVar(&scopes, "scopes", "", "read, write, attach, or a comma list of them; required for a deploy token; none for a personal access token is its user's full rights; write holds attach")
-	f.StringVar(&expires, "expires", "", "a lifetime (30d, 12h) or an RFC 3339 time; a personal access token defaults to 90d and lives at most 365d, a deploy token without it never expires")
+	f.StringVar(&expires, "expires", "", "a lifetime (30d, 12h) or an RFC 3339 time; a personal access token defaults to 90d and lives at most 365d, "+
+		"a service account's is bounded by auth.serviceAccounts.maxTokenTTL instead, a deploy token without it never expires")
 	_ = cmd.MarkFlagRequired("name") // fails only for a flag that does not exist
 	return cmd
 }
