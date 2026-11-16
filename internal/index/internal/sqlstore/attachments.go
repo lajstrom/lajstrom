@@ -67,13 +67,21 @@ func compareAttachments(a, b index.Attachment) int {
 // ReplaceAttachments makes the rows of the referrer d of the version exactly rows, in one
 // transaction, and fills their ID, VersionID and Digest; a row with a Tag also removes the
 // version's rows under that tag of another referrer. IndexedAt is now when zero. A version that
-// does not exist is index.ErrNotFound, and nothing is written.
+// does not exist is index.ErrNotFound, and nothing is written. A row with a Verdict gets its
+// verdicts row, and the policy generation moves when a verdicts row is written or goes with the
+// rows replaced.
 func (c *conn) ReplaceAttachments(ctx context.Context, versionID int64, d digest.Digest, rows []index.Attachment) error {
 	ts := now()
 	return c.withTx(ctx, func(c *conn) error {
 		what := fmt.Sprintf("versions id %d", versionID)
-		var one int
-		if err := c.scanRow(ctx, what, "SELECT 1 FROM versions WHERE id = ?", []any{versionID}, &one); err != nil {
+		var repoID int64
+		if err := c.scanRow(ctx, what, "SELECT p.repo_id FROM versions v JOIN packages p ON p.id = v.package_id WHERE v.id = ?",
+			[]any{versionID}, &repoID); err != nil {
+			return err
+		}
+		verdicts, err := c.attachedVerdicts(ctx, fmt.Sprintf("attachments %s of %s", d, what),
+			"SELECT id FROM attachments WHERE version_id = ? AND digest = ?", versionID, string(d))
+		if err != nil {
 			return err
 		}
 		if _, err := c.exec(ctx, fmt.Sprintf("attachments %s of %s", d, what),
@@ -85,6 +93,12 @@ func (c *conn) ReplaceAttachments(ctx context.Context, versionID int64, d digest
 			a := &rows[i]
 			if a.Tag != "" && !tags[a.Tag] {
 				tags[a.Tag] = true
+				tagged, err := c.attachedVerdicts(ctx, fmt.Sprintf("attachments under %q of %s", a.Tag, what),
+					"SELECT id FROM attachments WHERE version_id = ? AND tag = ?", versionID, a.Tag)
+				if err != nil {
+					return err
+				}
+				verdicts = verdicts || tagged
 				if _, err := c.exec(ctx, fmt.Sprintf("attachments under %q of %s", a.Tag, what),
 					"DELETE FROM attachments WHERE version_id = ? AND tag = ?", versionID, a.Tag); err != nil {
 					return err
@@ -104,8 +118,20 @@ func (c *conn) ReplaceAttachments(ctx context.Context, versionID int64, d digest
 			if err != nil {
 				return err
 			}
+			if a.Verdict != nil {
+				v := a.Verdict
+				v.RepoID, v.AttachmentID, v.Referrer, v.Layer, v.CreatedAt = repoID, a.ID, d, a.Layer, a.CreatedAt
+				v.IndexedAt = a.IndexedAt
+				if err := c.insertVerdict(ctx, v); err != nil {
+					return err
+				}
+				verdicts = true
+			}
 		}
-		return nil
+		if !verdicts {
+			return nil
+		}
+		return c.nextPolicyGeneration(ctx)
 	})
 }
 
@@ -130,11 +156,23 @@ func (c *conn) TouchAttachments(ctx context.Context, ids []int64, at time.Time) 
 
 // DeleteAttachments removes the rows of the referrer d among the versions of a repo, and returns
 // how many.
+// The policy generation moves when a verdicts row goes with them.
 func (c *conn) DeleteAttachments(ctx context.Context, repoID int64, d digest.Digest) (int, error) {
-	return c.exec(ctx, fmt.Sprintf("attachments %s in repo %d", d, repoID),
-		"DELETE FROM attachments WHERE digest = ? AND version_id IN"+
-			" (SELECT v.id FROM versions v JOIN packages p ON p.id = v.package_id WHERE p.repo_id = ?)",
-		string(d), repoID)
+	what := fmt.Sprintf("attachments %s in repo %d", d, repoID)
+	sel := "SELECT a.id FROM attachments a JOIN versions v ON v.id = a.version_id JOIN packages p ON p.id = v.package_id" +
+		" WHERE a.digest = ? AND p.repo_id = ?"
+	var n int
+	err := c.withTx(ctx, func(c *conn) error {
+		verdicts, err := c.attachedVerdicts(ctx, what, sel, string(d), repoID)
+		if err != nil {
+			return err
+		}
+		if n, err = c.exec(ctx, what, "DELETE FROM attachments WHERE id IN ("+sel+")", string(d), repoID); err != nil || !verdicts {
+			return err
+		}
+		return c.nextPolicyGeneration(ctx)
+	})
+	return n, err
 }
 
 // SweepAttachments removes the rows of a version whose IndexedAt is before seenBefore, and

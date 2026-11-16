@@ -265,6 +265,22 @@ type Reader interface {
 	// zero facts but VersionID for an id without rows (docs/spec/index-schema.md, Pages of
 	// packages and versions).
 	ListVersionFacts(ctx context.Context, versionIDs []int64) ([]VersionFacts, error)
+
+	// The policy (#101; docs/spec/policy.md, docs/spec/index-schema.md, Policy).
+
+	// ListPolicyRules returns every policy rule, the expired ones too, by id.
+	ListPolicyRules(ctx context.Context) ([]PolicyRule, error)
+	// GetPolicyRule returns the rule id; ErrNotFound when there is none.
+	GetPolicyRule(ctx context.Context, id int64) (*PolicyRule, error)
+	// PolicyGeneration returns policy_state.generation, which every change of the rules and of
+	// the verdicts increments.
+	PolicyGeneration(ctx context.Context) (int64, error)
+	// ListVerdicts returns the verdicts f selects, newest first (CreatedAt descending, those
+	// without one last), then by Referrer and Layer.
+	ListVerdicts(ctx context.Context, f VerdictFilter) ([]Verdict, error)
+	// GetPolicySeen returns when the repo first saw the version without a publish time;
+	// ErrNotFound when it has no row.
+	GetPolicySeen(ctx context.Context, repoID int64, name, version, variant string) (*PolicySeen, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use
@@ -616,4 +632,30 @@ type Writer interface {
 	// SweepAttachments removes the rows of a version whose IndexedAt is before seenBefore, the
 	// sweep of reindex once it listed the version's referrers, and returns how many it removed.
 	SweepAttachments(ctx context.Context, versionID int64, seenBefore time.Time) (int, error)
+
+	// The policy (#101; docs/spec/index-schema.md, Policy). ReplaceAttachments writes the
+	// verdicts row of each row with a Verdict, and a verdicts row goes with its attachment. Every
+	// method below that changes a row, and ReplaceAttachments and DeleteAttachments when they
+	// write or remove a verdicts row, increment policy_state.generation in their transaction.
+
+	// CreatePolicyRule inserts r and fills its ID; CreatedAt is now when zero.
+	CreatePolicyRule(ctx context.Context, r *PolicyRule) error
+	// DeletePolicyRule removes the rule id; ErrNotFound when there is none.
+	DeletePolicyRule(ctx context.Context, id int64) error
+	// ReplaceOCIVerdicts makes the verdicts rows of the referrer d of an oci repo, those without
+	// an attachment, exactly rows, and fills their ID, RepoID and Referrer; IndexedAt is now when
+	// zero.
+	ReplaceOCIVerdicts(ctx context.Context, repoID int64, d digest.Digest, rows []Verdict) error
+	// DeleteOCIVerdicts removes the verdicts rows without an attachment of the referrer d of a
+	// repo, and returns how many.
+	DeleteOCIVerdicts(ctx context.Context, repoID int64, d digest.Digest) (int, error)
+	// TouchOCIVerdicts sets IndexedAt of the rows with the given ids; ids that do not exist are
+	// skipped. It does not move the generation.
+	TouchOCIVerdicts(ctx context.Context, ids []int64, at time.Time) error
+	// SweepOCIVerdicts removes the rows without an attachment of a repo's OCI repository path
+	// whose IndexedAt is before seenBefore, and returns how many.
+	SweepOCIVerdicts(ctx context.Context, repoID int64, path string, seenBefore time.Time) (int, error)
+	// PutPolicySeen inserts s unless the row of its key exists, and fills s.SeenAt with the
+	// row's; SeenAt is now when zero. It does not move the generation.
+	PutPolicySeen(ctx context.Context, s *PolicySeen) error
 }

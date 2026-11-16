@@ -85,6 +85,10 @@ type ControlPlane struct {
 	// deliveries, the outbox and the delivery log, are not in a snapshot.
 	Webhooks []Webhook
 
+	// PolicyRules are the rows of policy_rules (#101); nil in a snapshot of a database before
+	// migration 0030.
+	PolicyRules []PolicyRule
+
 	// WithAudit and AuditSince are the ExportOptions of the read: Audit holds the rows they
 	// selected, and none without WithAudit.
 	WithAudit  bool

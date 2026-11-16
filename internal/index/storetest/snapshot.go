@@ -80,6 +80,8 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	off := index.Webhook{Mask: "*/*", URL: "https://audit.example.com/hook", SecretEnc: []byte("sealed other"),
 		CreatedBy: "user:" + alice.UID, CreatedAt: at(6)}
 	must(t, s.CreateWebhook(ctx, &off))
+	must(t, s.CreatePolicyRule(ctx, &index.PolicyRule{RepoMask: "npm/*", Name: "@evil/*", Version: "*", Variant: "*",
+		Effect: index.PolicyDeny, Reason: "malware", CreatedBy: "user:" + alice.UID, CreatedAt: at(7), ExpiresAt: ptr(at(9000))}))
 	must(t, s.CreateWebhookDeliveries(ctx, []index.WebhookDelivery{{WebhookID: hook.ID, EventID: "e1", EventType: "version.published",
 		Payload: []byte(`{}`)}}))
 	must(t, s.ReplaceAttachments(ctx, f.version.ID, dg("sbom"), []index.Attachment{attachment("sbom", "layer", 10, 100)}))
@@ -126,9 +128,10 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	}
 	counts := map[string]int{"repos": len(cp.Repos), "group_members": len(cp.GroupMembers), "users": len(cp.Users),
 		"identities": len(cp.Identities), "identity_groups": len(cp.IdentityGroups), "tokens": len(cp.Tokens),
-		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "audit": len(cp.Audit)}
+		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "policy_rules": len(cp.PolicyRules),
+		"audit": len(cp.Audit)}
 	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
-		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "audit": 3}, counts)
+		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "audit": 3}, counts)
 
 	dst := open(t)
 	v0, err := dst.AuthVersion(ctx)
@@ -179,6 +182,9 @@ func checkImported(t *testing.T, dst index.Store, cp *index.ControlPlane, f fixt
 	hooks, err := dst.ListWebhooks(ctx)
 	must(t, err)
 	same(t, "the webhooks", cp.Webhooks, hooks)
+	rules, err := dst.ListPolicyRules(ctx)
+	must(t, err)
+	same(t, "the policy rules", cp.PolicyRules, rules)
 	if ds, err := dst.ListWebhookDeliveries(ctx, hooks[0].ID, 0, 10); err != nil || len(ds) != 0 {
 		t.Errorf("the deliveries of the webhook after the import: %d, %v; want none, a snapshot has none", len(ds), err)
 	}
