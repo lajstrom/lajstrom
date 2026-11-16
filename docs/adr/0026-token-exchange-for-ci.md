@@ -270,7 +270,7 @@ the limits below, and the refusals' "no row".
   writes), and one that writes in the index (from a snapshot) is left out of the evaluation, with a
   warning. A stolen admin credential then adds a policy that reads at most: it can leak internal
   artifacts, never publish one. The policies that write stay in the configuration, reviewed in
-  git.
+  git (the second amendment, below, lets the API make them under conditions).
 - **Refusals.** A `400 invalid_grant` is a `token.exchange` row with `outcome: refused`, its
   reason, the issuer, and for a token that verified its principal and the claims that say who and
   where (ids, project, ref, environment, event); never the token, never a claim of a token that
@@ -285,3 +285,64 @@ credential, visible in the audit log only; the policies of a server are its conf
 its index's, so `lajstrom admin ci-policy list` (or the API) shows them both, and a restore from a
 snapshot brings the API's back. A replica of the release before the migration does not read the
 table: its CI tokens get the configuration's grants only until it is replaced.
+
+## Second amendment (maintainer, 2026-11-16)
+
+The maintainer decided on the policies of the API that write (comments on #937): an admin makes
+them through the API too, and a policy created or widened through the API that grants `writer` or
+`maintainer` needs
+
+1. a fresh interactive sign-in with a second factor: a web UI's sign-in through OIDC with
+   `prompt=login` and `max_age`, the ID token's `auth_time` within 10 minutes and its `amr`
+   showing a second factor. A password's sign-in does not count, nor a personal access token, a
+   deploy token, a service account's token or a CI token;
+2. the approval of a second, different admin: the policy waits, pending, until then. The approval
+   is a setting, `auth.ci.apiWriteApproval: second-admin | none`, `second-admin` by default; an
+   install with one admin sets `none`, or declares its policies that write in the configuration,
+   where the review in git is the second pair of eyes;
+3. a target within `auth.ci.apiWriteRepos`, masks of the configuration: write to other repos only
+   through the configuration;
+4. an expiry of at most 180 days, renewed by the same fresh sign-in and approval;
+5. an event on the webhooks for every create, approval, change, renewal, expiry and delete.
+
+With `none`, steps 1, 3, 4 and 5 still hold. A policy that reads only is made through the API
+without them. This replaces "Policies of the API read" of the first amendment.
+
+How it is built (rbac.md §10, §11):
+
+- **The sign-in.** The callback of a web UI's login keeps `auth_time` and `amr` of the ID token
+  with the login request, and the token of its code keeps them (`tokens.auth_time`, `tokens.amr`,
+  migration 0033), so that a request with the token and a proof of its DPoP key carries when and
+  how the person authenticated. `/-/oidc/login` takes `prompt=login` from a web UI and asks the IdP
+  for `prompt=login` and `max_age=600`. `amr` shows a second factor with `mfa`, or with methods of
+  two kinds of factor of RFC 8176 (knowledge, possession, inherence). Chosen over a separate
+  credential for the step-up: the token that a web UI already holds, bound to its key, carries it,
+  and nothing else changes for the token. The command line, which writes the database without a
+  credential, makes the policies that read and deletes any.
+- **Pending, approval and renewal.** `ci_policies` has a `state` (`active`, `pending`,
+  `expired`), `expires_at`, the expiry of a renewal that waits, the principal of the latest change
+  (`updated_by`, who may not approve it) and of the latest approval, and a `revision`. An approval
+  takes `If-Match`, the ETag of the revision read, so that what is approved is what was read; a
+  change of a policy that writes waits again, whatever it changed: telling a narrowing from a
+  widening of patterns is not attempted. A renewal of a policy that counts waits beside it, which
+  keeps its expiry until the approval, so that renewing early stops nothing.
+- **The expiry.** A policy grants nothing from its `expiresAt` on, whether marked or not: each
+  replica's policies are read again when the earliest expiry among them passes. Each replica also
+  looks once a minute for the policies whose expiry passed and marks each `expired` with its
+  `ci.policy.expire` row and event, in a transaction that updates the row only at the revision it
+  read: of the replicas that look at once, one marks it, and the event is sent once. Chosen over
+  marking at the first read of the policy, which writes nothing until someone exchanges a token or
+  lists the policies, so that the event of an expiry could come days late; one query a minute per
+  replica is the cost.
+- **Events.** The six types `ci.policy.created`, `.updated`, `.renewed`, `.approved`, `.expired`
+  and `.deleted` (webhooks.md §1), for every policy of the API, one that reads too, to the
+  webhooks of the admin (a mask with `*`) that cover a mask of the policy's grants: a webhook of
+  one repo belongs to its maintainer, who may not read the policies.
+
+Consequences of the second amendment: making a policy that publishes through the API takes a web
+UI that signs in through OIDC with a second factor, and with the default, two admins; an install
+without them declares its policies that write in the configuration as before. A policy that
+writes stops at its expiry unless renewed, which breaks the CI jobs that rely on it: the
+`ci.policy.expired` event, and the expiry in the lists, warn first. The state, the expiry and the
+sign-in come with the table, in migration 0033, so no release reads the table without them.
+

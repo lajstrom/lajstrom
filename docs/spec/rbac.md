@@ -386,8 +386,9 @@ deliveries are not audited: the delivery log has them (webhooks.md §4). Reads a
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself. A CI token's
 exchange is: `token.exchange`, a row per token minted and, rate-limited, per refusal; and so is
-every change of a CI trust policy through the API, `ci.policy.create`, `ci.policy.update` and
-`ci.policy.delete` (§11).
+every change of a CI trust policy through the API, `ci.policy.create`, `ci.policy.update`,
+`ci.policy.renew`, `ci.policy.approve` and `ci.policy.delete`, and the mark of one whose expiry
+passed, `ci.policy.expire` (§11).
 
 ## 6. Bootstrap
 
@@ -759,6 +760,17 @@ or key marks the request `denied`, so a code is tried once: a code read from the
 the page is of no use without the key that started the login. No code, verifier or challenge is
 logged, audited, or put in a URL but the one redirect.
 
+**The sign-in at the IdP** (#937). The callback of a web UI's login keeps the ID token's
+`auth_time` and `amr` (RFC 8176; its strings of at most 64 bytes, at most 16 of them) on the login
+request, and the token of its code keeps them (index-schema.md, `tokens.auth_time` and
+`tokens.amr`), as does its `token.create` row (`authTime`, `amr`): a request with that token and a
+proof of its key carries when and how the person authenticated, which a step that needs a fresh
+sign-in with a second factor reads (§11). A login with `prompt=login` (http-routing.md §7) asks
+the IdP to authenticate the person again, `prompt=login` and `max_age=600` on its authorization
+request; its token is a token of a sign-in as any other, of the same lifetime, and its sign-in is
+fresh for the 10 minutes after `auth_time`. A token of a password, of a login of §8 and of an ID
+token without `auth_time` keeps none.
+
 ## 11. Token exchange for CI (after the MVP, #937)
 
 A CI job trades the OIDC token its platform issues it, GitHub Actions' or GitLab CI's, for a
@@ -811,15 +823,64 @@ a policy of the API with `400` naming the field, when a policy:
 **Policies of the API.** The CI trust policies are a resource of `system` (§2): the routes and the
 command line take the admin role, checked before the body is read. A policy made through them is
 a row of `ci_policies` (index-schema.md), owned by the API; one of the configuration is shown
-through the API with `source` `config`, and is changed only in the configuration: a `PUT` or a
-`DELETE` of it is `409`, and so is a `POST` with the name of either. The same rules as the
-configuration's apply, and its issuer must be an issuer of the configuration. A policy of the API
-grants `reader` only: one that grants `writer` or `maintainer` is `403`, and one that is in the
-index (restored from a snapshot) is left out of the policies the replica evaluates, logged at
-warn, as is a row that breaks a rule or has the name of a policy of the configuration. Every create, change and delete moves `auth_version` in its transaction, and
-writes its row (Audit, below). Each replica reads the policies of the index again when
-`auth_version` moved, which it reads before each exchange and each request with a CI token: a
-change counts from the next request on, on every replica, without a restart.
+through the API with `source` `config`, and is changed only in the configuration: a `PUT`, a
+`DELETE`, a renewal or an approval of it is `409`, and so is a `POST` with the name of either. The
+same rules as the configuration's apply, and its issuer must be an issuer of the configuration. A
+policy of the API that grants `reader` only is made, changed and deleted by an admin and counts at
+once; one that grants `writer` or `maintainer` takes the steps below. A row that breaks a rule, has
+the name of a policy of the configuration, or writes without an expiry or outside
+`auth.ci.apiWriteRepos` (restored from a snapshot, or the configuration changed since) is left out
+of the policies the replica evaluates, logged at warn. Every create, change, renewal, approval,
+expiry and delete moves `auth_version` and the policy's revision in its transaction, and writes
+its row (Audit, below) and its event (webhooks.md §1). Each replica reads the policies of the
+index again when `auth_version` moved, which it reads before each exchange and each request with a
+CI token, and when the earliest expiry among them passed: a change counts from the next request
+on, on every replica, without a restart.
+
+**Policies of the API that write** (decided on #937, 2026-11-16). A policy of the API that grants
+`writer` or `maintainer`, made, changed so that it still grants one, or renewed, takes these
+steps; deleting one, or changing it to grant `reader` only, takes none:
+
+1. **A fresh sign-in with a second factor.** The request's credential is the token of a web UI's
+   sign-in through OIDC (§10), with a proof of its key, whose ID token's `auth_time` is at most 10
+   minutes before the request (and at most 60 s after it), and whose `amr` (RFC 8176) shows a
+   second factor: `mfa`, or methods of two kinds of factor, knowledge (`pwd`, `pin`, `kba`),
+   possession (`hwk`, `swk`, `otp`, `sms`, `tel`, `sc`, `pop`) and inherence (`fpt`, `face`,
+   `iris`, `retina`, `vbm`). A web UI gets one with a login with `prompt=login` (http-routing.md
+   §7), which asks the IdP to authenticate the person again. A password's sign-in, a token the
+   person made, a deploy token, a service account's token, a client certificate, a Kubernetes
+   token, a CI token and the command line never are one: `403` saying what is missing.
+2. **A second admin.** With `auth.ci.apiWriteApproval: second-admin`, the default, the policy
+   waits, `state` `pending`, and grants nothing until an admin other than the one who made the
+   change (`updatedBy`) approves it: `POST …/<name>/approve` with a fresh sign-in of step 1 and
+   `If-Match`, the ETag of the revision read (`400` without one or with `*`, `412` for another),
+   so that an approval names what it approves. With `none`, for an install with one admin, the
+   change counts at once, and the other steps hold. An install with one admin may instead declare
+   its policies that write in the configuration, where the review in git is the second pair of
+   eyes.
+3. **Bounded repos.** The mask of each grant that writes is within a mask of
+   `auth.ci.apiWriteRepos` (configuration.md): every repo it matches, one of those matches
+   (`pypi/app` and `pypi/*` within `pypi/*`, `*/*` within `*/*` only). Empty, the default, no
+   policy of the API writes: a policy that writes elsewhere is declared in the configuration. Else
+   `403` naming the grant; an approval checks it again.
+4. **An expiry.** The policy has `expiresAt`, at most 180 days after the change and by default
+   180 days after it; one beyond, or past, is `400`. `POST …/<name>/renew` gives it another, under
+   steps 1 to 3: the renewal of a policy that counts waits beside it (`renewal`), the policy
+   keeping its expiry until the renewal is approved; that of an expired policy waits pending; that
+   of a pending one is `409` (a change gives it its expiry). From its `expiresAt` on a policy
+   grants nothing, whether a replica marked it yet or not. Each replica looks once a minute for
+   the policies of the API whose expiry passed and marks each `expired` in a transaction that
+   changes it only at the revision it read, so that of the replicas one marks it, with its
+   `ci.policy.expire` row and its event. An expired policy is renewed or deleted.
+5. **Events.** Every create, approval, change, renewal, expiry and delete of a policy of the API,
+   one that reads included, is an event of the webhooks (webhooks.md §1, `ci.policy.*`).
+
+A policy of the API has a `state`: `active`, which counts; `pending`, which waits for an approval
+and grants nothing; `expired`, which grants nothing. What waits, a pending policy or the renewal
+of one that counts, is approved once; an approval when nothing waits, or after the expiry, is
+`409`. A change of a policy that writes waits for its approval again, whatever it changed. The
+command line, `lajstrom admin ci-policy`, is no sign-in: it makes the policies that read, lists
+every policy, and deletes any.
 
 **A pull request never writes.** A policy that grants `writer` or `maintainer` never matches a
 token of a pull request, whatever its conditions: on GitHub one whose `event_name` is
@@ -855,14 +916,15 @@ not verify is `401` with the challenge, and counts as no failed login.
 
 **What it may do.** The grants of the policies the token names, as the replica that serves the
 request has them: step 2 of §3. A policy removed from the configuration grants nothing from that
-replica's restart on, one deleted through the API from the next request on, and a token none of
-whose policies the replica has is `401`. It never reaches `system` nor `audit`, and creates no personal access token and no
+replica's restart on, one of the API deleted, pending again or past its expiry from the next
+request on, and a token none of whose policies the replica has is `401`. It never reaches `system` nor `audit`, and creates no personal access token and no
 deploy token (§3). The bearer `/v2/token` issues on it names the `ci:` principal as its `sub` and
 is issued as any (§4): its access is reduced by the grants when it is issued, and it is trusted
 for its 20 minutes. It carries the CI token's id as the claim `ci`.
 
-**Revocation.** A CI token is not revoked alone. It ends at its `exp`; a policy of the API deleted
-ends it at its next request, one of the configuration removed at the restart of each replica;
+**Revocation.** A CI token is not revoked alone. It ends at its `exp`; a policy of the API deleted,
+changed to wait for an approval, or past its expiry, ends it at its next request, one of the
+configuration removed at the restart of each replica;
 `lajstrom admin key rotate --token --drop` ends it with every bearer (§4).
 
 **Audit.** A token minted is a `token.exchange` row (§5), in a transaction of its own, by the
@@ -887,8 +949,11 @@ before. At most 10 000 keys are kept, and a refusal of a key beyond them writes 
 refusal is logged at info as well, with its reason, the issuer and the project when the token
 verified, never the token.
 
-A create, change or delete of a policy through the API is `ci.policy.create`, `ci.policy.update`
-or `ci.policy.delete`, in its transaction, by the admin, `subject` the policy's name, no `repo`,
-and `details` with the policy, `issuer`, `claims` and `grants` (those it had, for a delete), the
-`previous` ones for a change, and the origin's keys (`source` `api` or `cli`, `requestId`,
-`host`).
+A create, change, renewal, approval or delete of a policy through the API is `ci.policy.create`,
+`ci.policy.update`, `ci.policy.renew`, `ci.policy.approve` or `ci.policy.delete`, in its
+transaction, by the admin, `subject` the policy's name, no `repo`, and `details` with the policy as
+the change left it (as it was, for a delete): `issuer`, `claims`, `grants`, `state`, and
+`expiresAt` and `renewalExpiresAt` when it has them; the `previous` policy for a change, a renewal
+and an approval; `signIn`, `{token, authTime, amr}`, for a request with the sign-in of a web UI
+(§10); and the origin's keys (`source` `api` or `cli`, `requestId`, `host`). The mark of a policy
+whose expiry passed is `ci.policy.expire`, by `anonymous`, with `source` `expiry`.
