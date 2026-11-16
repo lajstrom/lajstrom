@@ -20,6 +20,8 @@ import (
 	"testing/iotest"
 
 	"github.com/opencontainers/go-digest"
+
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
 // fixed returns options of a fixed key and a nonce whose low half overflows within 7 blocks.
@@ -278,5 +280,14 @@ func TestPrivateNeverPrinted(t *testing.T) {
 	}
 	if !Encrypted("application/vnd.lajstrom.raw.file.v1+encrypted") || Encrypted("application/vnd.lajstrom.raw.file.v1") {
 		t.Error("Encrypted")
+	}
+}
+
+// TestNamesOfProfile: the media type suffix and the annotations are those the manifest profile
+// writes (docs/spec/manifest-profile.md §11).
+func TestNamesOfProfile(t *testing.T) {
+	if Suffix != profile.EncryptedSuffix || AnnotationJWE != profile.AnnotationEncJWE || AnnotationPubOpts != profile.AnnotationEncPubOpts ||
+		AnnotationPrefix != profile.AnnotationEncPrefix {
+		t.Error("blobcrypt and profile name the encryption differently")
 	}
 }
