@@ -14,7 +14,6 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
-	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/facade"
@@ -219,6 +218,7 @@ func newServeCmd(a *app) *cobra.Command {
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
 				OIDC: edge.login != nil}
+			ciPolicies := newCIPolicies(c, st)
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
@@ -227,8 +227,9 @@ func newServeCmd(a *app) *cobra.Command {
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
 				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize,
 				Rules: newRules(c, st, a.log), Verdicter: pipe, PolicyKey: apiPolicyKey(pkey), Locate: locateIn(lookupIn(plugins)),
-				CIPolicies: &ci.Service{Index: st, Config: c.Auth.CI}})
+				CIPolicies: ciPolicies})
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
+			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
 			srv, err := server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,

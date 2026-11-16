@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
@@ -19,7 +20,7 @@ func ciPolicyCLI(t *testing.T) (func(args ...string) (string, error), string) {
 	dir := t.TempDir()
 	cfg, dsn := filepath.Join(dir, "lajstrom.yaml"), "file:"+filepath.Join(dir, "lajstrom.db")
 	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
-		"auth:\n  ci:\n    issuers: [{name: github, platform: github, issuer: \"https://token.actions.githubusercontent.com\"}]\n" +
+		"auth:\n  ci:\n    apiWriteRepos: [\"oci/*\"]\n    issuers: [{name: github, platform: github, issuer: \"https://token.actions.githubusercontent.com\"}]\n" +
 		"    policies:\n      - {name: from-config, issuer: github, claims: {repository_owner_id: \"9\"}, grants: [{role: reader, mask: \"*/*\"}]}\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestAdminCIPolicy(t *testing.T) {
 		wantErr string
 	}{
 		{[]string{"create", "--name", "w", "--issuer", "github", "--claim", "repository_id=1", "--claim", "ref=main", "--grant", "writer:oci/app"},
-			"writer on oci/app is outside auth.ci.apiWriteRepos"},
+			"a policy of the API that grants write: this needs a sign-in with a second factor"},
 		{[]string{"create", "--name", "x", "--issuer", "github", "--claim", "repository=acme/app", "--grant", "reader:*/*"}, "must name the project by an id"},
 		{[]string{"create", "--name", "x", "--issuer", "github", "--claim", "repository_id", "--grant", "reader:*/*"}, "want <claim>=<value>"},
 		{[]string{"delete", "from-config"}, "declared in the configuration"},
@@ -62,10 +63,15 @@ func TestAdminCIPolicy(t *testing.T) {
 		}
 	}
 	out, err = cli("list")
-	if err != nil || !strings.Contains(out, "from-config  config  github") || !strings.Contains(out, "acme-read    api     github  ref=refs/tags/v* repository_id=123  reader:oci/*") {
+	if err != nil || !strings.Contains(out, "from-config  config  active  -        github") ||
+		!strings.Contains(out, "acme-read    api     active  -        github  ref=refs/tags/v* repository_id=123  reader:oci/*") {
 		t.Errorf("list = %q, %v", out, err)
 	}
-	if _, err := cli("delete", "acme-read"); err != nil {
+	stale := api.ETag(api.TableCIPolicies, 99, 1)
+	if _, err := cli("delete", "acme-read", "--if-match", stale); err == nil || !strings.Contains(err.Error(), "CI trust policy acme-read changed") {
+		t.Errorf("delete --if-match of another revision: %v", err)
+	}
+	if _, err := cli("delete", "acme-read", "--if-match", "*"); err != nil {
 		t.Fatal(err)
 	}
 	if got := cliPolicyRows(t, dsn); got != "ci.policy.delete ci.policy.create" {
