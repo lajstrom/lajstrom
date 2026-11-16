@@ -24,6 +24,10 @@ const (
 	AnnotationEncPubOpts = "org.opencontainers.image.enc.pubopts"
 	// AnnotationEncPrefix starts every annotation of an encrypted layer; a client sends none.
 	AnnotationEncPrefix = "org.opencontainers.image.enc."
+	// ArtifactTypeKeys is the artifact type of a keys referrer (§11.1), which only Lajstrom writes.
+	ArtifactTypeKeys = "application/vnd.lajstrom.keys.v1"
+	// AnnotationKeys is the annotation of a keys referrer that holds the layers' wrappings.
+	AnnotationKeys = "lajstrom.keys"
 )
 
 // ErrEncryption means a manifest cannot be stored encrypted, or a stored one cannot be answered

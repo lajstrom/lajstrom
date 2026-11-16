@@ -40,6 +40,13 @@ func (h *handler) referrers(w http.ResponseWriter, r *http.Request, t *target, a
 	}
 	artifactType := r.URL.Query().Get("artifactType")
 	refs := []ocispec.Descriptor{}
+	if mapped(t) {
+		if row, err := h.manifestRow(ctx, t, d); err != nil {
+			return err
+		} else if row != nil {
+			d = row.Stored
+		}
+	}
 	subject := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d}
 	err = rr.Referrers(ctx, subject, artifactType, func(page []ocispec.Descriptor) error {
 		refs = append(refs, page...)
@@ -47,6 +54,11 @@ func (h *handler) referrers(w http.ResponseWriter, r *http.Request, t *target, a
 	})
 	if err != nil && !errors.Is(err, provider.ErrNotFound) {
 		return fmt.Errorf("facade: referrers of %s@%s: %w", t.name, d, err)
+	}
+	if mapped(t) {
+		if refs, err = h.clientReferrers(ctx, t, rr, refs); err != nil {
+			return err
+		}
 	}
 	body, err := json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2},
 		MediaType: ocispec.MediaTypeImageIndex, Manifests: refs})

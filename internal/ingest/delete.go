@@ -1141,22 +1141,27 @@ func (d *deletion) record(ctx context.Context) error {
 }
 
 // recordRows deletes on w the rows of what the delete took: a version's, a journal entry's, a
-// referrer's attachments, when it was one of a version (#89), and its verdicts (#101).
+// referrer's attachments, when it was one of a version (#89), and its verdicts (#101); and the
+// manifest's row of blob_map, when it is a stored manifest of an encrypted repo (#114).
 func (d *deletion) recordRows(ctx context.Context, w index.Writer) error {
+	var err error
 	switch {
 	case d.version != nil:
-		return d.deleteRows(ctx, w)
+		err = d.deleteRows(ctx, w)
 	case d.journal && d.pkg != nil:
-		return d.deleteEntry(ctx, w)
+		err = d.deleteEntry(ctx, w)
 	case !d.journal && d.repo.Format != ociFormat:
-		return d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, func() error {
+		err = d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, func() error {
 			_, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest)
 			return err
 		})
 	case !d.journal:
-		return d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, nil)
+		err = d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, nil)
 	}
-	return nil
+	if err != nil || d.repo.Format == ociFormat {
+		return err
+	}
+	return w.DeleteBlobMap(ctx, d.repo.ID, d.del.Path, d.target.Digest)
 }
 
 // dropUntagged removes the oci_repos row of the delete's OCI repository, on an oci repo, when the
