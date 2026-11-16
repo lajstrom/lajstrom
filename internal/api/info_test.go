@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -88,12 +89,38 @@ func TestInfo(t *testing.T) {
 	}
 }
 
+// TestInfoLogin checks what info tells a web UI of its sign-in (docs/spec/rbac.md §10): oidc in
+// authModes while the OIDC login is on, and the lifetime of the token of POST /api/v1/login in
+// seconds.
+func TestInfoLogin(t *testing.T) {
+	for _, tc := range []struct {
+		oidc     bool
+		lifetime time.Duration
+		modes    []string
+		seconds  int64
+	}{
+		{false, 0, []string{"password", "token"}, 43200},
+		{true, 3 * time.Hour, []string{"password", "token", "oidc"}, 10800},
+	} {
+		info := testInfo
+		info.OIDC = tc.oidc
+		f := newFixture(t, Options{Info: info, LoginLifetime: tc.lifetime})
+		var got Info
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous), http.StatusOK, &got)
+		if !slices.Equal(got.AuthModes, tc.modes) || got.Login.TokenLifetime != tc.seconds {
+			t.Errorf("OIDC %v, lifetime %v: authModes %q, login %+v; want %q, %d", tc.oidc, tc.lifetime, got.AuthModes, got.Login,
+				tc.modes, tc.seconds)
+		}
+	}
+}
+
 // TestInfoZero checks the answer of a handler without Options.Info: lists, never null.
 func TestInfoZero(t *testing.T) {
 	f := newFixture(t, Options{})
 	rr := f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous)
 	wantStatus(t, rr, http.StatusOK)
-	for _, want := range []string{`"externalURL":""`, `"anonymousRead":false`, `"formats":[]`, `"admin":false`} {
+	for _, want := range []string{`"externalURL":""`, `"anonymousRead":false`, `"formats":[]`, `"admin":false`,
+		`"login":{"tokenLifetime":43200}`} {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Errorf("body %s does not contain %s", rr.Body, want)
 		}

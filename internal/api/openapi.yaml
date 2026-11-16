@@ -1212,12 +1212,16 @@ paths:
       summary: Sign in a web UI; the answer is a short-lived personal access token, once.
       description: >-
         For a local user's name and password, checked as Basic credentials are, with the same
-        throttles of failed logins, and a DPoP proof (RFC 9449) of the browser's key in the
-        header DPoP, checked before the password. The answer is a personal access token of the
-        user without scopes, bound to that key (dpopJkt, tokenType DPoP), named login <time> <4
-        hex>, that expires after auth.login.tokenLifetime (12 hours by default); there is no
-        refresh. The UI sends it as Authorization: DPoP with a new proof of the key on every
-        request to /api/, where alone it works, and revokes it at sign-out with DELETE
+        throttles of failed logins; or for the code that the callback of an OIDC login started
+        with return_to, code_challenge and dpop_jkt handed the UI, with the PKCE verifier of that
+        challenge, redeemed once. Either way with a DPoP proof (RFC 9449) of the browser's key in
+        the header DPoP, checked before the credential, the key of dpop_jkt for a code. The
+        answer is a personal access token of the user without scopes, bound to that key
+        (dpopJkt, tokenType DPoP), named login <time> <4 hex> or oidc <time> <4 hex>, that
+        expires after auth.login.tokenLifetime (12 hours by default), and for a code after
+        auth.oidc.tokenLifetime when that is shorter; there is no refresh. The UI sends it as
+        Authorization: DPoP with a new proof of the key on every request to /api/, where alone
+        it works, and revokes it at sign-out with DELETE
         /api/v1/users/{user}/tokens/{id}. The request takes no credential: its Authorization
         header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
       security:
@@ -1240,13 +1244,16 @@ paths:
               schema: {$ref: "#/components/schemas/LoginToken"}
         "400":
           description: >-
-            The body is not a user name and a password, or the DPoP proof is missing, refused or
-            used already; the message says why.
+            The body is neither form, the code is unknown, used, expired, of another verifier or
+            of another key, or the DPoP proof is missing, refused or used already; the message
+            says why.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
         "401":
-          description: The user name or the password is wrong, or the user may not sign in; the reason is not told.
+          description: >-
+            The user name or the password is wrong, or the user may not sign in, the reason not
+            told; or the user of a code was disabled since its login.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
@@ -1868,13 +1875,23 @@ components:
         name: {type: string}
         password: {$ref: "#/components/schemas/Password"}
     LoginRequest:
-      description: "The body of a sign-in: a local user's name and password."
-      type: object
-      required: [username, password]
-      additionalProperties: false
-      properties:
-        username: {type: string}
-        password: {type: string}
+      description: "The body of a sign-in: a local user's name and password, or the code of an OIDC login and its PKCE verifier."
+      oneOf:
+        - type: object
+          required: [username, password]
+          additionalProperties: false
+          properties:
+            username: {type: string}
+            password: {type: string}
+        - type: object
+          required: [code, codeVerifier]
+          additionalProperties: false
+          properties:
+            code: {type: string, description: "The code in the fragment of the page the callback redirected to, #code=<code>."}
+            codeVerifier:
+              type: string
+              description: The PKCE verifier (RFC 7636) whose S256 challenge started the login.
+              pattern: "^[A-Za-z0-9._~-]{43,128}$"
     UserPatch:
       type: object
       additionalProperties: false
@@ -2283,7 +2300,7 @@ components:
     Info:
       description: "What a client needs before it signs in, and the caller."
       type: object
-      required: [version, commit, date, externalURL, anonymousRead, formats, authModes, caller]
+      required: [version, commit, date, externalURL, anonymousRead, formats, authModes, login, caller]
       properties:
         version: {type: string, description: The release version; dev for an unversioned build.}
         commit: {type: string, description: The short commit hash; empty when unknown.}
@@ -2296,8 +2313,17 @@ components:
           items: {$ref: "#/components/schemas/FormatInfo"}
         authModes:
           type: array
-          description: How a person signs in; the OIDC login adds oidc.
+          description: How a person signs in; oidc while the OIDC login is on.
           items: {type: string, enum: [password, token, oidc]}
+        login:
+          description: >-
+            POST /api/v1/login, whose token is DPoP-bound, which a server before it does not
+            answer; with oidc in authModes, /-/oidc/login takes return_to, code_challenge and
+            dpop_jkt for a web UI.
+          type: object
+          required: [tokenLifetime]
+          properties:
+            tokenLifetime: {type: integer, description: "The seconds of auth.login.tokenLifetime."}
         caller: {$ref: "#/components/schemas/Caller"}
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."
