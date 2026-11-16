@@ -417,11 +417,15 @@ type Writer interface {
 	// CI trust policies (docs/spec/rbac.md §11): control plane. Each write increments
 	// AuthVersion in its transaction, as a write of bindings does.
 
-	// CreateCIPolicy inserts p, whose name must be new (ErrConflict), and fills ID, CreatedAt
-	// when it is zero, and UpdatedAt, CreatedAt.
+	// CreateCIPolicy inserts p, whose name must be new (ErrConflict), at revision 1, and fills
+	// ID, CreatedAt when it is zero, UpdatedAt, CreatedAt, and Revision; State "" is
+	// CIPolicyActive, and UpdatedBy "" is CreatedBy.
 	CreateCIPolicy(ctx context.Context, p *CIPolicy) error
-	// UpdateCIPolicy stores Issuer, Claims and Grants of p by p.ID, sets UpdatedAt, and fills
-	// Name, CreatedBy and CreatedAt from the row: they never change.
+	// UpdateCIPolicy stores Issuer, Claims, Grants, State, ExpiresAt, RenewalExpiresAt,
+	// UpdatedBy, ApprovedBy and ApprovedAt of p by p.ID while the row's revision is p.Revision,
+	// sets UpdatedAt, moves the revision by one, and fills Name, CreatedBy and CreatedAt from the
+	// row: they never change. A row at another revision is ErrConflict, and nothing changes: of
+	// two updates of what one read, one is made.
 	UpdateCIPolicy(ctx context.Context, p *CIPolicy) error
 	// DeleteCIPolicy removes the policy.
 	DeleteCIPolicy(ctx context.Context, id int64) error
@@ -493,8 +497,8 @@ type Writer interface {
 	// CreateOIDCLogin inserts l and fills ID, and CreatedAt when zero; a state, device code,
 	// user code or handoff that another row has wraps ErrConflict.
 	CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
-	// UpdateOIDCLogin stores Status, UserID, PolledAt and Handoff of l while the row's status is
-	// from; a row whose status is not from wraps ErrConflict and nothing changes, so that a
+	// UpdateOIDCLogin stores Status, UserID, PolledAt, Handoff, AuthTime and AMR of l while the
+	// row's status is from; a row whose status is not from wraps ErrConflict and nothing changes, so that a
 	// state, an approval, a device code and a handoff are each used once.
 	UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
 	// ExpireOIDCLogins deletes the rows whose ExpiresAt is before before, and returns how many.

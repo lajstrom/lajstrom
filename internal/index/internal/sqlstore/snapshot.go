@@ -292,7 +292,8 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, t := range cp.Tokens {
 		add(fmt.Sprintf("tokens id %d", t.ID), "tokens", tokCols, t.ID, t.Kind, idArg(t.UserID), idArg(t.RepoID), textArg(t.RepoMask),
 			t.Name, t.Hash, scopesArg(t.Scopes), c.d.encodeNullTime(t.ExpiresAt), c.d.encodeNullTime(t.LastUsedAt),
-			c.d.EncodeTime(t.CreatedAt), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT))
+			c.d.EncodeTime(t.CreatedAt), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT), c.d.encodeNullTime(t.AuthTime),
+			scopesArg(t.AMR))
 	}
 	for _, b := range cp.Bindings {
 		add(fmt.Sprintf("bindings id %d", b.ID), "bindings", bindingCols, b.ID, b.Principal, b.Role, b.RepoMask, c.d.EncodeTime(b.CreatedAt))
@@ -312,7 +313,9 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	}
 	for _, p := range cp.CIPolicies {
 		add("ci_policies "+p.Name, "ci_policies", ciPolicyCols, p.ID, p.Name, p.Issuer, claimsArg(p.Claims), grantsArg(p.Grants),
-			p.CreatedBy, c.d.EncodeTime(p.CreatedAt), c.d.EncodeTime(cmp.Or(p.UpdatedAt, p.CreatedAt)))
+			cmp.Or(p.State, index.CIPolicyActive), c.d.encodeNullTime(p.ExpiresAt), c.d.encodeNullTime(p.RenewalExpiresAt),
+			p.CreatedBy, c.d.EncodeTime(p.CreatedAt), cmp.Or(p.UpdatedBy, p.CreatedBy), c.d.EncodeTime(cmp.Or(p.UpdatedAt, p.CreatedAt)),
+			textArg(p.ApprovedBy), c.d.encodeNullTime(p.ApprovedAt), cmp.Or(p.Revision, 1))
 	}
 	for _, e := range cp.Audit {
 		add(fmt.Sprintf("audit id %d", e.ID), "audit", auditCols, e.ID, c.d.EncodeTime(e.At), e.Principal, textArg(e.PrincipalName),

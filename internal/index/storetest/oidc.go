@@ -150,8 +150,9 @@ func testOIDCLogins(t *testing.T, s index.Store) {
 	none := index.OIDCLogin{ID: 9999, Status: index.OIDCUsed}
 	wantErr(t, "UpdateOIDCLogin of none", s.UpdateOIDCLogin(ctx, &none, index.OIDCPending), index.ErrNotFound)
 
-	// A web UI's login: its page and challenge from the start, the handoff and the user from its
-	// callback, found by the handoff, which is unique, and redeemed once.
+	// A web UI's login: its page and challenge from the start, the handoff, the user and the ID
+	// token's auth_time and amr from its callback, found by the handoff, which is unique, and
+	// redeemed once.
 	ui := index.OIDCLogin{Kind: index.OIDCLoginCode, State: "st3", Binding: "b3", Nonce: "n3", Verifier: "v3",
 		ReturnTo: "https://ui.example.com/ui/sign-in?redirect=%2F", CodeChallenge: "ch3", DPoPJKT: "jkt3", Status: index.OIDCPending,
 		CreatedAt: at(3), ExpiresAt: at(2000)}
@@ -161,7 +162,7 @@ func testOIDCLogins(t *testing.T, s index.Store) {
 	same(t, "the login of a web UI", ui, *got)
 	wantErr(t, "GetOIDCLoginByHandoff before the callback", second(s.GetOIDCLoginByHandoff(ctx, "h3")), index.ErrNotFound)
 	wantErr(t, "GetOIDCLoginByHandoff of \"\"", second(s.GetOIDCLoginByHandoff(ctx, "")), index.ErrNotFound)
-	ui.Status, ui.UserID, ui.Handoff = index.OIDCApproved, &u.ID, "h3"
+	ui.Status, ui.UserID, ui.Handoff, ui.AuthTime, ui.AMR = index.OIDCApproved, &u.ID, "h3", ptr(at(2)), []string{"hwk", "pin"}
 	must(t, s.UpdateOIDCLogin(ctx, &ui, index.OIDCPending))
 	got, err = s.GetOIDCLoginByHandoff(ctx, "h3")
 	must(t, err)

@@ -242,12 +242,14 @@ func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.
-const tokCols = "id, kind, user_id, repo_id, repo_mask, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at, dpop_jkt"
+const tokCols = "id, kind, user_id, repo_id, repo_mask, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at, dpop_jkt," +
+	" auth_time, amr"
 
 func tokenDests(t *index.Token) []any {
 	return []any{&t.ID, &t.Kind, nullIDDest{&t.UserID}, nullIDDest{&t.RepoID}, textDest{&t.RepoMask}, &t.Name, &t.Hash,
 		jsonDest[[]string]{&t.Scopes}, nullTimeDest{&t.ExpiresAt}, nullTimeDest{&t.LastUsedAt},
-		timeDest{&t.CreatedAt}, nullTimeDest{&t.RevokedAt}, textDest{&t.DPoPJKT}}
+		timeDest{&t.CreatedAt}, nullTimeDest{&t.RevokedAt}, textDest{&t.DPoPJKT}, nullTimeDest{&t.AuthTime},
+		jsonDest[[]string]{&t.AMR}}
 }
 
 // GetTokenByHash returns the token with the hash, revoked and expired ones included.
@@ -298,12 +300,14 @@ func (c *conn) ListTokenPage(ctx context.Context, f index.TokenFilter) ([]index.
 // CreateToken inserts t.
 func (c *conn) CreateToken(ctx context.Context, t *index.Token) error {
 	t.ExpiresAt, t.LastUsedAt, t.RevokedAt = stampNull(t.ExpiresAt), stampNull(t.LastUsedAt), stampNull(t.RevokedAt)
+	t.AuthTime = stampNull(t.AuthTime)
 	return c.scanRow(ctx, fmt.Sprintf("tokens %s %q", t.Kind, t.Name),
 		"INSERT INTO tokens (kind, user_id, repo_id, repo_mask, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at,"+
-			" dpop_jkt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			" dpop_jkt, auth_time, amr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
 		[]any{t.Kind, idArg(t.UserID), idArg(t.RepoID), textArg(t.RepoMask), t.Name, t.Hash, scopesArg(t.Scopes),
 			c.d.encodeNullTime(t.ExpiresAt), c.d.encodeNullTime(t.LastUsedAt),
-			c.d.EncodeTime(stamp(&t.CreatedAt, now())), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT)},
+			c.d.EncodeTime(stamp(&t.CreatedAt, now())), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT),
+			c.d.encodeNullTime(t.AuthTime), scopesArg(t.AMR)},
 		&t.ID)
 }
 
