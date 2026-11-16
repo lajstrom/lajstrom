@@ -45,6 +45,28 @@ behind an edge, or with `server.tls`, when the peer is the client (#248); a thro
 (docs/auth.md, #130). The token endpoint `/v2/token` is rate-limited per client address, where
 Lajstrom knows it: 100 requests a second, then `429` with `Retry-After`.
 
+**A refused credential is a line at info** (#1284), `authentication refused`, one per request,
+beside its access line, with:
+
+- `credential`, the kind of what was sent: `password`, `pat`, `deploy`, `ci`, `certificate`,
+  `kubernetes`, `bootstrap` (the token of §6), or `bearer` (§4);
+- `account`, the principal it named when Lajstrom knows one: `user:<uid>` of the user its name or
+  its token resolves to, `token:<id>` of a deploy token, else `unknown`; and `token`, the id of a
+  token that was found (revoked, expired);
+- `reason`, from a fixed list (`unknown user`, `disabled`, `no password`, `wrong password`,
+  `unknown token`, `revoked`, `expired`, …), never a value of the request;
+- `address`, the client address (ADR 0011), and `requestId`.
+
+Never the user name as it was typed, which may be a password typed into the wrong field or a
+token pasted there (threat model L-3); never the secret, a part of it but the prefix that tells
+its kind, or its hash. A request that a throttle refuses is its `throttled` line instead: its
+credential was not checked. A bearer of §4 that only expired stays at debug, since every client
+of `/v2` gets a new one every 20 minutes as a matter of course; one that does not verify (its
+signature, its key, its issuer or audience) is at info. The refusals of an OIDC login (§8) and
+of a token exchange (§11) keep their own lines. Passwords are bounded by the throttles; token
+secrets are not, and a flood of them is one more line per access line. A throttle that trips is
+an audit row, `login.block` (§5); a single failure is not.
+
 A **deploy token over a mask** (#911) reaches every repo its mask matches, in the grammar and by
 the matching of a binding's mask (§3): a fleet of nodes sends one credential per registry host,
 and reads several repos of it. The mask names no repo: it matches the repos created after the
@@ -489,6 +511,77 @@ every change of a CI trust policy through the API, `ci.policy.create`, `ci.polic
 `ci.policy.renew`, `ci.policy.approve` and `ci.policy.delete`, and the mark of one whose expiry
 passed, `ci.policy.expire` (§11).
 
+**The origin of a row** (#1284) is in its `details`, under the same keys whatever the action:
+`source` (`api`, `cli`, `config`, `bootstrap`, `npm`, `expiry`, …), `requestId` for a change over
+HTTP, `host`, the machine of a change of the command line or the replica of a change of
+`serve`'s start, and, on a row of the command line, `osUser`, `actor` and `changeReason` (§6).
+Every row with `source: cli` has `host` and `osUser`, the rows of `lajstrom admin key` included.
+`changeReason` is the key of a person's reason for a change, whatever its source: a reason given
+over the API (#1285) goes there too. It is not `reason`, which rows already hold with other
+meanings: a rule's text (`policy.rule.create`), why something was refused (`proxy.reject`,
+`token.exchange`), a verdict's reason.
+
+**A throttle of failed logins that trips** (§1) is `login.block` (#1284), by `anonymous`, in a
+transaction of its own, written by the failure that fills the budget of a window: the 10th
+failed password of an account in its minute, the 30th of a client address, the 10th wrong
+bootstrap token of an address (§6). So it is written at most once per throttle, key and window
+on a replica. `subject` is the account, `user:<uid>`, or `unknown` for a name that no user has
+(never the name), or, for a throttle of an address, the address (an IPv6 address as its /64);
+`ip` is the address of the failure; `details` `{"limit", "credential", "failures", "window",
+"until", "requestId"}`: the throttle (`account`, `address` or `bootstrap`), the kind of
+credential (`password`, `bootstrap`), the failures counted, the window, and when the subject's
+credentials are checked again (RFC 3339). A replica writes at most 60 of them a minute, whatever
+the keys: beyond, a trip is counted, not written, and the next row it writes carries
+`suppressed`, the trips left out since its last row; the `throttled` lines and
+`lajstrom_auth_throttled_total` have every one. A row that cannot be written is logged at error
+and changes no answer. An account lockout (#1280) is meant to write this action too, with a
+`limit` of its own, so that one query finds every account and address that was blocked.
+
+**A change of the configuration** is `config.change` (#1284), by `anonymous`, `source: config`,
+written by `serve` at its start when the configuration it runs with is not the last one recorded
+on the database:
+
+- **What counts** is the effective configuration, after the defaults, the file and the
+  environment ([configuration.md](../configuration.md#changes-of-the-configuration)): every key
+  but `database.*` (its DSN may hold a password, and the record is in that database), `log.*`
+  (a knob of one run, which flags override), `server.listen` and `server.metricsListen` (an
+  address of each replica, such as a pod's IP) and `repos` (their effect has its own rows,
+  `repo.create` with `source: config`). A key added later counts unless it is said here.
+- **No secret.** A key that names where a secret is counts by that name only, the path or the
+  variable, never by the secret nor by a hash of it, which would let a weak password be guessed
+  offline: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
+  `keys.masterKeyEnv`, `keys.masterKeyFile`, `registries[].auth.passwordEnv`,
+  `upstreams[].auth.passwordEnv`, `upstreams[].auth.passwordFile` and
+  `upstreams[].auth.tokenFile`. A key that names a file of public material counts by its path and
+  the sha256 of the content the start read, so that a CA added to a bundle's file is a change:
+  `server.tls.certFile`, the `caFile` of `auth.clientCertificates.bundles[]`,
+  `auth.kubernetes.clusters[]` and `auth.ci.issuers[]`, `attachments.trust[].publicKeyFile` and
+  `attachments.keyless.trustedRoot`.
+- **Keys.** An item of a list of named items is written with its name,
+  `auth.clientCertificates.bundles[corp].caFile`; a list of values or a map is one value,
+  `server.trustedProxies`, `auth.ci.policies[deploy].claims`. The **fingerprint** is
+  `sha256:<hex>` of the canonical JSON of the keys and their values, in key order.
+- **One row per change, not per replica.** After its migrations and the repos of the file, and
+  before it listens, `serve` reads `config_state` (index-schema.md). When it has no row, or a
+  fingerprint other than the replica's, `serve` replaces the row, compare-and-set on the
+  fingerprint it read, and appends `config.change` in the same transaction. Of replicas that
+  start together with one new configuration, one writes; the others find theirs recorded and
+  write nothing. One that loses to another configuration reads the new row and compares again.
+  A start that cannot record its change stops, as a failed migration does: no configuration
+  takes effect without its row.
+- **The row:** `repo` empty, `subject` the new fingerprint, `details` `{"source", "host",
+  "release", "previous", "initial", "changes", "truncated"}`: the replica's host name, the
+  binary's version, the fingerprint before; `initial: true` for the first record of a database,
+  without `previous`, whose changes are every key; the changes in key order, each `{"key",
+  "from", "to"}`, without `from` for a key added and without `to` for one removed; and, when the
+  changes would take the details past 64 KiB, the number of those left out, `config_state`
+  holding them all.
+
+A release that adds a key or changes a default changes the configuration: the first start of it
+writes the row, whose `release` says why. Replicas that run with different configurations write a
+row at each start that changes the record, which is how it shows that they differ.
+`lajstrom admin` and `lajstrom reindex` record no configuration: their rows say what they did.
+
 ## 6. Bootstrap
 
 No admin password is read from the environment or the configuration (#440). The first admin
@@ -507,7 +600,34 @@ is made in one of two ways, both with an `admin` binding on `*/*`:
   binding from the command line (no HTTP), with the password from standard input or a prompt.
   It needs the database, which is the authority, and works whatever admins exist, disabled or
   not: it is also the recovery of a lost admin, with `lajstrom admin user set-password`. Its
-  audit events have the source `cli` and the `host` the command ran on.
+  audit events have the source `cli` and the `host` the command ran on, and say who ran it as
+  far as Lajstrom can tell (below).
+
+**Who ran a command** (#1284). Whoever holds the database's credentials is the operator, so a
+command against the database authenticates nobody: its rows stay by `anonymous`. Every row that a
+command of `lajstrom` writes against the database (`lajstrom admin`, `lajstrom reindex`) has
+`source: cli`, `host`, the host name of the machine, and `osUser`, the operating-system user the
+command runs as (`user.Current`): its name, or `uid:<n>` where the system knows no name for it
+(a container's arbitrary uid). In a container (`kubectl exec`, a Job) neither names a person: the
+person is in the operator's records, the Kubernetes audit log of the exec or of the Job's
+creation, or the bastion's, which the `host` (the pod's name) and the time lead to. Two optional
+values say more, each from a flag or, without it, from the environment:
+
+- `--actor` (`LAJSTROM_ACTOR`): who runs it, as the operator names people (an e-mail address, a
+  login of the IdP), in `details.actor`. A label the person asserts, and nothing more: never
+  resolved to a user, never the row's principal, granting nothing. 1 to 128 bytes of UTF-8
+  without control characters, and not in the form of a principal of §1 (`user:…`, `token:…`,
+  `group:…`, `cert:…`, `k8s:…`, `ci:…`, `anonymous`), so that no reader takes it for one.
+- `--reason` (`LAJSTROM_REASON`): why, a ticket or a sentence, in `details.changeReason` (§5). 1
+  to 1024 bytes of UTF-8 without control characters.
+
+A value outside its bounds is a usage error, exit status `2`, before anything is written; an empty
+variable counts as unset, and a flag wins over its variable. The same values go into every row the
+command writes. Each command that writes rows against the database takes both flags; the
+commands that go over HTTP (`admin bootstrap`, `admin retention`, `admin prefetch`), whose rows
+the server writes for the credential they send, and those that write no row do not. On
+`lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
+the change comes from `LAJSTROM_REASON` there.
 
 The bindings of other users are made with
 `lajstrom admin binding create|list|delete` from the command line (#45), which needs the database

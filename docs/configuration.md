@@ -54,7 +54,9 @@ The `--log-level` and `--log-format` flags override `log.level` and `log.format`
 Secrets never go into the file. Keys ending in `Env` name the environment variable that holds
 the secret: `registries[].auth.passwordEnv` and `keys.masterKeyEnv`. The master key can also come
 from a file of its own, `keys.masterKeyFile`, for a secret mounted as a file. A `password` key in
-the file is rejected. Lajstrom never logs a secret or puts one in an error message.
+the file is rejected. Lajstrom never logs a secret or puts one in an error message, nor records
+one, or a hash of one, in the audit row of a
+[change of the configuration](#changes-of-the-configuration).
 
 ## What `serve` needs
 
@@ -88,6 +90,35 @@ A `/v2` upload streams to the registry and takes no disk, but for the chunks of
 [`registries[].uploads.spoolUnknownLength`](#uploads), and so does a proxy repo's fetch. Those
 chunks go to `$TMPDIR` when it is set, `/tmp` otherwise; there is no configuration key for it (a tmpfs in
 [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)).
+
+## Changes of the configuration
+
+A configuration takes effect when `serve` starts, and a start whose configuration is not the one
+last recorded on the database writes the audit row `config.change` before it listens (#1284;
+[rbac.md](spec/rbac.md) §5). It is one row per change, whatever the number of replicas that start
+with it, by `anonymous` with `source: config`, the replica's `host` and the `release`, and lists
+each key that changed with the value before and after:
+
+```json
+{"source": "config", "host": "lajstrom-7d9f-x2k", "release": "v0.4.0",
+ "previous": "sha256:9f2c…", "changes": [
+  {"key": "auth.anonymousRead", "from": false, "to": true},
+  {"key": "auth.clientCertificates.bundles[corp].caFile",
+   "from": {"path": "/etc/lajstrom/corp-ca.pem", "sha256": "41d0…"},
+   "to": {"path": "/etc/lajstrom/corp-ca.pem", "sha256": "c7e1…"}},
+  {"key": "keys.retireGrace", "from": "720h", "to": "0s"}]}
+```
+
+Every key counts, with its default when the file leaves it out, but `database.*`, `log.*`,
+`server.listen`, `server.metricsListen` and `repos`, whose repos have rows of their own
+(`repo.create`). A key that names a secret counts by the path or the variable it names, never by
+the secret: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
+`keys.masterKeyEnv`, `keys.masterKeyFile`, `registries[].auth.passwordEnv`, and the
+`passwordEnv`, `passwordFile` and `tokenFile` of `upstreams[].auth`. A file of certificates or
+public keys counts by its content too, as the `caFile` above: a new CA in the same file is a
+change. A new release that adds a key or changes a default is a change at its first start. The
+commands of `lajstrom admin` read the configuration and record nothing of it: their own rows say
+what they did.
 
 ## Reference
 
