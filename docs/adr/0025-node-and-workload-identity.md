@@ -266,3 +266,38 @@ before and after.
 5. **Afterwards:** `talosctl cluster destroy --name ljs-1019 --state $PWD/spike/state`, the nginx
    container removed, the shasums of `~/.kube/config` and `~/.talos/config` unchanged. The
    measured results go into the guide, and this section says which held.
+
+## Verified (the spike of #1019, 2026-11-15)
+
+Run as planned above, at #1224 (e16fe920, with the fix 7c02b23a), on Talos v1.14.5 (Kubernetes
+v1.37.1) with the docker provisioner in OrbStack: one control plane and no worker, two clusters
+in turn. The measurements are in [the Talos guide](../guides/talos.md) §3.1 and §3.2.
+
+- **`clientIdentity` reaches Lajstrom both ways.** With Lajstrom terminating TLS, through
+  `machine.registries.config…tls.clientIdentity`: the boot completed, and every image came through
+  as `cert:spiffe://spike.test/node/cp1`. containerd asked `/v2/token` with a `GET` and no
+  credential over the TLS configuration of the host, as the issue expected. Behind nginx, through
+  a `RegistryTLSConfig` document and `$ssl_client_escaped_cert`, every image came through as
+  `cert:plain/node-cp1`. A header a client sent through nginx was replaced, and nginx outside
+  `server.trustedProxies` was not believed.
+- **The principal strings** are those of the decision: `cert:spiffe://<trust domain>/<path>` and
+  `cert:<bundle>/<CN>`, one per node in the access log.
+- **KEP-4412 works on Talos** with four settings the decision did not name, now in the guide and
+  in docs/auth.md:
+  - a `KubeAuthenticationConfig` document that adds the discovery paths to the anonymous
+    conditions, since Talos's API server takes anonymous requests on `/livez`, `/readyz` and
+    `/healthz` only;
+  - the RBAC that lets anonymous readers read the discovery;
+  - the RBAC verb `request-serviceaccounts-token-audience` on Lajstrom's audience for
+    `system:nodes`. The kubelet passes no credential without it
+    (`ServiceAccountNodeAudienceRestriction`);
+  - Talos's `KubeCredentialProviderConfig` document, with the binary in
+    `/usr/local/lib/kubelet/credentialproviders`. The node's root filesystem is read-only, so a
+    real node needs a system extension; the spike bind-mounted the directory into the node.
+
+  The pod of the bound service account pulled as `k8s:spike/default/puller`, and one of another
+  service account was refused.
+- **Found and fixed:** the API server answers its JWKS as `application/jwk-set+json`, and `406` to
+  a request that accepts `application/json` only, so every token was `503` (7c02b23a, on #1223).
+- **Not verified:** a provider binary installed by a system extension on a real node; Envoy's
+  `X-Forwarded-Client-Cert` (no Envoy run, unit tests only); a fleet of more than one node.

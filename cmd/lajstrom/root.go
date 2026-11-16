@@ -67,6 +67,7 @@ func newRootCmd(lookupEnv func(string) (string, bool)) *cobra.Command {
 		newHealthcheckCmd(a),
 		newRegistryCmd(a),
 		newLoginCmd(a),
+		newCredentialProviderCmd(),
 	)
 	for _, c := range root.Commands() {
 		refuseUnknown(c)
