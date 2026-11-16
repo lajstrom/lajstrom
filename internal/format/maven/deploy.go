@@ -43,14 +43,21 @@ func deployRoutes(r format.Router, deps format.Deps) {
 // added to its session (201), a checksum file is checked against the file it names (201, or
 // 400 when it differs), a maven-metadata.xml commits the sessions of the versions it lists
 // (201 for a new version, 200 for the same files again, 409 for other files under a version
-// that exists). It needs write on the repo.
+// that exists). It needs write on the repo. A proxy repo takes none, 405; a group's is its hosted
+// member's, with read on the group and write on the member, 405 without one (format.WriteTarget,
+// docs/spec/proxy-and-group.md §8.4).
 func (d *deployer) put(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	repo, ok := format.RepoFrom(ctx)
+	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		d.fail(w, r, errors.New("maven: the route has no repo"))
 		return
 	}
+	ctx, repo, err := format.WriteTarget(r.Context(), d.deps, repo)
+	if err != nil {
+		d.fail(w, r, err)
+		return
+	}
+	r = r.WithContext(ctx)
 	if err := format.Authorize(ctx, d.deps, auth.ActionWrite, repo); err != nil {
 		d.fail(w, r, err)
 		return

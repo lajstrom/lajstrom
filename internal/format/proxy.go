@@ -85,8 +85,12 @@ type UpstreamFile struct {
 	// URL is where the upstream serves it: absolute, or relative to upstreams[].url.
 	URL string
 	// Checksums are the upstream's checksums by algorithm, sha512, sha256 and sha1, as lowercase
-	// hex. The strongest one is verified before the ingest; a file without one is refused.
+	// hex. The strongest one is verified before the ingest; a file without one is refused, but
+	// an Unchecked one.
 	Checksums map[string]string
+	// Unchecked is a file without Checksums that the format takes unchecked (Unlisted): it is
+	// fetched as any other, bounded, and its Origin has no Checksum.
+	Unchecked bool
 }
 
 // ArtifactRef is the artifact and the file a request path names (FileRequest).
@@ -116,6 +120,18 @@ type Grouper interface {
 	// file starts with base, <server.externalURL>/<format>/<group>/; a member's links are under
 	// its own base. docs has at least one element. The Document's Kind is kind.
 	MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
+}
+
+// Unlisted is implemented by a plugin with files that the format takes unchecked when the
+// upstream has no document that lists them (docs/spec/proxy-and-group.md §5, steps 5 and 8):
+// maven's signatures whose upstream publishes no .sha1 (ADR 0013, Amendment).
+type Unlisted interface {
+	Proxier
+
+	// UnlistedEntry returns the entry of the file that ref names, its one file Unchecked and
+	// without Checksums, when the upstream does not have the document of ref.Kind; false for a
+	// file the format does not take so, which is then the 404 of a file no document lists.
+	UnlistedEntry(ref ArtifactRef) (UpstreamEntry, bool)
 }
 
 // Adopter is implemented by a plugin whose proxy repos may become hosted repos (docs/spec/

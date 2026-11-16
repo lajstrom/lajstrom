@@ -99,10 +99,14 @@ func (h *resolver) get(w http.ResponseWriter, r *http.Request) {
 // policy.blobRedirect allows it, else the backend's answer streamed with its Content-Length.
 // The ETag is the blob digest, Last-Modified the created of the version, Docker-Content-Digest
 // its manifest digest. HEAD asks the backend for the headers. A stream that breaks after the
-// headers is logged.
+// headers is logged. A proxy repo's file comes from the core, fetched from the upstream on a
+// miss, and a group's from the member that holds it (proxyLookup), whose registry serves it.
 func (h *resolver) file(w http.ResponseWriter, r *http.Request, repo index.Repo, p string) {
 	ctx := r.Context()
-	m, f, err := h.lookup(ctx, repo, p)
+	m, f, err := h.find(ctx, repo, p)
+	if err == nil {
+		repo, err = h.holder(ctx, repo, m)
+	}
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -130,7 +134,7 @@ func (h *resolver) file(w http.ResponseWriter, r *http.Request, repo index.Repo,
 // the registry. A version whose metadata the index does not hold (a degraded row) has no
 // checksum files.
 func (h *resolver) checksum(w http.ResponseWriter, r *http.Request, repo index.Repo, target, algorithm string) {
-	m, f, err := h.lookup(r.Context(), repo, target)
+	m, f, err := h.find(r.Context(), repo, target)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -176,6 +180,10 @@ func (h *resolver) metadata(w http.ResponseWriter, r *http.Request, repo index.R
 		h.fail(w, r, pathNotFound(repo, p, err))
 		return
 	}
+	if proxied(repo) {
+		h.proxyMetadata(w, r, repo, c, p, algorithm)
+		return
+	}
 	doc, err := format.CachedDocument(r.Context(), h.deps.Index, Plugin{}, repo, metadataScope(c), metadataKind(algorithm))
 	if err != nil {
 		h.fail(w, r, err)
@@ -186,6 +194,15 @@ func (h *resolver) metadata(w http.ResponseWriter, r *http.Request, repo index.R
 		contentType = contentTypeChecksum
 	}
 	format.ServeDocument(w, r, doc, contentType)
+}
+
+// find returns the file of a version at path p in the repo, with what its path says: lookup of a
+// hosted repo, proxyLookup of a proxy repo or a group.
+func (h *resolver) find(ctx context.Context, repo index.Repo, p string) (*index.FileMatch, File, error) {
+	if proxied(repo) {
+		return h.proxyLookup(ctx, repo, p)
+	}
+	return h.lookup(ctx, repo, p)
 }
 
 // lookup returns the file of a version at path p in the repo, with what its path says: of the
