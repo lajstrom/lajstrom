@@ -62,7 +62,8 @@ func TestLoadDefaults(t *testing.T) {
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
 				Auth: Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
-					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour}},
+					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour},
+					ServiceAccounts: ServiceAccounts{MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"}},
 				Keys:        Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 				Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: 1}},
 				Webhooks:    Webhooks{Timeout: 10 * time.Second, MaxAttempts: 8, Retention: 168 * time.Hour, Workers: 4},
@@ -85,6 +86,24 @@ func TestLoadWebhooks(t *testing.T) {
 		Retention: 168 * time.Hour}
 	if !reflect.DeepEqual(c.Webhooks, want) {
 		t.Errorf("webhooks %+v, want %+v", c.Webhooks, want)
+	}
+}
+
+// TestLoadServiceAccounts: auth.serviceAccounts.maxTokenTTL is 365 days and onOwnerDisabled flag
+// by default; a file sets the bound as a duration, 0 for none, and the other key to disable
+// (docs/spec/rbac.md §1).
+func TestLoadServiceAccounts(t *testing.T) {
+	for file, want := range map[string]ServiceAccounts{
+		minimal: {MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"},
+		minimal + "auth: {serviceAccounts: {maxTokenTTL: 17520h}}\n":                       {MaxTokenTTL: 17520 * time.Hour, OnOwnerDisabled: "flag"},
+		minimal + "auth: {serviceAccounts: {maxTokenTTL: 0s, onOwnerDisabled: disable}}\n": {OnOwnerDisabled: "disable"},
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.ServiceAccounts != want {
+			t.Errorf("Load(%q): serviceAccounts %+v, want %+v", file, c.Auth.ServiceAccounts, want)
+		}
 	}
 }
 
@@ -288,6 +307,10 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"ingest.claimTTL: must not be negative", "ingest.visibilityTimeout: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
 		{name: "zero bootstrap ttl", file: minimal + "auth: {bootstrap: {ttl: 0s}}\n", want: []string{"auth.bootstrap.ttl: must be positive"}},
+		{name: "negative service token ttl", file: minimal + "auth: {serviceAccounts: {maxTokenTTL: -1h}}\n",
+			want: []string{"auth.serviceAccounts.maxTokenTTL: must not be negative; 0 bounds nothing"}},
+		{name: "unknown onOwnerDisabled", file: minimal + "auth: {serviceAccounts: {onOwnerDisabled: delete}}\n",
+			want: []string{`auth.serviceAccounts.onOwnerDisabled: "delete" is not flag or disable`}},
 		{name: "oidc without its keys", file: minimal + "auth: {oidc: {issuer: \"http://idp.example\", usernameClaim: \"\", tokenLifetime: 9000h}}\n",
 			want: []string{"auth.oidc.issuer: must be https", "auth.oidc.clientID: must be set", "auth.oidc.clientSecretFile: must be set",
 				"auth.oidc.usernameClaim: must not be empty", "auth.oidc.tokenLifetime: must be positive and at most 8760h"}},

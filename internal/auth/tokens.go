@@ -78,7 +78,8 @@ type CreatedToken struct {
 }
 
 // Expiry is when a new token expires: At, or In from now, or neither for the default (90 days
-// for a personal access token, never for a deploy token). Both is an error.
+// for a personal access token, Tokens.ServiceMaxLifetime for a service account's, never for a
+// deploy token). Both is an error.
 type Expiry struct {
 	At time.Time     // zero when not given
 	In time.Duration // zero when not given
@@ -112,6 +113,11 @@ type Tokens struct {
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
+	// ServiceMaxLifetime bounds the lifetime of a service account's personal access token
+	// instead of MaxPATLifetime: auth.serviceAccounts.maxTokenTTL (docs/spec/rbac.md §1). A token
+	// created without an expiry gets it. Zero bounds nothing, and a token created without an
+	// expiry then never expires.
+	ServiceMaxLifetime time.Duration
 }
 
 // CreatePAT creates a personal access token of the user called user, and returns it with its
@@ -120,8 +126,9 @@ type Tokens struct {
 // revoked nor expired). scopes are empty, for the user's full rights, or read, write and attach,
 // one or more.
 // The expiry is mandatory: DefaultPATLifetime when exp gives none, at most MaxPATLifetime
-// ahead. The user need not be enabled. The credential of ctx must be one that may create it
-// (MayCreatePAT).
+// ahead; a service account's is bounded by ServiceMaxLifetime instead (lifetime). The user need
+// not be enabled. The credential of ctx must be one that may create it (MayCreatePAT): a
+// service account has no password, so its tokens are created by an admin or on the command line.
 func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
 	if err := MayCreatePAT(ctx); err != nil {
 		return nil, "", err
@@ -138,7 +145,7 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 		if err != nil {
 			return nil, tokenOwner{}, err
 		}
-		return &index.Token{UserID: &u.ID}, tokenOwner{user: u.Name, uid: u.UID}, nil
+		return &index.Token{UserID: &u.ID}, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
 	})
 }
 
@@ -244,39 +251,42 @@ func (s *Tokens) CreateMaskDeploy(ctx context.Context, mask, name string, scopes
 }
 
 // tokenOwner is the owner of a token: the name and the uid of the user of a personal access
-// token, the repo <format>/<name> of a deploy token of one repo, or the mask of one over a mask.
+// token, and whether it is a service account; the repo <format>/<name> of a deploy token of one
+// repo; or the mask of one over a mask.
 type tokenOwner struct {
 	user, uid, repo, mask string
+	service               bool
 }
 
 // create checks name and the expiry and creates a token of kind with scopes in one
 // transaction with its token.create event, whose details name the credential of ctx
 // (createdBy). owner names the owner for the messages, user <name>, repo <format>/<name> or
 // mask <mask>; read reads it in the transaction and returns the row with its owner set, and
-// the owner. The name is unique among the live tokens of the same kind and owner: a token over
-// a mask is listed with every token (ListTokens without a filter) and compared by its mask.
+// the owner, whose kind the rule of the expiry depends on (lifetime). The name is unique among
+// the live tokens of the same kind and owner: a token over a mask is listed with every token
+// (ListTokens without a filter) and compared by its mask.
 func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []string, exp Expiry, o Origin,
 	read func(index.Writer) (*index.Token, tokenOwner, error)) (*Token, string, error) {
 	if err := checkTokenName(name); err != nil {
 		return nil, "", err
 	}
 	now := s.now()
-	expiresAt, err := expiry(kind, exp, now)
-	if err != nil {
-		return nil, "", err
-	}
 	prefix := PATPrefix
 	if kind == TokenDeploy {
 		prefix = DeployPrefix
 	}
 	secret := newSecret(prefix)
 	var (
-		row *index.Token
-		own tokenOwner
-		ev  index.AuditEvent
+		row       *index.Token
+		own       tokenOwner
+		ev        index.AuditEvent
+		expiresAt *time.Time
 	)
-	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
+	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
 		if row, own, err = read(w); err != nil {
+			return err
+		}
+		if expiresAt, err = expiry(s.lifetime(kind, own), exp, now); err != nil {
 			return err
 		}
 		live, err := w.ListTokens(ctx, row.UserID, row.RepoID)
@@ -490,10 +500,33 @@ func checkScopes(scopes []string, kind string) ([]string, error) {
 	return out, nil
 }
 
-// expiry returns the expiry of a new token of kind at now: exp.At, or now plus exp.In, or the
-// default of the kind. It is in the future, and for a personal access token at most
-// MaxPATLifetime ahead.
-func expiry(kind string, exp Expiry, now time.Time) (*time.Time, error) {
+// lifetime is the rule of the expiry of a new token: def is the lifetime of a token created
+// without an expiry, and max bounds its lifetime, each none when zero; bound says max in the
+// message of a refusal.
+type lifetime struct {
+	def, max time.Duration
+	bound    string
+}
+
+// lifetime returns the rule of the expiry of a token of kind whose owner is own: for a person's
+// personal access token DefaultPATLifetime and MaxPATLifetime, for a service account's
+// ServiceMaxLifetime as both (docs/spec/rbac.md §1), for a deploy token none.
+func (s *Tokens) lifetime(kind string, own tokenOwner) lifetime {
+	switch {
+	case kind != TokenPAT:
+		return lifetime{}
+	case own.service:
+		return lifetime{def: s.ServiceMaxLifetime, max: s.ServiceMaxLifetime,
+			bound: fmt.Sprintf("a service account's token expires at most %s ahead (auth.serviceAccounts.maxTokenTTL)", s.ServiceMaxLifetime)}
+	}
+	return lifetime{def: DefaultPATLifetime, max: MaxPATLifetime,
+		bound: fmt.Sprintf("a personal access token expires at most %d days ahead", MaxPATLifetime/(24*time.Hour))}
+}
+
+// expiry returns the expiry of a new token at now by the rule l: exp.At, or now plus exp.In, or
+// l.def from now, or none when l.def is zero. It is in the future, and at most l.max ahead when
+// l.max is not zero.
+func expiry(l lifetime, exp Expiry, now time.Time) (*time.Time, error) {
 	field := "expiresAt"
 	var at time.Time
 	switch {
@@ -505,17 +538,16 @@ func expiry(kind string, exp Expiry, now time.Time) (*time.Time, error) {
 		field, at = "expiresIn", now.Add(exp.In)
 	case !exp.At.IsZero():
 		at = exp.At.UTC()
-	case kind == TokenPAT:
-		at = now.Add(DefaultPATLifetime)
+	case l.def > 0:
+		at = now.Add(l.def)
 	default:
-		return nil, nil // a deploy token without an expiry
+		return nil, nil // a deploy token, or a service account's token without a bound: no expiry
 	}
 	switch {
 	case !at.After(now):
 		return nil, invalidf("%s: must be in the future", field)
-	case kind == TokenPAT && at.After(now.Add(MaxPATLifetime)):
-		return nil, invalidf("%s: a personal access token expires at most %d days ahead, at %s at the latest",
-			field, MaxPATLifetime/(24*time.Hour), now.Add(MaxPATLifetime).Format(time.RFC3339))
+	case l.max > 0 && at.After(now.Add(l.max)):
+		return nil, invalidf("%s: %s, at %s at the latest", field, l.bound, now.Add(l.max).Format(time.RFC3339))
 	}
 	return &at, nil
 }

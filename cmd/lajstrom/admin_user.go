@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/config"
 )
 
 // removedEnv is the variable admin user create and set-password read the password from before
@@ -98,7 +99,7 @@ func newUserListCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				list, err := users.List(ctx)
+				list, err := users.List(ctx, "")
 				if err != nil {
 					return err
 				}
@@ -203,14 +204,15 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 }
 
 // withUsers opens the index database of the configuration, runs fn with the users service over
-// it, and closes the database.
+// it, which disables the service accounts of an owner it disables when
+// auth.serviceAccounts.onOwnerDisabled is disable, and closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &auth.Users{Index: st, Log: a.log})
+	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable})
 }
 
 // errNoPassword is the error when no source gives a password.
