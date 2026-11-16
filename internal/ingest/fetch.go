@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/lajstrom/lajstrom/internal/blobcrypt"
 )
 
 // The block cache of fetchedBlob.ReadAt: a range request reads one aligned block, and the last
@@ -49,6 +51,17 @@ type fetchedBlob struct {
 	whole   io.ReadCloser    // that whole blob, read up to block next
 	next    int64
 	closed  bool // by Close: a ReadAt after it keeps no body open
+
+	// key is the encryption of a layer of an encrypted repo, whose ciphertext desc names: Read
+	// decrypts and checks the HMAC and the plaintext digest at the end, ReadAt decrypts the
+	// blocks from their offset. nil for a plain blob.
+	key *blobKey
+}
+
+// blobKey is what decrypts an encrypted layer: its options and its HMAC.
+type blobKey struct {
+	opts blobcrypt.Private
+	mac  []byte
 }
 
 // Read implements io.Reader.
@@ -59,6 +72,11 @@ func (b *fetchedBlob) Read(p []byte) (int, error) {
 			return 0, fmt.Errorf("ingest: fetch %s from %s: %w", b.desc.Digest, b.t.name, err)
 		}
 		b.stream, b.read = rc, newVerifier(rc, b.desc)
+		if b.key != nil {
+			if b.read, err = blobcrypt.Open(rc, b.key.opts, b.key.mac); err != nil {
+				return 0, err
+			}
+		}
 	}
 	return b.read.Read(p)
 }
@@ -170,8 +188,14 @@ func (b *fetchedBlob) forward(i int64) ([]byte, error) {
 	}
 }
 
-// keep puts block i in the cache, which drops its oldest block when full.
+// keep puts block i in the cache, which drops its oldest block when full. The block of an
+// encrypted layer is decrypted here, in place, from its offset.
 func (b *fetchedBlob) keep(i int64, data []byte) {
+	if b.key != nil {
+		if s, err := blobcrypt.At(b.key.opts, i*blockSize); err == nil { // the options were checked when the key was opened
+			s.XORKeyStream(data, data)
+		}
+	}
 	if _, ok := b.blocks[i]; ok {
 		b.blocks[i] = data
 		return

@@ -76,15 +76,10 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	if err != nil {
 		return nil, err
 	}
-	w, err := t.rr.OpenBlobWriter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("ingest: open a blob upload in %s: %w", t.name, err)
-	}
-	t.streamed = &streamed{w: w, held: []format.BlobSource{emptyConfig}}
 	defer p.cancelStreamed(ctx, t)
-	file, err := t.streamed.read(repo, up, in)
+	file, err := p.streamInto(ctx, t, up, in)
 	if err != nil {
-		return nil, fmt.Errorf("ingest: %s into %s: %w", up.File.Name, t.name, err)
+		return nil, err
 	}
 	built, err := p.buildStreamed(ctx, t, format.Upload{Files: []format.UploadedFile{file}, Params: up.Params, Origin: up.Origin})
 	if err != nil {
@@ -108,6 +103,28 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	return pub, err
 }
 
+// streamInto opens an upload session in t's repository and reads the body of up into it (step 2
+// of UploadStream), encrypted when the repo encrypts at rest.
+func (p *Pipeline) streamInto(ctx context.Context, t *target, up format.StreamUpload, in format.Inspection) (format.UploadedFile, error) {
+	var err error
+	if t.sealer, err = p.sealerFor(t.repo, t.pkgPath); err != nil {
+		return format.UploadedFile{}, err
+	}
+	w, err := t.rr.OpenBlobWriter(ctx)
+	if err != nil {
+		return format.UploadedFile{}, fmt.Errorf("ingest: open a blob upload in %s: %w", t.name, err)
+	}
+	t.streamed = &streamed{w: w, held: []format.BlobSource{emptyConfig}}
+	if err := t.encryptStreamed(); err != nil {
+		return format.UploadedFile{}, err
+	}
+	file, err := t.streamed.read(t.repo, up, in)
+	if err != nil {
+		return format.UploadedFile{}, fmt.Errorf("ingest: %s into %s: %w", up.File.Name, t.name, err)
+	}
+	return file, t.sealStreamed(ctx)
+}
+
 // streamed is the file of UploadStream: its upload session holds the bytes until commit closes
 // it, after every check, or cancelStreamed drops it.
 type streamed struct {
@@ -118,6 +135,10 @@ type streamed struct {
 	// held are the other blobs of the upload, the empty config and Build's, which commit pushes
 	// after the file; until then the checks read them here (publish.open).
 	held []format.BlobSource
+	// cipher encrypts the file on its way into the session, and blob is its encryption, in an
+	// encrypted repo (encryptStreamed); nil otherwise.
+	cipher *cipherWriter
+	blob   *sealedBlob
 }
 
 // emptyConfig is the config of every manifest of the profile, as a blob to push.
@@ -149,7 +170,7 @@ func (s *streamed) read(repo index.Repo, up format.StreamUpload, in format.Inspe
 		}
 		hashes[name] = h
 	}
-	sink := &failing{w: s.w}
+	sink := &failing{w: s.sink()}
 	ws := []io.Writer{sink}
 	for _, h := range hashes {
 		ws = append(ws, h)
@@ -189,6 +210,14 @@ func (s *streamed) read(repo index.Repo, up format.StreamUpload, in format.Inspe
 	}
 	s.desc = ocispec.Descriptor{MediaType: sessionBlobType, Digest: digest.NewDigestFromEncoded(digest.SHA256, f.Checksums["sha256"]), Size: n}
 	return f, nil
+}
+
+// sink is what the bytes of the file go to: the session, through the cipher in an encrypted repo.
+func (s *streamed) sink() io.Writer {
+	if s.cipher != nil {
+		return s.cipher
+	}
+	return s.w
 }
 
 // newHash returns the hash of a checksum name of format.Inspection, nil for another name.
@@ -268,6 +297,13 @@ func (t *target) commitFile(ctx context.Context) error {
 	if s.done {
 		return nil
 	}
+	if s.blob != nil { // a ciphertext of its own: never in the repository already
+		if _, err := s.w.Commit(ctx, s.blob.stored); err != nil {
+			return fmt.Errorf("ingest: commit the ciphertext of %s to %s: %w", s.desc.Digest, t.name, err)
+		}
+		s.done = true
+		return nil
+	}
 	ok, err := t.rr.Exists(ctx, s.desc)
 	if err != nil {
 		return fmt.Errorf("ingest: blob %s in %s: %w", s.desc.Digest, t.name, err)
@@ -308,9 +344,13 @@ func (p *Pipeline) readBack(ctx context.Context, t *target, up format.Upload) (*
 		return nil, err
 	}
 	var deadline time.Time
-	ok, err := t.rr.Exists(ctx, s.desc)
+	desc, key, err := t.readBackOf(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := t.rr.Exists(ctx, desc)
 	if err == nil && !ok {
-		ok, err = readBlob(ctx, t.prov, t.rr, s.desc, p.visibility, &deadline)
+		ok, err = readBlob(ctx, t.prov, t.rr, desc, p.visibility, &deadline)
 	}
 	switch {
 	case err != nil:
@@ -323,7 +363,7 @@ func (p *Pipeline) readBack(ctx context.Context, t *target, up format.Upload) (*
 	failed := &readFailure{}
 	f := up.Files[0]
 	f.Open = func() (io.ReadCloser, error) {
-		return &readBackBlob{fetchedBlob: &fetchedBlob{ctx: ctx, t: t, desc: s.desc, blocks: map[int64][]byte{}}, failed: failed}, nil
+		return &readBackBlob{fetchedBlob: &fetchedBlob{ctx: ctx, t: t, desc: desc, blocks: map[int64][]byte{}, key: key}, failed: failed}, nil
 	}
 	up.Files = []format.UploadedFile{f}
 	built, err := t.plugin.Build(ctx, t.repo, up)

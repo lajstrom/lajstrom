@@ -53,6 +53,9 @@ type Pipeline struct {
 
 	// policy is Options.Policy: nil refuses nothing.
 	policy *policy.Decider
+
+	// enc is Options.Encryption: nil encrypts nothing, and a publish to an encrypted repo fails.
+	enc format.Encryption
 }
 
 // Options configures a Pipeline.
@@ -88,6 +91,10 @@ type Options struct {
 	// MaxAttachmentSize is attachments.maxBlobSize, the largest layer read to judge an
 	// attachment; zero, or negative, means 16 MiB.
 	MaxAttachmentSize int64
+	// Encryption wraps and opens the data keys of encrypted repos (docs/spec/manifest-profile.md
+	// §11); nil when the server has no master key, and then a publish to a repo with
+	// policy.encryption at-rest fails.
+	Encryption format.Encryption
 	// Webhooks writes the events of the publishes and the version deletes in the transaction
 	// of their audit rows (docs/spec/webhooks.md §4); nil writes none.
 	Webhooks *webhook.Outbox
@@ -111,6 +118,7 @@ func New(o Options) *Pipeline {
 		claimTTL:  o.ClaimTTL,
 		webhooks:  o.Webhooks,
 		policy:    o.Policy,
+		enc:       o.Encryption,
 
 		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
@@ -157,6 +165,9 @@ type Result struct {
 	// the same file layers: the call was an idempotent repeat, nothing was written, and Digest
 	// is the manifest the tag holds.
 	Existed bool
+	// View is the digest of the manifest as the client sent it when its layers were encrypted,
+	// whose stored manifest is Digest (docs/spec/manifest-profile.md §11); "" otherwise.
+	View digest.Digest
 }
 
 // Ingest stores a manifest that already exists as bytes; the facade's PUT manifest hook calls
@@ -209,6 +220,9 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
 	}
+	if t.sealer, err = p.sealerFor(repo, pkgPath); err != nil {
+		return nil, err
+	}
 	return p.ingest(ctx, &publish{target: t, tag: tag, manifest: m, raw: raw, principal: principal})
 }
 
@@ -249,6 +263,9 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	}
 	t, err := newTarget(ctx, repo, plugin, prov, pkgPath, p.known(repo, pkgPath, ociName(repo, pkgPath)))
 	if err != nil {
+		return nil, err
+	}
+	if t.sealer, err = p.sealerFor(repo, pkgPath); err != nil {
 		return nil, err
 	}
 	pub, err = p.store(ctx, t, built, up.Origin, principal)
@@ -404,6 +421,8 @@ type target struct {
 	// streamed is the file of UploadStream, held in an upload session until the push commits
 	// it; nil for every other publish.
 	streamed *streamed
+	// sealer encrypts the layers of a repo that encrypts at rest; nil otherwise (encrypt.go).
+	sealer *sealer
 }
 
 // publish is one manifest on its way through the pipeline; the steps fill it in.
@@ -478,6 +497,9 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 	if err := p.decide(ctx, pub); err != nil {
 		return nil, err
 	}
+	if err := p.seal(ctx, pub); err != nil {
+		return nil, err
+	}
 	existed, err := p.claimTag(ctx, pub)
 	if err != nil {
 		return nil, err
@@ -505,7 +527,11 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 	}
 	p.log.InfoContext(ctx, msg, "repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.parsed.Annotations.Name,
 		"tag", pub.tag, "digest", d.String(), "principal", pub.principal.String())
-	return &Result{Digest: d, Tag: pub.tag, RepoPath: pub.name, Entry: *pub.entry, Existed: existed}, nil
+	res := &Result{Digest: d, Tag: pub.tag, RepoPath: pub.name, Entry: *pub.entry, Existed: existed}
+	if pub.sealer != nil && pub.existing == "" {
+		res.View = pub.sealer.view
+	}
+	return res, nil
 }
 
 // count records a publish of format in lajstrom_ingest_total: published, existed (an idempotent
