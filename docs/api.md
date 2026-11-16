@@ -877,8 +877,9 @@ lajstrom admin repo prefetch oci/hub --from-file report.json --failed --report r
 
 ## Users
 
-Local users, managed by the admin role; what a user is, its uid and its name, is in
-[auth.md](auth.md#the-uid-and-the-name). `<user>` in a path is the user's name or its uid.
+Local users, OIDC users and service accounts, managed by the admin role; what a user is, its uid
+and its name, is in [auth.md](auth.md#the-uid-and-the-name), and what a service account is in
+[auth.md](auth.md#service-accounts). `<user>` in a path is the user's name or its uid.
 
 ### The resource
 
@@ -896,15 +897,32 @@ Local users, managed by the admin role; what a user is, its uid and its name, is
 | --- | --- |
 | `uid` | set by the server, a UUID v7; never changes |
 | `name` | 1 to 64 bytes of lowercase letters, digits, `.`, `_` and `-`, starting with a letter or a digit, not of the form of a uid, `deploy` reserved; unique among the live users |
-| `kind` | `local` in this version |
+| `kind` | `local`; `oidc`, made by its first OIDC login; `service`, a service account. Set at the creation, never changed |
 | `disabled` | a disabled user's credentials and tokens are refused from the next request on |
 | `createdAt` | set by the server |
+| `owner` | a service account's owner: `user:<uid>` of a person, or `group:<name>`; left out for every other kind |
+| `ownerName` | the name of a user owner; left out for a group |
+| `ownerDisabled` | `true` while a user owner is disabled; the service account keeps working unless `auth.serviceAccounts.onOwnerDisabled` is `disable` ([Change](#change-patch-apiv1usersuser)). Left out when `false` |
 
 A password is never answered.
+
+```json
+{
+  "uid": "01a1c137-0c2e-7f43-9b6a-3b1c5d2e8a10",
+  "name": "ci-release",
+  "kind": "service",
+  "disabled": false,
+  "createdAt": "2026-11-15T10:00:00Z",
+  "owner": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "ownerName": "alice"
+}
+```
 
 ### List: `GET /api/v1/users`
 
 `{"users": […], "next": "…"}`: a page of the live users, ordered by name ([Conventions](#conventions)).
+`?kind=service` lists the service accounts only, and `?kind=local` and `?kind=oidc` the users of
+those kinds; another kind is `400`.
 
 ### Create: `POST /api/v1/users`
 
@@ -912,27 +930,46 @@ The body has `name`, `password` (8 to 1024 bytes) and optionally `admin`, `true`
 user to the admin role on `*/*` in the same transaction. `201` with the resource and `Location:
 /api/v1/users/<name>`; a name that a live user has is `409`.
 
+A service account has `"kind": "service"` and `owner`, and neither `password` nor `admin`:
+`user:<name>` or `user:<uid>` of a live user that is not a service account, kept as its
+`user:<uid>`, or `group:<name>`, a group of the OIDC logins, which need not have members yet. An
+owner that is no live user, a service account, or neither a user nor a group is `400`, and so are
+a password and `admin` (bind it with [Bindings](#bindings)). `kind` is `local` when left out; an
+`oidc` user is made by its first login only.
+
+```sh
+curl -s -u admin -X POST "$LAJSTROM/api/v1/users" \
+  -H 'Content-Type: application/json' -d '{"name": "ci-release", "kind": "service", "owner": "group:platform"}'
+```
+
 ### Get: `GET /api/v1/users/<user>`
 
 The resource; `404` for a user that does not exist or was deleted.
 
 ### Change: `PATCH /api/v1/users/<user>`
 
-The body has `name`, `disabled` or both. `disabled` changes first, then the name; each change
-is an audit event of its own, and a value the user has already is none. `200` with the resource.
+The body has `name`, `disabled`, a service account's `owner`, or several of them. `disabled`
+changes first, then the owner, then the name; each change is an audit event of its own
+(`user.owner` for the owner), and a value the user has already is none. `200` with the resource.
 A new name that another live user has is `409`; disabling the last enabled user with an admin
-binding is `409`.
+binding is `409` (a service account's admin binding does not count); an owner given to a user
+that is not a service account is `400`. With `auth.serviceAccounts.onOwnerDisabled: disable`,
+disabling a user disables the enabled service accounts it owns in the same transaction, a
+`user.disable` event each with `owner` in its details; `"disabled": false` on the owner later
+enables none of them.
 
 ### Password: `POST /api/v1/users/<user>/password`
 
-The body is `{"password": "…"}`; `204`. The old password fails from the next request on.
+The body is `{"password": "…"}`; `204`. The old password fails from the next request on. A
+service account has no password: `400`.
 
 ### Delete: `DELETE /api/v1/users/<user>`
 
 `204`. The user's tokens are revoked and its bindings deleted; the row is kept, under the name
 `~<uid>`, so that the audit log still names it, and the name is free at once
 ([auth.md](auth.md#the-uid-and-the-name)). Deleting the last enabled user with an admin binding
-is `409`. A deletion is not undone.
+is `409`, and so is deleting a user that owns a live service account, naming the accounts: give
+them another owner, or delete them, first. A deletion is not undone.
 
 ### Who may
 
@@ -1053,8 +1090,9 @@ pages do not shift the pages after the first.
 
 `state` is `ok` but for a write to the registry, whose row is `pending` while the write runs,
 then `ok`, `failed` with the `error` the client was answered, or `unknown` when its writer
-stopped in between. `repo`, `subject`, `digest`, `ip`, `details`, `principalName` and `error`
-are left out when empty.
+stopped in between. `principalKind` is `service` when the principal is a service account's
+`user:<uid>` ([auth.md](auth.md#service-accounts)). `repo`, `subject`, `digest`, `ip`, `details`,
+`principalName`, `principalKind` and `error` are left out when empty.
 
 ## Tokens
 
@@ -1086,7 +1124,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `user`, `repo`, `repoMask` | the owner, one of the three, the others left out: the user of a personal access token, `<format>/<name>` of the repo of a deploy token, or the mask of a deploy token over a mask (`oci/*`, [below](#deploy-tokens-over-a-mask)) |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the owner's live tokens (neither revoked nor expired) |
 | `scopes` | `read`, `write` and `attach`, one or more; `write` holds `attach` (#89). A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
-| `expiresAt` | a personal access token always has one, at most 365 days ahead, 90 days when the creation gives none; a deploy token may have none, `null`, and never expires |
+| `expiresAt` | a personal access token of a person always has one, at most 365 days ahead, 90 days when the creation gives none; a service account's is bounded by `auth.serviceAccounts.maxTokenTTL` instead, 365 days when the creation gives none, and with the bound `0` may have none ([auth.md](auth.md#service-accounts)); a deploy token may have none, `null`, and never expires |
 | `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
 | `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
@@ -1098,7 +1136,8 @@ optionally `scopes` (required for a deploy token) and the expiry, `expiresAt` (R
 `expiresIn` (a number of days, `30d`, or a duration, `12h`), one of them at most. `201` with the
 resource and `secret`, and `Location` naming the token (`/api/v1/users/<name>/tokens/<id>`, with
 the user's name, the path of its `DELETE`); `400` for a field that breaks its rule, an expiry in
-the past, or more than a year ahead on a personal access token (a deploy token's has no bound),
+the past, or more than a year ahead on a personal access token (a service account's is bounded
+by `auth.serviceAccounts.maxTokenTTL`, a deploy token's not at all),
 both `expiresAt` and `expiresIn`, or `delete` in the scopes of a deploy token, or `write` in
 those of a group's (a write through a group is its hosted member's, which the group's token does
 not reach); `404` for a user or repo that does not exist; `409` when the name is taken. The user
