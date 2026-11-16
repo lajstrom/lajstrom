@@ -819,6 +819,13 @@ removes what the release before it stopped using, and its release notes say so
   serving on the schema`, apply nothing, and the old replicas keep serving. Upgrade through
   the release it requires, or stop every replica and run `lajstrom migrate --allow-breaking`.
 
+A release that adds a configuration key or changes a default changes the configuration that
+`serve` records: its first start writes a `config.change` row with that key and the `release`
+([Changes of the configuration](configuration.md#changes-of-the-configuration)). During a rolling
+update a replica of the release before that restarts writes another, the key removed: the
+replicas did run two configurations then. Replicas that keep running with different files write a
+row at each start that changes the record, which is how it shows.
+
 ### Several replicas
 
 Run `lajstrom migrate` of the new release once, then roll the replicas. The replicas of the
@@ -1493,6 +1500,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
 | `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
+| `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 
