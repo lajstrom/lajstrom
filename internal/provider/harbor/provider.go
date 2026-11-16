@@ -180,3 +180,30 @@ func (p *Provider) StatManifest(ctx context.Context, name string, d digest.Diges
 
 // Ping implements provider.Pinger: GET /v2/, the generic provider's.
 func (p *Provider) Ping(ctx context.Context) error { return p.data.Ping(ctx) }
+
+// Report implements provider.Reporter: the generic provider's, the vendor harbor whatever the
+// probe detected, and the capabilities as Capabilities answers them, once the first one that
+// succeeded read the REST API's facts; nil before. It sends no request.
+func (p *Provider) Report() provider.Report {
+	r := p.data.Report()
+	r.Vendor = Type
+	p.mu.Lock()
+	f := p.facts
+	p.mu.Unlock()
+	if r.Capabilities == nil || f == nil {
+		r.Capabilities = nil
+		return r
+	}
+	c := *r.Capabilities
+	if p.override.Catalog == nil {
+		c.Catalog = f.catalog
+	}
+	if p.override.ImmutableTags == nil {
+		c.ImmutableTags = f.rules > 0
+	}
+	c.MaxNameLength = max(maxNameLen-len(p.prefix), 1)
+	r.Capabilities = &c
+	return r
+}
+
+var _ provider.Reporter = (*Provider)(nil)

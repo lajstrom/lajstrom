@@ -101,6 +101,32 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+// TestReport: the vendor harbor, no capabilities before the first Capabilities that succeeded
+// and the same as it answered after, a closed breaker, and no request to the registry.
+func TestReport(t *testing.T) {
+	f := newFakeHarbor(t)
+	f.set(func(f *fakeHarbor) {
+		f.rules["lajstrom"] = []rule{{Action: "immutable"}}
+	})
+	p := f.provider(f.config("lajstrom/team/"), newClock().now)
+	r := p.Report()
+	if r.Vendor != "harbor" || r.Capabilities != nil || r.Breaker != provider.BreakerClosed {
+		t.Errorf("Report before Capabilities = %+v", r)
+	}
+	c, err := p.Capabilities(t.Context())
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	before := f.total()
+	r = p.Report()
+	if r.Vendor != "harbor" || r.Capabilities == nil || *r.Capabilities != c || r.Breaker != provider.BreakerClosed {
+		t.Errorf("Report = %+v, capabilities %+v; want those of Capabilities, %+v", r, r.Capabilities, c)
+	}
+	if n := f.total() - before; n != 0 {
+		t.Errorf("Report sent %d requests", n)
+	}
+}
+
 func TestCapabilitiesPermissions(t *testing.T) {
 	yes, no := true, false
 	tests := []struct {
