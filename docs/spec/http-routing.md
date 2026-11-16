@@ -257,6 +257,15 @@ token, which every route but `/v2` takes (npm's `_authToken` sends it). Anonymou
 with `anonymousRead: true`.
 Writes require `write` on `<format>/<repo>`.
 
+A document that a frontend renders, served with `format.ServeDocument` (apt's `dists/`, rpm's
+`repodata/`, pypi's simple pages, maven's `maven-metadata.xml` and checksums, terraform's
+`versions`), is validated by its `ETag` alone (#1255): `If-None-Match` with it is `304`, and an
+`If-Range` with it gives the range. Its `Last-Modified`, to the second, may be that of the render
+before a publish: `If-Modified-Since` is never `304`, `If-Unmodified-Since` is not read, and an
+`If-Range` with a date gives the whole document. apt asks with `If-Modified-Since` alone, and so
+fetches `InRelease` (or `Release` and `Release.gpg`) whole on every `apt-get update`, and an index
+only when the new `Release` lists another hash for it.
+
 A request that Lajstrom sends the registry for a frontend and that the registry refuses with a
 status no other rule names (#494; `format.StatusOf` is the one table): a `413` stays `413`, the
 file is larger than the registry takes; a `429` or `503` is `503` with the registry's
