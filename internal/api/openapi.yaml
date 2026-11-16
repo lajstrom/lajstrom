@@ -205,6 +205,17 @@ paths:
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
+        - name: without
+          in: query
+          description: >-
+            Keeps the variants that have no attachment of this kind, whatever its verification
+            (#89); given again, a variant must lack every kind given. A version is listed with
+            those of its variants, at their times, so a cursor is for the same filter.
+          schema:
+            type: array
+            items: {type: string, enum: [signature, sbom, scan, provenance, attestation, other]}
+          style: form
+          explode: true
       responses:
         "200":
           description: The page; the cursor holds the place of its last version.

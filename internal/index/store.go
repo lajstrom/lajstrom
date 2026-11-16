@@ -180,8 +180,10 @@ type Reader interface {
 	// ListVersionPage returns the rows of the first limit versions of a package whose
 	// VersionKey comes after after (nil = from the newest) in the order newest first, every
 	// variant of each: a version's rows are together, ordered by Variant. None when limit is
-	// below 1 (docs/spec/index-schema.md, Pages of packages and versions).
-	ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int) ([]Version, error)
+	// below 1 (docs/spec/index-schema.md, Pages of packages and versions). With without, kinds
+	// of attachments (Attachment*), only the rows that have no attachment of any of them count,
+	// for the versions and their keys alike (#89, ?without= of the versions list).
+	ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, without ...string) ([]Version, error)
 	// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore,
 	// with their packages, ordered by package name and version id: the sweep of reindex.
 	ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
