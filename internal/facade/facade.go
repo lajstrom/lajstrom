@@ -45,6 +45,10 @@ type Options struct {
 	// referrer pushed to any repo: the ingest pipeline. Required; without it those manifest PUTs
 	// are a 500.
 	Ingest Ingester
+	// Encryption wraps and opens the data keys of encrypted repos (encrypt.go,
+	// docs/spec/http-routing.md §2.1); nil when the server has no master key, and then a write to
+	// an encrypted repo is 500.
+	Encryption format.Encryption
 	// MaxManifestSize is the largest manifest a PUT may carry, in bytes (server.maxManifestSize);
 	// zero or negative means 4 MiB, the least the distribution spec asks a registry to take.
 	MaxManifestSize int64

@@ -81,6 +81,9 @@ func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if h.ociProxy(t) {
 		return h.getProxyManifest(w, r, t, ref)
 	}
+	if mapped(t) {
+		return h.getMappedManifest(w, r, t, ref)
+	}
 	rr, err := h.backend(ctx, t)
 	if err != nil {
 		return err
@@ -493,6 +496,10 @@ func (h *handler) deleteManifest(w http.ResponseWriter, r *http.Request, t *targ
 		return errors.New("facade: no ingest pipeline: Options.Ingest is required")
 	}
 	if err := h.refuseJournal(ctx, t, ref); err != nil {
+		return err
+	}
+	ref, err := h.storedRef(ctx, t, ref)
+	if err != nil {
 		return err
 	}
 	del := format.Deletion{Path: t.path, Reference: ref, ClientIP: server.ClientAddr(ctx)}

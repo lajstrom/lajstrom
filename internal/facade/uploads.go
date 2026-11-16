@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"strconv"
@@ -63,6 +64,9 @@ type uploadState struct {
 	// Recheck is set while a chunk streams, and stays when it fails: the backend may then hold
 	// bytes the hash did not see, which closingHash asks it before the close.
 	Recheck bool `json:"recheck,omitempty"`
+	// Enc is the encryption of a session of an encrypted repo (encrypt.go); nil otherwise. The
+	// sha256 above is then the plaintext's, the client's digest.
+	Enc *encState `json:"enc,omitempty"`
 }
 
 func (s uploadState) upload() provider.Upload {
@@ -146,6 +150,9 @@ func (h *handler) monolithic(w http.ResponseWriter, r *http.Request, t *target, 
 		return &apiError{code: codeBlobUploadInvalid, err: err}
 	}
 	body, size := requestBody(r)
+	if encrypted, err := h.encrypts(t); encrypted || err != nil {
+		return h.monolithicEncrypted(w, r, t, rr, u, d, body, size, err)
+	}
 	if err := finishChecked(ctx, rr, u, d, d.Algorithm().Hash(), body, size); err != nil {
 		h.cancelBackend(ctx, rr, u)
 		return finishError(err, body)
@@ -174,6 +181,12 @@ func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr pr
 	}
 	if err := h.ensureRepository(ctx, t); err != nil {
 		return err
+	}
+	if encrypted, err := h.encrypts(t); encrypted || err != nil {
+		if err != nil {
+			return err
+		}
+		return h.mountEncrypted(w, r, t, rr, d, from, src, ok)
 	}
 	if ok {
 		return h.openSession(w, r, t, rr, d, func(ctx context.Context) (bool, provider.Upload, error) {
@@ -253,7 +266,15 @@ func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target,
 		return full
 	}
 	s := &index.Session{RepoID: t.repo.ID, Key: uploadKind + id, Principal: principal, State: "open"}
-	if err := h.saveSession(ctx, s, uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset}); err != nil {
+	st := uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset}
+	if encrypted, err := h.encrypts(t); err != nil {
+		h.uploads.release(principal, id)
+		h.cancelBackend(ctx, rr, u)
+		return err
+	} else if encrypted {
+		st.Enc = h.newEncState(id)
+	}
+	if err := h.saveSession(ctx, s, st); err != nil {
 		h.uploads.release(principal, id)
 		h.cancelBackend(ctx, rr, u)
 		return err
@@ -288,8 +309,11 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 		return err
 	}
 	var rd io.Reader
+	var ck *chunk
 	if body != nil {
-		st.Recheck, rd = true, io.TeeReader(body, hs)
+		if rd, ck, err = h.chunkOf(id, &st, body, hs); err != nil {
+			return err
+		}
 		if err := h.saveSession(ctx, s, st); err != nil {
 			return err
 		}
@@ -306,16 +330,46 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 			h.endUpload(ctx, s, rr, st)
 			return &apiError{status: http.StatusNotFound, code: codeBlobUploadUnknown, msg: errUnchecked.Error(), err: errUnchecked}
 		}
-		if st.SHA256, err = hs.(encoding.BinaryMarshaler).MarshalBinary(); err != nil {
-			return fmt.Errorf("facade: upload session: sha256 state: %w", err)
+		if err := st.passed(hs, ck, u.Offset); err != nil {
+			return err
 		}
-		st.Hashed, st.Recheck = u.Offset, false
 	}
 	st.Location, st.ID, st.Offset = u.Location, u.ID, u.Offset
 	if err := h.saveSession(ctx, s, st); err != nil {
 		return err
 	}
 	answerSession(w, t, id, u, http.StatusAccepted)
+	return nil
+}
+
+// chunkOf returns the reader of a chunk's body that goes to the backend: hashed into hs, and
+// encrypted in a session of an encrypted repo (ck, nil otherwise). The row says Recheck from now.
+func (h *handler) chunkOf(id string, st *uploadState, body io.Reader, hs hash.Hash) (io.Reader, *chunk, error) {
+	st.Recheck = true
+	rd := io.TeeReader(body, hs)
+	if st.Enc == nil {
+		return rd, nil, nil
+	}
+	ck, err := h.encryptChunk(id, st.Enc, st.Offset, rd)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ck.r, ck, nil
+}
+
+// passed records a chunk that the backend took whole, up to offset: the plaintext's sha256 state
+// hs, the encryption's state of ck (nil for a plain session), and no recheck.
+func (s *uploadState) passed(hs hash.Hash, ck *chunk, offset int64) error {
+	var err error
+	if s.SHA256, err = hs.(encoding.BinaryMarshaler).MarshalBinary(); err != nil {
+		return fmt.Errorf("facade: upload session: sha256 state: %w", err)
+	}
+	if ck != nil {
+		if err := ck.passed(s.Enc); err != nil {
+			return err
+		}
+	}
+	s.Hashed, s.Recheck = offset, false
 	return nil
 }
 
@@ -357,7 +411,15 @@ func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, i
 	case err != nil:
 		return h.sessionError(ctx, s, err, nil)
 	}
-	if err := finishChecked(ctx, rr, st.upload(), d, hs, body, size); err != nil {
+	finish := func() error { return finishChecked(ctx, rr, st.upload(), d, hs, body, size) }
+	if st.Enc != nil {
+		finish = func() error { return h.finishEncrypted(ctx, t, id, rr, st.upload(), &st, d, hs, body, size) }
+	}
+	if err := finish(); err != nil {
+		if st.Enc != nil && errors.Is(err, errRowAfterClose) {
+			h.dropSession(ctx, s)
+			return err
+		}
 		if ends(err, body) {
 			h.endUpload(ctx, s, rr, st)
 			return finishError(err, body)
