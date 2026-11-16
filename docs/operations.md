@@ -1447,7 +1447,8 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
-| `ci.policy.create`, `ci.policy.update`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims and grants, and the `previous` ones of a change ([auth.md](auth.md#token-exchange-for-ci)) |
+| `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
+| `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 

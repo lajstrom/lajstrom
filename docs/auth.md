@@ -1294,6 +1294,14 @@ UI's tab, and without the key, which never leaves the browser, and it is redeeme
 the 10 minutes of the login. The IdP needs nothing
 more: its redirect URI stays `<server.externalURL>/-/oidc/callback`.
 
+The token keeps when and how the person authenticated at the IdP: the ID token's `auth_time` and
+`amr`, when the IdP sends them. A step that needs a fresh sign-in with a second factor (a [CI trust
+policy that publishes](#policies-in-the-configuration-or-through-the-api)) takes a token whose
+`auth_time` is at most 10 minutes old and whose `amr` shows a second factor. For it the UI signs
+in again with `prompt=login` beside `return_to`: Lajstrom asks the IdP for `prompt=login` and
+`max_age=600`, so that the person authenticates again, with their second factor if the IdP asks
+for one.
+
 ### Groups and group bindings
 
 Each login replaces the user's groups with those of the claim `groupsClaim`, and they count
@@ -1675,7 +1683,8 @@ A policy lives in one of two places, each its owner (ADR 0015):
   replica, without a restart: each create, change and delete moves `auth_version`, which every
   replica reads before an exchange and before a request with a CI token. Each is an audit row,
   `ci.policy.create`, `ci.policy.update` (with the `previous` policy) or `ci.policy.delete`, with
-  the policy's issuer, claims and grants.
+  the policy's issuer, claims and grants, and an event of the webhooks. The command line makes the
+  policies that read, lists them all, and deletes any.
 
 ```sh
 curl -fsS -u admin -X POST https://art.example.com/api/v1/ci/policies -H 'Content-Type: application/json' -d '{
@@ -1686,12 +1695,41 @@ lajstrom admin ci-policy create --name lib-read --issuer github --claim reposito
 lajstrom admin ci-policy list
 ```
 
-**A policy of the API reads only**: one that grants `writer` or `maintainer` is `403`, and one
-already in the database (restored from a snapshot) is left out with a warning. Whoever steals an
-admin's credential can then add a policy that trusts a repository of their own, and its CI tokens
-read what it grants; they publish nothing. Declare the policies that publish in the
-configuration, and watch the `ci.policy.*` rows; a snapshot carries the policies of the API, never
-the configuration's.
+**A policy of the API that publishes takes more.** One that grants `writer` or `maintainer`
+(made, changed, or renewed) needs:
+
+- **A fresh sign-in with a second factor**: the admin signs in to a web UI through OIDC again,
+  with the UI's step-up (`/-/oidc/login?…&prompt=login`, which asks your IdP for `prompt=login` and
+  `max_age=600`), and makes the change within 10 minutes, with the token of that sign-in. Your IdP
+  must put `auth_time` and `amr` in its ID tokens, and `amr` must show a second factor: `mfa`, or
+  two kinds of factor such as `pwd` and `otp`, or `hwk` and `pin`. A password, a personal access
+  token, `lajstrom login`'s token, a deploy token and the command line never count: they make the
+  policies that read only.
+- **A second admin**, with `auth.ci.apiWriteApproval: second-admin` (the default): the policy
+  waits, `pending`, and grants nothing until another admin, signed in the same way, approves the
+  revision they read (`POST …/<name>/approve` with `If-Match`). The admin who made the change
+  cannot approve it. On an install with one admin, set `none`, or declare the policies that publish
+  in `auth.ci.policies`, where the review of the configuration's history is the second pair of
+  eyes.
+- **Repos you allow**: each mask it writes to must be within `auth.ci.apiWriteRepos` (empty by
+  default: no policy of the API publishes). Publishing to other repos is the configuration's.
+- **An expiry**: 180 days at most, the default. Renew it before (`POST …/<name>/renew`, the same
+  sign-in and approval; the policy keeps working until the renewal is approved). From its
+  `expiresAt` on it grants nothing, its CI tokens included, and it shows `state: expired`.
+
+```yaml
+auth:
+  ci:
+    apiWriteRepos: ["pypi/internal", "oci/*"]
+    apiWriteApproval: second-admin
+```
+
+Every create, approval, change, renewal, expiry and delete of a policy of the API is an audit row
+(`ci.policy.create`, `.approve`, `.update`, `.renew`, `.expire`, `.delete`, with the sign-in that
+made it) and an event of the webhooks of the admin (`ci.policy.created` and the others,
+[webhooks](spec/webhooks.md)): point a webhook of `*/*` at your alerting. Whoever steals an admin's
+token or password alone can add a policy that reads, not one that publishes. A snapshot carries the
+policies of the API, never the configuration's.
 
 ### GitHub Actions
 

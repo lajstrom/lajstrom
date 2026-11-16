@@ -61,7 +61,7 @@ Every error is answered with one envelope:
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
-| 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted. Or `If-Match` names no revision the repo, user or webhook has ([Revisions](#revisions)): the answer's `ETag` is its revision now, and nothing changed |
+| 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted. Or `If-Match` names no revision the repo, user, webhook or CI trust policy has ([Revisions](#revisions)): the answer's `ETag` is its revision now, and nothing changed |
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | a version delete on a registry that does not delete manifests (`capabilities.deleteManifest: false`); the message names the registry, and nothing was deleted |
@@ -71,13 +71,15 @@ Every error is answered with one envelope:
 
 ### Revisions
 
-A repo, a user and a webhook have a revision, which every change of the resource moves (#796).
-`GET` of one answers it as `ETag: "…"`, a strong entity tag, and so do the `201` of its `POST`
-and the `200` of its `PATCH`, with the revision the change left. The tag is opaque: a client
+A repo, a user, a webhook and a CI trust policy of the API have a revision, which every change of
+the resource moves (#796). `GET` of one answers it as `ETag: "…"`, a strong entity tag, and so do
+the `201` of its `POST` and the `200` of its `PATCH` (a policy's `PUT`, renewal and approval),
+with the revision the change left. The tag is opaque: a client
 keeps it as it got it and sends it back. Two resources never have the same tag, a repo deleted
 and created again under its name included.
 
-- **`If-Match`** on the `PATCH` or the `DELETE` of one makes the change conditional: it is made
+- **`If-Match`** on the `PATCH` or the `DELETE` of one (a policy's `PUT`, `DELETE`, renewal and
+  approval, which requires it) makes the change conditional: it is made
   only while the resource has a revision whose tag the header lists (`If-Match: "…"`, or several
   separated by commas), or exists at all (`*`). Otherwise the answer is `412 CONFLICT` with the
   resource's tag now in `ETag`, and nothing changed: the client reads the resource again, makes
@@ -1434,8 +1436,10 @@ checked before the body is read: anyone else is `403`, anonymous `401`.
   "claims": {"repository_id": ["555"], "ref": ["refs/tags/v*"]},
   "grants": [{"role": "reader", "mask": "pypi/internal"}],
   "source": "api",
+  "state": "active",
   "createdBy": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
   "createdAt": "2026-11-16T12:00:00Z",
+  "updatedBy": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
   "updatedAt": "2026-11-16T12:00:00Z"
 }
 ```
@@ -1445,9 +1449,21 @@ checked before the body is read: anyone else is `403`, anonymous `401`.
 | `name` | lowercase letters and digits with single hyphens, at most 63 bytes; unique among the configuration's and the API's; the `{name}` of the routes; never changes |
 | `issuer` | the name of an issuer of `auth.ci.issuers` |
 | `claims` | each claim of the issuer's platform to its values ([auth.md](auth.md#setting-it-up)); an id is required, and `ref`, `ref_path` or `environment` for a policy that writes |
-| `grants` | one or more `{role, mask}`: `reader`, `writer` or `maintainer` on `<format>/<repo>`; `writer` and `maintainer` refused: a policy of the API reads |
+| `grants` | one or more `{role, mask}`: `reader`, `writer` or `maintainer` on `<format>/<repo>`; `writer` and `maintainer` take the steps below |
+| `expiresAt` | a policy that writes: when it stops granting; sent, at most 180 days ahead, by default 180 days ahead; refused for a policy that reads |
 | `source` | `config` or `api`; answered, never sent |
-| `createdBy`, `createdAt`, `updatedAt` | of a policy of the API; set by the server |
+| `state` | `active`, which counts; `pending`, which waits for an approval and grants nothing; `expired`, which grants nothing. The configuration's are `active`; answered, never sent |
+| `renewal` | `{"expiresAt"}`, a renewal that waits for an approval; answered, never sent |
+| `createdBy`, `createdAt`, `updatedBy`, `updatedAt`, `approvedBy`, `approvedAt` | of a policy of the API: `updatedBy` made its latest create, change or renewal, `approvedBy` its latest approval; set by the server |
+
+A policy of the API answers its revision as an `ETag` ([Revisions](#revisions)), and its `PUT`,
+`DELETE`, renewal and approval take `If-Match`.
+
+**A policy that writes** (`writer` or `maintainer`), made, changed or renewed, takes steps
+([rbac.md](spec/rbac.md) §11): the request comes from a web UI's sign-in through OIDC with a second
+factor of the last 10 minutes (`403` otherwise, saying what is missing); each mask that it writes
+to is within `auth.ci.apiWriteRepos` (`403` naming the grant); and with
+`auth.ci.apiWriteApproval: second-admin` it waits `pending` until another admin approves it.
 
 ### List: `GET /api/v1/ci/policies`
 
@@ -1455,22 +1471,49 @@ checked before the body is read: anyone else is `403`, anonymous `401`.
 
 ### Create: `POST /api/v1/ci/policies`
 
-The body has `name`, `issuer`, `claims` and `grants`. `201` with the resource and `Location:
-/api/v1/ci/policies/<name>`. A rule broken is `400` naming the field; a policy that writes `403`; a
-name taken, the configuration's too, `409`. It counts from the next request on, on every replica;
-its row is `ci.policy.create`.
+The body has `name`, `issuer`, `claims`, `grants`, and for a policy that writes `expiresAt` if
+you want it sooner. `201` with the resource, its `ETag` and `Location: /api/v1/ci/policies/<name>`.
+A rule broken is `400` naming the field; a step of a policy that writes missing `403`; a name
+taken, the configuration's too, `409`. It counts from the next request on, on every replica, once
+it is `active`; its row is `ci.policy.create`, its event `ci.policy.created`.
 
 ### Get, replace, delete: `GET`, `PUT`, `DELETE /api/v1/ci/policies/<name>`
 
-`PUT` replaces `issuer`, `claims` and `grants` with the body's, whose `name`, when present, is the
-path's; `200` with the resource, its row `ci.policy.update` with the `previous` policy. `DELETE` is
-`204`, its row `ci.policy.delete`; the CI tokens of the policy grant nothing more from their next
-request. A policy of the configuration is `409` to both; an unknown name `404`.
+`PUT` replaces `issuer`, `claims`, `grants` and `expiresAt` with the body's, whose `name`, when
+present, is the path's; `200` with the resource and its `ETag`, its row `ci.policy.update` with the
+`previous` policy. A change of a policy that writes takes its steps again and waits for an
+approval again, whatever it changed; one to `reader` only counts at once. `DELETE` is `204`, its row
+`ci.policy.delete`, a policy that writes too, without a step; the CI tokens of the policy grant
+nothing more from their next request. A policy of the configuration is `409` to both; an unknown
+name `404`.
+
+### Approve: `POST /api/v1/ci/policies/<name>/approve`
+
+No body; `If-Match` with the `ETag` of the policy as you read it, required (`400` without one, or
+with `*`; `412` when it changed since). The approver is an admin with a web UI's sign-in through
+OIDC with a second factor of the last 10 minutes, other than `updatedBy`, who made the change that
+waits (`403`). It approves a `pending` policy, which then counts, or the `renewal` that waits,
+whose expiry the policy then has: `200` with the resource. Nothing that waits, or an expiry passed
+before the approval, is `409`. Its row is `ci.policy.approve`, its event `ci.policy.approved`.
+
+### Renew: `POST /api/v1/ci/policies/<name>/renew`
+
+`{"expiresAt": "…"}`, or no body for 180 days ahead, under the steps of a policy that writes. With
+the approval of a second admin, the renewal of a policy that counts waits beside it (`renewal`),
+and the policy keeps its expiry until the renewal is approved; that of an `expired` policy makes it
+`pending`. A policy that reads (it does not expire) and one `pending` (change it instead) are
+`409`. `200` with the resource; its row `ci.policy.renew`, its event `ci.policy.renewed`.
+
+A policy that writes grants nothing from its `expiresAt` on; each replica marks it `expired` within
+a minute, with the row `ci.policy.expire` (by `anonymous`) and the event `ci.policy.expired`, sent
+once.
 
 ### `lajstrom admin ci-policy`
 
 The same, straight against the database of the configuration: `create --name --issuer --claim
-<claim>=<value>… --grant <role>:<mask>…`, `list`, `delete <name>`, with the source `cli`.
+<claim>=<value>… --grant <role>:<mask>…`, `list` (with `STATE` and `EXPIRES`), `delete <name>
+[--if-match <etag>]`, with the source `cli`. The command line is no sign-in: it makes the policies
+that read only.
 
 ## Audit
 
@@ -1764,7 +1807,7 @@ rotation, the one time it is shown.
 | `id` | set by the server |
 | `mask` | a repo mask, as a binding's: `raw/assets`, `raw/*`, `*/payments`, `*/*`. Under a repo it is the repo, and the body may leave it out; it never changes |
 | `url` | `http` or `https`, with a host, no user information, no fragment, at most 2048 bytes; `https` and a public address unless `webhooks.allowedHosts` lists its host ([configuration.md](configuration.md#webhooks)) |
-| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`, `policy.rule.created`, `policy.rule.deleted`, `policy.verdict.created`, `policy.verdict.deleted`; `[]`, every type |
+| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`, `policy.rule.created`, `policy.rule.deleted`, `policy.verdict.created`, `policy.verdict.deleted`, `ci.policy.created`, `ci.policy.updated`, `ci.policy.renewed`, `ci.policy.approved`, `ci.policy.expired`, `ci.policy.deleted` (the last six to a webhook of a mask with `*` only); `[]`, every type |
 | `active` | `true` by default; an inactive webhook gets no new event |
 | `description` | at most 256 bytes |
 | `createdBy`, `createdAt`, `updatedAt` | set by the server |
