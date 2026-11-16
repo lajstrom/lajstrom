@@ -159,7 +159,7 @@ by file: each file is a manifest of its own, with a variant (section 4.2).
 | Key | Value |
 | --- | --- |
 | `lajstrom.origin.url` | the URL the file was asked for, before any redirect, without userinfo, query or fragment: `https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz`. For an artifact of several files, the URL of the first file layer |
-| `lajstrom.origin.checksum` | the upstream's checksum that was verified before the ingest, `<algorithm>:<lowercase hex>`: `sha512:…`, `sha256:…`, `sha1:…` |
+| `lajstrom.origin.checksum` | the upstream's checksum that was verified before the ingest, `<algorithm>:<lowercase hex>`: `sha512:…`, `sha256:…`, `sha1:…`. Absent on a file fetched unchecked, a maven signature whose upstream publishes no checksum (section 4.2): nothing was verified |
 
 `org.opencontainers.image.created` of such a manifest is the upstream's publish time of the
 version when the upstream's document gives one (npm: the packument's `time`; #441), and the time
@@ -318,7 +318,9 @@ version, so a proxy fetches the files clients ask for, one at a time, and a tag 
 a version fetched whole would never take the classifier files asked after it. No extension has a
 `:` and no classifier has one, so the variant names one file of the version. Such a manifest
 has one file layer, the file, no `lajstrom.maven.packaging`, and the origin annotations of
-section 3.1. Its bytes are the upstream's, checked against the upstream's sha1 and not read: a
+section 3.1. Its bytes are the upstream's, checked against the upstream's sha1 (a signature,
+`.asc`, that the upstream publishes without one is not checked, and has no
+`lajstrom.origin.checksum`) and not read: a
 POM's neither, which an upstream may publish in a form a deploy would refuse (`${revision}` left
 in it). A maven manifest with a variant and without `lajstrom.origin.url` is refused, so only the
 fetcher writes one; a hosted repo keeps a version as one manifest without a variant.
