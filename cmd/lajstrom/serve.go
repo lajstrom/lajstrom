@@ -285,7 +285,8 @@ func newServeCmd(a *app) *cobra.Command {
 // repos of the configuration that the index does not have, which may be encrypted only with them.
 // The repos are not checked against their registry's capabilities: the provider set is not built
 // yet, and the probe logs a registry that takes no name of Lajstrom's at error. The API checks
-// (#663).
+// (#663). Then it records the configuration, config.change when it is not the one last recorded
+// (configRecorder, docs/spec/rbac.md §5).
 func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Store) (*keys.Encryption, error) {
 	encryption, err := newEncryption(c, a.lookupEnv, st, a.log)
 	if err != nil {
@@ -298,6 +299,10 @@ func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Stor
 		return nil, err
 	}
 	a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
+	cr := configRecorder{st: st, host: hostName(), release: version.Get().Version, now: time.Now, log: a.log}
+	if err := cr.recordConfig(ctx, c); err != nil {
+		return nil, err
+	}
 	return encryption, nil
 }
 

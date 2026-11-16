@@ -153,6 +153,12 @@ guesses a minute for an account. The bound across replicas is the edge's
 ([operations.md](operations.md#failed-logins-and-the-edge)). The budgets are constants of
 `internal/auth`, not settings.
 
+**What is recorded.** Every refused credential, a password, a token or a certificate, is an
+`authentication refused` line at info with the account's uid, never the name as it was typed;
+a throttle that trips, of an account or of an address, is a `login.block` row of the audit log,
+at most 60 a minute per replica ([operations.md](operations.md#failed-logins-and-the-edge),
+[rbac.md](spec/rbac.md) §1, §5).
+
 **When a throttle is full**, a new key takes the place of a window that has closed, or, when
 every window is still open, of the open window opened first that has not reached its budget.
 A window that throttles its account is never dropped while it is open, so failures of other
