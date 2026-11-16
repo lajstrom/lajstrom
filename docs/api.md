@@ -1582,7 +1582,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `user`, `repo`, `repoMask` | the owner, one of the three, the others left out: the user of a personal access token, `<format>/<name>` of the repo of a deploy token, or the mask of a deploy token over a mask (`oci/*`, [below](#deploy-tokens-over-a-mask)) |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the owner's live tokens (neither revoked nor expired) |
 | `scopes` | `read`, `write` and `attach`, one or more; `write` holds `attach` (#89). A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
-| `expiresAt` | a personal access token of a person always has one, at most 365 days ahead, 90 days when the creation gives none; a service account's is bounded by `auth.serviceAccounts.maxTokenTTL` instead, 365 days when the creation gives none, and with the bound `0` may have none ([auth.md](auth.md#service-accounts)); a deploy token may have none, `null`, and never expires |
+| `expiresAt` | a personal access token of a person always has one, at most 365 days ahead, 90 days when the creation gives none; a service account's is bounded by `auth.serviceAccounts.maxTokenTTL` instead, 365 days when the creation gives none, and with the bound `0` may have none ([auth.md](auth.md#service-accounts)); a deploy token is bounded by `auth.deployTokens.maxTTL` when it is set, the bound when the creation gives none, and without it may have none, `null`, and never expires ([auth.md](auth.md#rules)) |
 | `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
 | `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
@@ -1595,7 +1595,8 @@ optionally `scopes` (required for a deploy token) and the expiry, `expiresAt` (R
 resource and `secret`, and `Location` naming the token (`/api/v1/users/<name>/tokens/<id>`, with
 the user's name, the path of its `DELETE`); `400` for a field that breaks its rule, an expiry in
 the past, or more than a year ahead on a personal access token (a service account's is bounded
-by `auth.serviceAccounts.maxTokenTTL`, a deploy token's not at all),
+by `auth.serviceAccounts.maxTokenTTL`, a deploy token's by `auth.deployTokens.maxTTL` when it is
+set, and not at all without it; the message names the field, the bound and the latest expiry),
 both `expiresAt` and `expiresIn`, or `delete` in the scopes of a deploy token, or `write` in
 those of a group's (a write through a group is its hosted member's, which the group's token does
 not reach); `404` for a user or repo that does not exist; `409` when the name is taken. The user

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // tokenCLI migrates the database of a new configuration, creates the repo raw/scratch and the
@@ -98,7 +100,7 @@ func TestAdminToken(t *testing.T) {
 		{args: []string{"admin", "token", "create", "--user", "alice"}, wantErr: `required flag(s) "name" not set`},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--name", "dated"}, wantErr: `name: "dated" is taken by a live token of user alice`},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--name", "x", "--expires", "400d"},
-			wantErr: "expiresIn: a personal access token expires at most 365 days ahead"},
+			wantErr: "--expires: a personal access token expires at most 365 days ahead"},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--name", "x", "--expires", "soon"},
 			wantErr: `--expires: "soon" is not a positive number of days, like 30d, or a duration, like 12h, or an RFC 3339 time`},
 		{args: []string{"admin", "token", "create", "--repo", "raw/scratch", "--name", "x", "--scopes", "read,delete"},
@@ -153,6 +155,48 @@ func TestAdminTokenMask(t *testing.T) {
 	row, err := openTestStore(t, dsn).GetTokenByHash(context.Background(), auth.HashSecret(ci.Secret))
 	if err != nil || row.RepoMask != "*/scratch" || row.RepoID != nil {
 		t.Errorf("the token over */scratch in the index: %+v, %v", row, err)
+	}
+}
+
+// TestAdminTokenBound: the command line reads auth.deployTokens.maxTTL of its configuration
+// (docs/spec/rbac.md §1, #1286): a deploy token of a repo or over a mask created without
+// --expires expires at the bound, one asked to expire later is refused naming --expires, and the
+// token.create events have maxTTL; a person's token keeps its own bounds.
+func TestAdminTokenBound(t *testing.T) {
+	cfg, dsn := tokenCLI(t)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0) // #nosec G304 -- the test's own configuration
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("auth:\n  deployTokens:\n    maxTTL: 720h\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	before := time.Now()
+	for _, c := range []auth.CreatedToken{
+		cliCreate(t, cfg, "--repo", "raw/scratch", "--name", "ci", "--scopes", "write"),
+		cliCreate(t, cfg, "--mask", "oci/*", "--name", "nodes", "--scopes", "read"),
+	} {
+		if c.ExpiresAt == nil || c.ExpiresAt.Before(before.Add(720*time.Hour).Truncate(time.Second)) || c.ExpiresAt.After(time.Now().Add(720*time.Hour)) {
+			t.Errorf("%s expires at %v, want 720h after its creation", c.Name, c.ExpiresAt)
+		}
+	}
+	cliCreate(t, cfg, "--user", "alice", "--name", "laptop", "--expires", "365d")
+	const refused = "--expires: a deploy token expires at most 720h0m0s ahead (auth.deployTokens.maxTTL)"
+	runSteps(t, cfg, []step{
+		{args: []string{"admin", "token", "create", "--repo", "raw/scratch", "--name", "long", "--scopes", "read", "--expires", "31d"}, wantErr: refused},
+		{args: []string{"admin", "token", "create", "--mask", "oci/*", "--name", "long", "--scopes", "read", "--expires", "2099-01-01T00:00:00Z"},
+			wantErr: refused},
+	})
+	st := openTestStore(t, dsn)
+	evs, err := st.ListAudit(context.Background(), index.AuditFilter{Action: auth.ActionTokenCreate})
+	if err != nil || len(evs) != 3 {
+		t.Fatalf("token.create events = %d, %v; want the 3 creations: a refusal writes none", len(evs), err)
+	}
+	for i, want := range []string{"", `"maxTTL":2592000`, `"maxTTL":2592000`} { // newest first: alice's, then the deploy tokens
+		if got := string(evs[i].Details); (want == "") == strings.Contains(got, "maxTTL") || !strings.Contains(got, want) {
+			t.Errorf("token.create %d details %s, want %q", i, got, want)
+		}
 	}
 }
 

@@ -693,3 +693,117 @@ func TestTokensMaskDeployLife(t *testing.T) {
 	}
 	f.noSecrets(t)
 }
+
+// TestTokensDeployLifetime: a deploy token, of a repo and over a mask, is bounded by
+// DeployMaxLifetime (docs/spec/rbac.md §1, #1286): created without an expiry it gets the bound,
+// one asked to expire later is refused naming the field given, or --expires; zero bounds
+// nothing, and a token without an expiry then never expires.
+func TestTokensDeployLifetime(t *testing.T) {
+	ctx := context.Background()
+	quarter := 90 * 24 * time.Hour
+	decade := Expiry{In: 3650 * 24 * time.Hour}
+	latest := "at 2027-02-05T12:00:00Z at the latest"
+	for i, tt := range []struct {
+		max  time.Duration
+		mask bool // a token over raw/*, else one of raw/scratch
+		exp  Expiry
+		want time.Duration // the lifetime given; 0 for none
+		err  string
+	}{
+		{max: 0, exp: Expiry{}},
+		{max: 0, exp: decade, want: decade.In},
+		{max: 0, mask: true, exp: Expiry{}},
+		{max: quarter, exp: Expiry{}, want: quarter},
+		{max: quarter, mask: true, exp: Expiry{}, want: quarter},
+		{max: quarter, exp: Expiry{In: 30 * 24 * time.Hour}, want: 30 * 24 * time.Hour},
+		{max: quarter, exp: Expiry{At: usersNow.Add(quarter)}, want: quarter},
+		{max: quarter, exp: Expiry{In: quarter + time.Hour},
+			err: "expiresIn: a deploy token expires at most 2160h0m0s ahead (auth.deployTokens.maxTTL), " + latest},
+		{max: quarter, exp: Expiry{At: usersNow.Add(quarter + time.Second)},
+			err: "expiresAt: a deploy token expires at most 2160h0m0s ahead (auth.deployTokens.maxTTL), " + latest},
+		{max: quarter, mask: true, exp: Expiry{In: decade.In, Field: "--expires"},
+			err: "--expires: a deploy token expires at most 2160h0m0s ahead (auth.deployTokens.maxTTL), " + latest},
+		{max: quarter, exp: Expiry{At: usersNow.Add(-time.Hour), Field: "--expires"}, err: "--expires: must be in the future"},
+	} {
+		f := newTokensFixture(t)
+		f.tokens.DeployMaxLifetime = tt.max
+		var (
+			tok *Token
+			err error
+		)
+		if tt.mask {
+			tok, _, err = f.tokens.CreateMaskDeploy(ctx, "raw/*", "nodes", []string{ScopeRead}, tt.exp, cli)
+		} else {
+			tok, _, err = f.tokens.CreateDeploy(ctx, "raw/scratch", "ci", []string{ScopeRead}, tt.exp, cli)
+		}
+		switch {
+		case tt.err != "":
+			if !errors.Is(err, ErrInvalid) || err.Error() != tt.err {
+				t.Errorf("%d: %v, want %q", i, err, tt.err)
+			}
+			if n := len(tokenAudit(t, f.st)); n != 0 {
+				t.Errorf("%d: %d audit events, want none for a refusal", i, n)
+			}
+		case err != nil:
+			t.Errorf("%d: %v", i, err)
+		case tt.want == 0 && tok.ExpiresAt != nil, tt.want != 0 && (tok.ExpiresAt == nil || !tok.ExpiresAt.Equal(usersNow.Add(tt.want))):
+			t.Errorf("%d: expiresAt %v, want %v from now", i, tok.ExpiresAt, tt.want)
+		}
+	}
+}
+
+// TestTokensMaxTTLAudit: the token.create event of a deploy token or of a service account's token
+// created under a bound of the configuration has maxTTL, the seconds of the bound; one created
+// without a bound has none, nor has a person's, whose bound is a constant.
+func TestTokensMaxTTLAudit(t *testing.T) {
+	ctx := context.Background()
+	f, _ := newServiceFixture(t)
+	tokens := &Tokens{Index: f.st, Now: f.users.Now, Log: f.users.Log}
+	r := index.Repo{Format: "raw", Name: "scratch", Registry: "local", Prefix: "raw/scratch", Kind: "hosted"}
+	if err := f.st.CreateRepo(ctx, &r); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name            string
+		deploy, service time.Duration
+		create          func(name string) error
+		want            any // maxTTL in the details; nil for none
+	}{
+		{name: "deploy under a bound", deploy: 90 * 24 * time.Hour, want: float64(7776000), create: func(name string) error {
+			return third(tokens.CreateDeploy(ctx, "raw/scratch", name, []string{ScopeRead}, Expiry{}, cli))
+		}},
+		{name: "mask under a bound", deploy: time.Hour, want: float64(3600), create: func(name string) error {
+			return third(tokens.CreateMaskDeploy(ctx, "raw/*", name, []string{ScopeRead}, Expiry{In: time.Minute}, cli))
+		}},
+		{name: "deploy without a bound", create: func(name string) error {
+			return third(tokens.CreateDeploy(ctx, "raw/scratch", name, []string{ScopeRead}, Expiry{}, cli))
+		}},
+		{name: "service account under a bound", service: 720 * time.Hour, want: float64(2592000), create: func(name string) error {
+			return third(tokens.CreatePAT(ctx, "robot", name, nil, Expiry{}, cli))
+		}},
+		{name: "service account without a bound", create: func(name string) error {
+			return third(tokens.CreatePAT(ctx, "robot", name, nil, Expiry{}, cli))
+		}},
+		{name: "a person's", deploy: time.Hour, service: time.Hour, create: func(name string) error {
+			return third(tokens.CreatePAT(ctx, "alice", name, nil, Expiry{}, cli))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens.DeployMaxLifetime, tokens.ServiceMaxLifetime = tt.deploy, tt.service
+			if err := tt.create(tt.name); err != nil {
+				t.Fatal(err)
+			}
+			evs, err := f.st.ListAudit(ctx, index.AuditFilter{})
+			if err != nil || len(evs) == 0 || evs[0].Action != ActionTokenCreate {
+				t.Fatalf("ListAudit = %d events, %v; want a token.create first", len(evs), err)
+			}
+			var details map[string]any
+			if err := json.Unmarshal(evs[0].Details, &details); err != nil {
+				t.Fatal(err)
+			}
+			if got := details["maxTTL"]; got != tt.want {
+				t.Errorf("maxTTL = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -701,7 +701,7 @@ the lookup of the hash is the check, one query for the token and one for its use
 | principal | `user:<owner's uid>` | `token:<id>` | `token:<id>` |
 | bound to | its user | one repo | a mask (`oci/*`, `*/talos`), the repos created later included |
 | `scopes` | none (the user's full rights), or `read`, `write` and `attach`, one or more | `read`, `write` and `attach`, one or more, required; `delete`, `manage` and anything else are `400`; a group's deploy token reads only | the same |
-| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound); a service account's by `auth.serviceAccounts.maxTokenTTL` instead ([Service accounts](#service-accounts)) | optional: none is never | the same |
+| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound); a service account's by `auth.serviceAccounts.maxTokenTTL` instead ([Service accounts](#service-accounts)) | optional: none is never; with `auth.deployTokens.maxTTL`, the bound when not given, at most the bound ahead (`400` beyond, naming the bound; below) | the same |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens | the same, among the live tokens over the same mask |
 | created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the password of a user with the `admin` role only (`403` with a token, #911) |
 
@@ -719,7 +719,18 @@ for it with a password, or gets a deploy token instead ([In CI](#in-ci)).
 
 A live token is neither revoked nor expired. A scope grants its action and nothing else:
 `write` does not include `read`, so a client that pushes through `/v2`, and reads blobs before
-it writes them, needs both. The bounds are constants, not configuration.
+it writes them, needs both. The bounds of a person's personal access tokens are constants, not
+configuration; those of a service account's ([Service accounts](#service-accounts)) and of
+deploy tokens are configuration.
+
+**A deploy token's lifetime** is bounded by `auth.deployTokens.maxTTL`
+([configuration.md](configuration.md)), none by default (#1286). With a bound, a token of a repo
+or over a mask created without `--expires`, `expiresAt` or `expiresIn` expires at the bound, and
+an expiry beyond it is `400`, naming the field, the key and the latest expiry it allows, through
+the API and on the command line alike, which reads the bound of the configuration it is given.
+The bound counts when a token is created: a token made before it was set or lowered keeps its
+expiry, or none, until it is revoked; raising it lengthens no token. Without a bound, a deploy
+token created without an expiry never expires.
 
 Expiry and revocation count at the next request, on every replica: the token is read from the
 database on every request. A token is expired once `expiresAt` is past, without leeway.
@@ -895,8 +906,10 @@ ID  KIND  NAME    SCOPES  EXPIRES               LAST USED             REVOKED  H
 
 `token.create` (details `id`, `kind`, `name`, `scopes`, `expiresAt`, and `createdBy`, the
 credential of the request: `password`, or `token:<id>` for a token, which a deploy token made
-with a personal access token has; none from the CLI) and `token.revoke` (`id`, `kind`, `name`),
-by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
+with a personal access token has; none from the CLI; and `maxTTL`, the seconds of
+`auth.deployTokens.maxTTL` or `auth.serviceAccounts.maxTokenTTL` for a deploy token or a service
+account's token created under that bound, none without one) and `token.revoke` (`id`, `kind`,
+`name`), by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
 deploy token, whose repo is also the row's `repo`; for a deploy token over a mask it is the mask,
 and the row has no `repo`. Never the secret, never its hash. Revoking a
 revoked token writes nothing. The use of a token is not audited, as reads are not; `lastUsedAt`
@@ -1001,8 +1014,8 @@ tokens, when it has no scopes, and never creates one.
 ([configuration.md](configuration.md)), 365 days by default, instead of a person's 90 days by
 default and 365 at most: a token created without `--expires` or `expiresIn` expires at the bound,
 and an expiry beyond it is `400`, naming the key. `0` bounds nothing: such a token then never
-expires, as a deploy token. Lowering the bound changes nothing for the tokens made before: revoke
-them to apply it.
+expires, as a deploy token without `auth.deployTokens.maxTTL`. Lowering the bound changes
+nothing for the tokens made before: revoke them to apply it.
 
 **The owner.** What disabling the owner does is `auth.serviceAccounts.onOwnerDisabled`. With
 `flag`, the default, it changes nothing for the account, which keeps working: the users API

@@ -221,7 +221,7 @@ func newServeCmd(a *app) *cobra.Command {
 			ciPolicies := newCIPolicies(c, st)
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
-				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
+				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},

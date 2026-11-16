@@ -672,3 +672,31 @@ func TestMaskTokenReach(t *testing.T) {
 		t.Errorf("after raw/libs, raw/scratch2 and pypi/later: %q, want the same two", got)
 	}
 }
+
+// TestDeployTokensAPIBound: with auth.deployTokens.maxTTL, a deploy token of a repo or over a
+// mask created without an expiry gets the bound, and one asked to expire later is 400 naming the
+// field, the bound and the latest expiry (docs/spec/rbac.md §1, #1286); a person's token keeps
+// its own bounds.
+func TestDeployTokensAPIBound(t *testing.T) {
+	f := newFixture(t, Options{DeployTokenMaxLifetime: 90 * 24 * time.Hour})
+	f.create(t, "raw", "scratch")
+	f.addUsers(t, "alice")
+	bound := testNow.Add(90 * 24 * time.Hour)
+	for _, c := range []created{
+		f.postToken(t, "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "ci", "scopes": ["write"]}`),
+		f.postToken(t, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "nodes", "scopes": ["read"]}`),
+		f.postToken(t, "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "short", "scopes": ["read"], "expiresIn": "30d"}`),
+	} {
+		if c.ExpiresAt == nil || c.ExpiresAt.After(bound) || (c.Name != "short" && !c.ExpiresAt.Equal(bound)) {
+			t.Errorf("deploy token %q expires at %v, want at %v at the latest, at it without an expiry", c.Name, c.ExpiresAt, bound)
+		}
+	}
+	msg := "a deploy token expires at most 2160h0m0s ahead (auth.deployTokens.maxTTL), at 2026-04-02T12:00:00Z at the latest"
+	wantError(t, f.do(http.MethodPost, "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "long", "scopes": ["read"], "expiresIn": "91d"}`, admin),
+		http.StatusBadRequest, codeInvalid, "expiresIn: "+msg)
+	wantError(t, f.do(http.MethodPost, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "long", "scopes": ["read"], "expiresAt": "2026-04-02T12:00:01Z"}`, admin),
+		http.StatusBadRequest, codeInvalid, "expiresAt: "+msg)
+	var pat created
+	decodeJSON(t, f.doAs(http.MethodPost, "/api/v1/users/alice/tokens", `{"name": "laptop", "expiresIn": "365d"}`, admin,
+		auth.Credential{Kind: auth.CredPassword}), http.StatusCreated, &pat)
+}

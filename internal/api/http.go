@@ -30,12 +30,16 @@ type Options struct {
 	Repos *Repos
 	// Tokens is the service behind the tokens of a user and the deploy tokens of a repo; nil
 	// means one over the index, the audit writer, the clock and the logger of Repos, with
-	// ServiceTokenMaxLifetime.
+	// ServiceTokenMaxLifetime and DeployTokenMaxLifetime.
 	Tokens *auth.Tokens
 	// ServiceTokenMaxLifetime bounds the lifetime of a service account's personal access tokens,
 	// auth.serviceAccounts.maxTokenTTL (auth.Tokens.ServiceMaxLifetime), when Tokens is nil;
 	// zero bounds nothing.
 	ServiceTokenMaxLifetime time.Duration
+	// DeployTokenMaxLifetime bounds the lifetime of a deploy token, of a repo and over a mask,
+	// auth.deployTokens.maxTTL (auth.Tokens.DeployMaxLifetime), when Tokens is nil; zero bounds
+	// nothing.
+	DeployTokenMaxLifetime time.Duration
 	// Users is the service behind /api/v1/users; nil means one over the index, the audit
 	// writer, the clock and the logger of Repos, with ServiceDisableWithOwner.
 	Users *auth.Users
@@ -219,7 +223,7 @@ func New(o Options) http.Handler {
 	}
 	if h.tokens == nil {
 		h.tokens = &auth.Tokens{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
-			ServiceMaxLifetime: o.ServiceTokenMaxLifetime}
+			ServiceMaxLifetime: o.ServiceTokenMaxLifetime, DeployMaxLifetime: o.DeployTokenMaxLifetime}
 	}
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,

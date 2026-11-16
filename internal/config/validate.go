@@ -963,6 +963,9 @@ func (a Auth) validate(p *problems, s Server) {
 	if a.Bootstrap.TTL <= 0 {
 		p.add("auth.bootstrap.ttl", "must be positive")
 	}
+	if a.DeployTokens.MaxTTL < 0 {
+		p.add("auth.deployTokens.maxTTL", "must not be negative; 0 bounds nothing")
+	}
 	if a.ServiceAccounts.MaxTokenTTL < 0 {
 		p.add("auth.serviceAccounts.maxTokenTTL", "must not be negative; 0 bounds nothing")
 	}

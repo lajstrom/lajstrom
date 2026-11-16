@@ -90,25 +90,26 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 	f.StringVar(&name, "name", "", "a label for the token, unique among the owner's live tokens, at most 64 bytes")
 	f.StringVar(&scopes, "scopes", "", "read, write, attach, or a comma list of them; required for a deploy token; none for a personal access token is its user's full rights; write holds attach")
 	f.StringVar(&expires, "expires", "", "a lifetime (30d, 12h) or an RFC 3339 time; a personal access token defaults to 90d and lives at most 365d, "+
-		"a service account's is bounded by auth.serviceAccounts.maxTokenTTL instead, a deploy token without it never expires")
+		"a service account's is bounded by auth.serviceAccounts.maxTokenTTL instead, a deploy token by auth.deployTokens.maxTTL; "+
+		"without it and without a bound, a deploy token never expires")
 	_ = cmd.MarkFlagRequired("name") // fails only for a flag that does not exist
 	return cmd
 }
 
 // parseExpires reads --expires: an RFC 3339 time, else a lifetime (auth.ParseLifetime); empty
-// is the default of the kind.
+// is the default of the kind. A refusal of the expiry names --expires.
 func parseExpires(s string) (auth.Expiry, error) {
 	if s == "" {
 		return auth.Expiry{}, nil
 	}
 	if at, err := time.Parse(time.RFC3339, s); err == nil {
-		return auth.Expiry{At: at}, nil
+		return auth.Expiry{At: at, Field: "--expires"}, nil
 	}
 	d, err := auth.ParseLifetime(s)
 	if err != nil {
 		return auth.Expiry{}, fmt.Errorf("--expires: %w, or an RFC 3339 time", err)
 	}
-	return auth.Expiry{In: d}, nil
+	return auth.Expiry{In: d, Field: "--expires"}, nil
 }
 
 // newTokenListCmd returns admin token list: the tokens of a user, of a repo or over a mask (as
@@ -167,15 +168,16 @@ func newTokenRevokeCmd(a *app) *cobra.Command {
 }
 
 // withTokens opens the index database of the configuration, runs fn with the tokens service
-// over it, its bound of a service account's tokens auth.serviceAccounts.maxTokenTTL, and closes
-// the database.
+// over it, with the bounds of the configuration, auth.serviceAccounts.maxTokenTTL for a service
+// account's tokens and auth.deployTokens.maxTTL for deploy tokens, and closes the database.
 func (a *app) withTokens(ctx context.Context, fn func(context.Context, *auth.Tokens) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &auth.Tokens{Index: st, Formats: api.RepoFormat, Log: a.log, ServiceMaxLifetime: a.cfg.Auth.ServiceAccounts.MaxTokenTTL})
+	return fn(ctx, &auth.Tokens{Index: st, Formats: api.RepoFormat, Log: a.log,
+		ServiceMaxLifetime: a.cfg.Auth.ServiceAccounts.MaxTokenTTL, DeployMaxLifetime: a.cfg.Auth.DeployTokens.MaxTTL})
 }
 
 // writeTokenTable prints tokens as a table with the columns ID, KIND, NAME, SCOPES, EXPIRES,
