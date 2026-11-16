@@ -55,6 +55,10 @@ type LoginOptions struct {
 	InsecureCookie bool
 	// TokenLifetime is auth.oidc.tokenLifetime.
 	TokenLifetime time.Duration
+	// ReturnOrigins are the origins a web UI's login may return to (docs/spec/rbac.md §10): the
+	// origin of server.externalURL and those of server.corsOrigins. Empty: a login with
+	// return_to is refused.
+	ReturnOrigins []string
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log gets the refusals at info level with their reason; nil is slog.Default().
@@ -103,6 +107,11 @@ func NewHandler(o LoginOptions) http.Handler {
 func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := h.o.Now()
+	ui, why := uiLogin(r.URL.Query(), h.o.ReturnOrigins)
+	if why != "" {
+		h.refuse(w, r, why, "This login cannot start: "+why+".")
+		return
+	}
 	var device *index.OIDCLogin
 	if r.URL.Query().Has("user_code") {
 		var ok bool
@@ -120,7 +129,8 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := index.OIDCLogin{Kind: index.OIDCLoginCode, State: Hash(state), Binding: Hash(cookie), Nonce: nonce,
-		Verifier: verifier, Status: index.OIDCPending, CreatedAt: now, ExpiresAt: now.Add(LoginTTL)}
+		Verifier: verifier, ReturnTo: ui.returnTo, CodeChallenge: ui.challenge, DPoPJKT: ui.jkt, Status: index.OIDCPending,
+		CreatedAt: now, ExpiresAt: now.Add(LoginTTL)}
 	if device != nil {
 		row.DeviceID = &device.ID
 	}
@@ -204,6 +214,10 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.approve(w, r, *row.DeviceID, u)
 		return
 	}
+	if row.ReturnTo != "" {
+		h.handOff(w, r, row, u)
+		return
+	}
 	t, secret, err := h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, h.origin(r))
 	if err != nil {
 		h.fail(w, r, err)
@@ -263,6 +277,24 @@ func (h *handler) approve(w http.ResponseWriter, r *http.Request, id int64, u *i
 	default:
 		writePage(w, http.StatusOK, page{Title: "Logged in", User: u.Name, Message: "You are logged in. Return to your terminal: lajstrom login finishes there."})
 	}
+}
+
+// handOff ends the login row of a web UI for u (docs/spec/rbac.md §10): a new code, whose hash
+// the row keeps with the user, approved once, and 302 to the row's return_to with the code in
+// the fragment. The redirect has no body, so that the code is in the Location alone.
+func (h *handler) handOff(w http.ResponseWriter, r *http.Request, row *index.OIDCLogin, u *index.User) {
+	code := NewSecret()
+	row.Status, row.UserID, row.Handoff = index.OIDCApproved, &u.ID, Hash(code)
+	switch err := h.o.Index.UpdateOIDCLogin(r.Context(), row, index.OIDCUsed); {
+	case errors.Is(err, index.ErrNotFound), errors.Is(err, index.ErrConflict):
+		h.refuse(w, r, "a login of a web UI that no longer waits", "This login was used already: start it again.")
+		return
+	case err != nil:
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", row.ReturnTo+"#code="+code)
+	w.WriteHeader(http.StatusFound)
 }
 
 // deny marks the device request of the login row denied, when it has one that waits.

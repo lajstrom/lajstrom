@@ -142,10 +142,24 @@ func (s *Users) identityUser(ctx context.Context, w index.Writer, l OIDCLogin, n
 // (docs/spec/rbac.md §8): without scopes, expiring after lifetime, named oidc <time> <4 hex>, with
 // its token.create event by the user and createdBy oidc. It returns the token and its secret.
 func (s *Tokens) LoginToken(ctx context.Context, u *index.User, lifetime time.Duration, o Origin) (*Token, string, error) {
+	return s.loginToken(ctx, u, lifetime, "", o)
+}
+
+// BoundLoginToken mints the token of a web UI's OIDC sign-in (docs/spec/rbac.md §10): the token of
+// LoginToken, bound to the DPoP key whose JWK SHA-256 thumbprint is jkt (CreateBoundPAT).
+func (s *Tokens) BoundLoginToken(ctx context.Context, u *index.User, lifetime time.Duration, jkt string, o Origin) (*Token, string, error) {
+	return s.loginToken(ctx, u, lifetime, jkt, o)
+}
+
+// loginToken is LoginToken, the token bound to the DPoP key of the thumbprint jkt unless it is "".
+func (s *Tokens) loginToken(ctx context.Context, u *index.User, lifetime time.Duration, jkt string, o Origin) (*Token, string, error) {
 	o.Source = SourceOIDC
 	b := make([]byte, 2)
 	_, _ = rand.Read(b) // crypto/rand.Read does not return errors; it crashes the program instead
 	name := "oidc " + s.now().Format(time.RFC3339) + " " + hex.EncodeToString(b)
 	ctx = WithCredential(WithPrincipal(ctx, UserPrincipal(u)), Credential{Kind: CredOIDC})
+	if jkt != "" {
+		return s.CreateBoundPAT(ctx, u.Name, name, jkt, Expiry{In: lifetime}, o)
+	}
 	return s.CreatePAT(ctx, u.Name, name, nil, Expiry{In: lifetime}, o)
 }

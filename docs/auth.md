@@ -1272,6 +1272,25 @@ To keep a person out, **disable** their user (`lajstrom admin user disable alice
 stop at the next request, and their logins are refused. Deleting the user lets the identity go,
 and the next login makes a new user.
 
+### A web UI
+
+The web UI ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)) signs a person in through
+the same login, and the token goes to the UI instead of a page
+([rbac.md](spec/rbac.md) §10). The UI starts the login with `return_to`, one of its pages, the
+challenge of a PKCE verifier it keeps, and `dpop_jkt`, the thumbprint of its DPoP key; the
+callback sends the browser back to that page with a one-time code in the fragment, `#code=…`,
+and the UI trades the code and the verifier, with a DPoP proof of that key, for a token bound to
+the key at [`POST /api/v1/login`](api.md#sign-in-post-apiv1login). The token expires after
+`auth.login.tokenLifetime` (12 hours), or `tokenLifetime` when that is shorter, and signing out
+revokes it.
+
+`return_to` must be on the origin of `server.externalURL`, a UI at `/ui/` behind the same edge,
+or of [`server.corsOrigins`](configuration.md#server), a UI served from elsewhere: the login
+redirects to no other site. The code is useless without the verifier, which never leaves the
+UI's tab, and without the key, which never leaves the browser, and it is redeemed once, within
+the 10 minutes of the login. The IdP needs nothing
+more: its redirect URI stays `<server.externalURL>/-/oidc/callback`.
+
 ### Groups and group bindings
 
 Each login replaces the user's groups with those of the claim `groupsClaim`, and they count

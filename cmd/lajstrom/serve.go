@@ -212,12 +212,13 @@ func newServeCmd(a *app) *cobra.Command {
 
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
-			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins)}
+			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
+				OIDC: edge.login != nil}
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, DPoP: proofs})
+				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, Handoffs: handoffsOf(edge), DPoP: proofs})
 			srv, err := server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,

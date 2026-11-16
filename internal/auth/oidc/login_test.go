@@ -84,7 +84,7 @@ func newLoginFixture(t *testing.T) *loginFixture {
 	log := slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	f.h = NewHandler(LoginOptions{Provider: f.p, Index: st, Users: &auth.Users{Index: st, Now: clock, Log: log},
 		Tokens: &auth.Tokens{Index: st, Now: clock, Log: log}, ExternalURL: "https://lajstrom.example",
-		TokenLifetime: 24 * time.Hour, Now: clock, Log: log})
+		TokenLifetime: 24 * time.Hour, ReturnOrigins: []string{"https://lajstrom.example", uiOrigin}, Now: clock, Log: log})
 	return f
 }
 
