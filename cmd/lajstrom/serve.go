@@ -21,6 +21,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -128,14 +129,10 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			// After the background work has ended, before the index closes.
 			defer rep.Stop(context.WithoutCancel(ctx))
-			// The repos of the configuration are not checked against their registry's
-			// capabilities: the provider set is not built yet, and the probe below logs a
-			// registry that takes no name of Lajstrom's at error. The API checks (#663).
-			created, err := newRepos(c, st, a.log, nil).Bootstrap(ctx, c.Repos)
+			encryption, err := bootstrapRepos(ctx, a, c, st)
 			if err != nil {
 				return err
 			}
-			a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
 			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log}
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
@@ -199,7 +196,7 @@ func newServeCmd(a *app) *cobra.Command {
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
-				Proxy: proxyCore, Policy: decider}
+				Proxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
@@ -210,6 +207,7 @@ func newServeCmd(a *app) *cobra.Command {
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
+			repos.Encryption = encryption != nil
 			edge, err := edgeInputs(c, st, a.log)
 			if err != nil {
 				return err
@@ -262,6 +260,35 @@ func newServeCmd(a *app) *cobra.Command {
 			return srv.Run(ctx)
 		},
 	}
+}
+
+// bootstrapRepos makes the keys of encrypted repos (nil without a master key) and creates the
+// repos of the configuration that the index does not have, which may be encrypted only with them.
+// The repos are not checked against their registry's capabilities: the provider set is not built
+// yet, and the probe logs a registry that takes no name of Lajstrom's at error. The API checks
+// (#663).
+func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Store) (*keys.Encryption, error) {
+	encryption, err := newEncryption(c, a.lookupEnv, st, a.log)
+	if err != nil {
+		return nil, err
+	}
+	repos := newRepos(c, st, a.log, nil)
+	repos.Encryption = encryption != nil
+	created, err := repos.Bootstrap(ctx, c.Repos)
+	if err != nil {
+		return nil, err
+	}
+	a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
+	return encryption, nil
+}
+
+// asEncryption is e as a format.Encryption: nil, not an interface holding a nil pointer, when
+// there is none.
+func asEncryption(e *keys.Encryption) format.Encryption {
+	if e == nil {
+		return nil
+	}
+	return e
 }
 
 // warnPlainHTTP warns when server.insecureHTTP is on and server.listen takes plain HTTP from

@@ -1,5 +1,5 @@
-// Package awskms is the AWS KMS of internal/keys (ADR 0020): the calls DescribeKey,
-// GetPublicKey and Sign of the KMS JSON 1.1 API over net/http, signed with SigV4 by
+// Package awskms is the AWS KMS of internal/keys (ADR 0020, ADR 0009): the calls DescribeKey,
+// GetPublicKey, Sign and Decrypt of the KMS JSON 1.1 API over net/http, signed with SigV4 by
 // aws-sdk-go-v2, with the credentials of the SDK's default chain, as the ECR adapter gets them.
 // It holds no key material: KMS keys never leave the KMS.
 package awskms
@@ -43,6 +43,8 @@ const (
 	// The signing algorithms of OpenPGP signatures by an RSA and a P-256 key.
 	algorithmRSA   = "RSASSA_PKCS1_V1_5_SHA_256"
 	algorithmECDSA = "ECDSA_SHA_256"
+	// algorithmOAEP is the encryption algorithm of a JWE recipient RSA-OAEP-256.
+	algorithmOAEP = "RSAES_OAEP_SHA_256"
 
 	// maxAnswer bounds what is read of an answer: a public key of RSA 4096 is under 1 KiB.
 	maxAnswer = 64 << 10
@@ -85,7 +87,7 @@ type Options struct {
 	Log *slog.Logger
 }
 
-// Client is AWS KMS for internal/keys: it implements keys.KMS. The SDK's configuration is read at
+// Client is AWS KMS for internal/keys: it implements keys.KMS and keys.DecryptKMS. The SDK's configuration is read at
 // the first request, so a server that holds no key in AWS KMS never reads it. It is safe for
 // concurrent use.
 type Client struct {
@@ -101,7 +103,10 @@ type Client struct {
 	err    error
 }
 
-var _ keys.KMS = (*Client)(nil)
+var (
+	_ keys.KMS        = (*Client)(nil)
+	_ keys.DecryptKMS = (*Client)(nil)
+)
 
 // New returns the Client of o. It does not talk to AWS.
 func New(o Options) *Client {
@@ -214,6 +219,66 @@ func (c *Client) Sign(ctx context.Context, name string, pub crypto.PublicKey, di
 		return nil, errors.New("awskms: Sign answered no signature")
 	}
 	return out.Signature, nil
+}
+
+// decryptSpecs are the key specs of AWS KMS that decrypt the data keys of encrypted repos.
+var decryptSpecs = map[string]bool{"RSA_2048": true, "RSA_3072": true, "RSA_4096": true}
+
+// DecryptKey describes the key of name, as Key does, for decryption: a key that is not enabled,
+// whose usage is not ENCRYPT_DECRYPT, whose spec is not RSA_2048, RSA_3072 or RSA_4096, or that
+// does not decrypt with RSAES_OAEP_SHA_256, is keys.ErrKMSKeyUnsupported.
+func (c *Client) DecryptKey(ctx context.Context, name string) (*keys.KMSKey, error) {
+	var desc struct {
+		KeyMetadata struct {
+			Arn                  string
+			CreationDate         float64
+			KeyUsage             string
+			KeySpec              string
+			KeyState             string
+			EncryptionAlgorithms []string
+		}
+	}
+	if err := c.call(ctx, name, "DescribeKey", map[string]string{"KeyId": name}, &desc); err != nil {
+		return nil, err
+	}
+	m := desc.KeyMetadata
+	switch {
+	case m.Arn == "":
+		return nil, errors.New("awskms: DescribeKey answered no key ARN")
+	case m.KeyUsage != "ENCRYPT_DECRYPT":
+		return nil, fmt.Errorf("%w: %s has the usage %s, not ENCRYPT_DECRYPT", keys.ErrKMSKeyUnsupported, m.Arn, m.KeyUsage)
+	case !decryptSpecs[m.KeySpec]:
+		return nil, fmt.Errorf("%w: %s is a key of %s, not RSA_2048, RSA_3072 or RSA_4096", keys.ErrKMSKeyUnsupported, m.Arn, m.KeySpec)
+	case m.KeyState != "Enabled":
+		return nil, fmt.Errorf("%w: %s is %s, not Enabled", keys.ErrKMSKeyUnsupported, m.Arn, m.KeyState)
+	case !slices.Contains(m.EncryptionAlgorithms, algorithmOAEP):
+		return nil, fmt.Errorf("%w: %s does not decrypt with %s", keys.ErrKMSKeyUnsupported, m.Arn, algorithmOAEP)
+	}
+	var pub struct{ PublicKey []byte }
+	if err := c.call(ctx, m.Arn, "GetPublicKey", map[string]string{"KeyId": m.Arn}, &pub); err != nil {
+		return nil, err
+	}
+	key, err := x509.ParsePKIXPublicKey(pub.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("awskms: the public key of %s: %w", m.Arn, err)
+	}
+	if _, ok := key.(*rsa.PublicKey); !ok {
+		return nil, fmt.Errorf("%w: the public key of %s is a %T", keys.ErrKMSKeyUnsupported, m.Arn, key)
+	}
+	return &keys.KMSKey{Name: m.Arn, Public: key, Created: time.Unix(int64(m.CreationDate), 0)}, nil
+}
+
+// Decrypt decrypts ciphertext with the key of the ARN name, RSAES_OAEP_SHA_256.
+func (c *Client) Decrypt(ctx context.Context, name string, ciphertext []byte) ([]byte, error) {
+	in := map[string]any{"KeyId": name, "CiphertextBlob": ciphertext, "EncryptionAlgorithm": algorithmOAEP}
+	var out struct{ Plaintext []byte }
+	if err := c.call(ctx, name, "Decrypt", in, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Plaintext) == 0 {
+		return nil, errors.New("awskms: Decrypt answered no plaintext")
+	}
+	return out.Plaintext, nil
 }
 
 // call sends the request op of the KMS API with in for the key of name, whose ARN names its

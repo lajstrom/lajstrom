@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -89,6 +90,8 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"pem": string(p), "algorithm": f.version["algorithm"], "pemCrc32c": crc(p)})
 	case r.Method == http.MethodPost && path == testVersion+":asymmetricSign":
 		f.sign(w, r)
+	case r.Method == http.MethodPost && path == testVersion+":asymmetricDecrypt":
+		f.decrypt(w, r)
 	default:
 		apiError(w, http.StatusNotFound, "NOT_FOUND", "no "+path)
 	}
@@ -114,6 +117,29 @@ func (f *fakeKMS) sign(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"name": testVersion, "signature": sig, "signatureCrc32c": sum,
 		"verifiedDigestCrc32c": true, "protectionLevel": "HSM"})
+}
+
+// decrypt answers asymmetricDecrypt: the plaintext of the ciphertext, checked against its CRC32C.
+func (f *fakeKMS) decrypt(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Ciphertext       []byte
+		CiphertextCrc32c string
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.CiphertextCrc32c != crc(in.Ciphertext) {
+		apiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "ciphertext")
+		return
+	}
+	plain, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, f.priv.(*rsa.PrivateKey), in.Ciphertext, nil)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "decryption failed")
+		return
+	}
+	sum := crc(plain)
+	if f.badCRC {
+		sum = crc(append(plain, 0))
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"plaintext": plain, "plaintextCrc32c": sum,
+		"verifiedCiphertextCrc32c": true, "protectionLevel": "HSM"})
 }
 
 func crc(b []byte) string {
@@ -299,5 +325,40 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(fmt.Sprint(err))
+	}
+}
+
+// TestDecryptKeyAndDecrypt describes an RSA version for decryption and decrypts what its public
+// key encrypted with OAEP and SHA-256; another algorithm or state is ErrKMSKeyUnsupported, a
+// plaintext whose CRC32C differs is ErrKMSUnavailable.
+func TestDecryptKeyAndDecrypt(t *testing.T) {
+	r, err := rsa.GenerateKey(rand.Reader, 2048)
+	must(t, err)
+	f, c := newFakeKMS(t, r, "RSA_DECRYPT_OAEP_3072_SHA256")
+	k, err := c.DecryptKey(t.Context(), testVersion)
+	must(t, err)
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, k.Public.(*rsa.PublicKey), []byte("a data key"), nil)
+	must(t, err)
+	plain, err := c.Decrypt(t.Context(), k.Name, ct)
+	must(t, err)
+	if string(plain) != "a data key" {
+		t.Errorf("Decrypt = %q", plain)
+	}
+	f.set(func(f *fakeKMS) { f.badCRC = true })
+	if _, err := c.Decrypt(t.Context(), k.Name, ct); !errors.Is(err, keys.ErrKMSUnavailable) {
+		t.Errorf("a CRC32C of other bytes: %v, want ErrKMSUnavailable", err)
+	}
+	for name, change := range map[string]func(map[string]any){
+		"sign":     func(m map[string]any) { m["algorithm"] = "RSA_SIGN_PKCS1_3072_SHA256" },
+		"sha1":     func(m map[string]any) { m["algorithm"] = "RSA_DECRYPT_OAEP_3072_SHA1" },
+		"disabled": func(m map[string]any) { m["state"] = "DISABLED" },
+	} {
+		f.set(func(f *fakeKMS) {
+			f.version["algorithm"], f.version["state"] = "RSA_DECRYPT_OAEP_3072_SHA256", "ENABLED"
+			change(f.version)
+		})
+		if _, err := c.DecryptKey(t.Context(), testVersion); !errors.Is(err, keys.ErrKMSKeyUnsupported) {
+			t.Errorf("%s: %v, want ErrKMSKeyUnsupported", name, err)
+		}
 	}
 }

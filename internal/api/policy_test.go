@@ -30,7 +30,7 @@ func TestCheckPolicy(t *testing.T) {
 		{"string", "raw", `"x"`, "", "policy: must be a JSON object or null"},
 		{"truncated", "raw", `{"a":`, "", "policy: must be a JSON object or null"},
 		{"two values", "raw", `{} {}`, "", "policy: must be a JSON object or null"},
-		{"unknown key", "raw", `{"maxFileSize":1,"maxFilesize":1}`, "", "policy.maxFilesize: unknown key; the keys are maxFileSize, blobRedirect, maven"},
+		{"unknown key", "raw", `{"maxFileSize":1,"maxFilesize":1}`, "", "policy.maxFilesize: unknown key; the keys are maxFileSize, blobRedirect, encryption, maven"},
 		{"zero size", "raw", `{"maxFileSize":0}`, "", "policy.maxFileSize: must be an integer number of bytes, at least 1"},
 		{"negative size", "raw", `{"maxFileSize":-1}`, "", "policy.maxFileSize: must be"},
 		{"fractional size", "raw", `{"maxFileSize":1.5}`, "", "policy.maxFileSize: must be"},

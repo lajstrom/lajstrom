@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/blobcrypt"
+	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/policy"
 )
@@ -17,7 +20,8 @@ import (
 // reader elsewhere: maxFileSize format.MaxFileSize (the uploads of the frontends and ingest),
 // blobRedirect format.BlobRedirect (every blob read), maven.sessionTimeout and
 // maven.maxSessionFiles the publication sessions of ingest, maven.versionPolicy the maven plugin
-// (its deploy path and Admit). The readers are lenient; the API is where a policy is checked.
+// (its deploy path and Admit), encryption format.EncryptionOf (every write, internal/keys). The
+// readers are lenient but encryption's; the API is where a policy is checked.
 const (
 	keyMaxFileSize     = "maxFileSize"
 	keyBlobRedirect    = "blobRedirect"
@@ -27,6 +31,10 @@ const (
 	keyVersionPolicy   = "versionPolicy"
 	keyEnforcePull     = policy.KeyEnforcePull // docs/spec/policy.md §9
 	keyQuarantine      = policy.KeyQuarantine
+	keyEncryption      = "encryption"
+	keyMode            = "mode"
+	keyKey             = "key"
+	keyRecipients      = "recipients"
 
 	minSessionTimeout = time.Minute
 	maxSessionTimeout = 24 * time.Hour
@@ -34,13 +42,17 @@ const (
 	// for each file and one for its metadata, and a manifest of /v2 has at most 1 000 layers
 	// (facade.maxLayers), so a version stays one that /v2 takes back.
 	maxSessionFiles = 999
+	// maxRecipients bounds policy.encryption.recipients: each is one more JWE recipient of every
+	// data key, in every layer's annotation.
+	maxRecipients = 8
 )
 
 // policyKeys are the keys of a policy, and mavenKeys those of policy.maven, as the messages
 // list them.
 var (
-	policyKeys = []string{keyMaxFileSize, keyBlobRedirect, keyMaven, keyEnforcePull, keyQuarantine}
-	mavenKeys  = []string{keyMaxSessionFiles, keySessionTimeout, keyVersionPolicy}
+	policyKeys     = []string{keyMaxFileSize, keyBlobRedirect, keyEncryption, keyMaven, keyEnforcePull, keyQuarantine}
+	mavenKeys      = []string{keyMaxSessionFiles, keySessionTimeout, keyVersionPolicy}
+	encryptionKeys = []string{keyKey, keyMode, keyRecipients}
 )
 
 // policyObject is a policy decoded as JSON with numbers kept as written (json.Number), so that a
@@ -154,16 +166,25 @@ func checkPolicyKeys(formatName string, obj policyObject) error {
 				err = invalid("policy.enforcePull: must be true or false")
 			}
 		case keyQuarantine:
-			s, _ := v.(string)
-			if d, perr := time.ParseDuration(s); perr != nil || (d != 0 && (d < policy.MinQuarantine || d > policy.MaxQuarantine)) {
-				err = invalid(`policy.quarantineNewVersions: must be a duration from 1m to 8760h, or "0s", e.g. "72h"`)
-			}
+			err = checkQuarantine(v)
+		case keyEncryption:
+			err = checkEncryption(formatName, v)
 		default:
 			err = unknownKey("policy."+k, policyKeys)
 		}
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkQuarantine checks policy.quarantineNewVersions: a duration from policy.MinQuarantine to
+// policy.MaxQuarantine, or "0s", none.
+func checkQuarantine(v any) error {
+	s, _ := v.(string)
+	if d, err := time.ParseDuration(s); err != nil || (d != 0 && (d < policy.MinQuarantine || d > policy.MaxQuarantine)) {
+		return invalid(`policy.quarantineNewVersions: must be a duration from 1m to 8760h, or "0s", e.g. "72h"`)
 	}
 	return nil
 }
@@ -228,6 +249,82 @@ func checkMavenKey(k string, v any) error {
 		return unknownKey("policy.maven."+k, mavenKeys)
 	}
 	return nil
+}
+
+// checkEncryption checks policy.encryption (docs/api.md, ADR 0009): an object whose mode is
+// "none" or "at-rest", at-rest not on an oci repo; key "" or a key URI of a KMS; recipients at
+// most maxRecipients PEM public keys that blobcrypt takes, and at least one with at-rest, the
+// recovery recipient (decided on #114). A group has no policy at all. The policy checked is the
+// one the repo will have, a change merged in (mergePolicy), so that a change to at-rest and the
+// removal of the last recipient are refused alike.
+func checkEncryption(formatName string, v any) error {
+	obj, ok := v.(policyObject)
+	if !ok {
+		return invalid("policy.encryption: must be a JSON object")
+	}
+	for _, k := range slices.Sorted(maps.Keys(obj)) {
+		if !slices.Contains(encryptionKeys, k) {
+			return unknownKey("policy.encryption."+k, encryptionKeys)
+		}
+	}
+	switch mode, _ := obj[keyMode].(string); {
+	case mode == format.EncryptionAtRest && formatName == "oci":
+		return invalid("policy.encryption.mode: an oci repo passes its manifests through and cannot encrypt them")
+	case mode != format.EncryptionNone && mode != format.EncryptionAtRest:
+		return invalid(`policy.encryption.mode: must be "none" or "at-rest"`)
+	}
+	if err := checkEncryptionKey(obj); err != nil {
+		return err
+	}
+	if err := checkRecipients(obj); err != nil {
+		return err
+	}
+	if list, _ := obj[keyRecipients].([]any); obj[keyMode] == format.EncryptionAtRest && len(list) == 0 {
+		return invalid("policy.encryption.recipients: %s", config.AtRestNeedsRecipient)
+	}
+	return nil
+}
+
+// checkEncryptionKey checks policy.encryption.key: "" or a key URI of a KMS.
+func checkEncryptionKey(obj policyObject) error {
+	if v, ok := obj[keyKey]; ok {
+		s, isString := v.(string)
+		if !isString {
+			return invalid(`policy.encryption.key: must be a key URI of a KMS, or "" for a key Lajstrom makes`)
+		}
+		if s != "" {
+			if _, err := config.ParseKMSKey(s); err != nil {
+				return invalid("policy.encryption.key: %s", err.Error())
+			}
+		}
+	}
+	return nil
+}
+
+// checkRecipients checks policy.encryption.recipients: at most maxRecipients PEM public keys that
+// blobcrypt takes.
+func checkRecipients(obj policyObject) error {
+	if v, ok := obj[keyRecipients]; ok {
+		list, isList := v.([]any)
+		if !isList || len(list) > maxRecipients {
+			return invalid("policy.encryption.recipients: must be a list of at most %d PEM public keys", maxRecipients)
+		}
+		for i, r := range list {
+			s, _ := r.(string)
+			if _, err := blobcrypt.ParseRecipient(s); err != nil {
+				return invalid("policy.encryption.recipients[%d]: %s", i, strings.TrimPrefix(err.Error(), "blobcrypt: "))
+			}
+		}
+	}
+	return nil
+}
+
+// atRest reports whether the policy p, as checkPolicy returns it, has encryption mode at-rest.
+func atRest(p json.RawMessage) bool {
+	var pol struct {
+		Encryption *format.EncryptionPolicy `json:"encryption"`
+	}
+	return len(p) > 0 && json.Unmarshal(p, &pol) == nil && pol.Encryption != nil && pol.Encryption.AtRest()
 }
 
 // unknownKey is the error of a key a policy does not have.

@@ -313,7 +313,7 @@ func TestUpdateInvalid(t *testing.T) {
 		// A manager could otherwise make every upload of the repo a 500 (threat model U-7).
 		{"policy maxFileSize not a number", `{"policy":{"maxFileSize":"big"}}`, "policy.maxFileSize: must be an integer number of bytes"},
 		{"policy maxFileSize zero", `{"policy":{"maxFileSize":0}}`, "policy.maxFileSize: must be an integer number of bytes, at least 1"},
-		{"policy unknown key", `{"policy":{"maxFilesize":1}}`, "policy.maxFilesize: unknown key; the keys are maxFileSize, blobRedirect, maven"},
+		{"policy unknown key", `{"policy":{"maxFilesize":1}}`, "policy.maxFilesize: unknown key; the keys are maxFileSize, blobRedirect, encryption, maven"},
 		{"policy maven on raw", `{"policy":{"maven":{"sessionTimeout":"1h"}}}`, "policy.maven: only a maven repo has it, not a raw repo"},
 		{"anonymousRead string", `{"anonymousRead":"yes"}`, "anonymousRead: "},
 		{"unknown field", `{"createdAt":"2026-01-01T00:00:00Z"}`, `body: unknown field "createdAt"`},
