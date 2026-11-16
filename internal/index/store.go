@@ -343,6 +343,10 @@ type Writer interface {
 	// u by u.ID, moves Revision by one, and fills UID, CreatedAt and Revision from the row. A
 	// name another user has is ErrConflict.
 	UpdateUser(ctx context.Context, u *User) error
+	// TouchUser sets LastSeenAt of the user to seenAt when it is null or earlier, else changes
+	// nothing: it only moves forward, as TouchToken (#1283). It moves neither Revision nor
+	// AuthVersion. No user wraps ErrNotFound.
+	TouchUser(ctx context.Context, id int64, seenAt time.Time) error
 
 	// CreateToken inserts t; the hash must be new.
 	CreateToken(ctx context.Context, t *Token) error

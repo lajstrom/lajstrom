@@ -184,11 +184,11 @@ func prefixed(p, cols string) string {
 	return strings.Join(parts, ", ")
 }
 
-const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision"
+const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision, last_seen_at"
 
 func userDests(u *index.User) []any {
 	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
-		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision}
+		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision, nullTimeDest{&u.LastSeenAt}}
 }
 
 // GetUser returns the live user with the given name.
@@ -239,6 +239,24 @@ func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName),
 			textArg(u.Owner), u.ID},
 		textDest{&u.UID}, timeDest{&u.CreatedAt}, &u.Revision)
+}
+
+// TouchUser sets LastSeenAt of the user to seenAt when it is NULL or earlier, and changes
+// nothing otherwise: it only moves forward, as TouchToken does, so that of replicas that record
+// an authentication at once, or a late one, none moves it back (docs/spec/rbac.md §1, Inactive
+// users). It moves neither the revision nor auth_version: the record of an activity is no change
+// of the user. A zero seenAt means now. Only when nothing changed does it read the row, to tell a
+// later activity from no user.
+func (c *conn) TouchUser(ctx context.Context, id int64, seenAt time.Time) error {
+	what := fmt.Sprintf("users id %d", id)
+	at := c.d.EncodeTime(stamp(&seenAt, now()))
+	n, err := c.exec(ctx, what,
+		"UPDATE users SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)", at, id, at)
+	if err != nil || n > 0 {
+		return err
+	}
+	var one int
+	return c.scanRow(ctx, what, "SELECT 1 FROM users WHERE id = ?", []any{id}, &one)
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.

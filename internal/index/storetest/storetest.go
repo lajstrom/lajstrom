@@ -39,6 +39,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"KeysActive", testKeysActive},
 		{"KeyRace", testKeyRace},
 		{"UsersDeleted", testUsersDeleted},
+		{"UsersLastSeen", testUsersLastSeen},
 		{"AuditPrincipalName", testAuditPrincipalName},
 		{"Sessions", testSessions},
 		{"OpenSessions", testOpenSessions},
@@ -134,6 +135,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"SnapshotRoundTrip", testSnapshotRoundTrip},
 		{"SnapshotNotEmpty", testSnapshotNotEmpty},
 		{"SnapshotRefused", testSnapshotRefused},
+		{"SnapshotLastSeenBefore0034", testSnapshotLastSeenBefore0034},
 	}
 	for _, tt := range multi {
 		t.Run(tt.name, func(t *testing.T) {
