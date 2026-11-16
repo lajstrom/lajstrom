@@ -513,6 +513,8 @@ type Auth struct {
 	ServiceAccounts ServiceAccounts `yaml:"serviceAccounts"`
 	// Login is the sign-in of a web UI, POST /api/v1/login (docs/spec/rbac.md §10, #70).
 	Login Login `yaml:"login"`
+	// CI is token exchange for CI (docs/spec/rbac.md §11, #937); off while it has no issuer.
+	CI CI `yaml:"ci"`
 }
 
 // Kubernetes configures Kubernetes service-account tokens as a credential of /v2/token
@@ -831,7 +833,8 @@ func Default() *Config {
 		Auth: Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
 			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},
-			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime}},
+			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime},
+			CI:              CI{TokenLifetime: DefaultCITokenLifetime}},
 		Keys:        Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 		Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: DefaultSignedCertificateTimestamps}},
 		Webhooks: Webhooks{Timeout: DefaultWebhookTimeout, MaxAttempts: DefaultWebhookMaxAttempts, Retention: DefaultWebhookRetention,
