@@ -180,19 +180,25 @@ func (h *handler) createWebhook(w http.ResponseWriter, r *http.Request) (int, an
 		return 0, nil, webhookError(0, err)
 	}
 	w.Header().Set("Location", webhookPath(scope, wh.ID))
+	w.Header().Set("ETag", webhookETag(wh))
 	return http.StatusCreated, CreatedWebhook{Webhook: WebhookOf(wh), Secret: secret}, nil
 }
 
-// getWebhook answers one webhook.
-func (h *handler) getWebhook(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+// webhookETag is the entity tag of h (ETag).
+func webhookETag(h *index.Webhook) string { return ETag(TableWebhooks, h.ID, h.Revision) }
+
+// getWebhook answers one webhook, with its ETag; 304 for an If-None-Match that has it.
+func (h *handler) getWebhook(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	_, wh, err := h.webhookOf(r)
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, WebhookOf(wh), nil
+	return tagged(w, r, webhookETag(wh), WebhookOf(wh))
 }
 
-// updateWebhook changes url, events, active and description; mask is 400.
+// updateWebhook changes url, events, active and description; mask is 400. The answer has the
+// webhook's ETag; with If-Match, the change is made only while the webhook has a revision it
+// names.
 func (h *handler) updateWebhook(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	_, wh, err := h.webhookOf(r)
 	if err != nil {
@@ -209,17 +215,25 @@ func (h *handler) updateWebhook(w http.ResponseWriter, r *http.Request) (int, an
 			req.Mask = " " // set but empty: still a change of the mask
 		}
 	}
+	if r, err = conditional(r, TableWebhooks, fmt.Sprintf("webhook %d", wh.ID)); err != nil {
+		return 0, nil, err
+	}
 	updated, err := h.webhooks.Update(r.Context(), wh.ID, req, auth.Origin(origin(r)))
 	if err != nil {
 		return 0, nil, webhookError(wh.ID, err)
 	}
+	w.Header().Set("ETag", webhookETag(updated))
 	return http.StatusOK, WebhookOf(updated), nil
 }
 
-// deleteWebhook deletes a webhook and its delivery log: 204.
+// deleteWebhook deletes a webhook and its delivery log: 204. With If-Match, only while the
+// webhook has a revision it names.
 func (h *handler) deleteWebhook(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	_, wh, err := h.webhookOf(r)
 	if err != nil {
+		return 0, nil, err
+	}
+	if r, err = conditional(r, TableWebhooks, fmt.Sprintf("webhook %d", wh.ID)); err != nil {
 		return 0, nil, err
 	}
 	if err := h.webhooks.Delete(r.Context(), wh.ID, auth.Origin(origin(r))); err != nil {

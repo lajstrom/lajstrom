@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -162,11 +161,15 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, serviceError(err)
 	}
 	w.Header().Set("Location", "/api/v1/users/"+u.Name)
+	w.Header().Set("ETag", userETag(u))
 	return http.StatusCreated, u, nil
 }
 
-// getUser answers one live user.
-func (h *handler) getUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+// userETag is the entity tag of u (ETag).
+func userETag(u *auth.User) string { return ETag(TableUsers, u.ID, u.Revision) }
+
+// getUser answers one live user, with its ETag; 304 for an If-None-Match that has it.
+func (h *handler) getUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
@@ -178,13 +181,14 @@ func (h *handler) getUser(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, u, nil
+	return tagged(w, r, userETag(u), u)
 }
 
-// updateUser applies the UserPatch of the body and answers the user as it is then: disabled
-// first, then a service account's owner, under the old name, then the name; each change is an
-// audit event of its own (user.disable or user.enable, user.owner, user.rename), and a change to
-// what the user already has is no event.
+// updateUser applies the UserPatch of the body in one transaction (auth.Users.Change) and
+// answers the user as it is then, with its ETag: disabled first, then a service account's owner,
+// under the old name, then the name; each change is an audit event of its own (user.disable or
+// user.enable, user.owner, user.rename), and a change to what the user already has is no event.
+// With If-Match, the change is made only while the user has a revision it names.
 func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -200,49 +204,29 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if patch.Name == nil && patch.Disabled == nil && patch.Owner == nil {
 		return 0, nil, invalid("body: nothing to change; the fields are name, disabled and owner")
 	}
-	ctx := r.Context()
-	if _, err := h.users.Get(ctx, name); err != nil {
+	if r, err = conditional(r, TableUsers, "user "+name); err != nil {
 		return 0, nil, err
 	}
-	if name, err = h.patchUser(ctx, name, patch, auth.Origin(origin(r))); err != nil {
+	u, err := h.users.Change(r.Context(), name, auth.UserChange{Disabled: patch.Disabled, Owner: patch.Owner, Name: patch.Name},
+		auth.Origin(origin(r)))
+	if err != nil {
 		return 0, nil, serviceError(err)
 	}
-	u, err := h.users.Get(ctx, name)
-	if err != nil {
-		return 0, nil, err
-	}
+	w.Header().Set("ETag", userETag(u))
 	return http.StatusOK, u, nil
 }
 
-// patchUser applies patch to the user called name, in the order of updateUser, and returns the
-// user's name after it; it stops at the first change that fails.
-func (h *handler) patchUser(ctx context.Context, name string, patch UserPatch, o auth.Origin) (string, error) {
-	var err error
-	switch {
-	case patch.Disabled == nil:
-	case *patch.Disabled:
-		err = h.users.Disable(ctx, name, o)
-	default:
-		err = h.users.Enable(ctx, name, o)
-	}
-	if err == nil && patch.Owner != nil {
-		err = h.users.SetOwner(ctx, name, *patch.Owner, o)
-	}
-	if err == nil && patch.Name != nil {
-		if err = h.users.Rename(ctx, name, *patch.Name, o); err == nil {
-			name = *patch.Name
-		}
-	}
-	return name, err
-}
-
-// deleteUser deletes a user (auth.Users.Delete): 204.
+// deleteUser deletes a user (auth.Users.Delete): 204. With If-Match, only while the user has a
+// revision it names.
 func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	name, err := h.userName(r)
 	if err != nil {
+		return 0, nil, err
+	}
+	if r, err = conditional(r, TableUsers, "user "+name); err != nil {
 		return 0, nil, err
 	}
 	if err := h.users.Delete(r.Context(), name, auth.Origin(origin(r))); err != nil {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 // revisioned is a resource that has a revision (docs/api.md, Revisions), over a fixture: its
 // path, and the bodies of a PATCH that changes it, that changes it back, and that changes
-// nothing.
+// nothing ("" for a webhook, whose PATCH writes the row whatever it sends).
 type revisioned struct {
 	name              string
 	f                 *fixture
@@ -20,13 +21,19 @@ type revisioned struct {
 	change, back, nop string
 }
 
-// revisionedResources returns a repo in a fixture of its own.
+// revisionedResources returns a repo, a user and a webhook, each in a fixture of its own.
 func revisionedResources(t *testing.T) []revisioned {
 	t.Helper()
 	repos := newFixture(t, Options{})
 	repos.create(t, "raw", "scratch")
+	users := newFixture(t, Options{})
+	wantStatus(t, users.do(http.MethodPost, "/api/v1/users", `{"name": "alice", "password": "correct horse"}`, admin), http.StatusCreated)
+	hooks := webhookFixture(t, true)
+	hook := hooks.postWebhook(t, "/api/v1/webhooks", `{"mask": "*/*", "url": "https://audit.example.com/"}`, admin)
 	return []revisioned{
 		{"repo", repos, "/api/v1/repos/raw/scratch", `{"anonymousRead": true}`, `{"anonymousRead": false}`, `{"policy": null}`},
+		{"user", users, "/api/v1/users/alice", `{"disabled": true}`, `{"disabled": false}`, `{"name": "alice"}`},
+		{"webhook", hooks, fmt.Sprintf("/api/v1/webhooks/%d", hook.ID), `{"active": false}`, `{"active": true}`, ""},
 	}
 }
 
@@ -65,7 +72,7 @@ func wantETag(t *testing.T, what string, rr *httptest.ResponseRecorder, want str
 // ifMatch is the header If-Match: v.
 func ifMatch(v string) http.Header { return http.Header{"If-Match": {v}} }
 
-// TestRevisionGet: GET of a repo answers a strong ETag, the same while
+// TestRevisionGet: GET of a repo, a user and a webhook answers a strong ETag, the same while
 // nothing changes; If-None-Match with it, weak or strong, or *, is 304 without a body, another
 // tag 200, and a value that is no tag 400.
 func TestRevisionGet(t *testing.T) {
@@ -119,9 +126,11 @@ func TestRevisionPatch(t *testing.T) {
 			}
 			wantError(t, f.send(http.MethodPatch, res.target, res.back, ifMatch(fresh[1:])), http.StatusBadRequest, codeInvalid, "If-Match:")
 
-			rr = f.send(http.MethodPatch, res.target, res.nop, ifMatch(fresh))
-			wantStatus(t, rr, http.StatusOK)
-			wantETag(t, "a PATCH that changes nothing", rr, fresh)
+			if res.nop != "" {
+				rr = f.send(http.MethodPatch, res.target, res.nop, ifMatch(fresh))
+				wantStatus(t, rr, http.StatusOK)
+				wantETag(t, "a PATCH that changes nothing", rr, fresh)
+			}
 			rr = f.send(http.MethodPatch, res.target, res.back, ifMatch(stale+", "+fresh))
 			wantStatus(t, rr, http.StatusOK)
 			wantStatus(t, f.send(http.MethodPatch, res.target, res.change, nil), http.StatusOK)
@@ -205,4 +214,16 @@ func TestRevisionOfAnother(t *testing.T) {
 	wantStatus(t, f.send(http.MethodPost, "/api/v1/repos", scratch, nil), http.StatusCreated)
 	wantError(t, f.send(http.MethodPatch, "/api/v1/repos/raw/scratch", `{"anonymousRead": true}`, ifMatch(old)),
 		http.StatusPreconditionFailed, codeConflict)
+}
+
+// TestRevisionPassword: a user's new password moves its ETag, though its resource does not
+// show it.
+func TestRevisionPassword(t *testing.T) {
+	f := newFixture(t, Options{})
+	wantStatus(t, f.send(http.MethodPost, "/api/v1/users", `{"name": "alice", "password": "correct horse"}`, nil), http.StatusCreated)
+	before := f.etagOf(t, "/api/v1/users/alice")
+	wantStatus(t, f.send(http.MethodPost, "/api/v1/users/alice/password", `{"password": "battery staple"}`, nil), http.StatusNoContent)
+	if after := f.etagOf(t, "/api/v1/users/alice"); after == before {
+		t.Errorf("ETag %s after a new password, want another", after)
+	}
 }
