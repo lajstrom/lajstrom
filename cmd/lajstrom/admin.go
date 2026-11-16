@@ -11,6 +11,7 @@ func newAdminCmd(a *app) *cobra.Command {
 	}
 	admin.AddCommand(newAdminRepoCmd(a), newAdminKeyCmd(a), newAdminDebCmd(), newAdminRpmCmd(), newAdminUserCmd(a), newAdminTokenCmd(a),
 		newAdminBindingCmd(a), newAdminBootstrapCmd(a), newAdminRetentionCmd(a), newAdminTrustedRootCmd(),
-		newAdminWebhookCmd(a), newAdminSnapshotCmd(a), newAdminPolicyCmd(a))
+		newAdminWebhookCmd(a), newAdminSnapshotCmd(a), newAdminPolicyCmd(a),
+		newAdminCIPolicyCmd(a))
 	return admin
 }

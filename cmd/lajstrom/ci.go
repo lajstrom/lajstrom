@@ -17,14 +17,15 @@ import (
 // ciExchange returns the exchange of POST /-/oidc/token and the authenticator of the CI tokens
 // of auth.ci (docs/spec/rbac.md §11), both nil when it has no issuer. Each issuer is read through
 // a client that trusts its caFile, or the system's roots, and nothing is read at start; the CI
-// tokens are signed and verified with keys, the token keys of the bearers. It logs each issuer
-// and each policy with its claims and grants: the configuration is the record of the policies.
+// tokens are signed and verified with keys, the token keys of the bearers, and the policies are
+// the configuration's and the index's (ci.Live). It logs each issuer and each policy of the
+// configuration with its claims and grants; those of the API have their audit rows.
 func ciExchange(c *config.Config, st index.Store, keys token.Keys, log *slog.Logger) (http.Handler, server.CIAuthenticator, error) {
 	cc := c.Auth.CI
 	if len(cc.Issuers) == 0 {
 		return nil, nil, nil
 	}
-	policies, err := ci.New(cc)
+	policies, err := ci.NewLive(cc, st, log)
 	if err != nil {
 		return nil, nil, fmt.Errorf("auth.ci: %w", err)
 	}
@@ -46,8 +47,10 @@ func ciExchange(c *config.Config, st index.Store, keys token.Keys, log *slog.Log
 			"url", is.Issuer, "audience", audience)
 	}
 	for _, p := range cc.Policies {
-		log.Info("CI trust policy", "policy", p.Name, "issuer", p.Issuer, "claims", p.Claims, "grants", p.Grants)
+		log.Info("CI trust policy of the configuration", "policy", p.Name, "issuer", p.Issuer, "claims", p.Claims, "grants", p.Grants)
 	}
+	log.Info("CI trust policies of the API are read from the index as they change", "apiWriteRepos", cc.APIWriteRepos,
+		"apiWriteApproval", cc.APIWriteApproval)
 	verifier := token.NewVerifier(token.Options{Keys: keys, Log: log})
 	exchange := &ci.Exchange{Policies: policies, Verifiers: verifiers, Index: st, Lifetime: cc.TokenLifetime,
 		Tokens: token.NewIssuer(token.Options{Keys: keys, Verifier: verifier, Log: log}), ExternalURL: c.Server.ExternalURL, Log: log}
