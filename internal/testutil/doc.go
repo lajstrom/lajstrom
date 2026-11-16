@@ -8,6 +8,9 @@
 // NewCA makes certificate authorities and the certificates they issue, in memory, for the
 // tests of client certificates: no private key is written to the repository.
 //
+// NewOIDCIssuer serves an OIDC issuer in process, its discovery document and its JWKS, and signs
+// the tokens of the tests of CI and cluster tokens with a key of the process.
+//
 // The same options give the same bytes: archive members carry a fixed time and owner. The
 // compressed bytes are those of the Go release's compress/flate, so a test compares with what
 // the builder returns, not with a digest written into the test.
