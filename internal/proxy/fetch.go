@@ -146,7 +146,10 @@ func (c *Core) held(ctx context.Context, p *proxied, a artifact) (*index.FileMat
 }
 
 // heldFile returns the file of the artifact that repo holds in the index r, nil when it does not
-// hold the version, and index.ErrNotFound when it holds the version without the file.
+// hold the version, and index.ErrNotFound when it holds the version without the file. Without
+// the artifact's variant, the file of that name in another variant of the version counts: a
+// hosted maven repo holds every file of a version under no variant, where its proxy keeps each
+// file under a variant of its own (docs/spec/manifest-profile.md §4.2).
 func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) (*index.FileMatch, error) {
 	pkg, err := index.PackageAt(ctx, r, repo.ID, a.pkgPath)
 	if errors.Is(err, index.ErrNotFound) {
@@ -157,7 +160,7 @@ func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) 
 	}
 	v, err := r.GetVersion(ctx, pkg.ID, a.ref.Version, a.ref.Variant)
 	if errors.Is(err, index.ErrNotFound) {
-		return nil, nil
+		return heldByName(ctx, r, repo, pkg, a)
 	}
 	if err != nil {
 		return nil, err
@@ -172,6 +175,21 @@ func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) 
 		}
 	}
 	return nil, fmt.Errorf("%w: %s/%s: %s has no file %s", index.ErrNotFound, repo.Format, repo.Name, a.subject(), a.ref.File)
+}
+
+// heldByName returns the file of the artifact's name in a version of pkg with the artifact's
+// version and another variant, nil when there is none.
+func heldByName(ctx context.Context, r index.Reader, repo index.Repo, pkg *index.Package, a artifact) (*index.FileMatch, error) {
+	matches, err := r.FindFiles(ctx, repo.ID, a.ref.File)
+	if err != nil {
+		return nil, err
+	}
+	for i := range matches {
+		if m := &matches[i]; m.Package.ID == pkg.ID && m.Version.Version == a.ref.Version {
+			return m, nil
+		}
+	}
+	return nil, nil
 }
 
 // entry returns the entry of the artifact in the name's document (§5, step 5), brought up to

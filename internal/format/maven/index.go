@@ -57,8 +57,13 @@ func metadataKind(algorithm string) string {
 // computed from its bytes. The render depends on the index alone, so that two renders of the
 // same versions, on any replica, are the same bytes with the same checksums. An artifact that is
 // not in the index, or has no version (no build), renders no document, which
-// format.CachedDocument answers with index.ErrNotFound; another scope is index.ErrNotFound.
+// format.CachedDocument answers with index.ErrNotFound; another scope is index.ErrNotFound. The
+// scope <groupId>:<artifactId>, the key of a proxy's documents, is the one a group reads of its
+// hosted member (renderKeyed).
 func (Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.IndexScope, st index.Reader) ([]format.Document, error) {
+	if strings.Contains(string(scope), ":") {
+		return renderKeyed(ctx, repo, string(scope), st)
+	}
 	parts := strings.Split(string(scope), "/")
 	if len(parts) < 2 || len(parts) > 3 || checkGroupArtifact(parts[0], parts[1]) != nil || (len(parts) == 3 && !isSnapshotVersion(parts[2])) {
 		return nil, fmt.Errorf("%w: maven scope %q is not <groupId>/<artifactId>[/<base>-SNAPSHOT]", index.ErrNotFound, scope)
@@ -81,6 +86,52 @@ func (Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.Ind
 		return nil, err
 	}
 	return metadataDocuments(groupID, artifactID, vs)
+}
+
+// renderKeyed renders the documents of the artifact key, groupId:artifactId, as a group reads
+// them of its hosted member under the key and the kinds of a proxy's (docs/spec/index-schema.md,
+// index_cache): the artifact's maven-metadata.xml, kindMetadata, and that of each SNAPSHOT
+// version that has a build, of the kind snapshotKind, without their checksum files, which a group
+// computes from the bytes it merged.
+func renderKeyed(ctx context.Context, repo index.Repo, key string, st index.Reader) ([]format.Document, error) {
+	c, err := artifactOf(key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: maven scope %q: %w", index.ErrNotFound, key, err)
+	}
+	pkg, err := st.GetPackage(ctx, repo.ID, c.Name())
+	if errors.Is(err, index.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	vs, err := st.ListVersions(ctx, pkg.ID)
+	if err != nil || len(vs) == 0 {
+		return nil, err
+	}
+	docs, err := metadataDocuments(c.GroupID, c.ArtifactID, vs)
+	if err != nil {
+		return nil, err
+	}
+	out := []format.Document{docs[0]}
+	seen := map[string]bool{}
+	for _, v := range vs {
+		snapshot, ok := SnapshotOf(v.Version)
+		if !ok || seen[snapshot] {
+			continue
+		}
+		seen[snapshot] = true
+		c.Version = snapshot
+		docs, err := renderSnapshot(ctx, st, pkg, c)
+		if err != nil {
+			return nil, err
+		}
+		if len(docs) > 0 {
+			docs[0].Kind = snapshotKind(snapshot)
+			out = append(out, docs[0])
+		}
+	}
+	return out, nil
 }
 
 // artifactMetadata is the maven-metadata.xml of an artifact.
