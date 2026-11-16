@@ -21,12 +21,18 @@ const (
 	TypeVersionDeleted   = "version.deleted"
 	TypeRepoCreated      = "repo.created"
 	TypeRepoDeleted      = "repo.deleted"
+	// The events of the policy (#101; docs/spec/policy.md §7).
+	TypePolicyRuleCreated    = "policy.rule.created"
+	TypePolicyRuleDeleted    = "policy.rule.deleted"
+	TypePolicyVerdictCreated = "policy.verdict.created"
+	TypePolicyVerdictDeleted = "policy.verdict.deleted"
 	// TypePing is sent only by the test of one webhook; no webhook asks for it.
 	TypePing = "webhook.ping"
 )
 
 // Types are the types a webhook may ask for, in the order of webhooks.md §1.
-var Types = []string{TypeVersionPublished, TypeVersionDeleted, TypeRepoCreated, TypeRepoDeleted}
+var Types = []string{TypeVersionPublished, TypeVersionDeleted, TypeRepoCreated, TypeRepoDeleted,
+	TypePolicyRuleCreated, TypePolicyRuleDeleted, TypePolicyVerdictCreated, TypePolicyVerdictDeleted}
 
 // typePrefix makes a type a CloudEvents type: the reverse domain name of lajstrom.dev.
 const typePrefix = "dev.lajstrom."
@@ -40,7 +46,10 @@ type Event struct {
 	Type    string
 	Repo    index.Repo // Format, Name and Kind are read
 	Subject string     // the audit row's subject; "" for a repo
-	Data    any        // VersionData, RepoData or PingData, marshalled as it is
+	Data    any        // VersionData, RepoData, RuleData, VerdictData or PingData, marshalled as it is
+	// Mask is the repo mask of a policy rule's event, which goes to the webhooks whose mask
+	// covers it (Covers) instead of those whose mask matches Repo; its source is the rules'.
+	Mask string
 }
 
 // Actor is the principal of a write and a user's name at the time.
@@ -111,6 +120,53 @@ type RepoData struct {
 	Force    *bool   `json:"force,omitempty"`
 }
 
+// RuleData is the data of a policy.rule.created or policy.rule.deleted.
+type RuleData struct {
+	Common
+	Rule Rule `json:"rule"`
+}
+
+// Rule is a policy rule in an event.
+type Rule struct {
+	ID        int64      `json:"id"`
+	RepoMask  string     `json:"repoMask"`
+	Name      string     `json:"name"`
+	Version   string     `json:"version"`
+	Variant   string     `json:"variant"`
+	Effect    string     `json:"effect"`
+	Reason    string     `json:"reason"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+// RuleOf is the Rule of r.
+func RuleOf(r index.PolicyRule) Rule {
+	return Rule{ID: r.ID, RepoMask: r.RepoMask, Name: r.Name, Version: r.Version, Variant: r.Variant, Effect: r.Effect, Reason: r.Reason,
+		ExpiresAt: r.ExpiresAt}
+}
+
+// VerdictData is the data of a policy.verdict.created or policy.verdict.deleted: the version's
+// coordinates, as a version's event has them where the subject is one, and the verdict.
+type VerdictData struct {
+	Common
+	Repo          RepoRef       `json:"repo"`
+	Package       string        `json:"package"`
+	Version       string        `json:"version,omitempty"`
+	Variant       string        `json:"variant,omitempty"`
+	OCIRepository string        `json:"ociRepository"`
+	Digest        digest.Digest `json:"digest"`
+	Verdict       Verdict       `json:"verdict"`
+}
+
+// Verdict is a verdict in an event.
+type Verdict struct {
+	Verdict     string        `json:"verdict"`
+	Reason      string        `json:"reason"`
+	Source      string        `json:"source"`
+	Scope       string        `json:"scope"`
+	ValidUntil  *time.Time    `json:"validUntil"`
+	Attestation digest.Digest `json:"attestation"`
+}
+
 // PingData is the data of a webhook.ping.
 type PingData struct {
 	Common
@@ -153,7 +209,11 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	}
 	var matched []index.Webhook
 	for _, h := range hooks {
-		if h.Active && Matches(h.Mask, ev.Repo.Format, ev.Repo.Name) && Wants(h.Events, ev.Type) {
+		match := Matches(h.Mask, ev.Repo.Format, ev.Repo.Name)
+		if ev.Mask != "" {
+			match = Covers(h.Mask, ev.Mask)
+		}
+		if h.Active && match && Wants(h.Events, ev.Type) {
 			matched = append(matched, h)
 		}
 	}
@@ -161,7 +221,11 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 		return nil
 	}
 	at := o.now()
-	id, body, err := o.document(ev, at, o.Source+"/"+ev.Repo.Format+"/"+ev.Repo.Name)
+	source := o.Source + "/" + ev.Repo.Format + "/" + ev.Repo.Name
+	if ev.Mask != "" {
+		source = o.Source + "/api/v1/policy/rules"
+	}
+	id, body, err := o.document(ev, at, source)
 	if err != nil {
 		return err
 	}
@@ -198,6 +262,14 @@ func (o *Outbox) now() time.Time {
 func Matches(mask, formatName, repo string) bool {
 	f, n, err := auth.ParseMask(mask)
 	return err == nil && (f == "*" || f == formatName) && (n == "*" || n == repo)
+}
+
+// Covers reports whether a webhook's mask covers mask, a policy rule's: every repo mask matches,
+// the webhook's matches too, segment by segment (docs/spec/webhooks.md §3).
+func Covers(mask, of string) bool {
+	f, n, err := auth.ParseMask(mask)
+	of1, on, err2 := auth.ParseMask(of)
+	return err == nil && err2 == nil && (f == "*" || f == of1) && (n == "*" || n == on)
 }
 
 // Wants reports whether a webhook with events gets an event of type typ: none means every type.

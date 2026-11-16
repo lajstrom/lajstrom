@@ -14,9 +14,13 @@ import (
 // attachments (#89; docs/configuration.md, attachments). A file that cannot be read, or a key, a
 // trusted root or an identity that does not parse, is an error naming it; serve and reindex stop
 // on it rather than label every attachment untrusted.
-func attachmentTrust(c config.Attachments, log *slog.Logger) (*attest.Trust, error) {
-	entries := make([]attest.Entry, 0, len(c.Trust))
-	names := make([]string, 0, len(c.Trust))
+func attachmentTrust(c config.Attachments, log *slog.Logger, extra ...attest.Entry) (*attest.Trust, error) {
+	entries := make([]attest.Entry, 0, len(c.Trust)+len(extra))
+	names := make([]string, 0, len(c.Trust)+len(extra))
+	for _, e := range extra {
+		entries = append(entries, e)
+		names = append(names, e.Name)
+	}
 	for i, e := range c.Trust {
 		key := []byte(e.PublicKey)
 		if e.PublicKeyFile != "" {
