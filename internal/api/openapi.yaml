@@ -851,6 +851,7 @@ paths:
         "201":
           description: The webhook and its secret.
           headers:
+            ETag: {$ref: "#/components/headers/ETag"}
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
@@ -869,12 +870,18 @@ paths:
       tags: [webhooks]
       operationId: getRepoWebhook
       summary: One webhook (manage).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The webhook; never its secret.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Webhook"}
+        "304": {$ref: "#/components/responses/NotModified"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -887,9 +894,13 @@ paths:
         content:
           application/json:
             schema: {$ref: "#/components/schemas/WebhookRequest"}
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The webhook as it is now.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Webhook"}
@@ -897,15 +908,20 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "412": {$ref: "#/components/responses/Changed"}
     delete:
       tags: [webhooks]
       operationId: deleteRepoWebhook
       summary: Delete a webhook and its delivery log (manage).
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "412": {$ref: "#/components/responses/Changed"}
   /api/v1/repos/{format}/{repo}/webhooks/{id}/secret:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1150,6 +1166,7 @@ paths:
         "201":
           description: The webhook and its secret.
           headers:
+            ETag: {$ref: "#/components/headers/ETag"}
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
@@ -1166,12 +1183,18 @@ paths:
       tags: [webhooks]
       operationId: getWebhook
       summary: One webhook (admin).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The webhook; never its secret.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Webhook"}
+        "304": {$ref: "#/components/responses/NotModified"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1184,9 +1207,13 @@ paths:
         content:
           application/json:
             schema: {$ref: "#/components/schemas/WebhookRequest"}
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The webhook as it is now.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Webhook"}
@@ -1194,15 +1221,20 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "412": {$ref: "#/components/responses/Changed"}
     delete:
       tags: [webhooks]
       operationId: deleteWebhook
       summary: Delete a webhook and its delivery log (admin).
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "412": {$ref: "#/components/responses/Changed"}
   /api/v1/webhooks/{id}/secret:
     parameters:
       - $ref: "#/components/parameters/id"
@@ -1291,6 +1323,7 @@ paths:
         "201":
           description: The user.
           headers:
+            ETag: {$ref: "#/components/headers/ETag"}
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
@@ -1306,12 +1339,18 @@ paths:
       tags: [users]
       operationId: getUser
       summary: One live user (admin).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The user.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/User"}
+        "304": {$ref: "#/components/responses/NotModified"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1324,9 +1363,13 @@ paths:
         content:
           application/json:
             schema: {$ref: "#/components/schemas/UserPatch"}
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The user as it is then.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/User"}
@@ -1335,6 +1378,7 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
     delete:
       tags: [users]
       operationId: deleteUser
@@ -1342,12 +1386,16 @@ paths:
       description: >-
         409 for the last enabled user with an admin binding, and for a user that owns a live
         service account.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
   /api/v1/users/{user}/password:
     parameters:
       - $ref: "#/components/parameters/user"
