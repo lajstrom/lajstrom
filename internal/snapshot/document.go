@@ -49,14 +49,21 @@ type document struct {
 
 // ciPolicyRow is a row of ci_policies; claims and grants are the JSON of their columns.
 type ciPolicyRow struct {
-	ID        int64               `json:"id"`
-	Name      string              `json:"name"`
-	Issuer    string              `json:"issuer"`
-	Claims    map[string][]string `json:"claims"`
-	Grants    []index.CIGrant     `json:"grants"`
-	CreatedBy string              `json:"createdBy"`
-	CreatedAt time.Time           `json:"createdAt"`
-	UpdatedAt time.Time           `json:"updatedAt"`
+	ID               int64               `json:"id"`
+	Name             string              `json:"name"`
+	Issuer           string              `json:"issuer"`
+	Claims           map[string][]string `json:"claims"`
+	Grants           []index.CIGrant     `json:"grants"`
+	State            string              `json:"state"`
+	ExpiresAt        *time.Time          `json:"expiresAt,omitempty"`
+	RenewalExpiresAt *time.Time          `json:"renewalExpiresAt,omitempty"`
+	CreatedBy        string              `json:"createdBy"`
+	CreatedAt        time.Time           `json:"createdAt"`
+	UpdatedBy        string              `json:"updatedBy"`
+	UpdatedAt        time.Time           `json:"updatedAt"`
+	ApprovedBy       string              `json:"approvedBy,omitempty"`
+	ApprovedAt       *time.Time          `json:"approvedAt,omitempty"`
+	Revision         int64               `json:"revision"`
 }
 
 type repoRow struct {
@@ -124,6 +131,10 @@ type tokenRow struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
 	DPoPJKT    string     `json:"dpopJkt,omitempty"` // a web UI's token's
+	// AuthTime and AMR are those of the OIDC login of a web UI's token; absent for the others,
+	// and in a document written before migration 0033.
+	AuthTime *time.Time `json:"authTime,omitempty"`
+	AMR      []string   `json:"amr,omitempty"`
 }
 
 type bindingRow struct {
@@ -262,7 +273,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	for _, t := range cp.Tokens {
 		doc.Tokens = append(doc.Tokens, tokenRow{ID: t.ID, Kind: t.Kind, User: t.UserID, Repo: t.RepoID, RepoMask: t.RepoMask,
 			Name: t.Name, Hash: t.Hash, Scopes: t.Scopes, ExpiresAt: t.ExpiresAt, LastUsedAt: t.LastUsedAt, CreatedAt: t.CreatedAt,
-			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT})
+			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR})
 	}
 	for _, b := range cp.Bindings {
 		doc.Bindings = append(doc.Bindings, bindingRow{ID: b.ID, Principal: b.Principal, Role: b.Role, RepoMask: b.RepoMask,
@@ -283,7 +294,8 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	}
 	for _, p := range cp.CIPolicies {
 		doc.CIPolicies = append(doc.CIPolicies, ciPolicyRow{ID: p.ID, Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants,
-			CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
+			State: p.State, ExpiresAt: p.ExpiresAt, RenewalExpiresAt: p.RenewalExpiresAt, CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
+			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
 	if cp.WithAudit {
 		rows := make([]auditRow, 0, len(cp.Audit))
@@ -331,7 +343,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, t := range doc.Tokens {
 		cp.Tokens = append(cp.Tokens, index.Token{ID: t.ID, Kind: t.Kind, UserID: t.User, RepoID: t.Repo, RepoMask: t.RepoMask,
 			Name: t.Name, Hash: t.Hash, Scopes: t.Scopes, ExpiresAt: t.ExpiresAt, LastUsedAt: t.LastUsedAt, CreatedAt: t.CreatedAt,
-			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT})
+			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR})
 	}
 	for _, b := range doc.Bindings {
 		cp.Bindings = append(cp.Bindings, index.Binding{ID: b.ID, Principal: b.Principal, Role: b.Role, RepoMask: b.RepoMask,
@@ -352,7 +364,8 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	}
 	for _, p := range doc.CIPolicies {
 		cp.CIPolicies = append(cp.CIPolicies, index.CIPolicy{ID: p.ID, Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants,
-			CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
+			State: p.State, ExpiresAt: p.ExpiresAt, RenewalExpiresAt: p.RenewalExpiresAt, CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
+			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
 	if doc.Audit != nil {
 		cp.WithAudit, cp.Audit = true, []index.AuditEvent{}

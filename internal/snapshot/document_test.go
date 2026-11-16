@@ -87,6 +87,14 @@ func filled(t *testing.T, st index.Store, m *keys.Master) secrets {
 	hook.SecretEnc, err = webhook.Seal(m, hook.UID, hookKey)
 	must(t, err)
 	must(t, st.CreateWebhook(ctx, &hook))
+	at := time.Now().UTC().Truncate(time.Second)
+	alice, err := st.GetUser(ctx, "alice")
+	must(t, err)
+	must(t, st.CreateToken(ctx, &index.Token{Kind: auth.TokenPAT, UserID: &alice.ID, Name: "oidc", Hash: strings.Repeat("0", 64),
+		DPoPJKT: "jkt", AuthTime: &at, AMR: []string{"pwd", "otp"}}))
+	must(t, st.CreateCIPolicy(ctx, &index.CIPolicy{Name: "app-publish", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
+		Grants: []index.CIGrant{{Role: "writer", Mask: "apt/debs"}}, State: index.CIPolicyPending, ExpiresAt: &at,
+		RenewalExpiresAt: &at, CreatedBy: "user:alice", UpdatedBy: "user:bob", ApprovedBy: "user:carol", ApprovedAt: &at}))
 	svc, err := keys.New(keys.Options{Index: st, Master: m, Log: quiet})
 	must(t, err)
 	gpg, err := svc.KeyFor(ctx, repo)

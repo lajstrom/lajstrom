@@ -74,13 +74,14 @@ func (c *conn) SetIdentityGroups(ctx context.Context, id int64, names []string, 
 }
 
 const oidcLoginCols = "id, kind, state, binding, nonce, verifier, device_id, device_code, user_code, status, user_id," +
-	" polled_at, return_to, code_challenge, handoff, dpop_jkt, created_at, expires_at"
+	" polled_at, return_to, code_challenge, handoff, dpop_jkt, auth_time, amr, created_at, expires_at"
 
 func oidcLoginDests(l *index.OIDCLogin) []any {
 	return []any{&l.ID, &l.Kind, textDest{&l.State}, textDest{&l.Binding}, textDest{&l.Nonce}, textDest{&l.Verifier},
 		nullIDDest{&l.DeviceID}, textDest{&l.DeviceCode}, textDest{&l.UserCode}, &l.Status, nullIDDest{&l.UserID},
 		nullTimeDest{&l.PolledAt}, textDest{&l.ReturnTo}, textDest{&l.CodeChallenge}, textDest{&l.Handoff},
-		textDest{&l.DPoPJKT}, timeDest{&l.CreatedAt}, timeDest{&l.ExpiresAt}}
+		textDest{&l.DPoPJKT}, nullTimeDest{&l.AuthTime}, jsonDest[[]string]{&l.AMR}, timeDest{&l.CreatedAt},
+		timeDest{&l.ExpiresAt}}
 }
 
 // GetOIDCLogin returns the row with id.
@@ -134,14 +135,15 @@ func (c *conn) CreateOIDCLogin(ctx context.Context, l *index.OIDCLogin) error {
 		&l.ID)
 }
 
-// UpdateOIDCLogin stores Status, UserID, PolledAt and Handoff of l when the row's status is
-// from: one UPDATE, so that of two requests that read the same status one changes it.
+// UpdateOIDCLogin stores Status, UserID, PolledAt, Handoff, AuthTime and AMR of l when the row's
+// status is from: one UPDATE, so that of two requests that read the same status one changes it.
 func (c *conn) UpdateOIDCLogin(ctx context.Context, l *index.OIDCLogin, from string) error {
 	what := fmt.Sprintf("oidc_logins id %d", l.ID)
-	l.PolledAt = stampNull(l.PolledAt)
+	l.PolledAt, l.AuthTime = stampNull(l.PolledAt), stampNull(l.AuthTime)
 	n, err := c.exec(ctx, what,
-		"UPDATE oidc_logins SET status = ?, user_id = ?, polled_at = ?, handoff = ? WHERE id = ? AND status = ?",
-		l.Status, idArg(l.UserID), c.d.encodeNullTime(l.PolledAt), textArg(l.Handoff), l.ID, from)
+		"UPDATE oidc_logins SET status = ?, user_id = ?, polled_at = ?, handoff = ?, auth_time = ?, amr = ? WHERE id = ? AND status = ?",
+		l.Status, idArg(l.UserID), c.d.encodeNullTime(l.PolledAt), textArg(l.Handoff), c.d.encodeNullTime(l.AuthTime),
+		scopesArg(l.AMR), l.ID, from)
 	switch {
 	case err != nil:
 		return err

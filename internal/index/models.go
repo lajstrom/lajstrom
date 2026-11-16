@@ -89,6 +89,12 @@ type Token struct {
 	// DPoPJKT is the JWK SHA-256 thumbprint, base64url, of the DPoP key that the token of a web
 	// UI's sign-in is bound to (docs/spec/rbac.md §10, 0028); "" for every other token.
 	DPoPJKT string
+	// AuthTime and AMR are the auth_time and the amr of the ID token of the OIDC login that a web
+	// UI's token was minted for (docs/spec/rbac.md §10, 0033): when and how the person
+	// authenticated at the IdP. nil for every other token, and for a login whose ID token had
+	// none.
+	AuthTime *time.Time
+	AMR      []string
 }
 
 // Identity is a row of identities (control plane): an OIDC identity, the iss and sub of an ID
@@ -151,10 +157,14 @@ type OIDCLogin struct {
 	// the UI's PKCE verifier, the hash of the code its callback handed the UI, and the thumbprint
 	// of the DPoP key the code is redeemed with (0028).
 	ReturnTo, CodeChallenge, Handoff, DPoPJKT string
-	Status                                    string
-	UserID                                    *int64
-	PolledAt                                  *time.Time
-	CreatedAt, ExpiresAt                      time.Time
+	// AuthTime and AMR are the auth_time and the amr of the ID token of a web UI's login, kept by
+	// its callback for the token that redeems its code (0033); nil when it had none.
+	AuthTime             *time.Time
+	AMR                  []string
+	Status               string
+	UserID               *int64
+	PolledAt             *time.Time
+	CreatedAt, ExpiresAt time.Time
 }
 
 // BootstrapToken is the row of bootstrap_token (control plane): the one-time token that makes
@@ -333,10 +343,37 @@ type CIPolicy struct {
 	Claims map[string][]string
 	// Grants are its roles on masks.
 	Grants []CIGrant
+	// State is CIPolicyActive, CIPolicyPending or CIPolicyExpired: only an active policy counts.
+	State string
+	// ExpiresAt is when a policy that grants writer or maintainer stops counting; nil for one
+	// that grants reader only, which does not expire.
+	ExpiresAt *time.Time
+	// RenewalExpiresAt is the expiry of a renewal that waits for an admin's approval; nil when
+	// none waits.
+	RenewalExpiresAt *time.Time
 	// CreatedBy is the principal that made it; it never changes.
-	CreatedBy            string
+	CreatedBy string
+	// UpdatedBy is the principal of its latest create, change or renewal: the one admin who may
+	// not approve what waits.
+	UpdatedBy            string
 	CreatedAt, UpdatedAt time.Time
+	// ApprovedBy and ApprovedAt are the principal and the time of its latest approval; "" and
+	// nil before one.
+	ApprovedBy string
+	ApprovedAt *time.Time
+	// Revision is 1 on insert, and every update moves it by one.
+	Revision int64
 }
+
+// The states of a CI trust policy of the API (docs/spec/rbac.md §11).
+const (
+	// CIPolicyActive counts.
+	CIPolicyActive = "active"
+	// CIPolicyPending grants nothing until a second admin approves it.
+	CIPolicyPending = "pending"
+	// CIPolicyExpired grants nothing: its ExpiresAt passed, and a replica marked it.
+	CIPolicyExpired = "expired"
+)
 
 // CIGrant is a role on the repos of a mask, a grant of a CI trust policy.
 type CIGrant struct {

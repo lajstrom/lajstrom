@@ -107,7 +107,9 @@ func (s *Service) Create(ctx context.Context, p Policy, o auth.Origin) (*Policy,
 	if _, ok := s.configPolicy(p.Name); ok {
 		return nil, &serviceError{msg: fmt.Sprintf("policy %s is a policy of the configuration (auth.ci.policies)", p.Name), err: index.ErrConflict}
 	}
-	r := index.CIPolicy{Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants, CreatedBy: auth.PrincipalFrom(ctx).String()}
+	by := auth.PrincipalFrom(ctx).String()
+	r := index.CIPolicy{Name: p.Name, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants, State: index.CIPolicyActive, CreatedBy: by,
+		UpdatedBy: by}
 	err := s.Index.Tx(ctx, func(w index.Writer) error {
 		if err := w.CreateCIPolicy(ctx, &r); err != nil {
 			return err
@@ -125,7 +127,9 @@ func (s *Service) Create(ctx context.Context, p Policy, o auth.Origin) (*Policy,
 }
 
 // Update replaces the issuer, the claims and the grants of the policy of the API called name by
-// those of p, with its ci.policy.update row. A policy of the configuration is index.ErrConflict.
+// those of p, by the principal of ctx, with its ci.policy.update row, while the row is at the
+// revision read (index.ErrConflict otherwise, a change meanwhile). A policy of the configuration
+// is index.ErrConflict.
 func (s *Service) Update(ctx context.Context, name string, p Policy, o auth.Origin) (*Policy, error) {
 	if p.Name != "" && p.Name != name {
 		return nil, &serviceError{msg: fmt.Sprintf("name: %q is not the policy's, %s: a policy is not renamed", p.Name, name), err: auth.ErrInvalid}
@@ -143,8 +147,12 @@ func (s *Service) Update(ctx context.Context, name string, p Policy, o auth.Orig
 		if err != nil {
 			return err
 		}
-		r = index.CIPolicy{ID: old.ID, Issuer: p.Issuer, Claims: p.Claims, Grants: p.Grants}
+		r = *old
+		r.Issuer, r.Claims, r.Grants, r.UpdatedBy = p.Issuer, p.Claims, p.Grants, auth.PrincipalFrom(ctx).String()
 		if err := w.UpdateCIPolicy(ctx, &r); err != nil {
+			if errors.Is(err, index.ErrConflict) {
+				return &serviceError{msg: fmt.Sprintf("policy %s changed meanwhile: read it again", name), err: err}
+			}
 			return err
 		}
 		return s.record(ctx, w, ActionPolicyUpdate, r, old, o)

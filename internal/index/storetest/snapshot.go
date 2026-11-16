@@ -62,7 +62,8 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 		{Kind: "pat", UserID: &alice.ID, Name: "old", Hash: "hash-revoked", RevokedAt: ptr(at(70))},
 		{Kind: "deploy", RepoMask: "npm/*", Name: "mask", Hash: "hash-mask", Scopes: []string{"read"}},
 		{Kind: "pat", UserID: &robot.ID, Name: "ci", Hash: "hash-robot", Scopes: []string{"read"}},
-		{Kind: "pat", UserID: &alice.ID, Name: "login", Hash: "hash-bound", ExpiresAt: ptr(at(9000)), DPoPJKT: "jkt-of-the-browser"},
+		{Kind: "pat", UserID: &alice.ID, Name: "login", Hash: "hash-bound", ExpiresAt: ptr(at(9000)), DPoPJKT: "jkt-of-the-browser",
+			AuthTime: ptr(at(-60)), AMR: []string{"pwd", "mfa"}},
 	} {
 		must(t, s.CreateToken(ctx, &tok))
 	}
@@ -87,6 +88,10 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	must(t, s.CreateWebhookDeliveries(ctx, []index.WebhookDelivery{{WebhookID: hook.ID, EventID: "e1", EventType: "version.published",
 		Payload: []byte(`{}`)}}))
 	newCIPolicy(t, s, "app-release")
+	must(t, s.CreateCIPolicy(ctx, &index.CIPolicy{Name: "app-publish", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
+		Grants: []index.CIGrant{{Role: "writer", Mask: "pypi/app"}}, State: index.CIPolicyActive, ExpiresAt: ptr(at(9000)),
+		RenewalExpiresAt: ptr(at(9500)), CreatedBy: "user:" + alice.UID, UpdatedBy: "user:bob", ApprovedBy: "user:carol",
+		ApprovedAt: ptr(at(8)), CreatedAt: at(8)}))
 	must(t, s.ReplaceAttachments(ctx, f.version.ID, dg("sbom"), []index.Attachment{attachment("sbom", "layer", 10, 100)}))
 	for i, ev := range []index.AuditEvent{
 		{Principal: "user:" + alice.UID, Action: "repo.create", Repo: "npm/internal", Subject: "npm/internal", IP: "10.0.0.1",
@@ -134,7 +139,7 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "policy_rules": len(cp.PolicyRules),
 		"ci_policies": len(cp.CIPolicies), "audit": len(cp.Audit)}
 	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
-		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "ci_policies": 1, "audit": 3}, counts)
+		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "ci_policies": 2, "audit": 3}, counts)
 
 	dst := open(t)
 	v0, err := dst.AuthVersion(ctx)
