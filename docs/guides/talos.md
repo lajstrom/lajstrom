@@ -28,6 +28,8 @@ What was used, on 2026-11-12:
 | --- | --- | --- |
 | Installer and extension images | `oci` passthrough, copied in | measured: digests unchanged (§2) |
 | Images the nodes pull | `oci` proxy of ghcr.io and registry.k8s.io | measured, with a token: every image of the boot came through Lajstrom, and both nodes and coredns went `Ready` (§3) |
+| The nodes' credential as a client certificate | the same proxies | measured: every image of the boot came through as the certificate's principal, with Lajstrom terminating TLS and behind nginx (§3.1) |
+| A pod's image with its service account | an `oci` proxy | measured: the pod's own service account pulled, another was refused (§3.2) |
 | The installer, fetched on demand | `oci` proxy of factory.talos.dev | measured: manifests and config blobs (§6.3) |
 | ISO, disk image, PXE kernel and initramfs | `raw` | measured: `Range`, Basic after a `401`, anonymous read (§4) |
 | `talosctl upgrade` from Lajstrom | | not run: needs qemu with KVM (§5) |
@@ -290,6 +292,180 @@ talosctl cluster destroy --name ljs-talos --state $PWD/state
 The docker provisioner's own `ghcr.io/siderolabs/talos` image is pulled by the host's docker,
 outside the mirrors.
 
+### 3.1 A client certificate instead of a token (#1019)
+
+A node can present a client certificate instead of sending a token
+([auth.md](../auth.md#client-certificates), [ADR 0025](../adr/0025-node-and-workload-identity.md)).
+Lajstrom then knows each node by its certificate, and no secret of Lajstrom's is in the machine
+configuration. Give Lajstrom the CA as a bundle and bind the nodes:
+
+```yaml
+auth:
+  clientCertificates:
+    bundles:
+      - {name: fleet, caFile: /etc/lajstrom/fleet-ca.pem, trustDomain: fleet.example}   # SPIFFE IDs
+      - {name: plain, caFile: /etc/lajstrom/plain-ca.pem, identity: cn}                 # or the CN
+```
+
+```sh
+lajstrom admin binding create --principal 'cert:spiffe://fleet.example/node/*' --role reader --mask 'oci/k8s'
+lajstrom admin binding create --principal 'cert:spiffe://fleet.example/node/*' --role reader --mask 'oci/ghcr'
+```
+
+The node gets the mirrors of §3, no `auth` for the host, and its certificate, either as a
+document (PEM, Talos 1.12 and later):
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: lajstrom.example.com          # the host of the endpoints, with the port if they have one
+ca: |                               # only for a private CA of Lajstrom's own certificate
+  -----BEGIN CERTIFICATE-----
+  …
+clientIdentity:
+  cert: |
+    -----BEGIN CERTIFICATE-----
+    …
+  key: |
+    -----BEGIN EC PRIVATE KEY-----
+    …
+```
+
+or in `machine.registries` (base64 of the PEM):
+
+```yaml
+machine:
+  registries:
+    config:
+      lajstrom.example.com:
+        tls:
+          ca: LS0tLS1CRUdJTi…
+          clientIdentity: {crt: LS0tLS1CRUdJTi…, key: LS0tLS1CRUdJTi…}
+```
+
+The certificate lives in the machine configuration until you patch it (`talosctl patch
+machineconfig`). Lajstrom checks no CRL, so to cut one node off before its certificate ends,
+remove its binding. Bind such nodes one by one rather than by a pattern where that may be needed.
+
+**Measured** on 2026-11-15, with the commands of §3 at #1224 (e16fe920, with 7c02b23a for §3.2),
+on Talos v1.14.5 (Kubernetes v1.37.1, containerd 2.3.7), one control plane and no worker, a
+fresh SQLite index and a fresh registry:3 backend. The certificates were ECDSA P-256 from
+`openssl`, valid for a day. Repos had no anonymous read, and `skipFallback` was on.
+
+- **Lajstrom terminating TLS** (`server.tls`; `machine.registries.config…tls.clientIdentity` with
+  the SPIFFE ID `spiffe://spike.test/node/cp1`): `talosctl cluster create` returned in 2 minutes
+  8 seconds, with the node `Ready` and coredns running. All nine images of the boot came through
+  Lajstrom as `cert:spiffe://spike.test/node/cp1`: etcd, kube-apiserver, kube-controller-manager,
+  kube-scheduler, kube-proxy, coredns and pause from `oci/k8s`, kubelet and flannel from
+  `oci/ghcr`. containerd fetched its 25 tokens with `GET /v2/token` and no `Authorization`, over
+  the TLS configuration of the host. It sent no `POST`, since it had no secret. Each token was
+  logged as `client certificate` with `bundle: spike, from: tls`. Anonymous requests got only
+  the `401` challenge.
+- **Behind nginx** (1.30.6, the configuration of
+  [reverse-proxy.md](../reverse-proxy.md#client-certificates); Lajstrom on plain HTTP with
+  `server.trustedProxies` and `forwardedHeader: X-SSL-Client-Cert`; a `RegistryTLSConfig`
+  document with a certificate of the `cn` bundle): `Ready` in 1 minute 44 seconds. The nine
+  images came through as `cert:plain/node-cp1`, with 24 tokens logged `from: header`. The access
+  log showed the node's address through nginx (`proxy` 127.0.0.1).
+  - A client that sent the header itself through nginx was anonymous, since nginx replaced it.
+  - With nginx outside `server.trustedProxies`, the header was not read, and the same client
+    certificate was anonymous.
+- A certificate of a CA that no bundle has, sent by curl, failed the handshake (`unknown ca`).
+- `~/.kube/config` and `~/.talos/config` had the same shasums before and after.
+
+### 3.2 Pods with their service accounts (#1019)
+
+A pod can pull from Lajstrom with its own service account
+([auth.md](../auth.md#kubernetes-service-account-tokens)). This does not cover the images of the
+boot, which the node pulls for itself: §3.1 or §1 covers those. On Talos it takes four settings
+beside Lajstrom's `auth.kubernetes`, two documents and two of RBAC:
+
+```yaml
+# 1. The issuer's discovery for anonymous readers. Talos's API server takes anonymous requests on
+#    /livez, /readyz and /healthz only, whatever RBAC grants.
+apiVersion: v1alpha1
+kind: KubeAuthenticationConfig
+configuration:
+  anonymous:
+    enabled: true
+    conditions:
+      - path: /livez
+      - path: /readyz
+      - path: /healthz
+      - path: /.well-known/openid-configuration
+      - path: /openid/v1/jwks
+---
+# 2. The provider. Talos writes the kubelet's configuration and takes the binaries from
+#    /usr/local/lib/kubelet/credentialproviders, which a system extension fills: the lajstrom
+#    binary, linux, of the node's architecture, under the name of the provider.
+apiVersion: v1alpha1
+kind: KubeCredentialProviderConfig
+configuration:
+  apiVersion: kubelet.config.k8s.io/v1
+  kind: CredentialProviderConfig
+  providers:
+    - name: lajstrom
+      args: [credential-provider]
+      apiVersion: credentialprovider.kubelet.k8s.io/v1
+      matchImages: ["lajstrom.example.com"]
+      defaultCacheDuration: 1m
+      tokenAttributes:
+        serviceAccountTokenAudience: https://lajstrom.example.com
+        requireServiceAccount: true
+        cacheType: Token
+```
+
+```sh
+# 3. RBAC: anonymous readers may read the discovery.
+kubectl create clusterrolebinding service-account-issuer-discovery \
+  --clusterrole=system:service-account-issuer-discovery --group=system:unauthenticated
+```
+
+```yaml
+# 4. RBAC: the kubelets may ask tokens of Lajstrom's audience (ServiceAccountNodeAudienceRestriction).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lajstrom-image-pull-audience}
+rules:
+  - verbs: ["request-serviceaccounts-token-audience"]
+    apiGroups: [""]
+    resources: ["https://lajstrom.example.com"]   # the audience; resourceNames would narrow it to service accounts
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lajstrom-image-pull-audience}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lajstrom-image-pull-audience}
+subjects: [{kind: Group, name: "system:nodes", apiGroup: rbac.authorization.k8s.io}]
+```
+
+A pod names the image on Lajstrom's host (`lajstrom.example.com/oci/private/pause:3.10`), not
+through a mirror: the provider is asked for the registry the image names.
+
+**Measured** on 2026-11-15, on the cluster behind nginx of §3.1:
+
+- **The issuer.** `https://10.219.0.2:6443`, the control plane, with the cluster's CA as
+  `caFile`. Before the `KubeAuthenticationConfig`, `/openid/v1/jwks` answered `401` to anonymous
+  readers even with the binding. With it, it answered `200`, and other paths stayed `401`.
+- **The JWKS.** The API server answered `406` to Lajstrom's `Accept: application/json`, since it
+  serves `application/jwk-set+json`. Lajstrom asks for both since 7c02b23a. Before that fix,
+  every token was `503`.
+- **The audience.** The kubelet logged `system:node:… is not authorized to request tokens for
+  audience "https://host.docker.internal:18444"` until the ClusterRole above was bound. Until
+  then it passed no credential, and containerd fell back to the node's certificate, which
+  `oci/private` refused (`404`).
+- **With all four:**
+  - A pod of the service account `puller` started. Its pull came through as
+    `k8s:spike/default/puller`: `POST /v2/token` with the token as the password through nginx,
+    then the manifest and the blobs of `oci/private/pause:3.10`.
+  - A pod of `default` got its token too, as `k8s:spike/default/default`, and then `404` on the
+    repo, which only `puller` may read: `ErrImagePull`.
+  - A token of the API server's own audience (`kubectl create token puller`) was `401`.
+- **The binary** was in `/usr/local/lib/kubelet/credentialproviders` through a bind mount of the
+  docker provisioner (`talosctl cluster create docker --mount
+  type=bind,source=<dir>,target=/usr/local/lib/kubelet/credentialproviders`). The node's root
+  filesystem is read-only, and `docker cp` there failed. On a real node it takes a system
+  extension, which this run did not build.
+
 ## 4. Boot assets in `raw` repos
 
 Image Factory serves each asset at `https://factory.talos.dev/image/<schematic>/<version>/<file>`.
@@ -465,6 +641,9 @@ the installer if the factory has not built it yet, and keep it in the backend.
   that need not expire within a year is now a deploy token over a mask (§1). It was tested with
   oras in `rbac.sh`. No Talos boot has been run with it: the boots of §3 used a personal access
   token.
+- [#1019](https://github.com/lajstrom/lajstrom/issues/1019): a node's client certificate and a
+  pod's service account (§3.1, §3.2) were measured on the docker provisioner only. The provider
+  binary on a real node needs a system extension, which was not built.
 - [#876](https://github.com/lajstrom/lajstrom/issues/876), fixed in #880 and #881 on top of #869:
   images whose layers a node already held were never completed in the backend, and the control
   plane images share most of their layers. At fc1a6be5, all nine images of the boot were
