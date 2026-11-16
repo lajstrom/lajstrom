@@ -193,23 +193,43 @@ func (c *conn) ListVersions(ctx context.Context, packageID int64) ([]index.Versi
 // first by their key: the earliest created_at of a version's rows, then the version, both in
 // the column's order (bytes; SQLite's timestamps are text of a fixed width). The database groups
 // the package's rows by version, over the unique index (package_id, version, variant), keeps
-// the page's versions and answers their rows only.
-func (c *conn) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int) ([]index.Version, error) {
+// the page's versions and answers their rows only. With without, a row counts only when no
+// attachment of it has one of those kinds (NOT EXISTS over the unique index of attachments,
+// whose first column is version_id), in the page and in the answer alike.
+func (c *conn) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int, without ...string) ([]index.Version, error) {
 	if limit < 1 {
 		return []index.Version{}, nil
 	}
-	having, args := "", []any{packageID}
+	lacks, kinds := "", []any{}
+	if len(without) > 0 {
+		lacks = " AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.version_id = %s.id AND a.kind IN (?" +
+			strings.Repeat(", ?", len(without)-1) + "))"
+		for _, k := range without {
+			kinds = append(kinds, k)
+		}
+	}
+	having, args := "", append([]any{packageID}, kinds...)
 	if after != nil {
 		at := c.d.EncodeTime(after.CreatedAt)
 		having = " HAVING MIN(created_at) < ? OR (MIN(created_at) = ? AND version < ?)"
 		args = append(args, at, at, after.Version)
 	}
+	args = append(append(args, limit, packageID), kinds...)
 	return getAll(ctx, c, fmt.Sprintf("a page of the versions of package %d", packageID), versionDests,
-		"WITH page AS (SELECT version, MIN(created_at) AS first_at FROM versions WHERE package_id = ?"+
+		"WITH page AS (SELECT version, MIN(created_at) AS first_at FROM versions WHERE package_id = ?"+lacksOf(lacks, "versions")+
 			" GROUP BY version"+having+" ORDER BY first_at DESC, version DESC LIMIT ?)"+
-			" SELECT "+versionColsV+" FROM page JOIN versions v ON v.package_id = ? AND v.version = page.version"+
+			" SELECT "+versionColsV+" FROM page JOIN versions v ON v.package_id = ? AND v.version = page.version"+lacksOf(lacks, "v")+
 			" ORDER BY page.first_at DESC, page.version DESC, v.variant",
-		append(args, limit, packageID)...)
+		args...)
+}
+
+// lacksOf is the condition lacks of ListVersionPage on the rows of versions called table; ""
+// without one.
+func lacksOf(lacks, table string) string {
+	if lacks == "" {
+		return ""
+	}
+	return fmt.Sprintf(lacks, table)
 }
 
 // ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore, with
