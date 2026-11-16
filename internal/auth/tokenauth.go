@@ -58,7 +58,7 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
-	a.touch(ctx, t.ID)
+	a.touch(ctx, t)
 	return UserPrincipal(u), patCredential(t), nil
 }
 
@@ -81,7 +81,7 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
 	}
 	if t.RepoMask != "" {
-		a.touch(ctx, t.ID)
+		a.touch(ctx, t)
 		return Principal{Kind: KindToken, Name: strconv.FormatInt(t.ID, 10)}, Credential{
 			Kind: CredDeploy, TokenID: t.ID, Mask: t.RepoMask, Scopes: slices.Clone(t.Scopes),
 		}, nil
@@ -93,7 +93,7 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 	case err != nil:
 		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its repo: %w", t.ID, err)
 	}
-	a.touch(ctx, t.ID)
+	a.touch(ctx, t)
 	return Principal{Kind: KindToken, Name: strconv.FormatInt(t.ID, 10)}, Credential{
 		Kind: CredDeploy, TokenID: t.ID, RepoID: repo.ID, Repo: repo.Format + "/" + repo.Name, Scopes: slices.Clone(t.Scopes),
 	}, nil
@@ -120,7 +120,7 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
-	a.touch(ctx, t.ID)
+	a.touch(ctx, t)
 	return UserPrincipal(u), patCredential(t), nil
 }
 
@@ -138,7 +138,7 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 	case subtle.ConstantTimeCompare([]byte(t.DPoPJKT), []byte(jkt)) != 1:
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to another DPoP key")
 	}
-	a.touch(ctx, t.ID)
+	a.touch(ctx, t)
 	cred := patCredential(t)
 	if t.AuthTime != nil {
 		cred.SignIn = &SignIn{At: *t.AuthTime, AMR: slices.Clone(t.AMR)}
@@ -259,16 +259,25 @@ func (a *Authenticator) refuseToken(ctx context.Context, u *index.User, t *index
 	return ErrBadCredentials
 }
 
-// touch records the use of the token id now (TouchToken) when the last record of this replica
-// is a minute old or more. A record that fails is logged at debug and does not refuse the
-// request: last_used_at is for the person reading a token list, not for a decision.
-func (a *Authenticator) touch(ctx context.Context, id int64) {
+// touch records the use of the token t now (TouchToken) when its last use, as read with it on
+// this request, is a minute old or more, or none (docs/spec/rbac.md §10, #1277): every replica
+// reads the same row, so the use is recorded at most once a minute per token on all replicas
+// together, and less than a minute behind the last use. TouchToken only moves forward, so
+// replicas that record at once move it back on none. This replica's last record, by token, keeps
+// requests that read the same old value at once from writing it each: a record of the last
+// minute leaves the row at least as late. A record that fails is logged at debug, refuses
+// nothing, and is forgotten, so that the next request records it again.
+func (a *Authenticator) touch(ctx context.Context, t *index.Token) {
 	now := a.now()
-	if !a.touches.putUnless(id, now, func(last time.Time) bool { return now.Sub(last) < touchInterval }) {
+	if t.LastUsedAt != nil && now.Sub(*t.LastUsedAt) < touchInterval {
 		return
 	}
-	if err := a.index.TouchToken(ctx, id, now); err != nil {
-		a.log.DebugContext(ctx, "the use of a token is not recorded", "token", id, "error", err.Error())
+	if !a.touches.putUnless(t.ID, now, func(last time.Time) bool { return now.Sub(last) < touchInterval }) {
+		return
+	}
+	if err := a.index.TouchToken(ctx, t.ID, now); err != nil {
+		a.touches.removeIf(t.ID, now.Equal) // a record made since stays
+		a.log.DebugContext(ctx, "the use of a token is not recorded", "token", t.ID, "error", err.Error())
 	}
 }
 
@@ -313,6 +322,16 @@ func (b *bounded[K, V]) push(k K, v V) {
 		oldest := b.order.Front()
 		b.order.Remove(oldest)
 		delete(b.entries, oldest.Value.(*boundedEntry[K, V]).key)
+	}
+}
+
+// removeIf deletes the entry of k when match reports true for its value.
+func (b *bounded[K, V]) removeIf(k K, match func(V) bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if el, ok := b.entries[k]; ok && match(el.Value.(*boundedEntry[K, V]).value) {
+		b.order.Remove(el)
+		delete(b.entries, k)
 	}
 }
 

@@ -266,6 +266,29 @@ func testTokens(t *testing.T, s index.Store) {
 	if touched.LastUsedAt == nil || !touched.LastUsedAt.Equal(at(20)) {
 		t.Errorf("LastUsedAt = %v, want %v", touched.LastUsedAt, at(20))
 	}
+	// TouchToken only moves forward (#1277): an earlier or the same time changes nothing and is
+	// no error; a later one moves it.
+	for _, tt := range []struct {
+		name     string
+		lastUsed time.Time
+		want     time.Time
+	}{
+		{"earlier", at(15), at(20)},
+		{"the same", at(20), at(20)},
+		{"later", at(80), at(80)},
+		{"earlier than the later", at(79), at(80)},
+	} {
+		must(t, s.TouchToken(ctx, tokens[1].ID, tt.lastUsed))
+		got, err := s.GetTokenByHash(ctx, "h2")
+		must(t, err)
+		if got.LastUsedAt == nil || !got.LastUsedAt.Equal(tt.want) {
+			t.Errorf("TouchToken %s: LastUsedAt = %v, want %v", tt.name, got.LastUsedAt, tt.want)
+		}
+	}
+	must(t, s.TouchToken(ctx, tokens[0].ID, at(3)))
+	if got, err := s.GetTokenByHash(ctx, "h1"); err != nil || got.LastUsedAt == nil || !got.LastUsedAt.Equal(at(5)) {
+		t.Errorf("TouchToken earlier than a token's first last use: %v, %v, want %v", got, err, at(5))
+	}
 
 	for _, tt := range []struct {
 		name string

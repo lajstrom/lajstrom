@@ -37,7 +37,8 @@ const (
 )
 
 // touchInterval is how often at most the authenticator records the use of a token
-// (tokens.last_used_at), per token and per replica.
+// (tokens.last_used_at), per token on all replicas together: when the last use read with the
+// token is this old or more (docs/spec/rbac.md §10, #1277).
 const touchInterval = time.Minute
 
 // Options configures an Authenticator.
@@ -70,7 +71,7 @@ type Options struct {
 // A token (docs/auth.md, "Tokens") is read from the index on every call too, by the sha256 of
 // its secret, so that a revocation counts at the next request on every replica. It needs no
 // cache and no argon2id: the secret is 256 random bits, and the lookup of its hash is the
-// check. Its use is recorded at most once a minute.
+// check. Its use is recorded at most once a minute per token, on all replicas together.
 type Authenticator struct {
 	index index.Store
 	log   *slog.Logger
@@ -85,7 +86,8 @@ type Authenticator struct {
 	entries map[cacheKey]*list.Element // of *cacheEntry
 	order   *list.List                 // oldest first
 
-	// touches remembers when the use of each token was last recorded.
+	// touches remembers when this replica last recorded the use of each token, so that
+	// requests that read the same old last use at once record it once.
 	touches *bounded[int64, time.Time]
 
 	// logins counts the failed password verifications per account (accountKey), addresses
