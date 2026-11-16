@@ -393,7 +393,7 @@ func TestValidateRefuses(t *testing.T) {
 		pom      []byte
 		msg      string
 	}{
-		{name: "a variant", manifest: func(m *ocispec.Manifest) { m.Annotations[profile.AnnotationVariant] = "jar" }, msg: "no lajstrom.variant"},
+		{name: "a variant", manifest: func(m *ocispec.Manifest) { m.Annotations[profile.AnnotationVariant] = "jar" }, msg: "without lajstrom.origin.url"},
 		{name: "an unknown maven annotation", manifest: func(m *ocispec.Manifest) { m.Annotations["lajstrom.maven.scope"] = "x" }, msg: "lajstrom.maven.scope is not"},
 		{name: "no packaging", manifest: func(m *ocispec.Manifest) { delete(m.Annotations, profile.AnnotationMavenPackaging) }, msg: "has lajstrom.maven.packaging"},
 		{name: "a name that is not groupId:artifactId", manifest: func(m *ocispec.Manifest) { m.Annotations[profile.AnnotationName] = "com.example:lib-api" },
