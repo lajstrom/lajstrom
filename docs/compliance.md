@@ -138,7 +138,7 @@ procedures. The table says what Lajstrom does for each point all the same.
 | **8.2.1** A unique ID for every user. | A user is its uid, a UUID v7 that never changes and is never reused; the name is an attribute ([auth.md](auth.md#the-uid-and-the-name)). Every audit row and access log line names the principal: `user:<uid>`, `token:<id>`, `cert:…`, `k8s:…`. A deleted user keeps its row as `~<uid>`. | |
 | **8.2.2** Shared or generic IDs only by exception. | People authenticate as themselves: a password, a personal access token, an OIDC login. A deploy token is a principal of its own, `token:<id>`, for a pipeline or a fleet of nodes. | Never give a person a deploy token: a person uses a personal access token. |
 | **8.2.4** Additions, deletions and changes of user IDs and authentication factors are approved. | *Evidence:* `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`, `token.create`, `token.revoke`, `binding.create`, `binding.delete` ([Audit](operations.md#audit)). | The approval: [#1285](https://github.com/lajstrom/lajstrom/issues/1285). |
-| **8.2.5** "Access for terminated users is immediately revoked." | `lajstrom admin user disable` refuses the user's passwords and tokens from the next request on, on every replica; a `/v2` bearer issued before lasts 20 minutes at most, and `lajstrom admin key rotate --token --drop` ends every bearer within a second ([What a token does not say](auth.md#what-a-token-does-not-say), [Disabling a user](operations.md#disabling-a-user)). | Offboarding disables the user in Lajstrom too. **Gap:** an OIDC user removed at the IdP keeps its logins' tokens until they expire (`auth.oidc.tokenLifetime`, 24 hours by default): [#1282](https://github.com/lajstrom/lajstrom/issues/1282). |
+| **8.2.5** "Access for terminated users is immediately revoked." | `lajstrom admin user disable` refuses the user's passwords and tokens from the next request on, on every replica; a `/v2` bearer issued before lasts 20 minutes at most, and `lajstrom admin key rotate --token --drop` ends every bearer within a second ([What a token does not say](auth.md#what-a-token-does-not-say), [Disabling a user](operations.md#disabling-a-user)). *Evidence:* `user.disable`, `token.revoke`. | Offboarding disables the user in Lajstrom too, and ends by hand what disabling does not: [Offboarding a person](#offboarding-a-person), with a short `auth.oidc.tokenLifetime`. **Gap:** nothing tells Lajstrom of a removal at the IdP; asking the IdP again is planned: [#1282](https://github.com/lajstrom/lajstrom/issues/1282). |
 | **8.2.6** Inactive user accounts are removed or disabled within 90 days. | Tokens have `lastUsedAt`; OIDC logins are audited (`user.login`). | **Gap:** no last activity per user, and nothing disables an inactive one: [#1283](https://github.com/lajstrom/lajstrom/issues/1283). |
 | **8.2.7** Third-party remote access is enabled only when needed and monitored. | A vendor is a user like any other. | Enable its user for the time needed (`lajstrom admin user enable`, then `disable`, both audited). |
 | **8.2.8** A session idle for more than 15 minutes needs re-authentication. | The web UI's sign-in token (#1170) lives `auth.login.tokenLifetime`, 12 hours by default and at most 24, is bound to the browser's DPoP key and is revoked at sign-out. Package clients authenticate every request and hold no session. | **Gap:** no idle timeout: [#1277](https://github.com/lajstrom/lajstrom/issues/1277). |
@@ -156,6 +156,84 @@ procedures. The table says what Lajstrom does for each point all the same.
 | **8.6.1** System accounts used for interactive login. | A service account has no password and cannot log in (#1020); deploy tokens, CI tokens and certificates are not interactive logins. | A deploy token in a person's hands is interactive use (8.2.2). |
 | **8.6.2** No system account passwords in scripts, configuration files or source code. | Lajstrom's own secrets (the registries' passwords, the master key, the OIDC client secret, the bootstrap token) come from files or variables that the configuration names ([configuration.md](configuration.md#secrets)). CI reads a deploy token from its secret store ([In CI](auth.md#in-ci)), or needs none with token exchange (#937). | The secret store. |
 | **8.6.3** System account passwords are changed periodically and when compromised. | A deploy token rotates by create, switch, revoke ([A credential for CI](operations.md#a-credential-for-ci)); personal access tokens expire within 365 days; a service account's tokens within `auth.serviceAccounts.maxTokenTTL` when it is set (#1020); CI tokens live 15 minutes (#937); a client certificate as long as its CA makes it. | **Gap:** a deploy token may never expire, and no setting bounds it: [#1286](https://github.com/lajstrom/lajstrom/issues/1286). |
+
+#### Offboarding a person
+
+Nothing tells Lajstrom that a person left: a login asks the IdP once, and nothing asks it again
+([rbac.md](spec/rbac.md) §8). Until Lajstrom asks the IdP again with each login's sealed refresh
+token ([#1282](https://github.com/lajstrom/lajstrom/issues/1282)), what it offers for 8.2.5 and
+CC6.2 is this procedure, which an admin runs when a person leaves, and a short lifetime of the
+logins' tokens, which bounds what a late step leaves open. It is a procedure, not a control:
+"immediately" depends on people.
+
+1. **At the IdP**, disable or remove the person. No login works from then on; the tokens of their
+   earlier logins still do, and so do those logins' groups (the window, below).
+2. **In Lajstrom, disable the user**: `lajstrom admin user disable alice`, or
+   `PATCH /api/v1/users/alice` with `{"disabled": true}`. From the next request on, on every
+   replica, the user's password, its logins and every personal access token of the user are
+   refused: those it made, those of its OIDC logins and of `lajstrom login`, a web UI's, and those
+   an admin made for it ([Disabling a user](operations.md#disabling-a-user)). Disable, do not
+   delete: deleting an OIDC user lets its identity go, and a login the IdP still lets through
+   makes a new user, with its groups' bindings. The last enabled user with an admin binding is
+   not disabled (`409`): make another admin first.
+3. **A bearer of `/v2`** issued before step 2 lasts 20 minutes at most, and so does the archive
+   URL of a terraform module. `lajstrom admin key rotate --token --drop` ends them within a
+   second, with the bearers and CI tokens of every other principal
+   ([What a token does not say](auth.md#what-a-token-does-not-say)).
+4. **What disabling does not end**: what the person made that is not the user's.
+   - *Tokens made for others.* A deploy token, of a repo or over a mask, belongs to no user, and a
+     token the person made for a service account or another user belongs to that one: each keeps
+     working. No token records who made it, but its `token.create` row does:
+     `GET /api/v1/audit?principal=user:alice&action=token.create` lists them, and those whose
+     `subject` is not alice's `user:<uid>` are others', with the token's id in `details.id`. Give
+     each system a new token, then `lajstrom admin token revoke <id>`
+     ([A credential for CI](operations.md#a-credential-for-ci)); the same for the deploy tokens of
+     a secret store the person could read. The rows of `lajstrom admin` name no person
+     ([#1284](https://github.com/lajstrom/lajstrom/issues/1284)).
+   - *Service accounts the person owns* (#1020). With
+     `auth.serviceAccounts.onOwnerDisabled: flag`, the default, they keep working, and
+     `lajstrom admin user list --kind service` shows their owner as `user:alice (disabled)`: give
+     each another owner (`lajstrom admin user set-owner ci-release user:bob`) and new tokens, and
+     revoke those the person held. With `disable`, step 2 disabled them; enable each again by
+     itself ([Service accounts](auth.md#service-accounts)).
+   - *CI trust policies* the person made or changed through the API (#937), `createdBy` or
+     `updatedBy` in `GET /api/v1/ci/policies`, keep granting, and a pending one can still be
+     approved. Review them, and delete those nobody else answers for
+     (`lajstrom admin ci-policy delete <name>`). A policy whose claims name the person at the CI
+     platform (`actor`, `actor_id`, `user_login`, `user_id`) matches their jobs as long as the
+     platform runs them.
+   - *Webhooks* the person made, `createdBy` in `GET /api/v1/webhooks`, keep sending events to
+     their URLs.
+   - *The operator's secrets.* Whoever holds the database's credentials runs every
+     `lajstrom admin` command without a password: change them, and the other secrets the person
+     read (the OIDC client secret, the registries' credentials). The master key cannot be
+     replaced: [#1288](https://github.com/lajstrom/lajstrom/issues/1288).
+5. **Bindings** need nothing: the user's own grant nothing while it is disabled, and its groups'
+   reach it only through its logins. Later, once the IdP no longer logs the person in,
+   `lajstrom admin user delete alice` deletes them and revokes its tokens for good; it is `409`
+   while the user owns a live service account.
+6. **Check**: `GET /api/v1/users/alice` answers `"disabled": true`;
+   `lajstrom admin token list --user alice` shows no `LAST USED` after the disabling;
+   `GET /api/v1/audit?principal=user:alice&since=<t>`, `t` the `at` of the `user.disable` row, is
+   empty; after the 20 minutes of step 3, or the `--drop`, no access log line names alice's
+   `user:<uid>`. *Evidence:* the IdP's record of the removal, the `user.disable` row, the
+   `token.revoke` rows of step 4.
+
+**The window.** Between steps 1 and 2, a person removed at the IdP keeps the tokens of their
+logins, the browser's and `lajstrom login`'s, for `auth.oidc.tokenLifetime` (24 hours by
+default), and their groups as long; a web UI's token for the shorter of
+`auth.login.tokenLifetime` (12 hours) and `auth.oidc.tokenLifetime`; and a bearer of `/v2`
+20 minutes beyond either. A token an admin made for the user, and a password an admin set for
+it, do not depend on the IdP: only step 2 ends them.
+
+Set `auth.oidc.tokenLifetime` to the longest window the organisation accepts for a late step 2:
+`8h`, one working day, or less ([configuration.md](configuration.md#auth)).
+`auth.login.tokenLifetime` needs no change: a web UI's OIDC sign-in gets the shorter of the two.
+The cost: package clients never refresh a token, so at each expiry the person logs in again and
+puts the new token where `docker login`, `pip.conf`, `.npmrc` or `settings.xml` keeps it.
+Systems use deploy tokens, service accounts and CI tokens, which the key does not touch. A new
+value counts for the logins after `serve` restarts with it; tokens minted before keep their
+expiry.
 
 ### Requirement 10: logging and monitoring
 
@@ -253,7 +331,7 @@ procedures. The table says what Lajstrom does for each point all the same.
 | An access report for the periodic review, and its acknowledgement | PCI DSS 7.2.4, 7.2.5.1; CC6.2, CC6.3 | [#1279](https://github.com/lajstrom/lajstrom/issues/1279) |
 | A lockout of 30 minutes, or no local passwords | PCI DSS 8.3.4 | [#1280](https://github.com/lajstrom/lajstrom/issues/1280) |
 | A password policy for local users | PCI DSS 8.3.5 to 8.3.7, 8.3.9 | [#1281](https://github.com/lajstrom/lajstrom/issues/1281) |
-| Deprovisioning from the IdP | PCI DSS 8.2.5; CC6.2 | [#1282](https://github.com/lajstrom/lajstrom/issues/1282) |
+| Deprovisioning from the IdP: asking it again with each login's sealed refresh token; until then, the [offboarding procedure](#offboarding-a-person) | PCI DSS 8.2.5; CC6.2 | [#1282](https://github.com/lajstrom/lajstrom/issues/1282) |
 | A user's last activity; disabling inactive users | PCI DSS 8.2.6 | [#1283](https://github.com/lajstrom/lajstrom/issues/1283) |
 | The person behind `lajstrom admin`, refused passwords at info, configuration changes | PCI DSS 10.2.1.2, 10.2.1.4, 10.2.2; CC7.1 | [#1284](https://github.com/lajstrom/lajstrom/issues/1284) |
 | Approval of privileged changes | PCI DSS 7.2.3, 8.2.4, 6.5.4; CC6.3, CC8.1 | [#1285](https://github.com/lajstrom/lajstrom/issues/1285) |
