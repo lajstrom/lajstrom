@@ -104,10 +104,16 @@ func render(ctx context.Context, r index.Reader, p Plugin, repo index.Repo, scop
 }
 
 // ServeDocument writes c with contentType, ETag `"<sha256>"` and Last-Modified RenderedAt through
-// http.ServeContent, so If-None-Match, If-Modified-Since and Range work.
+// http.ServeContent, so If-None-Match and Range work. The ETag is the one validator: a render
+// after a publish may have the second of the render a client holds (#1255), so ServeContent gets
+// no modification time, and If-Modified-Since is never 304, If-Unmodified-Since is not read, and
+// an If-Range with a date gives the whole document.
 func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string) {
 	h := w.Header()
 	h.Set("Content-Type", contentType)
 	h.Set("ETag", `"`+c.SHA256+`"`)
-	http.ServeContent(w, r, "", c.RenderedAt, bytes.NewReader(c.Content))
+	if t := c.RenderedAt; !t.IsZero() && !t.Equal(time.Unix(0, 0)) { // ServeContent's none
+		h.Set("Last-Modified", t.UTC().Format(http.TimeFormat))
+	}
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(c.Content))
 }
