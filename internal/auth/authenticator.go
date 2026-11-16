@@ -80,6 +80,10 @@ type Options struct {
 	// IdleTimeout is auth.login.idleTimeout: a token bound to a DPoP key whose last use is longer
 	// ago is refused with an *IdleError (docs/spec/rbac.md §10, #1277). Zero is off.
 	IdleTimeout time.Duration
+	// Users disables the users that an authentication finds inactive beyond its InactiveAfter,
+	// auth.disableInactiveUsersAfter (docs/spec/rbac.md §1, Inactive users; DisableInactive),
+	// whose credentials are then refused. Nil, or an InactiveAfter of zero, disables nobody.
+	Users *Users
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -96,6 +100,10 @@ type Options struct {
 // its secret, so that a revocation counts at the next request on every replica. It needs no
 // cache and no argon2id: the secret is 256 random bits, and the lookup of its hash is the
 // check. Its use is recorded at most once a minute per token, on all replicas together.
+//
+// A credential that verifies admits its user (admit, docs/spec/rbac.md §1, Inactive users): a
+// user inactive beyond auth.disableInactiveUsersAfter is disabled and its credential refused,
+// and the activity of any other is recorded, users.last_seen_at, as a token's use is.
 type Authenticator struct {
 	index index.Store
 	log   *slog.Logger
@@ -114,6 +122,12 @@ type Authenticator struct {
 	// touches remembers when this replica last recorded the use of each token, so that
 	// requests that read the same old last use at once record it once.
 	touches *bounded[int64, time.Time]
+
+	// seen does so for the activity of each user, by its id (users.last_seen_at), and users
+	// disables the inactive users (Options.Users; nil disables nobody): docs/spec/rbac.md §1,
+	// Inactive users.
+	seen  *bounded[int64, time.Time]
+	users *Users
 
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
@@ -141,7 +155,7 @@ func NewAuthenticator(o Options) *Authenticator {
 		panic("auth: NewAuthenticator: nil Options.Index")
 	}
 	a := &Authenticator{
-		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize, idle: o.IdleTimeout,
+		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize, idle: o.IdleTimeout, users: o.Users,
 		verify:  VerifyPassword,
 		entries: map[cacheKey]*list.Element{},
 		order:   list.New(),
@@ -159,6 +173,7 @@ func NewAuthenticator(o Options) *Authenticator {
 		a.size = DefaultCacheSize
 	}
 	a.touches = newBounded[int64, time.Time](a.size)
+	a.seen = newBounded[int64, time.Time](a.size)
 	a.logins = newThrottle(LoginFailures, LoginWindow, a.now)
 	a.addresses = newThrottle(AddressFailures, LoginWindow, a.now)
 	a.tokens = newThrottle(TokenRequests, TokenWindow, a.now)
@@ -219,9 +234,12 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 		return Principal{}, err
 	}
 	if unusable(u) == "" && a.cached(keyOf(username, secret), u.PasswordHash) {
-		return UserPrincipal(u), nil
+		return a.admitPassword(ctx, u, account, addr)
 	}
-	return a.verifyPassword(ctx, u, username, secret, account, addr)
+	if _, err := a.verifyPassword(ctx, u, username, secret, account, addr); err != nil {
+		return Principal{}, err
+	}
+	return a.admitPassword(ctx, u, account, addr)
 }
 
 // AuthenticatePassword returns the principal user:<uid> of the user called username when
@@ -239,7 +257,10 @@ func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, pass
 		return Principal{}, Credential{}, err
 	}
 	defer a.lockLogin(addr, account)()
-	p, err := a.checkPassword(ctx, u, password, account, addr)
+	if _, err := a.checkPassword(ctx, u, password, account, addr); err != nil {
+		return Principal{}, Credential{}, err
+	}
+	p, err := a.admitPassword(ctx, u, account, addr)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}

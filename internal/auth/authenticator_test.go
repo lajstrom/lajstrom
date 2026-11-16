@@ -24,6 +24,7 @@ type fakeUsers struct {
 	deleted []index.User // users deleted, by markDeleted
 	err     error        // the answer of every GetUser when set
 	reads   atomic.Int64
+	seen    map[int64][]time.Time // the calls of TouchUser, by user id
 
 	tokenStore // tokenauth_test.go
 }
@@ -43,6 +44,23 @@ func (f *fakeUsers) GetUser(_ context.Context, name string) (*index.User, error)
 }
 
 // set stores u, with an id and a uid when it has none.
+// TouchUser records the call and, as the store does, moves the user's LastSeenAt forward only.
+func (f *fakeUsers) TouchUser(_ context.Context, id int64, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seen == nil {
+		f.seen = map[int64][]time.Time{}
+	}
+	f.seen[id] = append(f.seen[id], at)
+	for name, u := range f.users {
+		if u.ID == id && (u.LastSeenAt == nil || u.LastSeenAt.Before(at)) {
+			u.LastSeenAt = &at
+			f.users[name] = u
+		}
+	}
+	return nil
+}
+
 func (f *fakeUsers) set(u index.User) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
