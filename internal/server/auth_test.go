@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -479,6 +480,68 @@ func TestAuthenticateFailure(t *testing.T) {
 			}
 			if strings.Contains(logs.String(), alicePassword) {
 				t.Errorf("the log contains the password:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// TestRefusedAtInfo is #1284's 2A (rbac.md §1): every refused credential is one line at info,
+// "authentication refused", with the kind of credential, the account (alice's uid, never a name
+// as typed), the reason, the client address and the request id of its access line; a throttled
+// request is its throttled line instead.
+func TestRefusedAtInfo(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	s, err := New(Options{Listen: "127.0.0.1:0", Log: log, API: http.NotFoundHandler(),
+		Authenticator: auth.NewAuthenticator(auth.Options{Index: usersReader{}, Log: log})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := "correct-horse-typed-as-a-name"
+	for _, tt := range []struct {
+		name, authorization string
+		want                map[string]any
+	}{
+		{"a wrong password", basic("alice", "wrong-password"),
+			map[string]any{"credential": "password", "account": "user:" + aliceUID, "reason": "wrong password"}},
+		{"a name no user has", basic(typed, "wrong-password"),
+			map[string]any{"credential": "password", "account": "unknown", "reason": "unknown user"}},
+		{"a token no one has", "Bearer " + auth.PATPrefix + strings.Repeat("a1b2c3", 7) + "z",
+			map[string]any{"credential": "pat", "account": "unknown", "reason": "unknown token"}},
+		{"Basic that does not decode", "Basic !!!",
+			map[string]any{"credential": "password", "account": "unknown", "reason": "credentials that do not decode"}},
+		{"a CI token without auth.ci", basic("ci", auth.CIPrefix+"x"),
+			map[string]any{"credential": "ci", "account": "unknown", "reason": "a CI token without auth.ci"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+			r.Header.Set("Authorization", tt.authorization)
+			rr := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rr, r)
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status %d, want 401", rr.Code)
+			}
+			if strings.Contains(buf.String(), typed) {
+				t.Errorf("the log holds the name as typed:\n%s", &buf)
+			}
+			var refused, access map[string]any
+			for _, l := range logLines(t, &buf) {
+				switch l["msg"] {
+				case "authentication refused":
+					refused = l
+				case "request":
+					access = l
+				}
+			}
+			if refused == nil || access == nil || refused["level"] != "INFO" || refused["requestId"] != access["requestId"] ||
+				refused["address"] != "192.0.2.1" {
+				t.Fatalf("lines %v and %v: want one at info with the request id of the access line and the address", refused, access)
+			}
+			for k, v := range tt.want {
+				if refused[k] != v {
+					t.Errorf("%s = %v, want %v", k, refused[k], v)
+				}
 			}
 		})
 	}

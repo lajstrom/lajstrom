@@ -27,7 +27,8 @@ func ClientAddr(ctx context.Context) string {
 }
 
 // clientAddress resolves the client of each request once (resolveClient) and puts it in the
-// context, for the access log, the authentication and ClientAddr. No other code reads a
+// context, for the access log, the authentication and ClientAddr, and for the line of a refused
+// credential with the request id (auth.WithRequest). No other code reads a
 // forwarded header. With server.trustedProxies, the address counts in the per-address
 // throttles of internal/auth (auth.WithClientAddress), and so it does with server.tls, where
 // Lajstrom terminates TLS and the peer is the client (#248); behind an edge without the list
@@ -41,7 +42,9 @@ func (s *Server) clientAddress(next http.Handler) http.Handler {
 				"remoteAddr", r.RemoteAddr, "requestId", RequestID(r.Context()))
 		}
 		ctx := context.WithValue(r.Context(), clientKey{}, c)
-		ctx = auth.WithRequest(ctx, c.addr, RequestID(ctx)) // for the row of an inactive user disabled by its credential
+		// for the line at info of a refused credential, whoever refuses it (auth.LogRefusal), and the
+		// row of an inactive user disabled by its credential
+		ctx = auth.WithRequest(ctx, auth.Request{ID: RequestID(ctx), Address: c.addr})
 		if s.byAddress {
 			ctx = auth.WithClientAddress(ctx, c.addr)
 		}
