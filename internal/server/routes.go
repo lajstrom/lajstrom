@@ -24,6 +24,9 @@ func (s *Server) routes() {
 	if s.opts.OIDC != nil {
 		s.mux.Handle("/-/oidc/", s.opts.OIDC)
 	}
+	if s.opts.CIExchange != nil {
+		s.mux.HandleFunc("POST "+oidcTokenPath, s.oidcToken)
+	}
 	s.mountFormats()
 }
 

@@ -83,7 +83,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     Options.ClientCerts is set; refused like Basic credentials. Without one, anonymous.
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
-//     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//     (auth.Authenticator.AuthenticateBearer), or a CI token (ljs_ci_…, Options.CI), and refused
+//     like Basic credentials. A CI token is the password of Basic credentials and of the form
+//     too, whatever the user name (authenticateSecret).
 //   - DPoP (RFC 9449 §7.1) on /api/: the token of a web UI's sign-in with a proof of the key it
 //     is bound to (authenticateDPoP, docs/spec/rbac.md §10); refused elsewhere. A token bound to a
 //     key is refused in Basic credentials and as a bearer (auth.ErrBound), on /api/ with the
@@ -102,7 +104,8 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //
 // Every request also gets an evaluation scope (auth.WithEvaluationScope): the RBAC evaluator
 // reads the index's auth_version once per request, however many repos the request checks. A
-// request to /v2/token is counted against its client address first (tokenThrottled).
+// request to /v2/token or a POST of /-/oidc/token is counted against its client address first
+// (tokenThrottled).
 //
 // A nil Options.Authenticator authenticates nobody: every request is anonymous, as in the unit
 // tests of other packages.
@@ -154,7 +157,12 @@ func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Creden
 		p, cred, err = s.authenticateSecret(r, user, secret)
 		return p, cred, true, err
 	case strings.EqualFold(scheme, "Bearer") && tokenBearer(r.URL.Path, strings.TrimSpace(value)):
-		p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), strings.TrimSpace(value))
+		secret := strings.TrimSpace(value)
+		if strings.HasPrefix(secret, auth.CIPrefix) {
+			p, cred, err = s.ciToken(r, secret)
+		} else {
+			p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), secret)
+		}
 		return p, cred, true, err
 	case scheme == "" && r.Method == http.MethodGet && r.URL.Path == tokenPath && s.opts.ClientCerts != nil:
 		return s.certificate(r)
@@ -266,11 +274,14 @@ func (s *Server) authenticateForm(w http.ResponseWriter, r *http.Request, next h
 const issuerRetryAfter = 30 * time.Second
 
 // authenticateSecret authenticates the user name and the secret of Basic credentials or of the
-// form of r. On /v2/token a secret that is a service-account token of a cluster of
-// auth.kubernetes is that token, whatever the user name (Options.Kubernetes, docs/spec/rbac.md
-// §9), and an issuer that does not answer is 503 with Retry-After (settle); any other secret is
-// the authenticator's.
+// form of r. A CI token is that token on every route, whatever the user name (ciToken). On
+// /v2/token a secret that is a service-account token of a cluster of auth.kubernetes is that
+// token, whatever the user name (Options.Kubernetes, docs/spec/rbac.md §9), and an issuer that
+// does not answer is 503 with Retry-After (settle); any other secret is the authenticator's.
 func (s *Server) authenticateSecret(r *http.Request, user, secret string) (auth.Principal, auth.Credential, error) {
+	if strings.HasPrefix(secret, auth.CIPrefix) {
+		return s.ciToken(r, secret)
+	}
 	if r.URL.Path == tokenPath && s.opts.Kubernetes != nil && s.opts.Kubernetes.Recognizes(secret) {
 		p, cred, err := s.opts.Kubernetes.Authenticate(r.Context(), secret)
 		if errors.Is(err, auth.ErrIssuerUnavailable) {
@@ -279,6 +290,22 @@ func (s *Server) authenticateSecret(r *http.Request, user, secret string) (auth.
 		return p, cred, err
 	}
 	return s.opts.Authenticator.Authenticate(r.Context(), user, secret)
+}
+
+// ciToken authenticates the CI token secret (Options.CI, docs/spec/rbac.md §11): without
+// Options.CI it is refused, and counts as no failed login, as a token secret does not.
+func (s *Server) ciToken(r *http.Request, secret string) (auth.Principal, auth.Credential, error) {
+	if s.opts.CI == nil {
+		s.log.DebugContext(r.Context(), "authentication refused", "reason", "a CI token without auth.ci", "requestId", RequestID(r.Context()))
+		return auth.Principal{}, auth.Credential{}, auth.ErrBadCredentials
+	}
+	return s.opts.CI.Authenticate(r.Context(), secret)
+}
+
+// CIAuthenticator authenticates a CI token (ci.Tokens): its ci: principal and a CredCI, an error
+// wrapping auth.ErrBadCredentials for a token that is refused, or another for a failure to decide.
+type CIAuthenticator interface {
+	Authenticate(ctx context.Context, secret string) (auth.Principal, auth.Credential, error)
 }
 
 // oidcPrefix is the prefix of the routes of the OIDC login.
@@ -290,21 +317,25 @@ const loginPath = "/api/v1/login"
 // npmLogin is the path of npm's legacy login, PUT /npm/<repo>/-/user/org.couchdb.user:<name>.
 var npmLogin = regexp.MustCompile(`^/npm/[^/]+/-/user/org\.couchdb\.user:[^/]+$`)
 
-// tokenBearer reports whether the bearer secret on path is the authenticator's: a token secret
-// (auth.PATPrefix or auth.DeployPrefix) outside /v2, whose bearer is the facade's JWT.
+// tokenBearer reports whether the bearer secret on path is the middleware's: a token secret
+// (auth.PATPrefix, auth.DeployPrefix or auth.CIPrefix) outside /v2, whose bearer is the facade's
+// JWT.
 func tokenBearer(path, secret string) bool {
 	if path == "/v2" || strings.HasPrefix(path, "/v2/") {
 		return false
 	}
-	return strings.HasPrefix(secret, auth.PATPrefix) || strings.HasPrefix(secret, auth.DeployPrefix)
+	return strings.HasPrefix(secret, auth.PATPrefix) || strings.HasPrefix(secret, auth.DeployPrefix) ||
+		strings.HasPrefix(secret, auth.CIPrefix)
 }
 
-// tokenThrottled answers 429 and reports true when r is a request to the token endpoint from a
-// client address that made too many (auth.Authenticator.AllowTokenRequest). It runs before
-// the credentials are checked, so that a flood of token requests costs no argon2id.
+// tokenThrottled answers 429 and reports true when r is a request to the token endpoint, or a
+// POST of /-/oidc/token (docs/spec/http-routing.md §7), from a client address that made too many
+// (auth.Authenticator.AllowTokenRequest). It runs before the credentials are checked, so that a
+// flood of token requests costs no argon2id and no verification of a CI platform's token.
 func (s *Server) tokenThrottled(w http.ResponseWriter, r *http.Request) bool {
 	var te *auth.ThrottledError
-	if r.URL.Path != tokenPath || !errors.As(s.opts.Authenticator.AllowTokenRequest(r.Context()), &te) {
+	exchange := r.Method == http.MethodPost && r.URL.Path == oidcTokenPath
+	if (r.URL.Path != tokenPath && !exchange) || !errors.As(s.opts.Authenticator.AllowTokenRequest(r.Context()), &te) {
 		return false
 	}
 	s.throttled(w, r, te, msgTooManyRequests)

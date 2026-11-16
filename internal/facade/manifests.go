@@ -206,7 +206,7 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 // intendPassThrough writes the audit row of the push of the manifest d to t, an oci repo,
 // pending, before the push (docs/spec/rbac.md §5): the principal, the repo, the OCI name as the
 // subject, the digest, the client address (server.ClientAddr), and the tag, "" for a push by
-// digest, and the request id in the details. Every PUT writes one, the repeat of a manifest the
+// digest, the request id and the id of a CI token (auth.CITokenFrom) in the details. Every PUT writes one, the repeat of a manifest the
 // backend has too: no index row tells the facade that it was there, as a version does for a
 // managed repo. No push goes without its row, so a failure is the PUT's.
 func (h *handler) intendPassThrough(ctx context.Context, t *target, tag string, d digest.Digest) (*index.AuditEvent, error) {
@@ -216,6 +216,9 @@ func (h *handler) intendPassThrough(ctx context.Context, t *target, tag string, 
 	}
 	if id := server.RequestID(ctx); id != "" {
 		details["requestId"] = id
+	}
+	if id := auth.CITokenFrom(ctx); id != "" {
+		details["ciToken"] = id
 	}
 	ev := &index.AuditEvent{At: h.o.Now(), Principal: auth.PrincipalFrom(ctx).String(), Action: "push",
 		Repo: t.repo.Format + "/" + t.repo.Name, Subject: t.oci, Digest: d, IP: server.ClientAddr(ctx), State: index.AuditPending}

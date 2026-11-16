@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -14,7 +15,8 @@ import (
 // the client address of the request (server.ClientAddr: the client that X-Forwarded-For names
 // behind a trusted proxy, ADR 0011). The request id (server.RequestID) joins details as
 // "requestId", the group a request came through (format.ViaFrom, rbac.md §7) as "via",
-// <format>/<group>, and details become ev.Details, which stays nil when nothing is in them.
+// <format>/<group>, the id of a CI token (auth.CITokenFrom, rbac.md §11) as "ciToken", and
+// details become ev.Details, which stays nil when nothing is in them.
 // Outside a request through the server's middleware, as in reindex or the CLI, ev keeps what
 // it has.
 func withOrigin(ctx context.Context, ev *index.AuditEvent, details map[string]any) {
@@ -32,6 +34,9 @@ func withOrigin(ctx context.Context, ev *index.AuditEvent, details map[string]an
 	}
 	if group, ok := format.ViaFrom(ctx); ok {
 		add("via", group.Format+"/"+group.Name)
+	}
+	if id := auth.CITokenFrom(ctx); id != "" {
+		add("ciToken", id)
 	}
 	if len(details) > 0 {
 		ev.Details, _ = json.Marshal(details) // strings and ints always marshal

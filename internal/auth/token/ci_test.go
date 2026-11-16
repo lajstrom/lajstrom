@@ -124,3 +124,24 @@ func toStrings(v any) []string {
 	}
 	return out
 }
+
+// TestIssueOnCIToken: a bearer issued for a request whose credential is a CI token carries the
+// CI token's id as ci, which Verify returns; any other bearer has none.
+func TestIssueOnCIToken(t *testing.T) {
+	k := newKey(t, keys.TokenES256)
+	issuer, verifier, _, _ := pair(&fakeKeys{signer: k, verifiers: []*keys.TokenKey{k}})
+	ctx := auth.WithCredential(t.Context(), auth.Credential{Kind: auth.CredCI, CIToken: "jti-1"})
+	tok, err := issuer.Issue(ctx, ciJob, service, nil)
+	must(t, err)
+	if _, payload := segments(t, tok.Raw); payload["ci"] != "jti-1" {
+		t.Errorf("payload %v, want ci", payload)
+	}
+	if g, err := verifier.Verify(t.Context(), tok.Raw, service); err != nil || g.CI != "jti-1" || g.Principal != ciJob {
+		t.Errorf("Verify = %+v, %v", g, err)
+	}
+	tok, err = issuer.Issue(t.Context(), alice, service, nil)
+	must(t, err)
+	if _, payload := segments(t, tok.Raw); payload["ci"] != nil {
+		t.Errorf("a user's bearer has ci: %v", payload)
+	}
+}

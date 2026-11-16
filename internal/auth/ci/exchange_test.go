@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -362,6 +363,40 @@ func TestExchangeForm(t *testing.T) {
 	f.ex.ServeHTTP(rr, r)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_request") {
 		t.Errorf("JSON: %d %s", rr.Code, rr.Body)
+	}
+}
+
+// TestTokens: a CI token the exchange minted authenticates as its principal with the grants of
+// its policies as the configuration has them now; one whose policies are all gone, and one that
+// does not verify, are refused.
+func TestTokens(t *testing.T) {
+	f := newExchangeFixture(t)
+	_, body := f.post(t, f.glTok(nil), nil)
+	secret, _ := body["access_token"].(string)
+	tokens := &Tokens{Policies: f.ex.Policies, Verifier: f.tokens, Log: slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	p, c, err := tokens.Authenticate(context.Background(), secret)
+	if err != nil || p.String() != "ci:gitlab/acme/platform/app" || c.Kind != auth.CredCI || c.CIToken == "" ||
+		!slices.Equal(c.Grants, []auth.Grant{{Role: "maintainer", Mask: "oci/*"}}) {
+		t.Fatalf("Authenticate = %v, %+v, %v", p, c, err)
+	}
+	gone, err := New(config.CI{Issuers: []config.CIIssuer{{Name: "gitlab", Platform: config.CIPlatformGitLab, Issuer: f.gl.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tt := range map[string]struct {
+		t      *Tokens
+		secret string
+	}{
+		"its policies gone": {&Tokens{Policies: gone, Verifier: f.tokens}, secret},
+		"a changed token":   {tokens, secret[:len(secret)-3] + "abc"},
+		"not a CI token":    {tokens, "ljs_ci_x"},
+	} {
+		if _, _, err := tt.t.Authenticate(context.Background(), tt.secret); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Errorf("%s: %v, want auth.ErrBadCredentials", name, err)
+		}
+	}
+	if strings.Contains(f.logs.String(), secret) {
+		t.Errorf("the log has the CI token")
 	}
 }
 

@@ -15,8 +15,10 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/clientcert"
 	"github.com/lajstrom/lajstrom/internal/auth/oidc"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // maxClientSecret bounds the file of auth.oidc.clientSecretFile.
@@ -36,10 +38,14 @@ type edge struct {
 	// kubernetes authenticates the tokens of auth.kubernetes (kubernetesClusters), nil without
 	// clusters.
 	kubernetes *auth.Kubernetes
+	// exchange is the token exchange of auth.ci, and ci the authenticator of its CI tokens
+	// (ciExchange), both nil without an issuer.
+	exchange http.Handler
+	ci       server.CIAuthenticator
 }
 
-// edgeInputs returns the edge of the configuration c.
-func edgeInputs(c *config.Config, st index.Store, log *slog.Logger) (edge, error) {
+// edgeInputs returns the edge of the configuration c; the CI tokens are signed and verified with tokens.
+func edgeInputs(c *config.Config, st index.Store, tokens token.Keys, log *slog.Logger) (edge, error) {
 	login, handoffs, err := oidcLogin(c, st, log)
 	if err != nil {
 		return edge{}, err
@@ -53,7 +59,11 @@ func edgeInputs(c *config.Config, st index.Store, log *slog.Logger) (edge, error
 		return edge{}, err
 	}
 	kubernetes, err := kubernetesClusters(c, log)
-	return edge{login: login, handoffs: handoffs, proxies: proxies, certs: certs, kubernetes: kubernetes}, err
+	if err != nil {
+		return edge{}, err
+	}
+	exchange, ci, err := ciExchange(c, st, tokens, log)
+	return edge{login: login, handoffs: handoffs, proxies: proxies, certs: certs, kubernetes: kubernetes, exchange: exchange, ci: ci}, err
 }
 
 // oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), and the

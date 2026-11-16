@@ -3198,7 +3198,7 @@ components:
       required: [principal, kind, name]
       properties:
         principal: {type: string}
-        kind: {type: string, enum: [user, token]}
+        kind: {type: string, enum: [user, token, ci], description: "user, token for a deploy token, or ci for a CI token (docs/spec/rbac.md §11), whose name is <issuer>/<project>."}
         name: {type: string}
         uid: {type: string, format: uuid}
         groups:
