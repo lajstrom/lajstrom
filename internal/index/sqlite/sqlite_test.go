@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/internal/sqlstore"
@@ -243,5 +246,80 @@ func TestForcedTables(t *testing.T) {
 	listed := slices.Sorted(slices.Values(slices.Concat(sqlstore.ForcedTables, sqlstore.KeptTables)))
 	if !slices.Equal(tables, listed) {
 		t.Errorf("the tables of the schema: %v\nthe tables a forced import empties or keeps: %v", tables, listed)
+	}
+}
+
+// TestVersionsWithoutSummary: the rows that migration 0029 left without a summary, which only a
+// statement of their own makes in this test, are listed after an id in id order when they keep
+// their metadata, and SetVersionSummaries writes each once; an empty summary is one written.
+func TestVersionsWithoutSummary(t *testing.T) {
+	ctx := t.Context()
+	file := filepath.Join(t.TempDir(), "lajstrom.db")
+	s := openMigrated(t, "file:"+file)
+	repo := index.Repo{Format: "pypi", Name: "a", Registry: "local", Prefix: "pypi/a", Kind: "hosted"}
+	must(t, s.CreateRepo(ctx, &repo))
+	pkg := index.Package{RepoID: repo.ID, Name: "requests", NameOCI: "requests"}
+	must(t, s.UpsertPackage(ctx, &pkg))
+	var rows []index.Version
+	for i, md := range []string{`{"summary": "One"}`, `{"name": "requests"}`, ``, `{"summary": "Four"}`} {
+		v := index.Version{PackageID: pkg.ID, Version: fmt.Sprint(i), Tag: fmt.Sprint(i), Digest: digest.FromString(fmt.Sprint(i)),
+			ArtifactType: "application/vnd.lajstrom.pypi.v1", Summary: "x"}
+		if md != "" {
+			v.Metadata = json.RawMessage(md)
+		}
+		must(t, s.UpsertVersion(ctx, &v))
+		rows = append(rows, v)
+	}
+	db, err := sql.Open("sqlite", "file:"+file)
+	must(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.ExecContext(ctx, "UPDATE versions SET summary = NULL")
+	must(t, err)
+
+	ids := func(vs []index.Version) []int64 {
+		out := []int64{}
+		for _, v := range vs {
+			out = append(out, v.ID)
+		}
+		return out
+	}
+	got, err := s.ListVersionsWithoutSummary(ctx, 0, 2)
+	must(t, err)
+	if want := []int64{rows[0].ID, rows[1].ID}; !slices.Equal(ids(got), want) {
+		t.Errorf("the first page: %v, want %v", ids(got), want)
+	}
+	got, err = s.ListVersionsWithoutSummary(ctx, rows[1].ID, 2)
+	must(t, err)
+	if want := []int64{rows[3].ID}; !slices.Equal(ids(got), want) {
+		t.Errorf("the page after %d: %v, want %v (the row without metadata is left out)", rows[1].ID, ids(got), want)
+	}
+	summaries := map[int64]string{rows[0].ID: "One", rows[1].ID: "", rows[2].ID: "none", rows[3].ID: "Four"}
+	n, err := s.SetVersionSummaries(ctx, summaries)
+	must(t, err)
+	if n != 3 {
+		t.Errorf("SetVersionSummaries wrote %d rows, want 3", n)
+	}
+	if n, err = s.SetVersionSummaries(ctx, summaries); err != nil || n != 0 {
+		t.Errorf("SetVersionSummaries again: %d, %v; want none written", n, err)
+	}
+	got, err = s.ListVersionsWithoutSummary(ctx, 0, 10)
+	must(t, err)
+	if len(got) != 0 {
+		t.Errorf("rows without a summary after it was written: %v", ids(got))
+	}
+	for i, want := range []sql.NullString{{String: "One", Valid: true}, {Valid: true}, {}, {String: "Four", Valid: true}} {
+		var summary sql.NullString
+		must(t, db.QueryRowContext(ctx, "SELECT summary FROM versions WHERE id = ?", rows[i].ID).Scan(&summary))
+		if summary != want {
+			t.Errorf("row %d: summary %+v, want %+v", i, summary, want)
+		}
+	}
+}
+
+// must stops the test on an error.
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }
