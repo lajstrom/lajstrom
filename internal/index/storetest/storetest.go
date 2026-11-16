@@ -57,6 +57,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"PackagePages", testPackagePages},
 		{"VersionPages", testVersionPages},
 		{"VersionPagesWithout", testVersionPagesWithout},
+		{"PackageFacts", testPackageFacts},
 		{"VersionTagRace", testVersionTagRace},
 		{"VersionOCIRepo", testVersionOCIRepo},
 		{"Files", testFiles},

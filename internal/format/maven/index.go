@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -167,13 +168,9 @@ func metadataDocuments(groupID, artifactID string, vs []index.Version) ([]format
 	}
 	sortVersions(versions)
 	doc := artifactMetadata{GroupID: groupID, ArtifactID: artifactID, Versioning: versioning{
-		Latest: versions[len(versions)-1], Versions: versions, LastUpdated: updated.UTC().Format(lastUpdatedLayout),
+		Latest: versions[len(versions)-1], Release: releaseOf(versions), Versions: versions,
+		LastUpdated: updated.UTC().Format(lastUpdatedLayout),
 	}}
-	for i := len(versions) - 1; i >= 0 && doc.Versioning.Release == ""; i-- {
-		if !isPrerelease(versions[i]) {
-			doc.Versioning.Release = versions[i]
-		}
-	}
 	body, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("maven: the %s of %s:%s: %w", MetadataFile, groupID, artifactID, err)
@@ -194,4 +191,31 @@ func withChecksums(path string, body []byte) []format.Document {
 			Content: []byte(sums[a.name])})
 	}
 	return docs
+}
+
+// releaseOf is the release of a maven-metadata.xml whose versions, in Maven's order, are sorted:
+// the greatest that is not a pre-release, "" when every one is.
+func releaseOf(sorted []string) string {
+	for _, v := range slices.Backward(sorted) {
+		if !isPrerelease(v) {
+			return v
+		}
+	}
+	return ""
+}
+
+// LatestVersion returns the release of the artifact's maven-metadata.xml (format.LatestPicker):
+// the greatest version in Maven's order that is not a pre-release, a SNAPSHOT build never; ""
+// when every version is one.
+func (Plugin) LatestVersion(versions []string, _ []index.JournalState) string {
+	var dirs []string
+	seen := map[string]bool{}
+	for _, v := range versions {
+		if d := versionDir(v); !seen[d] {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	sortVersions(dirs)
+	return releaseOf(dirs)
 }

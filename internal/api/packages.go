@@ -23,10 +23,146 @@ type PackageList struct {
 	Next     string         `json:"next,omitempty"`
 }
 
-// PackageEntry is a package as the API answers it.
+// PackageEntry is a package as the API answers it (docs/api.md, List packages): its row and
+// its facts, read from the derived tables.
 type PackageEntry struct {
 	Name      string    `json:"name"`
+	NameOCI   string    `json:"nameOci"`
 	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"` // the publish time of its newest manifest
+	// LatestVersion is the version the format's client installs by default (format.LatestPicker),
+	// LatestVariants that version's variants but "" in byte order; nil and empty when there is
+	// none.
+	LatestVersion  *string  `json:"latestVersion"`
+	LatestVariants []string `json:"latestVariants"`
+	// LastPublished is the first version of its versions list; nil without versions.
+	LastPublished *string `json:"lastPublished"`
+	Versions      int64   `json:"versions"`
+	Manifests     int64   `json:"manifests"`
+	Size          int64   `json:"size"` // of the file layers of all its manifests
+	// Summary and Attrs are those of the head manifest, the first variant of LatestVersion, or
+	// of LastPublished when it is nil; Summary nil when it has none.
+	Summary *string           `json:"summary"`
+	Attrs   map[string]string `json:"attrs"`
+	// Pointers are its pointers that name one of its versions, with the version.
+	Pointers []PackagePointer `json:"pointers"`
+}
+
+// PackagePointer is a pointer of a package with the version it names: an npm dist-tag.
+type PackagePointer struct {
+	format.Pointer
+	Version string `json:"version"`
+}
+
+// PackageDetail is the answer of GET …/packages/{name} (docs/api.md, Get a package): the
+// package's row of PackageList, the OCI repository of its manifests as VersionDetail has it, and
+// the metadata layer of its head manifest, null when it is absent or omitted for size.
+type PackageDetail struct {
+	PackageEntry
+	OCIRepository  string          `json:"ociRepository"`
+	LatestMetadata json.RawMessage `json:"latestMetadata"`
+}
+
+// packageEntry is the PackageEntry of a package and its facts.
+func packageEntry(p index.Package, f index.PackageFacts) PackageEntry {
+	e := PackageEntry{Name: p.Name, NameOCI: p.NameOCI, CreatedAt: p.CreatedAt.UTC(), UpdatedAt: p.CreatedAt.UTC(),
+		LatestVariants: []string{}, Versions: f.Versions, Manifests: f.Manifests, Size: f.Size, Attrs: map[string]string{},
+		Pointers: []PackagePointer{}}
+	if !f.UpdatedAt.IsZero() {
+		e.UpdatedAt = f.UpdatedAt.UTC()
+	}
+	if f.Latest != "" {
+		e.LatestVersion = &f.Latest
+		for _, v := range f.LatestVariants {
+			if v != "" {
+				e.LatestVariants = append(e.LatestVariants, v)
+			}
+		}
+	}
+	if f.LastPublished != "" {
+		e.LastPublished = &f.LastPublished
+	}
+	if f.Head != nil {
+		if f.Head.Summary != "" {
+			e.Summary = &f.Head.Summary
+		}
+		e.Attrs = orEmpty(f.Head.Attrs)
+	}
+	for _, s := range f.Tags {
+		e.Pointers = append(e.Pointers, PackagePointer{Pointer: format.Pointer{Kind: s.Kind, Name: s.Key}, Version: s.Value})
+	}
+	return e
+}
+
+// latestOf returns the index.LatestFunc of pkgs, whose repos have the formats of formats by repo
+// id: a package's latest version is the one its format's plugin picks (format.LatestPicker), and
+// the newest by VersionKey for a format whose plugin picks none (raw).
+func (h *handler) latestOf(pkgs []index.Package, formats map[int64]string) index.LatestFunc {
+	pickers := map[int64]format.LatestPicker{}
+	for _, p := range pkgs {
+		if lp, ok := h.repos.latestPicker(formats[p.RepoID]); ok {
+			pickers[p.ID] = lp
+		}
+	}
+	return func(id int64, versions []string, state []index.JournalState) string {
+		if lp, ok := pickers[id]; ok {
+			return lp.LatestVersion(versions, state)
+		}
+		return versions[0]
+	}
+}
+
+// packageEntries returns the PackageEntry of each of pkgs, with the facts of all of them read at
+// once, the latest versions picked by latest.
+func packageEntries(ctx context.Context, rd index.Reader, pkgs []index.Package, latest index.LatestFunc) ([]PackageEntry, error) {
+	ids := make([]int64, len(pkgs))
+	for i, p := range pkgs {
+		ids[i] = p.ID
+	}
+	facts, err := rd.ListPackageFacts(ctx, ids, latest)
+	if err != nil {
+		return nil, fmt.Errorf("api: the facts of %d packages: %w", len(pkgs), err)
+	}
+	out := make([]PackageEntry, len(pkgs))
+	for i, p := range pkgs {
+		out[i] = packageEntry(p, facts[i])
+	}
+	return out, nil
+}
+
+// getPackage answers GET /api/v1/repos/{format}/{repo}/packages/{name}: the package's row of the
+// list with its OCI repository and the metadata of its head manifest, read from the index. It
+// needs read; a repo or a package that does not exist is 404, and so is any package of a group,
+// which has none.
+func (h *handler) getPackage(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	f, name := r.PathValue("format"), r.PathValue("repo")
+	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
+		return 0, nil, err
+	}
+	ctx := r.Context()
+	repo, err := h.repos.Index.GetRepo(ctx, f, name)
+	if err != nil {
+		return 0, nil, repoError("read a package of", f, name, err)
+	}
+	pkg, err := h.packageOf(r, repo)
+	if err != nil {
+		return 0, nil, err
+	}
+	facts, err := h.repos.Index.ListPackageFacts(ctx, []int64{pkg.ID}, h.latestOf([]index.Package{*pkg}, map[int64]string{repo.ID: repo.Format}))
+	if err != nil {
+		return 0, nil, fmt.Errorf("api: the facts of %q in %s/%s: %w", pkg.Name, f, name, err)
+	}
+	out := PackageDetail{PackageEntry: packageEntry(*pkg, facts[0]), OCIRepository: repo.Format + "/" + repo.Name + "/" + pkg.NameOCI}
+	if head := facts[0].Head; head != nil {
+		v, err := h.repos.Index.GetVersion(ctx, pkg.ID, head.Version, head.Variant)
+		switch {
+		case err == nil:
+			out.LatestMetadata = v.Metadata
+		case !errors.Is(err, index.ErrNotFound): // deleted since: no metadata
+			return 0, nil, fmt.Errorf("api: the head of %q in %s/%s: %w", pkg.Name, f, name, err)
+		}
+	}
+	return http.StatusOK, out, nil
 }
 
 // VersionList is the answer of GET …/packages/{name}/versions: a page of the package's
@@ -193,13 +329,14 @@ func (h *handler) listPackages(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, fmt.Errorf("api: packages of %s/%s: %w", f, name, err)
 	}
-	list := PackageList{Packages: []PackageEntry{}}
-	for i, p := range pkgs {
-		if i == limit {
-			list.Next = cursor(list.Packages[i-1].Name)
-			break
-		}
-		list.Packages = append(list.Packages, PackageEntry{Name: p.Name, CreatedAt: p.CreatedAt.UTC()})
+	list := PackageList{}
+	if len(pkgs) > limit {
+		pkgs = pkgs[:limit]
+		list.Next = cursor(pkgs[limit-1].Name)
+	}
+	latest := h.latestOf(pkgs, map[int64]string{repo.ID: repo.Format})
+	if list.Packages, err = packageEntries(ctx, h.repos.Index, pkgs, latest); err != nil {
+		return 0, nil, err
 	}
 	return http.StatusOK, list, nil
 }

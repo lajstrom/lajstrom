@@ -73,3 +73,23 @@ func check(t *testing.T, name string, compare func(a, b string) int, a string, w
 		t.Errorf("%s(%q, %q) = %d, want %d", name, b, a, got, -want)
 	}
 }
+
+// TestLatestVersion: the highest version in rpm's order, what dnf installs from one repo.
+func TestLatestVersion(t *testing.T) {
+	for _, tt := range []struct {
+		versions []string
+		want     string
+	}{
+		{[]string{"1.0~rc1-1", "1.0-1", "0.9-3"}, "1.0-1"},
+		{[]string{"1.0-1", "1.0^git1-1"}, "1.0^git1-1"},
+		{[]string{"1.10-1", "1.9-1"}, "1.10-1"},
+		{[]string{"2.0-1", "1:0.9-1"}, "1:0.9-1"},
+		{[]string{"1.0-1.el9", "1.0-10.el9", "1.0-2.el9"}, "1.0-10.el9"},
+		{[]string{"1.0-1", "0:1.0-1"}, "1.0-1"},
+		{nil, ""},
+	} {
+		if got := (Plugin{}).LatestVersion(tt.versions, nil); got != tt.want {
+			t.Errorf("LatestVersion(%q) = %q, want %q", tt.versions, got, tt.want)
+		}
+	}
+}

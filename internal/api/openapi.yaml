@@ -192,6 +192,25 @@ paths:
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/packages/{name}:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+    get:
+      tags: [repos]
+      operationId: getPackage
+      summary: >-
+        One package (read): its row of the package list, the OCI repository that holds it and the
+        metadata layer of its head manifest.
+      responses:
+        "200":
+          description: The package.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PackageDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/repos/{format}/{repo}/packages/{name}/versions:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1963,11 +1982,67 @@ components:
           items: {$ref: "#/components/schemas/AuditEntry"}
         next: {type: string}
     Package:
+      description: A package with the facts of its manifests, all read from the index.
       type: object
-      required: [name, createdAt]
+      required: [name, nameOci, createdAt, updatedAt, latestVersion, latestVariants, lastPublished, versions, manifests, size, summary, attrs,
+        pointers]
       properties:
         name: {type: string, description: The name in the format's spelling.}
-        createdAt: {type: string, format: date-time, description: The publish time of its first version.}
+        nameOci: {type: string, description: The escaped package path of its OCI repository.}
+        createdAt: {type: string, format: date-time, description: The publish time of its first manifest.}
+        updatedAt: {type: string, format: date-time, description: The publish time of its newest manifest.}
+        latestVersion:
+          type: [string, "null"]
+          description: >-
+            The version the format's client installs by default: npm the latest dist-tag, maven the release of
+            maven-metadata.xml, pypi the highest that is not a pre-release and not yanked (as pip picks it), apt and
+            rpm the highest by dpkg's and rpm's order, raw the newest; null when the client installs none.
+        latestVariants:
+          type: array
+          description: The variants of the latest version in byte order; empty for a format without variants and without a latest version.
+          items: {type: string}
+        lastPublished:
+          type: [string, "null"]
+          description: The first version of its versions list, the newest by its first publish time; null without versions.
+        versions: {type: integer, format: int64, description: How many versions it has.}
+        manifests: {type: integer, format: int64, description: "How many manifests it has, one per variant of each version."}
+        size: {type: integer, format: int64, description: "The sizes of the file layers of all its manifests, added up."}
+        summary:
+          type: [string, "null"]
+          description: >-
+            One line of the head manifest's metadata layer (pypi summary, deb Description, npm description,
+            rpm summary); null when it has none.
+        attrs:
+          type: object
+          description: >-
+            The lajstrom.* annotations of the head manifest, the latest version's first variant (else the last
+            published one's), by their full key.
+          additionalProperties: {type: string}
+        pointers:
+          type: array
+          description: "Its pointers that name one of its versions, with the version, by kind and name: npm's dist-tags."
+          items: {$ref: "#/components/schemas/PackagePointer"}
+    PackagePointer:
+      description: A pointer of a package, with the version it names.
+      allOf:
+        - {$ref: "#/components/schemas/Pointer"}
+        - type: object
+          required: [version]
+          properties:
+            version: {type: string, description: The version it names.}
+    PackageDetail:
+      description: "One package: its row of the package list, its OCI repository and the metadata of its head manifest."
+      allOf:
+        - {$ref: "#/components/schemas/Package"}
+        - type: object
+          required: [ociRepository, latestMetadata]
+          properties:
+            ociRepository:
+              type: string
+              description: <format>/<repo>/<package path>, the repository of its manifests on /v2.
+            latestMetadata:
+              type: [object, "null"]
+              description: The metadata layer of the head manifest; null when it is absent or was too large to keep.
     PackageList:
       type: object
       required: [packages]

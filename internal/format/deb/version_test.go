@@ -98,3 +98,23 @@ func TestParseVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestLatestVersion: the highest version in dpkg's order, what apt installs from one repo.
+func TestLatestVersion(t *testing.T) {
+	for _, tt := range []struct {
+		versions []string
+		want     string
+	}{
+		{[]string{"1.0~rc1-1", "1.0-1", "0.9-3"}, "1.0-1"},
+		{[]string{"1.10-1", "1.9-1"}, "1.10-1"},
+		{[]string{"2.0-1", "1:0.9-1"}, "1:0.9-1"},
+		{[]string{"1.0-1", "1.0-1+deb12u1", "1.0-1~bpo11+1"}, "1.0-1+deb12u1"},
+		{[]string{"1.0", "1.0-0"}, "1.0-0"},
+		{[]string{"1.0-1", "not a version"}, "1.0-1"},
+		{nil, ""},
+	} {
+		if got := (Plugin{}).LatestVersion(tt.versions, nil); got != tt.want {
+			t.Errorf("LatestVersion(%q) = %q, want %q", tt.versions, got, tt.want)
+		}
+	}
+}

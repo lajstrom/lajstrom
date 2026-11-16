@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
@@ -176,4 +177,29 @@ func objectKeys(t *testing.T, b []byte, key string) []string {
 		must(t, dec.Decode(&skip))
 	}
 	return keys
+}
+
+// TestLatestVersion: latest of the packument, the journal's when the package has its version,
+// else the highest release, else the highest version, by SemVer precedence.
+func TestLatestVersion(t *testing.T) {
+	tag := func(name, version string) []index.JournalState {
+		return []index.JournalState{{Kind: index.JournalDistTag, Key: name, Value: version}}
+	}
+	for _, tt := range []struct {
+		name     string
+		versions []string
+		state    []index.JournalState
+		want     string
+	}{
+		{"the journal's", []string{"2.0.0", "1.0.0", "3.0.0-rc.1"}, tag("latest", "1.0.0"), "1.0.0"},
+		{"a pre-release the journal names", []string{"2.0.0", "3.0.0-rc.1"}, tag("latest", "3.0.0-rc.1"), "3.0.0-rc.1"},
+		{"the journal's, a version the package has not", []string{"1.10.0", "1.9.0"}, tag("latest", "4.0.0"), "1.10.0"},
+		{"another tag", []string{"1.0.0", "2.0.0-beta.1"}, tag("next", "2.0.0-beta.1"), "1.0.0"},
+		{"pre-releases only", []string{"1.0.0-alpha", "1.0.0-beta.2", "1.0.0-beta.11"}, nil, "1.0.0-beta.11"},
+		{"no versions", nil, nil, ""},
+	} {
+		if got := (Plugin{}).LatestVersion(tt.versions, tt.state); got != tt.want {
+			t.Errorf("%s: LatestVersion(%q) = %q, want %q", tt.name, tt.versions, got, tt.want)
+		}
+	}
 }
