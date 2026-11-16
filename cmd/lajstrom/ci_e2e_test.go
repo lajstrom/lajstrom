@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -33,6 +34,9 @@ type ciServer struct {
 	st     *sqlite.Store
 	gh, gl *testutil.OIDCIssuer
 	now    time.Time
+	cfg    *config.Config
+	dsn    string
+	tokens *keys.EphemeralTokens
 }
 
 // The claims of the tokens of ciServer: a release job of acme/app (repository 123), and a
@@ -61,30 +65,43 @@ func newCIServer(t *testing.T) *ciServer {
 		{Name: "platform", Issuer: "gitlab", Claims: map[string]config.CIValues{"namespace_id": {"42"}, "ref": {"main"},
 			"ref_protected": {"true"}}, Grants: []config.CIGrant{{Role: "writer", Mask: "oci/acme"}, {Role: "reader", Mask: "oci/other"}}},
 	}
-	var err error
-	cs.st, err = sqlite.Open(t.Context(), "file:"+filepath.Join(t.TempDir(), "ci.db"))
-	must(t, err)
-	t.Cleanup(func() { _ = cs.st.Close() })
+	cs.cfg, cs.dsn, cs.tokens = c, "file:"+filepath.Join(t.TempDir(), "ci.db"), keys.NewEphemeralTokens()
+	cs.st = cs.open(t)
 	must(t, cs.st.Migrate(t.Context()))
 	for _, name := range []string{"acme", "other"} {
 		must(t, cs.st.CreateRepo(t.Context(), &index.Repo{Format: "oci", Name: name, Registry: "local", Prefix: "oci/" + name, Kind: index.KindHosted}))
 	}
-	log := slog.New(slog.DiscardHandler)
-	tokens := keys.NewEphemeralTokens()
-	edge, err := edgeInputs(c, cs.st, tokens, log)
+	cs.h = cs.replica(t, cs.st)
+	return cs
+}
+
+// open opens the database of cs again: the connection of another replica.
+func (cs *ciServer) open(t *testing.T) *sqlite.Store {
+	t.Helper()
+	st, err := sqlite.Open(t.Context(), cs.dsn)
 	must(t, err)
-	authz := auth.NewRBAC(auth.RBACOptions{Index: cs.st, Log: log})
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// replica returns the handler of a server as serve builds it over st, with the token keys of cs,
+// as the replicas of one master key share them.
+func (cs *ciServer) replica(t *testing.T, st *sqlite.Store) http.Handler {
+	t.Helper()
+	log := slog.New(slog.DiscardHandler)
+	edge, err := edgeInputs(cs.cfg, st, cs.tokens, log)
+	must(t, err)
+	authz := auth.NewRBAC(auth.RBACOptions{Index: st, Log: log})
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, cred := auth.PrincipalFrom(r.Context()), auth.CredentialFrom(r.Context())
 		write, _ := authz.Allowed(r.Context(), p, auth.ActionWrite, "oci", "acme")
 		_ = json.NewEncoder(w).Encode(map[string]any{"principal": p.String(), "kind": cred.Kind, "write": write})
 	})
 	srv, err := server.New(server.Options{Listen: "127.0.0.1:0", ExternalURL: ciAudience, Log: log, API: api,
-		Facade:        facade.New(facade.Options{Index: cs.st, Auth: authz, Tokens: tokens, ExternalURL: ciAudience, Log: log}),
-		Authenticator: auth.NewAuthenticator(auth.Options{Index: cs.st, Log: log}), CI: edge.ci, CIExchange: edge.exchange})
+		Facade:        facade.New(facade.Options{Index: st, Auth: authz, Tokens: cs.tokens, ExternalURL: ciAudience, Log: log}),
+		Authenticator: auth.NewAuthenticator(auth.Options{Index: st, Log: log}), CI: edge.ci, CIExchange: edge.exchange})
 	must(t, err)
-	cs.h = srv.Handler()
-	return cs
+	return srv.Handler()
 }
 
 // token returns a token of the issuer i with the claims of base, the audience and the times of
@@ -102,12 +119,17 @@ func (cs *ciServer) token(t *testing.T, i *testutil.OIDCIssuer, base, over map[s
 
 // exchange posts subject to /-/oidc/token and returns the status and the JSON answer.
 func (cs *ciServer) exchange(subject string) (int, map[string]any) {
+	return exchangeOn(cs.h, subject)
+}
+
+// exchangeOn posts subject to /-/oidc/token of h.
+func exchangeOn(h http.Handler, subject string) (int, map[string]any) {
 	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "subject_token": {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"}}
 	r := httptest.NewRequest(http.MethodPost, "/-/oidc/token", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	cs.h.ServeHTTP(rr, r)
+	h.ServeHTTP(rr, r)
 	var body map[string]any
 	_ = json.Unmarshal(rr.Body.Bytes(), &body)
 	return rr.Code, body
@@ -126,10 +148,15 @@ func (cs *ciServer) ciToken(t *testing.T, subject, principal string) string {
 
 // get sends a GET of target with Basic credentials.
 func (cs *ciServer) get(target, user, secret string) *httptest.ResponseRecorder {
+	return getOn(cs.h, target, user, secret)
+}
+
+// getOn sends a GET of target with Basic credentials to h.
+func getOn(h http.Handler, target, user, secret string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodGet, target, nil)
 	r.SetBasicAuth(user, secret)
 	rr := httptest.NewRecorder()
-	cs.h.ServeHTTP(rr, r)
+	h.ServeHTTP(rr, r)
 	return rr
 }
 
@@ -176,7 +203,15 @@ func TestCITokenExchangeEndToEnd(t *testing.T) {
 	if rr := cs.get("/v2/token?scope=repository:oci/acme/app:pull", "ci", release+"x"); rr.Code != http.StatusUnauthorized {
 		t.Errorf("a changed CI token: %d", rr.Code)
 	}
-	rows, err := cs.st.ListAudit(t.Context(), index.AuditFilter{Action: "token.exchange"})
+	checkExchangeRows(t, cs.st)
+}
+
+// checkExchangeRows checks the token.exchange rows of TestCITokenExchangeEndToEnd: the two
+// tokens minted, and a row for each source of the refusals (the GitHub project, the GitLab
+// project, the client address), never GitLab's user_email.
+func checkExchangeRows(t *testing.T, st index.Store) {
+	t.Helper()
+	rows, err := st.ListAudit(t.Context(), index.AuditFilter{Action: "token.exchange"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +226,38 @@ func TestCITokenExchangeEndToEnd(t *testing.T) {
 	}
 	if outcomes["minted"] != 2 || outcomes["refused"] != 3 {
 		t.Errorf("token.exchange rows by outcome: %v, want 2 minted and 3 refused", outcomes)
+	}
+}
+
+// TestCIPolicyThroughTheAPI: a policy made through the API (ci.Service, on a connection of its
+// own) counts at the next exchange on another replica, without a restart; deleted, its CI token is
+// refused at its next request on a third one (docs/spec/rbac.md §11).
+func TestCIPolicyThroughTheAPI(t *testing.T) {
+	cs := newCIServer(t)
+	other := cs.replica(t, cs.open(t))
+	lib := cs.token(t, cs.gh, map[string]any{"repository": "acme/lib", "repository_id": "555", "ref": "refs/heads/main", "event_name": "push"}, nil)
+	if status, _ := cs.exchange(lib); status != http.StatusBadRequest {
+		t.Fatalf("before the policy: %d", status)
+	}
+	admin := auth.WithPrincipal(t.Context(), auth.Principal{Kind: auth.KindUser, Name: "019a6c3e-7b1e-7c3d-8e2f-0000000000ad"})
+	s := &ci.Service{Index: cs.open(t), Config: cs.cfg.Auth.CI}
+	if _, err := s.Create(admin, ci.Policy{Name: "lib-read", Issuer: "github", Claims: map[string][]string{"repository_id": {"555"}},
+		Grants: []index.CIGrant{{Role: "reader", Mask: "oci/acme"}}}, auth.Origin{Source: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	status, body := exchangeOn(other, lib)
+	secret, _ := body["access_token"].(string)
+	if status != http.StatusOK || body["principal"] != "ci:github/acme/lib" || fmt.Sprint(body["policies"]) != "[lib-read]" {
+		t.Fatalf("on another replica after the create: %d %v", status, body)
+	}
+	if access, _ := bearerOf(t, cs.get("/v2/token?scope=repository:oci/acme/app:pull,push", "ci", secret).Body.Bytes()); access != "oci/acme/app:pull" {
+		t.Errorf("the bearer of the policy of the API grants %q", access)
+	}
+	if err := s.Delete(admin, "lib-read", auth.Origin{Source: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	if rr := getOn(other, "/v2/token?scope=repository:oci/acme/app:pull", "ci", secret); rr.Code != http.StatusUnauthorized {
+		t.Errorf("the CI token of a deleted policy: %d", rr.Code)
 	}
 }
 

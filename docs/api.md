@@ -1418,6 +1418,60 @@ The admin role only, also to list one's own bindings; anyone else is `403`, anon
 The same, straight against the database of the configuration: `create`, `list`, `delete`
 ([auth.md](auth.md#bindings)).
 
+## CI trust policies
+
+The trust policies of the token exchange for CI ([auth.md](auth.md#token-exchange-for-ci),
+[rbac.md](spec/rbac.md) §11): which CI jobs get a CI token, and its grants. Those of the
+configuration are listed and read-only; the admin makes the others here. The admin role only,
+checked before the body is read: anyone else is `403`, anonymous `401`.
+
+### The resource
+
+```json
+{
+  "name": "lib-read",
+  "issuer": "github",
+  "claims": {"repository_id": ["555"], "ref": ["refs/tags/v*"]},
+  "grants": [{"role": "reader", "mask": "pypi/internal"}],
+  "source": "api",
+  "createdBy": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "createdAt": "2026-11-16T12:00:00Z",
+  "updatedAt": "2026-11-16T12:00:00Z"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `name` | lowercase letters and digits with single hyphens, at most 63 bytes; unique among the configuration's and the API's; the `{name}` of the routes; never changes |
+| `issuer` | the name of an issuer of `auth.ci.issuers` |
+| `claims` | each claim of the issuer's platform to its values ([auth.md](auth.md#setting-it-up)); an id is required, and `ref`, `ref_path` or `environment` for a policy that writes |
+| `grants` | one or more `{role, mask}`: `reader`, `writer` or `maintainer` on `<format>/<repo>`; `writer` and `maintainer` refused: a policy of the API reads |
+| `source` | `config` or `api`; answered, never sent |
+| `createdBy`, `createdAt`, `updatedAt` | of a policy of the API; set by the server |
+
+### List: `GET /api/v1/ci/policies`
+
+`{"policies": […]}`: those of the configuration in its order, then those of the API by id.
+
+### Create: `POST /api/v1/ci/policies`
+
+The body has `name`, `issuer`, `claims` and `grants`. `201` with the resource and `Location:
+/api/v1/ci/policies/<name>`. A rule broken is `400` naming the field; a policy that writes `403`; a
+name taken, the configuration's too, `409`. It counts from the next request on, on every replica;
+its row is `ci.policy.create`.
+
+### Get, replace, delete: `GET`, `PUT`, `DELETE /api/v1/ci/policies/<name>`
+
+`PUT` replaces `issuer`, `claims` and `grants` with the body's, whose `name`, when present, is the
+path's; `200` with the resource, its row `ci.policy.update` with the `previous` policy. `DELETE` is
+`204`, its row `ci.policy.delete`; the CI tokens of the policy grant nothing more from their next
+request. A policy of the configuration is `409` to both; an unknown name `404`.
+
+### `lajstrom admin ci-policy`
+
+The same, straight against the database of the configuration: `create --name --issuer --claim
+<claim>=<value>… --grant <role>:<mask>…`, `list`, `delete <name>`, with the source `cli`.
+
 ## Audit
 
 ### List: `GET /api/v1/audit`

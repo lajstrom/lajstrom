@@ -1658,11 +1658,40 @@ required reviewers or deployment branches, `job_workflow_ref` to name the one wo
 publishes (`acme/app/.github/workflows/release.yml@refs/tags/*`), and `runner_environment:
 github-hosted` (or `gitlab-hosted`) to keep self-hosted runners out.
 
-The policies are configuration only: no API adds one, and a `ci:` principal takes no binding
-(`400`). They change with a restart, and their history is your configuration's; `serve` logs each
-issuer and each policy with its claims and grants at start. GitHub Enterprise Server is `platform:
-github` with its issuer, `https://<host>/_services/token`; a GitLab of your own behind a private
-CA takes a `caFile`.
+GitHub Enterprise Server is `platform: github` with its issuer, `https://<host>/_services/token`;
+a GitLab of your own behind a private CA takes a `caFile`. A `ci:` principal takes no binding
+(`400`): its rights are its policies' grants.
+
+### Policies in the configuration, or through the API
+
+A policy lives in one of two places, each its owner (ADR 0015):
+
+- **The configuration**, `auth.ci.policies`: reviewed in git with the deployment, changed with a
+  restart; `serve` logs each one with its claims and grants at start. The API shows them with
+  `source: config` and refuses to change or delete them (`409`).
+- **The API**, for the admin role: `/api/v1/ci/policies` ([api.md](api.md#ci-trust-policies)) or
+  `lajstrom admin ci-policy` on the database. The same rules hold, `400` naming the field, and the
+  issuer must be one of the configuration. A change counts from the next request on, on every
+  replica, without a restart: each create, change and delete moves `auth_version`, which every
+  replica reads before an exchange and before a request with a CI token. Each is an audit row,
+  `ci.policy.create`, `ci.policy.update` (with the `previous` policy) or `ci.policy.delete`, with
+  the policy's issuer, claims and grants.
+
+```sh
+curl -fsS -u admin -X POST https://art.example.com/api/v1/ci/policies -H 'Content-Type: application/json' -d '{
+  "name": "lib-read", "issuer": "github",
+  "claims": {"repository_id": ["555"]},
+  "grants": [{"role": "reader", "mask": "pypi/internal"}]}'
+lajstrom admin ci-policy create --name lib-read --issuer github --claim repository_id=555 --grant reader:pypi/internal
+lajstrom admin ci-policy list
+```
+
+**A policy of the API reads only**: one that grants `writer` or `maintainer` is `403`, and one
+already in the database (restored from a snapshot) is left out with a warning. Whoever steals an
+admin's credential can then add a policy that trusts a repository of their own, and its CI tokens
+read what it grants; they publish nothing. Declare the policies that publish in the
+configuration, and watch the `ci.policy.*` rows; a snapshot carries the policies of the API, never
+the configuration's.
 
 ### GitHub Actions
 
@@ -1738,8 +1767,10 @@ release:
   system resources, and it creates no token: a personal access token, a deploy token of a repo
   (with `maintainer` too) and one over a mask are `403`.
 - It lives `auth.ci.tokenLifetime`, 15 minutes by default and 20 at most; a job that runs longer
-  exchanges again, with a new OIDC token where its platform gives one. It is not revoked alone: remove the policy and restart, or `lajstrom admin key rotate
-  --token --drop`, which ends every bearer of `/v2` too. A bearer `/v2/token` issued on it lives
+  exchanges again, with a new OIDC token where its platform gives one. It is not revoked alone:
+  delete its policy through the API (from the next request on), or remove it from the
+  configuration and restart, or `lajstrom admin key rotate --token --drop`, which ends every
+  bearer of `/v2` too. A bearer `/v2/token` issued on it lives
   its own 20 minutes.
 
 ### Audit
@@ -1749,8 +1780,16 @@ the policies, the token's id (`details.token`), its expiry, and the claims of th
 run's (`run_id`, `run_attempt`, `sha` on GitHub; `pipeline_id`, `job_id`, `sha` on GitLab), never
 a token nor GitLab's `user_email`. The rows of the job's pushes, deletes and fetches carry
 `details.ciToken`, the same id, through the bearer of `/v2/token` too, and its manifests
-`lajstrom.uploaded-by: ci:<issuer>/<project>`. A refused exchange writes no row, since anyone can
-get a valid token from a repository of their own; it is logged at info with the reason.
+`lajstrom.uploaded-by: ci:<issuer>/<project>`. The row says `outcome: minted`.
+
+A refused exchange is a `token.exchange` row of `outcome: refused` with its `reason` and the
+issuer, and, for a token that verified, its `ci:` principal and the claims that say who and where
+(the ids, the project, `ref`, `ref_type`, `environment`, the event); a token that did not verify is
+`anonymous` and tells nothing, its claims being anyone's. Anyone can get a valid token from a
+repository of their own, so the rows are rate-limited on each replica: one a minute for a project
+(`<issuer>/<project id>`) or, for a token that did not verify, for a client address, the next row
+carrying the refusals held back as `suppressed`. A job that retries against a missing policy writes
+a row a minute; every refusal is logged at info.
 
 ```sh
 curl -s -u admin "https://art.example.com/api/v1/audit?principal=ci:github/acme/app" | jq -c '.events[] | [.action, .repo, .details.ciToken // .details.token]'
