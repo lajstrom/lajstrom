@@ -30,7 +30,7 @@ func TestServiceAccountCreate(t *testing.T) {
 	ctx := context.Background()
 	f, robot := newServiceFixture(t)
 	b, _ := json.Marshal(robot)
-	want := `{"uid":"` + robot.UID + `","name":"robot","kind":"service","disabled":false,"createdAt":"2026-11-07T12:00:00Z",` +
+	want := `{"uid":"` + robot.UID + `","name":"robot","kind":"service","disabled":false,"createdAt":"2026-11-07T12:00:00Z","lastSeenAt":null,` +
 		`"owner":"user:` + f.alice.UID + `","ownerName":"alice"}`
 	if string(b) != want {
 		t.Errorf("service account = %s, want %s", b, want)

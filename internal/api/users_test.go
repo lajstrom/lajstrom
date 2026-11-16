@@ -19,7 +19,8 @@ func TestUsersAPI(t *testing.T) {
 	if loc := rr.Header().Get("Location"); loc != "/api/v1/users/alice" {
 		t.Errorf("Location = %q, want /api/v1/users/alice", loc)
 	}
-	wantJSON(t, "the created user", u, `{"uid": "`+u.UID+`", "name": "alice", "kind": "local", "disabled": false, "createdAt": "2026-01-02T12:00:00Z"}`)
+	wantJSON(t, "the created user", u, `{"uid": "`+u.UID+`", "name": "alice", "kind": "local", "disabled": false, "createdAt": "2026-01-02T12:00:00Z",
+		"lastSeenAt": null}`)
 	for _, target := range []string{"/api/v1/users/alice", "/api/v1/users/" + u.UID} {
 		var got auth.User
 		decodeJSON(t, f.do(http.MethodGet, target, "", admin), http.StatusOK, &got)

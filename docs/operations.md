@@ -114,6 +114,10 @@ frees its name; it is not undone, and the audit rows keep the name. The last ena
 an admin binding cannot be disabled or deleted (exit status 1, `409` over the API): create
 another admin first.
 
+With `auth.disableInactiveUsersAfter` set, a user who has not authenticated for that long is
+disabled at its next authentication, and `lajstrom admin user list` marks it `(inactive)` before
+([Inactive users](auth.md#inactive-users)); enabling it starts its time again.
+
 ### A credential for CI
 
 A CI job gets a deploy token: a principal of its own, bound to one repo, with `write` (and
@@ -1450,7 +1454,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `proxy.fetch` | a proxy repo that published a file it fetched from its upstream, as the principal whose request missed ([proxy-and-group.md](spec/proxy-and-group.md) §5) |
 | `proxy.reject` | a proxy repo that refused a file of its upstream for its bytes: a checksum, `Validate`, a bound ([rbac.md](spec/rbac.md) §7) |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
-| `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin |
+| `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin; `user.disable` also `serve`, by `anonymous` with `source: inactivity` and `reason: inactive`, at the authentication of a user inactive beyond `auth.disableInactiveUsersAfter` ([auth.md](auth.md#inactive-users)) |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
