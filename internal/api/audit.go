@@ -22,10 +22,13 @@ type AuditList struct {
 
 // AuditEntry is an audit event as the API answers it (docs/spec/rbac.md §5).
 type AuditEntry struct {
-	ID            int64           `json:"id"`
-	At            time.Time       `json:"at"`
-	Principal     string          `json:"principal"`
-	PrincipalName string          `json:"principalName,omitempty"`
+	ID            int64     `json:"id"`
+	At            time.Time `json:"at"`
+	Principal     string    `json:"principal"`
+	PrincipalName string    `json:"principalName,omitempty"`
+	// PrincipalKind is service when the principal is a service account's user:<uid>
+	// (docs/spec/rbac.md §5); absent otherwise.
+	PrincipalKind string          `json:"principalKind,omitempty"`
 	Action        string          `json:"action"`
 	Repo          string          `json:"repo,omitempty"`
 	Subject       string          `json:"subject,omitempty"`
@@ -64,16 +67,42 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 		return 0, nil, err
 	}
 	list := AuditList{Events: make([]AuditEntry, len(evs))}
+	kinds := map[string]string{}
 	for i, ev := range evs {
+		kind, err := h.principalKind(r.Context(), ev.Principal, kinds)
+		if err != nil {
+			return 0, nil, err
+		}
 		list.Events[i] = AuditEntry{ID: ev.ID, At: ev.At.UTC(), Principal: ev.Principal, PrincipalName: ev.PrincipalName,
-			Action: ev.Action, Repo: ev.Repo, Subject: ev.Subject, Digest: string(ev.Digest), IP: ev.IP, Details: ev.Details,
-			State: ev.State, Error: ev.Error}
+			PrincipalKind: kind, Action: ev.Action, Repo: ev.Repo, Subject: ev.Subject, Digest: string(ev.Digest), IP: ev.IP,
+			Details: ev.Details, State: ev.State, Error: ev.Error}
 	}
 	if more {
 		last := evs[len(evs)-1]
 		list.Next = cursor(auditKey{At: last.At, ID: last.ID}.String())
 	}
 	return http.StatusOK, list, nil
+}
+
+// principalKind returns service when principal is user:<uid> of a service account, live or
+// deleted, and "" for every other principal, a user that does not exist among them. kinds keeps
+// the answers by principal, so that a page reads each user once.
+func (h *handler) principalKind(ctx context.Context, principal string, kinds map[string]string) (string, error) {
+	if kind, ok := kinds[principal]; ok {
+		return kind, nil
+	}
+	kind := ""
+	if uid, ok := strings.CutPrefix(principal, string(auth.KindUser)+":"); ok && index.IsUID(uid) {
+		u, err := h.repos.Index.GetUserByUID(ctx, uid)
+		switch {
+		case err == nil && u.Kind == auth.KindService:
+			kind = auth.KindService
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return "", err
+		}
+	}
+	kinds[principal] = kind
+	return kind, nil
 }
 
 // auditFilter returns the index.AuditFilter of the query. A principal user:<name> is the live
