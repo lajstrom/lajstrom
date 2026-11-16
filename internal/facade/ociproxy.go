@@ -60,6 +60,9 @@ func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *ta
 	if err != nil {
 		return proxyError(codeManifestUnknown, err)
 	}
+	if err := h.checkPull(ctx, t, ref, desc.Digest); err != nil {
+		return err
+	}
 	hdr := w.Header()
 	hdr.Set("Content-Type", desc.MediaType)
 	hdr.Set("Docker-Content-Digest", desc.Digest.String())

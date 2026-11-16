@@ -256,6 +256,10 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if metadata {
+		if err := format.CheckVersion(ctx, *format.VersionSubject(repo, m.Package, m.Version)); err != nil {
+			h.fail(w, r, err)
+			return
+		}
 		h.metadata(w, r, m)
 		return
 	}
@@ -269,6 +273,7 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 		contentType = contentTypeTarGz
 	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
+		Subject:     format.VersionSubject(repo, m.Package, m.Version),
 		ContentType: contentType, LastModified: m.Version.CreatedAt, ManifestDigest: m.Version.Digest,
 		Redirect: format.BlobRedirect(repo), Filename: name,
 		Fail: func(w http.ResponseWriter, err error) { h.fail(w, r, err) },

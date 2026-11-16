@@ -20,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/webhook"
 )
@@ -49,6 +50,9 @@ type Pipeline struct {
 
 	// later holds the claims that the database did not release (releaseLater).
 	later laterReleases
+
+	// policy is Options.Policy: nil refuses nothing.
+	policy *policy.Decider
 }
 
 // Options configures a Pipeline.
@@ -87,6 +91,9 @@ type Options struct {
 	// Webhooks writes the events of the publishes and the version deletes in the transaction
 	// of their audit rows (docs/spec/webhooks.md §4); nil writes none.
 	Webhooks *webhook.Outbox
+	// Policy decides a publish after Validate and before the tag claim (docs/spec/policy.md
+	// §6.3); nil refuses nothing.
+	Policy *policy.Decider
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -103,6 +110,7 @@ func New(o Options) *Pipeline {
 		log:       o.Log,
 		claimTTL:  o.ClaimTTL,
 		webhooks:  o.Webhooks,
+		policy:    o.Policy,
 
 		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
@@ -465,6 +473,9 @@ func ociName(repo index.Repo, pkgPath string) string { return repoBase(repo) + "
 func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 	pub.digest = digest.FromBytes(pub.raw)
 	if err := p.validate(ctx, pub); err != nil {
+		return nil, err
+	}
+	if err := p.decide(ctx, pub); err != nil {
 		return nil, err
 	}
 	existed, err := p.claimTag(ctx, pub)

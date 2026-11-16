@@ -10,6 +10,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 )
 
 // NewRouter returns the Router the server hands to Plugin.Routes of the plugin named name.
@@ -114,7 +115,7 @@ func (r *router) withRepo(next http.Handler) http.Handler {
 			WriteError(w, err)
 			return
 		}
-		next.ServeHTTP(w, req.WithContext(WithRepo(ctx, *repo)))
+		next.ServeHTTP(w, req.WithContext(policy.NewContext(WithRepo(ctx, *repo), r.deps.Policy)))
 	})
 }
 

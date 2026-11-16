@@ -20,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
@@ -78,6 +79,7 @@ type envOptions struct {
 	signer    func(index.Store) format.Signer // the Signer over the store of the pipeline; nil: none
 	log       *slog.Logger                    // nil discards
 	now       func() time.Time                // the clock of a Release's Date and its signatures; nil: time.Now
+	policy    *policy.Decider                 // the policy of the routes; nil: none
 }
 
 func newAptEnv(t *testing.T, o envOptions) *aptEnv {
@@ -96,7 +98,7 @@ func envOn(t *testing.T, p *pipeline, o envOptions) *aptEnv {
 		o.log = slog.New(slog.DiscardHandler)
 	}
 	deps := format.Deps{Index: countingStore{Store: p.st, reads: e.reads}, Ingest: p.pipe, Sessions: p.pipe, Providers: o.providers,
-		Auth: o.authz, Log: o.log}
+		Auth: o.authz, Log: o.log, Policy: o.policy}
 	if o.signer != nil {
 		deps.Signer = o.signer(p.st)
 	}

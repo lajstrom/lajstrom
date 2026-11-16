@@ -12,6 +12,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -65,6 +66,15 @@ type Streamer interface {
 	// needs besides sha256, and the inspector its bytes pass through. An error refuses the upload
 	// before a byte is read, as Build's would.
 	Inspect(repo index.Repo, up StreamUpload) (Inspection, error)
+}
+
+// VersionComparer is a Plugin whose format orders its versions (docs/spec/policy.md §1.2): the
+// ranges of a policy rule compare in that order. CompareVersions returns <0, 0 or >0, and an
+// error for a version the order does not parse. npm orders by SemVer 2.0.0, maven by Maven's
+// ComparableVersion, pypi by PEP 440, apt by dpkg's order, rpm by rpmvercmp.
+type VersionComparer interface {
+	Plugin
+	CompareVersions(a, b string) (int, error)
 }
 
 // Admitter is a Plugin that checks a version against its repo's policy on a write
@@ -234,4 +244,8 @@ type Deps struct {
 	// Proxy is the core of proxy repos (*proxy.Core, ADR 0013); nil when the server serves
 	// none. A handler asks it for the documents and files of a repo of kind proxy.
 	Proxy Proxy
+	// Policy decides what a repo serves (docs/spec/policy.md); nil allows everything. The repo
+	// middleware of NewRouter puts it in the request's context (policy.NewContext), where
+	// CachedDocument and ServeBlob find it.
+	Policy *policy.Decider
 }

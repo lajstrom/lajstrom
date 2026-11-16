@@ -171,3 +171,17 @@ func numeric(s string) bool { return allDigits(s) && (s == "0" || s[0] != '0') }
 func allDigits(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
 }
+
+// CompareVersions compares two versions by SemVer precedence (format.VersionComparer, the order
+// of a policy rule's ranges); a version that is not SemVer 2.0.0 is an error.
+func (Plugin) CompareVersions(a, b string) (int, error) {
+	va, err := parseVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	vb, err := parseVersion(b)
+	if err != nil {
+		return 0, err
+	}
+	return va.compare(vb), nil
+}
