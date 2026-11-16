@@ -34,6 +34,9 @@ type Rows struct {
 	Files []index.File
 	// OCIRepo is the OCI repository of the manifest without the instance prefix.
 	OCIRepo string
+	// BlobMap are the rows of blob_map of a manifest of an encrypted repo: its own and its
+	// layers' (docs/spec/index-schema.md, The mapping of an encrypted repo); nil otherwise.
+	BlobMap []index.BlobMap
 }
 
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
@@ -82,6 +85,15 @@ func WriteRows(ctx context.Context, w index.Writer, rows *Rows, at time.Time) er
 	if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: pkg.RepoID, Path: rows.OCIRepo, SeenAt: at}); err != nil {
 		return err
 	}
+	if len(rows.BlobMap) > 0 {
+		bm := slices.Clone(rows.BlobMap)
+		for i := range bm {
+			bm[i].IndexedAt = at
+		}
+		if err := w.PutBlobMap(ctx, bm); err != nil {
+			return err
+		}
+	}
 	rows.Package, rows.Version, rows.Files = pkg, v, files
 	return nil
 }
@@ -89,10 +101,14 @@ func WriteRows(ctx context.Context, w index.Writer, rows *Rows, at time.Time) er
 // rows are the derived rows of pub, validated, at now.
 func (pub *publish) rows(now time.Time) Rows {
 	a := pub.parsed.Annotations
-	return Rows{
+	rows := Rows{
 		Package: index.Package{RepoID: pub.repo.ID, Name: a.Name, NameOCI: pub.pkgPath, CreatedAt: now},
 		Version: pub.version(0, now),
 		Files:   pub.files(),
 		OCIRepo: pub.name,
 	}
+	if pub.sealer != nil {
+		rows.BlobMap = pub.sealer.rows
+	}
+	return rows
 }
