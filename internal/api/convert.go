@@ -43,11 +43,15 @@ type adoption struct {
 // by principal; and the repo's proxy_meta rows are dropped. On a hosted repo it resumes a
 // conversion that failed after its flip, from the proxy_meta rows left, and changes nothing
 // without them. A group, or a format without the hook, wraps format.ErrInvalid; a nil j
-// format.ErrUnsupported.
+// format.ErrUnsupported. The condition of ctx (index.WithCondition) is checked on the row first,
+// and again in the transaction that converts it.
 func (s *Repos) Convert(ctx context.Context, formatName, name string, j Journaler, principal auth.Principal, o Origin) (Repo, error) {
 	row, err := s.Index.GetRepo(ctx, formatName, name)
 	if err != nil {
 		return Repo{}, repoError("convert", formatName, name, err)
+	}
+	if err := index.CheckCondition(ctx, row.ID, row.Revision); err != nil {
+		return Repo{}, err
 	}
 	id := formatName + "/" + name
 	if row.Kind == index.KindGroup {
@@ -148,22 +152,12 @@ func (s *Repos) flip(ctx context.Context, row *index.Repo, plan []adoption, skip
 	}
 	details["skipped"] = append([]string{}, skipped...)
 	var ev index.AuditEvent
-	err := s.Index.Tx(ctx, func(w index.Writer) error {
-		groups, err := w.ListGroupsOf(ctx, row.ID)
-		if err != nil {
+	err := s.Index.Tx(index.ConditionContext(ctx), func(w index.Writer) error {
+		if err := recheck(ctx, w, row.ID); err != nil {
 			return err
 		}
-		for _, g := range groups {
-			members, err := w.ListGroupMembers(ctx, g.ID)
-			if err != nil {
-				return err
-			}
-			for _, m := range members {
-				if m.ID != row.ID && m.Kind == index.KindHosted {
-					return &clientError{msg: fmt.Sprintf("kind: %s/%s is a member of the group %s/%s, which has the hosted member %s already",
-						row.Format, row.Name, g.Format, g.Name, m.Name), err: index.ErrConflict}
-				}
-			}
+		if err := oneHosted(ctx, w, row); err != nil {
+			return err
 		}
 		if err := w.ConvertRepo(ctx, row.ID, s.now().Add(-convertClaimStale)); err != nil {
 			return err
@@ -191,6 +185,41 @@ func (s *Repos) flip(ctx context.Context, row *index.Repo, plan []adoption, skip
 	}
 	s.writeAudit(ctx, ev)
 	return nil
+}
+
+// oneHosted refuses the conversion of row when a group it is a member of has another hosted
+// member, index.ErrConflict naming it: a group has one.
+func oneHosted(ctx context.Context, rd index.Reader, row *index.Repo) error {
+	groups, err := rd.ListGroupsOf(ctx, row.ID)
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		members, err := rd.ListGroupMembers(ctx, g.ID)
+		if err != nil {
+			return err
+		}
+		for _, m := range members {
+			if m.ID != row.ID && m.Kind == index.KindHosted {
+				return &clientError{msg: fmt.Sprintf("kind: %s/%s is a member of the group %s/%s, which has the hosted member %s already",
+					row.Format, row.Name, g.Format, g.Name, m.Name), err: index.ErrConflict}
+			}
+		}
+	}
+	return nil
+}
+
+// recheck checks the condition of ctx (index.WithCondition), when it has one, on the repo id as
+// the transaction of w reads it.
+func recheck(ctx context.Context, w index.Reader, id int64) error {
+	if !index.HasCondition(ctx) {
+		return nil
+	}
+	row, err := w.GetRepoByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return index.CheckCondition(ctx, row.ID, row.Revision)
 }
 
 // adopter returns the format's conversion hook, format.Adopter of its plugin.

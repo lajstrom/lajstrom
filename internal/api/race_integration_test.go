@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -96,4 +97,59 @@ func (w hookedWriter) GetRepo(ctx context.Context, formatName, name string) (*in
 		w.hook()
 	}
 	return r, err
+}
+
+// TestIntegrationConditionalRace sends two changes of a repo with the same If-Match at once, on
+// Postgres (#796): the first reads the repo, and the second, a PATCH or a DELETE, commits
+// before the first writes. The first's transaction is then run again on the repo as the
+// second left it: 412 with the ETag now after a PATCH, 404 after a DELETE. Exactly one change
+// is made.
+func TestIntegrationConditionalRace(t *testing.T) {
+	dsn := os.Getenv("LAJSTROM_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run against Postgres")
+	}
+	ctx := context.Background()
+	st, err := postgres.Open(ctx, dsn)
+	must(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	must(t, st.Migrate(ctx))
+	for _, second := range []string{"PATCH", "DELETE"} {
+		t.Run(second, func(t *testing.T) {
+			other := &Repos{Index: st, Formats: oneOf("raw"), Registries: oneOf("local")}
+			name := "cond-" + strings.ToLower(rand.Text())
+			created, err := other.Create(ctx, CreateRequest{Format: "raw", Name: name, Registry: "local"}, Origin{})
+			must(t, err)
+			cond, err := IfMatch(TableRepos, "repo raw/"+name, created.ETag())
+			must(t, err)
+			cctx := index.WithCondition(ctx, cond)
+			attempts := 0
+			first := &Repos{Index: readHook{Store: st, hook: func() {
+				if attempts++; attempts > 1 {
+					return
+				}
+				if second == "PATCH" {
+					_, err := other.Update(cctx, "raw", name, UpdateRequest{Policy: json.RawMessage(`{"maxFileSize": 1}`)}, Origin{})
+					must(t, err)
+				} else {
+					must(t, other.Delete(cctx, "raw", name, false, Origin{}))
+				}
+			}}, Formats: oneOf("raw"), Registries: oneOf("local")}
+			anon := true
+			_, err = first.Update(cctx, "raw", name, UpdateRequest{AnonymousRead: &anon}, Origin{})
+			if second == "PATCH" && attempts != 2 {
+				t.Errorf("the first transaction ran %d times, want 2", attempts)
+			}
+			row, rerr := st.GetRepo(ctx, "raw", name)
+			var pe *PreconditionError
+			switch {
+			case second == "PATCH" && (!errors.As(err, &pe) || rerr != nil || pe.ETag != ETag(TableRepos, row.ID, row.Revision)):
+				t.Errorf("the first PATCH: %v, the repo %+v (%v); want 412 with the ETag the second left", err, row, rerr)
+			case second == "PATCH" && (row.AnonymousRead || row.Revision != 2):
+				t.Errorf("the repo after both: %+v, want the second's change alone", row)
+			case second == "DELETE" && (!errors.Is(err, index.ErrNotFound) || !errors.Is(rerr, index.ErrNotFound)):
+				t.Errorf("the first PATCH after the delete: %v, the repo %v; want both not found", err, rerr)
+			}
+		})
+	}
 }
