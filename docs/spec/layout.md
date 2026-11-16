@@ -2080,7 +2080,8 @@ The contract packages grow these, each nil or absent for no policy:
   `SweepOCIVerdicts`, `PutPolicySeen` (insert if absent). `ControlPlane.PolicyRules`.
 - `ingest.Options.Policy`, decided in `ingest.decide` between `validate` and `claimTag`;
   `ingest.ErrDenied` is `policy.ErrDenied`. `Pipeline.Attach` (a referrer with its blobs),
-  `AttachVerdict` and `LiftQuarantine` store the verdicts the server makes, signed by an
+  `AttachVerdict` (the bundle and the legacy attestation), `RemoveVerdicts` and `LiftQuarantine`
+  store and remove the verdicts the server makes, signed by an
   `ingest.VerdictSigner` (`Sign`, `PublicDER`: the policy key); `InspectVerdicts` reads an oci
   repo's, which `reindex.VerdictInspector` asks for.
 - `proxy.Options.Policy` and `Options.Lifted` (the allow verdict of a quarantine over);
