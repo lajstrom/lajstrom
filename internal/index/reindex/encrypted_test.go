@@ -105,3 +105,73 @@ func TestEncryptedWithoutKeys(t *testing.T) {
 		t.Errorf("a skipped repo was inspected %d times", n)
 	}
 }
+
+// TestRotateEncrypted: a rotation retires the key and wraps every data key again for the new one
+// in a keys referrer per manifest, without pushing a blob or a version's manifest; run again it
+// wraps nothing; the files still open, and a rebuild takes the newest wrapping.
+func TestRotateEncrypted(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	enc := e.encrypted(t, strings.Repeat("0123456789abcdef", 4))
+	e.publish(t, "docs/readme.md", "hello, rotated")
+	e.publish(t, "bin/tool", "#!/bin/sh rotated")
+	pushesBefore := len(e.fake.Pushes())
+	old, err := e.st.GetKey(ctx, &e.repo.ID, keys.KindEnc)
+	must(t, err)
+
+	row, retired, err := enc.Rotate(ctx, e.repo)
+	must(t, err)
+	if retired != old.Fingerprint || row.Fingerprint == old.Fingerprint {
+		t.Fatalf("Rotate = %s retiring %q, want a new key retiring %s", row.Fingerprint, retired, old.Fingerprint)
+	}
+	n, err := e.pipe.Rewrap(ctx, e.repo, alice)
+	must(t, err)
+	if n != 2 {
+		t.Errorf("Rewrap pushed %d keys referrers, want 2", n)
+	}
+	before, err := e.st.ListBlobMap(ctx, e.repo.ID, "")
+	must(t, err)
+	for _, p := range e.fake.Pushes()[pushesBefore:] {
+		for _, r := range before {
+			if p.Digest == r.Stored {
+				t.Errorf("the rotation pushed a blob or a version's manifest again: %+v", p)
+			}
+		}
+	}
+	e.checkWrapped(t, enc, row.Fingerprint, "after the rotation")
+	if n, err := e.pipe.Rewrap(ctx, e.repo, alice); err != nil || n != 0 {
+		t.Errorf("Rewrap again = %d, %v; want nothing to do", n, err)
+	}
+	must(t, e.st.ResetDerived(ctx, e.repo.ID))
+	r := e.run(t, reindex.Request{Prune: true})
+	if r.Added != 2 || len(r.Errors) != 0 || r.Attachments != 0 {
+		t.Errorf("report after the rotation: %+v", *r)
+	}
+	e.checkWrapped(t, enc, row.Fingerprint, "after a rebuild")
+}
+
+// checkWrapped checks that every row of a blob of the env's repo is wrapped for the key active and
+// opens to its plaintext digest.
+func (e *env) checkWrapped(t *testing.T, enc *keys.Encryption, active, what string) {
+	t.Helper()
+	ctx := t.Context()
+	rows, err := e.st.ListBlobMap(ctx, e.repo.ID, "")
+	must(t, err)
+	blobs := 0
+	for _, r := range rows {
+		if r.Kind != index.BlobMapBlob {
+			continue
+		}
+		blobs++
+		if r.KeyFingerprint != active {
+			t.Errorf("%s: %s is wrapped for %s, want the new key", what, r.Stored, r.KeyFingerprint)
+		}
+		opts, err := enc.Unwrap(ctx, e.repo, r.KeyFingerprint, r.Wrapped)
+		if err != nil || opts.Digest != r.Plain {
+			t.Errorf("%s: %s opens to %v, %v", what, r.Stored, opts, err)
+		}
+	}
+	if blobs != 4 {
+		t.Errorf("%s: %d rows of blobs, want 4", what, blobs)
+	}
+}

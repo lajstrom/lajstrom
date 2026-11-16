@@ -8,12 +8,14 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/blobcrypt"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -379,4 +381,76 @@ func (e *Encryption) CanOpen(ctx context.Context, repo index.Repo) error {
 		}
 	}
 	return nil
+}
+
+// Rotate gives the repo a new enc key, made from policy.encryption.key as it is now, and retires
+// the one it had, in one transaction with the audit row key.rotate (kind enc in its details). The
+// retired key keeps decrypting: the wrappings name it until Rewrap wraps them again. The audit row
+// is ActionRotate's, with the kind enc in its details. A rotation
+// that loses to another at the same time is an error wrapping index.ErrConflict. It returns the
+// new key's row and the retired fingerprint ("" for a repo's first key).
+func (e *Encryption) Rotate(ctx context.Context, repo index.Repo) (*index.Key, string, error) {
+	pol, err := format.EncryptionOf(repo)
+	if err != nil {
+		return nil, "", err
+	}
+	row, err := e.newKey(ctx, repo, pol.Key)
+	if err != nil {
+		return nil, "", unavailable(err)
+	}
+	var retired string
+	err = e.st.Tx(ctx, func(tx index.Writer) error {
+		retired = ""
+		old, err := tx.GetKey(ctx, &repo.ID, KindEnc)
+		switch {
+		case err == nil && old.Fingerprint == row.Fingerprint:
+			return fmt.Errorf("the active encryption key is already %s, of the same KMS key", old.Fingerprint)
+		case err == nil:
+			if err := tx.RetireKey(ctx, old.ID, e.now()); err != nil {
+				return err
+			}
+			retired = old.Fingerprint
+		case !errors.Is(err, index.ErrNotFound):
+			return err
+		}
+		if err := tx.CreateKey(ctx, row); err != nil {
+			return err
+		}
+		details := map[string]string{"kind": KindEnc}
+		if retired != "" {
+			details["retired"] = retired
+		}
+		b, _ := json.Marshal(details) // a map of strings: never an error
+		return tx.AppendAudit(ctx, &index.AuditEvent{At: e.now(), Principal: auth.PrincipalFrom(ctx).String(), Action: ActionRotate,
+			Repo: repoName(repo), Subject: row.Fingerprint, Details: b})
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("keys: rotate the encryption key of %s: %w", repoName(repo), err)
+	}
+	e.log.InfoContext(ctx, "encryption key rotated", "repo", repoName(repo), "fingerprint", row.Fingerprint, "retired", retired,
+		"source", cmp.Or(pol.Key, Local))
+	return row, retired, nil
+}
+
+// Rewrap opens jwe, wrapped for the repo's key of fingerprint, and wraps the same options again
+// for the repo's active key alone: the member of a keys referrer (docs/spec/manifest-profile.md
+// §11.1). It returns the new wrapping and the active key's fingerprint.
+func (e *Encryption) Rewrap(ctx context.Context, repo index.Repo, fingerprint, jwe string) (string, string, error) {
+	opts, err := e.Unwrap(ctx, repo, fingerprint, jwe)
+	if err != nil {
+		return "", "", err
+	}
+	row, err := e.st.GetKey(ctx, &repo.ID, KindEnc)
+	if err != nil {
+		return "", "", fmt.Errorf("keys: the encryption key of %s: %w", repoName(repo), err)
+	}
+	pub, err := publicOf(*row)
+	if err != nil {
+		return "", "", err
+	}
+	out, err := blobcrypt.Wrap(opts, []blobcrypt.Recipient{{Key: pub, KID: row.Fingerprint}})
+	if err != nil {
+		return "", "", fmt.Errorf("keys: %s: %w", repoName(repo), err)
+	}
+	return out, row.Fingerprint, nil
 }

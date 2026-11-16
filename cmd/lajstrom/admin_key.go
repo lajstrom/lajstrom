@@ -9,14 +9,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/gcpauth"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/keys/awskms"
 	"github.com/lajstrom/lajstrom/internal/keys/gcpkms"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // signedFormats are the formats whose repos have signing keys: apt (internal/format/deb), whose
@@ -95,9 +98,9 @@ func newKeyExportCmd(a *app) *cobra.Command {
 // --drop as well, not at all, and every outstanding token dies.
 func newKeyRotateCmd(a *app) *cobra.Command {
 	var repo, kms string
-	var tok, drop, local bool
+	var tok, drop, local, encryption bool
 	cmd := &cobra.Command{
-		Use:         "rotate (--repo apt/<name> [--kms <key URI> | --local] | --token [--drop])",
+		Use:         "rotate (--repo apt/<name> [--kms <key URI> | --local] | --repo <format>/<name> --encryption | --token [--drop])",
 		Short:       "Give an apt or rpm repo, or the bearer tokens, a new signing key and print its fingerprint",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
@@ -107,6 +110,9 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 			}
 			if tok && (kms != "" || local) {
 				return errors.New("--kms and --local go with --repo: the bearer-token key is always made by Lajstrom")
+			}
+			if encryption {
+				return a.rotateEncryption(cmd, repo, tok || kms != "" || local)
 			}
 			if tok {
 				return a.withTokenKeys(cmd.Context(), func(ctx context.Context, t *keys.Tokens) error {
@@ -118,10 +124,8 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 					return err
 				})
 			}
-			if kms != "" {
-				if _, err := config.ParseKMSKey(kms); err != nil {
-					return fmt.Errorf("--kms: %w", err)
-				}
+			if err := checkKMSFlag(kms); err != nil {
+				return err
 			}
 			return a.withKeys(cmd.Context(), repo, func(ctx context.Context, svc *keys.Service, r index.Repo) error {
 				rotate := svc.Rotate
@@ -144,8 +148,97 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 	cmd.Flags().BoolVar(&drop, "drop", false, "with --token: the old key stops verifying at once, and every outstanding token dies")
 	cmd.Flags().StringVar(&kms, "kms", "", "with --repo: the new key is this key of a KMS, awskms:///<key> or gcpkms://<key version> (ADR 0020)")
 	cmd.Flags().BoolVar(&local, "local", false, "with --repo: the new key is made by Lajstrom, even with keys.kms set")
+	cmd.Flags().BoolVar(&encryption, "encryption", false, "with --repo: rotate the key of an encrypted repo, made from its "+
+		"policy.encryption.key, and wrap every data key again for it (ADR 0009)")
 	cmd.MarkFlagsMutuallyExclusive("kms", "local")
 	return cmd
+}
+
+// checkKMSFlag checks the key URI of --kms, when it is given.
+func checkKMSFlag(kms string) error {
+	if kms == "" {
+		return nil
+	}
+	if _, err := config.ParseKMSKey(kms); err != nil {
+		return fmt.Errorf("--kms: %w", err)
+	}
+	return nil
+}
+
+// rotateEncryption is admin key rotate --repo <repo> --encryption: a new key for the encrypted
+// repo, the old one retired, then every data key of the repo wrapped again for the new key, one
+// keys referrer per manifest (docs/spec/manifest-profile.md §11.1). It prints the new fingerprint
+// and the number of manifests wrapped again. Run again after a rotation that stopped, it makes no
+// other key and continues the wrapping.
+func (a *app) rotateEncryption(cmd *cobra.Command, arg string, otherFlags bool) error {
+	if otherFlags {
+		return errors.New("--encryption goes with --repo alone: the new key is what the repo's policy.encryption.key names")
+	}
+	formatName, name, err := splitRepo(arg)
+	if err != nil {
+		return err
+	}
+	return a.withMaster(cmd.Context(), "", func(ctx context.Context, m *keys.Master, st store) error {
+		repo, err := st.GetRepo(ctx, formatName, name)
+		if errors.Is(err, index.ErrNotFound) {
+			return fmt.Errorf("repo %s does not exist", arg)
+		}
+		if err != nil {
+			return err
+		}
+		pol, err := format.EncryptionOf(*repo)
+		if err != nil || !pol.AtRest() {
+			return errors.Join(err, fmt.Errorf("repo %s does not encrypt at rest: its policy.encryption.mode is not at-rest", arg))
+		}
+		enc, err := keys.NewEncryption(keys.EncryptionOptions{Index: st, Master: m, KMS: decryptClients(a.lookupEnv, a.log), Log: a.log})
+		if err != nil {
+			return err
+		}
+		providers, err := provider.NewSet(a.cfg.Registries, a.log)
+		if err != nil {
+			return err
+		}
+		pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: a.cfg.Ingest.ClaimTTL, Encryption: enc})
+		active, err := unfinishedRotation(ctx, st, *repo)
+		if err != nil {
+			return err
+		}
+		if active == "" {
+			row, _, err := enc.Rotate(ctx, *repo)
+			if err != nil {
+				return err
+			}
+			active = row.Fingerprint
+		}
+		n, err := pipe.Rewrap(ctx, *repo, auth.PrincipalFrom(ctx))
+		if err != nil {
+			return fmt.Errorf("%w; the key %s is active: run the rotation again to finish the wrapping", err, active)
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\n%d manifests wrapped again\n", active, n)
+		return err
+	})
+}
+
+// unfinishedRotation returns the active encryption key of repo when a rotation to it has not
+// wrapped every data key yet (a row of blob_map names another key), "" otherwise.
+func unfinishedRotation(ctx context.Context, st store, repo index.Repo) (string, error) {
+	active, err := st.GetKey(ctx, &repo.ID, keys.KindEnc)
+	if errors.Is(err, index.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	rows, err := st.ListBlobMap(ctx, repo.ID, "")
+	if err != nil {
+		return "", err
+	}
+	for _, r := range rows {
+		if r.Kind == index.BlobMapBlob && r.KeyFingerprint != active.Fingerprint {
+			return active.Fingerprint, nil
+		}
+	}
+	return "", nil
 }
 
 // newKeyDropCmd returns admin key drop --token: retire the active bearer-token key without a
