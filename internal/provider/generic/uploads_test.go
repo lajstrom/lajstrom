@@ -451,6 +451,78 @@ func TestUploadTransportError(t *testing.T) {
 	}
 }
 
+// lateBody answers a request at once with status and header, and reads its body only after
+// RoundTrip returned, in a goroutine of its own that nothing orders before the caller's next
+// steps: as net/http's write loop may, which reads a body of known length once more after its
+// last byte, and goes on reading when the registry answered before the end (#1270). read gets
+// the number of bytes once the body is read to its end.
+type lateBody struct {
+	status int
+	header http.Header
+	read   chan int64
+}
+
+func (l *lateBody) RoundTrip(req *http.Request) (*http.Response, error) {
+	go func() {
+		n, _ := io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+		l.read <- n
+	}()
+	return &http.Response{StatusCode: l.status, Header: l.header, Body: http.NoBody, Request: req}, nil
+}
+
+// TestUploadBodyReadLate: the offset after a chunk and the size of the finished blob do not
+// depend on what the transport has read of the body when RoundTrip returns. Under -race, a count
+// read unordered with the transport's reads is a data race whatever the timing (#1270).
+func TestUploadBodyReadLate(t *testing.T) {
+	const chunk = "a chunk read late"
+	size := int64(len(chunk))
+	loc := "/v2/art/raw/scratch/notes/blobs/uploads/1"
+	u := provider.Upload{ID: "1", Location: loc}
+	tests := []struct {
+		name   string
+		status int
+		header http.Header
+		send   func(context.Context, provider.Repository, io.Reader) (int64, error)
+	}{
+		{"chunk of known size", http.StatusAccepted, http.Header{"Location": {loc}},
+			func(ctx context.Context, repo provider.Repository, body io.Reader) (int64, error) {
+				next, err := repo.AppendBlobChunk(ctx, u, body, size)
+				return next.Offset, err
+			}},
+		{"chunk of unknown size", http.StatusAccepted, http.Header{"Location": {loc}, "Range": {fmt.Sprintf("0-%d", size-1)}},
+			func(ctx context.Context, repo provider.Repository, body io.Reader) (int64, error) {
+				next, err := repo.AppendBlobChunk(ctx, u, body, -1)
+				return next.Offset, err
+			}},
+		{"last chunk in the PUT", http.StatusCreated, nil,
+			func(ctx context.Context, repo provider.Repository, body io.Reader) (int64, error) {
+				desc, err := repo.FinishBlobUpload(ctx, u, digest.FromString(chunk), body, size)
+				return desc.Size, err
+			}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeRegistry(t)
+			log, _ := testLogger()
+			p := f.provider(t, log, nil)
+			late := &lateBody{status: tt.status, header: tt.header, read: make(chan int64, 1)}
+			p.clients.follow.Client.Client.Transport = late
+			repo, err := p.Repository(t.Context(), "raw/scratch/notes")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := tt.send(t.Context(), repo, strings.NewReader(chunk))
+			if err != nil || got != size {
+				t.Errorf("got %d, %v; want %d", got, err, size)
+			}
+			if n := <-late.read; n != size {
+				t.Errorf("the transport read %d bytes, want %d", n, size)
+			}
+		})
+	}
+}
+
 // TestBlobChunk: the chunks of OpenBlobWriter are 4 MiB on GHCR, which refuses a larger PATCH,
 // and streamChunk elsewhere; registries[].uploads.chunkSize replaces either (#558). The bound
 // of a client's /v2 chunk is the same where the vendor table or the key says, and none
