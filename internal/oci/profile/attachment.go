@@ -47,6 +47,9 @@ type Attachment struct {
 // its layer's, the manifest's artifact and config media types that ReferrerKind knows, else
 // ReferrerOther.
 func Attachments(tag string, m ocispec.Manifest) []Attachment {
+	if m.ArtifactType == ArtifactTypeKeys { // Lajstrom's keys referrer (§11.1) is no attachment
+		return nil
+	}
 	artifactType := cmp.Or(m.ArtifactType, m.Config.MediaType)
 	var out []Attachment
 	for _, l := range m.Layers {
