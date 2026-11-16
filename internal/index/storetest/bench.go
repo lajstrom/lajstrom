@@ -16,10 +16,10 @@ const (
 	benchVersions = 5
 )
 
-// Bench seeds s with the repo of the bench sizes, and a second repo as large that no read
-// asks for, then measures the reads of the package list on it, each as the API makes them: a
-// page of 100 packages and their facts (docs/spec/index-schema.md, The package list, one
-// package and search).
+// Bench seeds s with the repo of the bench sizes, and a second repo as large that no read of
+// the package list asks for, then measures the reads of the package list on it and of the
+// search over both, each as the API makes them: a page of 100 packages and their facts, a page
+// of 100 hits (docs/spec/index-schema.md, The package list, one package and search).
 func Bench(b *testing.B, s index.Store) {
 	ctx := b.Context()
 	repo := seedBench(b, s, "a")
@@ -39,6 +39,24 @@ func Bench(b *testing.B, s index.Store) {
 			return err
 		}
 	}
+	// search runs the ranks of the search over both repos, as the API does for a page of 100.
+	search := func(text string, ranks ...index.SearchRank) func() error {
+		return func() error {
+			n := 0
+			for _, rank := range ranks {
+				hits, err := s.Search(ctx, index.SearchQuery{Rank: rank, Text: text, Limit: 101 - n})
+				if err != nil {
+					return err
+				}
+				if n += len(hits); n > 100 {
+					break
+				}
+			}
+			return nil
+		}
+	}
+	names := []index.SearchRank{index.RankExact, index.RankPrefix, index.RankSubstring, index.RankSummary}
+	digest := dg("a" + "pkg-0500" + "1.0__jammy_amd64").String()[:15]
 	jammy := map[string][]string{"lajstrom.deb.suite": {"jammy"}}
 	for _, bb := range []struct {
 		name string
@@ -53,6 +71,11 @@ func Bench(b *testing.B, s index.Store) {
 		{"page of an attr", page(index.PackageQuery{Attrs: jammy})},
 		{"page of an attr by updated", page(index.PackageQuery{Attrs: jammy, Sort: index.SortUpdated, Desc: true})},
 		{"facet", func() error { _, err := s.ListAttrValues(ctx, repo.ID, "lajstrom.deb.suite"); return err }},
+		{"search a name", search("pkg-0500", names...)},
+		{"search a prefix", search("PKG-05", names...)},
+		{"search a summary", search("of the bench", names...)},
+		{"search nothing", search("nothing", names...)},
+		{"search a digest", search(digest, append([]index.SearchRank{index.RankManifest, index.RankFile}, names...)...)},
 	} {
 		b.Run(bb.name, func(b *testing.B) {
 			for b.Loop() {
