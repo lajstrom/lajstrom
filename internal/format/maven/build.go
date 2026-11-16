@@ -37,9 +37,13 @@ import (
 // pom and the others artifact with lajstrom.maven.extension and .classifier, and the metadata
 // layer; the annotations are name groupId:artifactId, version, no variant, and
 // lajstrom.maven.groupId, .artifactId and .packaging; the tag is profile.Tag(version, "").
-// created is now, in whole seconds. Errors wrap format.ErrInvalid, except a failure to read a
+// created is now, in whole seconds. The one file a proxy repo fetched, in.Origin set, is a
+// manifest of its own (buildFetched). Errors wrap format.ErrInvalid, except a failure to read a
 // file.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
+	if in.Origin != nil {
+		return buildFetched(repo, in)
+	}
 	files, err := parseUpload(in.Files)
 	if err != nil {
 		return nil, err
