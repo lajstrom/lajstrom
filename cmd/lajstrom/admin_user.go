@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
 )
@@ -152,63 +153,91 @@ func newUserSetOwnerCmd(a *app) *cobra.Command {
 // newUserDisableCmd returns admin user disable: the user's credentials are refused from the
 // next request on.
 func newUserDisableCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "disable <name>",
+	var etag string
+	cmd := &cobra.Command{
+		Use:         "disable <name> [--if-match <etag>]",
 		Short:       "Disable a user: its credentials are refused from the next request on",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Disable(ctx, args[0], auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableUsers, "user "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(users.Disable(ctx, args[0], auth.Origin(cliOrigin())))
 			})
 		},
 	}
+	ifMatchFlag(cmd, &etag)
+	return cmd
 }
 
 // newUserRenameCmd returns admin user rename: the uid, and so the bindings and tokens, stay.
 func newUserRenameCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "rename <name> <new name>",
+	var etag string
+	cmd := &cobra.Command{
+		Use:         "rename <name> <new name> [--if-match <etag>]",
 		Short:       "Rename a user; its uid, bindings and tokens stay",
 		Args:        cobra.ExactArgs(2),
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Rename(ctx, args[0], args[1], auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableUsers, "user "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(users.Rename(ctx, args[0], args[1], auth.Origin(cliOrigin())))
 			})
 		},
 	}
+	ifMatchFlag(cmd, &etag)
+	return cmd
 }
 
 // newUserDeleteCmd returns admin user delete (docs/spec/rbac.md §1): the user's tokens are
 // revoked and its bindings deleted, and its name is free for a new user, who inherits nothing.
 func newUserDeleteCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "delete <name>",
+	var etag string
+	cmd := &cobra.Command{
+		Use:         "delete <name> [--if-match <etag>]",
 		Short:       "Delete a user: revoke its tokens, delete its bindings, free its name; not undone",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Delete(ctx, args[0], auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableUsers, "user "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(users.Delete(ctx, args[0], auth.Origin(cliOrigin())))
 			})
 		},
 	}
+	ifMatchFlag(cmd, &etag)
+	return cmd
 }
 
 // newUserEnableCmd returns admin user enable.
 func newUserEnableCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "enable <name>",
+	var etag string
+	cmd := &cobra.Command{
+		Use:         "enable <name> [--if-match <etag>]",
 		Short:       "Enable a disabled user",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Enable(ctx, args[0], auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableUsers, "user "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(users.Enable(ctx, args[0], auth.Origin(cliOrigin())))
 			})
 		},
 	}
+	ifMatchFlag(cmd, &etag)
+	return cmd
 }
 
 // newUserSetPasswordCmd returns admin user set-password: the old password stops working at the

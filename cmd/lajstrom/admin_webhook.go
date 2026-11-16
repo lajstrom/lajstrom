@@ -98,11 +98,11 @@ func newWebhookListCmd(a *app) *cobra.Command {
 
 // newWebhookUpdateCmd returns admin webhook update: change the flags given.
 func newWebhookUpdateCmd(a *app) *cobra.Command {
-	var url, description string
+	var url, description, etag string
 	var events []string
 	var active bool
 	cmd := &cobra.Command{
-		Use:         "update <id> [--url …] [--events …] [--active=true|false] [--description …]",
+		Use:         "update <id> [--url …] [--events …] [--active=true|false] [--description …] [--if-match <etag>]",
 		Short:       "Change a webhook's URL, events, active or description, and print it",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
@@ -126,9 +126,13 @@ func newWebhookUpdateCmd(a *app) *cobra.Command {
 				req.Description = &description
 			}
 			return a.withWebhooks(cmd.Context(), func(ctx context.Context, s *webhook.Service) error {
-				h, err := s.Update(ctx, id, req, auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableWebhooks, "webhook "+args[0])
 				if err != nil {
 					return err
+				}
+				h, err := s.Update(ctx, id, req, auth.Origin(cliOrigin()))
+				if err != nil {
+					return ifMatched(err)
 				}
 				return writeJSONLine(cmd.OutOrStdout(), api.WebhookOf(h))
 			})
@@ -139,13 +143,15 @@ func newWebhookUpdateCmd(a *app) *cobra.Command {
 	f.StringSliceVar(&events, "events", nil, "the new types; an empty value: every type")
 	f.BoolVar(&active, "active", true, "whether it gets new events")
 	f.StringVar(&description, "description", "", "the new note")
+	ifMatchFlag(cmd, &etag)
 	return cmd
 }
 
 // newWebhookDeleteCmd returns admin webhook delete: the webhook and its delivery log go.
 func newWebhookDeleteCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:         "delete <id>",
+	var etag string
+	cmd := &cobra.Command{
+		Use:         "delete <id> [--if-match <etag>]",
 		Short:       "Delete a webhook and its delivery log",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
@@ -155,10 +161,16 @@ func newWebhookDeleteCmd(a *app) *cobra.Command {
 				return err
 			}
 			return a.withWebhooks(cmd.Context(), func(ctx context.Context, s *webhook.Service) error {
-				return s.Delete(ctx, id, auth.Origin(cliOrigin()))
+				ctx, err := ifMatch(ctx, etag, api.TableWebhooks, "webhook "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(s.Delete(ctx, id, auth.Origin(cliOrigin())))
 			})
 		},
 	}
+	ifMatchFlag(cmd, &etag)
+	return cmd
 }
 
 // newWebhookRotateCmd returns admin webhook rotate: print the new secret, once.

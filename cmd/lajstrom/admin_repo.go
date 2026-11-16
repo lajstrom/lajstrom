@@ -106,8 +106,9 @@ func newRepoListCmd(a *app) *cobra.Command {
 // --force, which removes its index rows and leaves the registry untouched.
 func newRepoDeleteCmd(a *app) *cobra.Command {
 	var force bool
+	var etag string
 	cmd := &cobra.Command{
-		Use:         "delete <format>/<name>",
+		Use:         "delete <format>/<name> [--force] [--if-match <etag>]",
 		Short:       "Delete a repo; one that has versions only with --force",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
@@ -117,12 +118,17 @@ func newRepoDeleteCmd(a *app) *cobra.Command {
 				return err
 			}
 			return a.withRepos(cmd.Context(), nil, func(ctx context.Context, repos *api.Repos) error {
-				return repos.Delete(ctx, formatName, name, force, cliOrigin())
+				ctx, err := ifMatch(ctx, etag, api.TableRepos, "repo "+args[0])
+				if err != nil {
+					return err
+				}
+				return ifMatched(repos.Delete(ctx, formatName, name, force, cliOrigin()))
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false,
 		"delete a repo that has versions: its index rows go with it, the artifacts stay in the registry")
+	ifMatchFlag(cmd, &etag)
 	return cmd
 }
 
