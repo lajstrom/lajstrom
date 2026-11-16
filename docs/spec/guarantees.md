@@ -417,7 +417,11 @@ longer than `reconcile.graceAge` is outside them
   (`ingest.Pipeline.adopt`), and confirms it: the retry of a publish answered `503` by the
   visibility barrier (INV-4), or whose confirm failed after its push (a database that did not
   answer, #641; a client gone, #709), a publish of the same files still on its way, or one that
-  stopped after its push and whose claim went stale.
+  stopped after its push and whose claim went stale. An upload whose tag is made of its file's
+  bytes (raw) waits for a fresh claim of its tag whose manifest the registry does not serve yet
+  (`ingest.Pipeline.awaitClaim`), and a publish that stopped before its push releases its claim
+  once the database answers again (`releaseLater`), so that a raw `PUT` of the same bytes is
+  never `409` (#1129): `200` with the version that holds them, `201` when it stores them.
 - **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
   `TestVisibilityRetryRebuilt`, `TestUploadRetryUnconfirmed`, `TestSessionCommitUnavailable`,
   `TestIndexUnavailableAtConfirm` (raw), `TestUploadIndexUnavailableAtConfirm` (pypi); R-02 in
