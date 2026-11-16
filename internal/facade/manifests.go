@@ -533,13 +533,24 @@ func (h *handler) refuseJournal(ctx context.Context, t *target, ref string) erro
 //	provider.ErrUnsupported   405 UNSUPPORTED: the backend does not delete manifests
 //	index.ErrNotFound         404 MANIFEST_UNKNOWN
 //	index.ErrConflict         409 DENIED: other tags name the manifest of a tag of an oci repo,
-//	                          named in the message and in detail.tags (#284)
+//	                          named in the message and in detail.tags (#284); or attachments of
+//	                          the same version name the referrer as their input, their referrers
+//	                          named in the message and in detail.reports (#89)
 //	provider.ErrConflict      409 DENIED: the backend refused this one delete
 //	anything else             format.StatusOf: 502 for the backend's credentials, 503 for an
 //	                          open circuit breaker, else 500, logged
 func deleteError(t *target, ref string, err error) error {
 	var tagged interface{ OtherTags() []string }
+	var referenced interface{ ReferencedBy() []digest.Digest }
 	switch {
+	case errors.As(err, &referenced) && errors.Is(err, index.ErrConflict):
+		var reports []string
+		for _, d := range referenced.ReferencedBy() {
+			reports = append(reports, d.String())
+		}
+		return &apiError{status: http.StatusConflict, code: codeDenied, err: err, detail: map[string][]string{"reports": reports},
+			msg: fmt.Sprintf("%s in %s is the input of the attachments of %s, of the same version (a scan report and its SBOM): delete them first; nothing was deleted",
+				ref, t.name, strings.Join(reports, ", "))}
 	case errors.As(err, &tagged) && errors.Is(err, index.ErrConflict):
 		tags := tagged.OtherTags()
 		return &apiError{status: http.StatusConflict, code: codeDenied, err: err, detail: map[string][]string{"tags": tags},
