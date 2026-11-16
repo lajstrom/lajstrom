@@ -151,6 +151,31 @@ func TestEnqueueMatches(t *testing.T) {
 	must(t, nilOutbox.Enqueue(ctx, st, none))
 }
 
+// TestEnqueueCIPolicy: the event of a CI trust policy goes to the active webhooks of the admin,
+// whose mask has a *, that cover a mask of its grants, with the source of the policies; never to a
+// webhook of one repo, whose maintainer may not read the policies (docs/spec/webhooks.md §3).
+func TestEnqueueCIPolicy(t *testing.T) {
+	ctx := t.Context()
+	st := newStore(t)
+	h := newHooks(t, st, newMaster(t))
+	m := newMaster(t)
+	pypi, _ := hook(t, st, m, "pypi/*", "https://f.example.com/")
+	admin, _ := hook(t, st, m, "*/scratch", "https://g.example.com/")
+	ev := webhook.Event{Type: webhook.TypeCIPolicyCreated, Subject: "app-release", Masks: []string{"raw/scratch", "oci/app"},
+		Data: webhook.CIPolicyData{Policy: webhook.CIPolicy{Name: "app-release"}}}
+	must(t, st.Tx(ctx, func(w index.Writer) error { return outbox.Enqueue(ctx, w, ev) }))
+	got := deliveries(t, st, admin)
+	if len(got) != 1 || got[0].EventType != webhook.TypeCIPolicyCreated ||
+		!strings.Contains(string(got[0].Payload), `"source":"https://art.example.com/api/v1/ci/policies"`) {
+		t.Errorf("the webhook of */scratch: %+v", got)
+	}
+	for _, w := range []index.Webhook{h.exact, h.wild, h.other, h.deletes, h.off, pypi} {
+		if ds := deliveries(t, st, w); len(ds) != 0 {
+			t.Errorf("webhook %s (events %v, active %v) got the event", w.Mask, w.Events, w.Active)
+		}
+	}
+}
+
 // TestEventDocument: the body is the CloudEvents document of webhooks.md §2 and §3, and holds
 // nothing of what it must never hold.
 func TestEventDocument(t *testing.T) {
