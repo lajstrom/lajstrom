@@ -169,6 +169,32 @@ func TestAuthenticateNpmLogin(t *testing.T) {
 	}
 }
 
+// TestAuthenticateLogin: the sign-in of a web UI, POST /api/v1/login, goes on as anonymous with
+// its Authorization untouched, a revoked bearer or wrong Basic credentials included, since its
+// body is the credential (docs/spec/rbac.md §10); any other method on the path is authenticated.
+func TestAuthenticateLogin(t *testing.T) {
+	for _, tc := range []struct {
+		method, authorization string
+		status                int
+	}{
+		{http.MethodPost, "Bearer " + revokedPAT, http.StatusNoContent},
+		{http.MethodPost, basic("alice", "wrong"), http.StatusNoContent},
+		{http.MethodGet, "Bearer " + revokedPAT, http.StatusUnauthorized},
+	} {
+		s, sw, _ := authServer(t, usersReader{})
+		r := httptest.NewRequest(tc.method, "/api/v1/login", strings.NewReader(`{}`))
+		r.Header.Set("Authorization", tc.authorization)
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, r)
+		if rr.Code != tc.status {
+			t.Errorf("%s with %.12s…: %d, want %d", tc.method, tc.authorization, rr.Code, tc.status)
+		}
+		if tc.status == http.StatusNoContent && (sw.principal != auth.Anonymous || sw.authorization != tc.authorization) {
+			t.Errorf("%s: the handler saw %v with %q", tc.method, sw.principal, sw.authorization)
+		}
+	}
+}
+
 // TestAuthenticateTokens checks the tokens in the middleware: a personal access token in Basic
 // credentials is its user, a deploy token is token:<id> whatever the user name, both with their
 // credential in the context; a personal access token as a bearer is its user on the API and

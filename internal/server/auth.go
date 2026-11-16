@@ -83,6 +83,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
 //   - The OIDC login (oidcPrefix, docs/spec/http-routing.md §7): the request goes on as
 //     anonymous with the header untouched; its routes take no credential.
+//   - The sign-in of a web UI, POST /api/v1/login (loginPath, docs/spec/http-routing.md §4): the
+//     request goes on as anonymous with the header untouched. Its body carries the credential,
+//     which the management API checks, and a UI may still send the token it had, revoked or not.
 //   - The legacy login of npm (npmLogin): the request goes on as anonymous with the header
 //     untouched, whatever it says. Its body carries the password, which the npm plugin checks,
 //     and npm sends with it the token it had, revoked or not (docs/spec/http-routing.md, npm).
@@ -105,7 +108,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if s.tokenThrottled(w, r) {
 			return
 		}
-		if r.Method == http.MethodPut && npmLogin.MatchString(r.URL.Path) || strings.HasPrefix(r.URL.Path, oidcPrefix) {
+		if r.Method == http.MethodPut && npmLogin.MatchString(r.URL.Path) || strings.HasPrefix(r.URL.Path, oidcPrefix) ||
+			r.Method == http.MethodPost && r.URL.Path == loginPath {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -214,6 +218,9 @@ func (s *Server) authenticateSecret(r *http.Request, user, secret string) (auth.
 
 // oidcPrefix is the prefix of the routes of the OIDC login.
 const oidcPrefix = "/-/oidc/"
+
+// loginPath is the sign-in of a web UI, whose body is its credential (docs/spec/rbac.md §10).
+const loginPath = "/api/v1/login"
 
 // npmLogin is the path of npm's legacy login, PUT /npm/<repo>/-/user/org.couchdb.user:<name>.
 var npmLogin = regexp.MustCompile(`^/npm/[^/]+/-/user/org\.couchdb\.user:[^/]+$`)

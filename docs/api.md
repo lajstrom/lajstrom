@@ -1384,9 +1384,11 @@ of `server.corsOrigins`, object storage behind a CDN for one
 ([http-routing.md](spec/http-routing.md) §1 and §4).
 
 - **Signing in.** The API sets no cookie and reads none. The UI asks for the person's name and
-  password and creates a personal access token with them:
-  `POST /api/v1/users/<name>/tokens` with Basic, `{"name": "<one name per sign-in>", "expiresIn": "12h"}`.
-  It then sends the token as `Authorization: Bearer` on every request. Signing out revokes it:
+  password and signs in with them: [`POST /api/v1/login`](#sign-in-post-apiv1login) answers a
+  personal access token for the browser, which expires after `auth.login.tokenLifetime`. A
+  server without that route takes `POST /api/v1/users/<name>/tokens` with Basic,
+  `{"name": "<one name per sign-in>", "expiresIn": "12h"}`. The UI then sends the token as
+  `Authorization: Bearer` on every request. Signing out revokes it:
   `DELETE /api/v1/users/<name>/tokens/<id>`, with the token itself. A person may also paste a
   personal access token they already have. Signing out then only forgets it.
 - **Every sign-in is a token.** Each one appears in the person's token list and as a
@@ -1425,6 +1427,37 @@ Access-Control-Allow-Origin: https://ui.example.com
 Access-Control-Max-Age: 600
 Vary: Origin
 ```
+
+## Sign in: `POST /api/v1/login`
+
+A web UI signs in with the person's name and password, and gets a personal access token for the
+browser ([rbac.md](spec/rbac.md) §10). The request takes no credential: its `Authorization`
+header is ignored, so a UI that still holds a revoked token signs in all the same.
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "…"}' "$LAJSTROM/api/v1/login"
+```
+
+```json
+{"id": 41, "kind": "pat", "user": "alice", "name": "login 2026-11-15T09:30:00Z 3f9a", "scopes": [],
+ "expiresAt": "2026-11-15T21:30:00Z", "lastUsedAt": null, "createdAt": "2026-11-15T09:30:00Z",
+ "revokedAt": null, "hashPrefix": "5c1d0e7a", "secret": "ljs_pat_…"}
+```
+
+`201`, with `Location: /api/v1/users/alice/tokens/41`: the token as
+[`POST /api/v1/users/<user>/tokens`](#create-post-apiv1usersusertokens-post-apiv1reposformatrepodeploy-tokens)
+answers it, its secret shown once. It has no scopes, and expires after
+`auth.login.tokenLifetime` ([configuration.md](configuration.md#auth)), 12 hours by default and
+at most 24; there is no refresh, and the UI signs in again. Signing out is
+`DELETE /api/v1/users/alice/tokens/41` with the token itself. The token is in alice's token list,
+and its creation is a `token.create` row by alice, `createdBy` `password`.
+
+The password is checked as HTTP Basic checks it, with the same
+[throttles of failed logins](auth.md#failed-logins): `401` whatever the reason, an unknown user,
+a disabled one, one without a password (an OIDC user), a wrong password or a token in its place;
+`429` with `Retry-After` for a throttled account or client address. A body that is not
+`{"username", "password"}` is `400`.
 
 ## Who am I: `GET /api/v1/whoami`
 
