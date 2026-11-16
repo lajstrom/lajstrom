@@ -118,6 +118,10 @@ attachments:                          # signatures, SBOMs and scan reports of ve
     identities: []                    # e.g. {name: release, issuer: https://token.actions.githubusercontent.com,
                                       #   subjectRegex: '^https://github\.com/acme/', predicateTypes: [https://slsa.dev/provenance/v1]}
 
+policy:                               # deny lists, quarantine and verdicts (#101, docs/policy.md)
+  signingKey: local                   # the policy key that signs the server's verdicts and the deny list: local (needs the master key) or a KMS key URI
+  denylist:
+    registry: ""                      # where the signed deny list is written, lajstrom/policy/denylist; empty: the first of registries
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format
     format: raw                       # raw | pypi | apt | maven | npm | oci

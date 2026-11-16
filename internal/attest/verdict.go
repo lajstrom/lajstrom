@@ -91,6 +91,41 @@ type VerdictReferrer struct {
 	// Bundle is the layer's bytes, the sigstore bundle; BundleDesc its descriptor.
 	Bundle     []byte
 	BundleDesc ocispec.Descriptor
+	// Envelope is the DSSE envelope of the bundle alone: the layer of cosign's legacy
+	// attestation (LegacyLayer).
+	Envelope []byte
+}
+
+// The legacy attestation of cosign, a manifest under sha256-<hex>.att with one DSSE envelope per
+// layer (docs/spec/manifest-profile.md §6.4).
+const (
+	LegacyLayerType  = "application/vnd.dsse.envelope.v1+json"
+	legacyConfigType = "application/vnd.oci.image.config.v1+json"
+)
+
+// LegacyLayer is the descriptor of envelope as a layer of cosign's legacy attestation.
+func LegacyLayer(envelope []byte) ocispec.Descriptor {
+	return ocispec.Descriptor{MediaType: LegacyLayerType, Digest: digest.FromBytes(envelope), Size: int64(len(envelope)),
+		Annotations: map[string]string{"dev.cosignproject.cosign/signature": "", "predicateType": VerdictPredicateType}}
+}
+
+// LegacyManifest returns cosign's legacy attestation of layers, as cosign writes it: an image
+// manifest whose config lists the layers as its diff ids, and the config's bytes and descriptor.
+func LegacyManifest(layers []ocispec.Descriptor) (manifest []byte, config []byte, configDesc ocispec.Descriptor, err error) {
+	ids := make([]string, 0, len(layers))
+	for _, l := range layers {
+		ids = append(ids, l.Digest.String())
+	}
+	config, err = json.Marshal(map[string]any{"architecture": "", "created": "0001-01-01T00:00:00Z",
+		"history": []map[string]string{{"created": "0001-01-01T00:00:00Z"}}, "os": "",
+		"rootfs": map[string]any{"type": "layers", "diff_ids": ids}, "config": map[string]any{}})
+	if err != nil {
+		return nil, nil, ocispec.Descriptor{}, err
+	}
+	configDesc = ocispec.Descriptor{MediaType: legacyConfigType, Digest: digest.FromBytes(config), Size: int64(len(config))}
+	manifest, err = json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+		Config: configDesc, Layers: layers})
+	return manifest, config, configDesc, err
 }
 
 // BuildVerdict makes the verdict v about the manifest subject of the OCI repository name, in the
@@ -134,6 +169,10 @@ func BuildVerdict(ctx context.Context, name string, subject ocispec.Descriptor, 
 	if err != nil {
 		return nil, err
 	}
+	envelopeBytes, err := json.Marshal(b.DSSEEnvelope)
+	if err != nil {
+		return nil, err
+	}
 	bd := ocispec.Descriptor{MediaType: BundleMediaType, Digest: digest.FromBytes(bundleBytes), Size: int64(len(bundleBytes))}
 	bd.Annotations = map[string]string{ocispec.AnnotationTitle: "sha256-" + bd.Digest.Encoded() + ".sigstore.json"}
 	m := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
@@ -146,7 +185,7 @@ func BuildVerdict(ctx context.Context, name string, subject ocispec.Descriptor, 
 		return nil, err
 	}
 	return &VerdictReferrer{Manifest: raw, Desc: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest,
-		Digest: digest.FromBytes(raw), Size: int64(len(raw))}, Bundle: bundleBytes, BundleDesc: bd}, nil
+		Digest: digest.FromBytes(raw), Size: int64(len(raw))}, Bundle: bundleBytes, BundleDesc: bd, Envelope: envelopeBytes}, nil
 }
 
 // bundleOut is a sigstore bundle v0.3 of a key without a transparency log entry, as BuildVerdict

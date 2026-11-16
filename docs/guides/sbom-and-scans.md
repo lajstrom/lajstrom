@@ -7,9 +7,9 @@ version with their history, and tells you whether a key you trust signed each on
 
 Lajstrom does not scan and does not sign. A job of yours makes the SBOM and the scan report, signs
 them with its key, and pushes them; Lajstrom checks the signature against the keys you configured
-and labels the attachment. A label never blocks a push. Refusing to serve a version without a
-verified attachment is the policy layer of
-[#101](https://github.com/lajstrom/lajstrom/issues/101), not built yet.
+and labels the attachment. A label never blocks a push. A signed verdict that refuses a version
+is the policy layer of [#101](https://github.com/lajstrom/lajstrom/issues/101)
+([policy.md](../policy.md)); refusing a version for lacking a verified attachment is not built.
 
 This page uses cosign v3.1.4 with a key pair. Its steps were run on 2026-11-14 against Lajstrom
 of the #89 stack on Zot 2.1.23, on a raw file: the attestations, the signature,
@@ -235,4 +235,5 @@ run attached nothing; `?without=sbom&without=scan` was empty after it; and the s
   scan; a scan of an older vulnerability database still counts as one.
 - **Pruning old reports**: a job of yours, through the same `DELETE`; `lajstrom admin retention`
   deletes versions only.
-- **Refusing to serve a version without a verified attachment**: #101.
+- **Refusing to serve a version without a verified attachment**: the policy of #101 refuses a
+  version a signed verdict denies ([policy.md](../policy.md)), not one that lacks an attachment.
