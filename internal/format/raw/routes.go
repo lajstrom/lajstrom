@@ -82,7 +82,8 @@ type putResponse struct {
 // deps.Ingest.UploadStream, which keeps it only when the publish goes through (ADR 0014), and the
 // answer is 201 with Location (the request path), Docker-Content-Digest (the manifest digest) and
 // a JSON body. Nothing of the body is written to a local disk. The same bytes again are the
-// idempotent repeat of ingest, answered alike with the digest of the manifest stored first. A
+// idempotent repeat of ingest (Published.Existed), answered 200 with the same headers and body,
+// naming the version stored first (#1129); ingest waits for a PUT of them still on its way. A
 // path that another spelling holds is 409 before the body is read (checkSpelling).
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	repo, p, ok := h.start(w, r, auth.ActionWrite)
@@ -126,7 +127,11 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Location", r.URL.EscapedPath())
 	hdr.Set("Docker-Content-Digest", pub.Digest.String())
 	hdr.Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	status := http.StatusCreated
+	if pub.Existed {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 

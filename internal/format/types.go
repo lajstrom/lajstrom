@@ -168,6 +168,10 @@ type Built struct {
 	Tag string
 	// RepoPath is <format>/<repo>/<package path> without the instance prefix (§4.1).
 	RepoPath string
+	// ContentTag says that Tag is made of the bytes of the one file (raw: the first 16 hex
+	// digits of its sha256), so that a claim of Tag by another manifest is a publish of the same
+	// file, which Upload waits for rather than refuse (docs/spec/index-schema.md, Coordination).
+	ContentTag bool
 }
 
 // BlobSource is one blob to push together with a way to read its bytes.

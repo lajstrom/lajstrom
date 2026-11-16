@@ -93,14 +93,14 @@ func checkNotModified(t *testing.T, e *env, target, etag string) {
 	}
 }
 
-// TestPutVersions is R-02 and R-03: the same bytes again are 201 with the same digest and one
-// version; new bytes are a new version that GET returns, ?digest= pins the old one, the digest
-// of another path is 404 there, and a pin that is not a digest is 400.
+// TestPutVersions is R-02 and R-03: the same bytes again are 200 with the same digest, the same
+// created and one version (#1129); new bytes are a new version that GET returns, ?digest= pins
+// the old one, the digest of another path is 404 there, and a pin that is not a digest is 400.
 func TestPutVersions(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	first := e.put(fileTxt, "first")
-	again := e.put(fileTxt, "first")
-	if again.Digest != first.Digest || len(e.versions(fileTxt)) != 1 || len(e.prov.PushReferences()) != 1 {
+	again := e.putAgain(fileTxt, "first")
+	if again != first || len(e.versions(fileTxt)) != 1 || len(e.prov.PushReferences()) != 1 {
 		t.Errorf("repeat = %+v after %+v: %d versions, %d manifest pushes", again, first, len(e.versions(fileTxt)), len(e.prov.PushReferences()))
 	}
 	second := e.put(fileTxt, "second")
@@ -503,7 +503,7 @@ func TestFirstSpellingWins(t *testing.T) {
 		t.Errorf("listing = %+v, want %s once", entries, first)
 	}
 
-	if again := e.put(first, "first"); again.Digest != resp.Digest || len(e.versions(first)) != 1 {
+	if again := e.putAgain(first, "first"); again.Digest != resp.Digest || len(e.versions(first)) != 1 {
 		t.Errorf("the same bytes at %s = %+v: %d versions, want the repeat of %s", first, again, len(e.versions(first)), resp.Digest)
 	}
 	if next := e.put(first, "second"); next.Digest == resp.Digest || len(e.versions(first)) != 2 {

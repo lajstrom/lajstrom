@@ -177,18 +177,18 @@ ok "admin user disable $user; the same PUT: 401"
 
 "${lajstrom[@]}" admin user enable "$user"
 put old
-expect "PUT after enable status" 201 "$status"
-ok "admin user enable $user; the same PUT: 201"
+expect "PUT after enable status" 200 "$status"
+ok "admin user enable $user; the same PUT: 200, the file it stored"
 
 printf '%s' "$pw2" | "${lajstrom[@]}" admin user set-password "$user" --password-stdin
 put old
 expect "PUT with the old password status" 401 "$status"
 ok "admin user set-password $user; the old password: 401"
 put new
-expect "PUT with the new password status" 201 "$status"
+expect "PUT with the new password status" 200 "$status"
 req new GET "$base/api/v1/whoami"
 expect "whoami with the new password" "user:$uid" "$(jq -r .principal "$work/body")"
-ok "the new password: PUT 201, whoami user:$uid"
+ok "the new password: PUT 200, whoami user:$uid"
 
 # A user is its uid (#182): renamed, it keeps its uid and its binding; the old name is gone.
 was="$user"

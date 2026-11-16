@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -36,12 +37,67 @@ var errExisted = errors.New("ingest: the tag already holds this manifest")
 // the publish that pub repeats: pub takes over that manifest and shares its claim (takeOver).
 // A claim pub gets is the tag's in the index only: checkTag reads the tag in the backend next.
 // On a registry that folds the case of tags the claim is on the tag lower-cased (claimKey).
+// An upload whose tag is made of its file's bytes waits for that claim instead (awaitClaim).
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	existed, claimed, err := p.claimOnce(ctx, pub, 0)
-	if claimed == "" {
+	switch {
+	case claimed == "":
 		return existed, err
+	case pub.contentTag:
+		return p.awaitClaim(ctx, pub, claimed, err)
 	}
 	return p.takeOver(ctx, pub, claimed, 0, err)
+}
+
+// awaitClaim settles the fresh claim of another digest d that refused the claim of pub, an
+// upload whose tag is made of its file's bytes (format.Built.ContentTag), so a publish of the
+// same file (docs/spec/index-schema.md, Coordination). While the registry does not serve d,
+// that publish is on its way, or stopped before its push, and its process releases the claim
+// once the database answers (releaseLater): pub reads the registry and the claim again, as the
+// visibility barrier reads a push, for the visibility timeout or the registry's consistency
+// bound when that is longer. d served with the same files is taken over (adopt), with other
+// files it is refused (refused, the conflict that named d, stands); a claim released or stale
+// is pub's, and a version of the tag with the same files is the repeat (existed). A claim still
+// held at the end is a *provider.UnavailableError, 503 with Retry-After: 30, and nothing is
+// pushed.
+func (p *Pipeline) awaitClaim(ctx context.Context, pub *publish, d digest.Digest, refused error) (existed bool, err error) {
+	caps, err := pub.prov.Capabilities(ctx)
+	if err != nil {
+		return false, fmt.Errorf("ingest: capabilities of the registry of %s: %w", pub.name, err)
+	}
+	timeout := max(p.visibility, caps.ConsistencyBound)
+	var (
+		done bool
+		out  error
+	)
+	_, err = provider.ReadBack{Timeout: timeout}.Await(ctx, func(ctx context.Context) (bool, error) {
+		adopted, served, err := p.adoptWithin(ctx, pub, d, 0)
+		switch {
+		case err != nil:
+			return false, err
+		case adopted:
+			existed, _, out = p.claimOnce(ctx, pub, 0)
+			done = true
+		case served:
+			out, done = refused, true
+		default:
+			var claimed digest.Digest
+			existed, claimed, out = p.claimOnce(ctx, pub, 0)
+			done = claimed == ""
+			d, refused = claimed, out
+		}
+		return done, nil
+	})
+	switch {
+	case err != nil:
+		return false, err
+	case done:
+		return existed, out
+	}
+	p.log.WarnContext(ctx, "ingest: a publish of the same file holds the tag, and the registry does not serve its manifest",
+		"name", pub.name, "tag", pub.tag, "claimed", d.String(), "waited", timeout.String())
+	return false, fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, &provider.UnavailableError{RetryAfter: visibilityRetryAfter,
+		Reason: fmt.Sprintf("a publish of the same file claims the tag for %s, which the registry did not serve within %s", d, timeout)})
 }
 
 // claimOnce is one claim transaction of claimTag. claimed is the digest of the fresh claim of
@@ -173,6 +229,13 @@ func (p *Pipeline) adopt(ctx context.Context, pub *publish, d digest.Digest) (ad
 	if caps.Consistency == provider.ConsistencyStrong {
 		timeout = 0
 	}
+	adopted, _, err = p.adoptWithin(ctx, pub, d, timeout)
+	return adopted, err
+}
+
+// adoptWithin is adopt reading d in the registry for timeout, once when it is zero. served
+// reports that the registry served d, whether pub adopted it or not.
+func (p *Pipeline) adoptWithin(ctx context.Context, pub *publish, d digest.Digest, timeout time.Duration) (adopted, served bool, err error) {
 	var desc ocispec.Descriptor
 	found, err := provider.ReadBack{Timeout: timeout}.Await(ctx, func(ctx context.Context) (bool, error) {
 		var rerr error
@@ -183,20 +246,20 @@ func (p *Pipeline) adopt(ctx context.Context, pub *publish, d digest.Digest) (ad
 		return rerr == nil, rerr
 	})
 	if err != nil || !found {
-		return false, err
+		return false, false, err
 	}
 	m, raw, err := fetchManifest(ctx, pub.rr, desc)
 	if err != nil {
-		return false, fmt.Errorf("ingest: the claimed manifest %s@%s: %w", pub.name, d, err)
+		return false, true, fmt.Errorf("ingest: the claimed manifest %s@%s: %w", pub.name, d, err)
 	}
 	parsed, err := profile.Validate(m)
 	if err != nil || parsed.Annotations.Name != pub.parsed.Annotations.Name || !sameLayers(parsed.Files, pub.parsed.Files) {
-		return false, nil //nolint:nilerr // another artifact: the claim's conflict stands
+		return false, true, nil //nolint:nilerr // another artifact: the claim's conflict stands
 	}
 	p.log.InfoContext(ctx, "ingest: an upload of the same files takes over the manifest of a publish not confirmed",
 		"name", pub.name, "tag", pub.tag, "digest", d.String(), "built", pub.digest.String())
-	pub.manifest, pub.raw, pub.digest = m, raw, d
-	return true, p.validate(ctx, pub)
+	pub.manifest, pub.raw, pub.digest, pub.adopted = m, raw, d, true
+	return true, true, p.validate(ctx, pub)
 }
 
 // fetchManifest reads the manifest desc of rr, which must be its digest's bytes.
@@ -436,6 +499,7 @@ func (pub *publish) pushManifest(ctx context.Context, visibility time.Duration, 
 		return err
 	}
 	desc := ocispec.Descriptor{MediaType: pub.manifest.MediaType, Digest: pub.digest, Size: int64(len(pub.raw))}
+	pub.sent = true
 	err := retryBlobsLag(ctx, pub.prov, visibility, func(ctx context.Context) error {
 		return pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)
 	})
@@ -458,12 +522,91 @@ func (pub *publish) pushManifest(ctx context.Context, visibility time.Duration, 
 }
 
 // release deletes the claim of a publish that does not go on, also when ctx is done: a claim
-// left behind holds the tag until it is stale. A claim that is gone already is fine.
+// left behind holds the tag until it is stale. A claim that is gone already is fine. The claim
+// of a publish that sent no manifest to the registry and took over none, which the database does
+// not release (a database out, which failed its pending audit row too), is released again later
+// (releaseLater): a retry of the same upload would be refused by it.
 func (p *Pipeline) release(ctx context.Context, pub *publish) {
 	err := p.index.ReleaseTagClaim(context.WithoutCancel(ctx), pub.claim.ID)
-	if err != nil && !errors.Is(err, index.ErrNotFound) {
-		p.log.WarnContext(ctx, "ingest: tag claim not released; it holds the tag until it is stale",
+	switch {
+	case err == nil, errors.Is(err, index.ErrNotFound):
+		return
+	case !pub.sent && !pub.adopted:
+		p.log.WarnContext(ctx, "ingest: tag claim not released; released again once the database answers",
 			"repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.claim.Package, "tag", pub.tag, "error", err.Error())
+		p.releaseLater(pub.claim)
+		return
+	}
+	p.log.WarnContext(ctx, "ingest: tag claim not released; it holds the tag until it is stale",
+		"repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.claim.Package, "tag", pub.tag, "error", err.Error())
+}
+
+// releaseRetry is how often releaseLater releases a claim again.
+const releaseRetry = time.Second
+
+// laterReleases are the claims that releaseLater releases again, and whether its goroutine runs.
+type laterReleases struct {
+	mu      sync.Mutex
+	claims  []laterClaim
+	running bool
+}
+
+// laterClaim is a claim to release again until the deadline.
+type laterClaim struct {
+	claim    index.TagClaim
+	deadline time.Time // on the wall clock: half ingest.claimTTL after the claim was made
+}
+
+// releaseLater releases c again every releaseRetry from a goroutine of its own, until the
+// database releases it or finds it gone, or until c is half ingest.claimTTL old: a claim is
+// taken over under its id once it is stale, and a release after that would release another
+// publish's claim (docs/spec/index-schema.md, Coordination). A process that stops before that
+// leaves c to go stale.
+func (p *Pipeline) releaseLater(c index.TagClaim) {
+	p.later.mu.Lock()
+	defer p.later.mu.Unlock()
+	p.later.claims = append(p.later.claims, laterClaim{claim: c, deadline: time.Now().Add(p.claimTTL/2 - p.now().Sub(c.ClaimedAt))})
+	if !p.later.running {
+		p.later.running = true
+		go p.releaseAgain()
+	}
+}
+
+// releaseAgain is the goroutine of releaseLater: every releaseRetry it releases the claims, and
+// it ends when none is left.
+func (p *Pipeline) releaseAgain() {
+	t := time.NewTicker(releaseRetry)
+	defer t.Stop()
+	for range t.C {
+		p.later.mu.Lock()
+		claims := p.later.claims
+		p.later.claims = nil
+		p.later.mu.Unlock()
+		var keep []laterClaim
+		for _, c := range claims {
+			if !time.Now().Before(c.deadline) {
+				p.log.Warn("ingest: tag claim not released again; it holds the tag until it is stale",
+					"package", c.claim.Package, "tag", c.claim.Tag, "digest", c.claim.Digest.String())
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
+			err := p.index.ReleaseTagClaim(ctx, c.claim.ID)
+			cancel()
+			if err != nil && !errors.Is(err, index.ErrNotFound) {
+				keep = append(keep, c)
+				continue
+			}
+			p.log.Info("ingest: tag claim released after the database answered again",
+				"package", c.claim.Package, "tag", c.claim.Tag, "digest", c.claim.Digest.String())
+		}
+		p.later.mu.Lock()
+		p.later.claims = append(keep, p.later.claims...)
+		if len(p.later.claims) == 0 {
+			p.later.running = false
+			p.later.mu.Unlock()
+			return
+		}
+		p.later.mu.Unlock()
 	}
 }
 
