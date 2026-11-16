@@ -2596,6 +2596,14 @@ components:
             The JWK SHA-256 thumbprint (RFC 7638) of the DPoP key that the token of a web UI's
             sign-in is bound to; absent for every other token. A bound token works only as
             Authorization: DPoP with a proof of that key, on /api/.
+        beyondMaxTTL:
+          type: boolean
+          description: >-
+            true on a live token beyond the bound of its kind, auth.deployTokens.maxTTL for a
+            deploy token and auth.serviceAccounts.maxTokenTTL for a service account's: made
+            before the bound was set or lowered, it has no expiry, or expires more than the bound
+            after its creation, and is to be replaced. Worked out when it is answered; absent
+            otherwise.
     CreatedToken:
       allOf:
         - $ref: "#/components/schemas/Token"

@@ -72,6 +72,11 @@ type Token struct {
 	// DPoPJKT is the JWK SHA-256 thumbprint of the DPoP key that the token of a web UI's sign-in
 	// is bound to (docs/spec/rbac.md §10); absent for every other token.
 	DPoPJKT string `json:"dpopJkt,omitempty"`
+	// BeyondMaxTTL marks a live token beyond the bound of the configuration of its kind when it
+	// is answered (Tokens.beyond, docs/spec/rbac.md §1): created before the bound was set or
+	// lowered, it is to be replaced. Worked out from the configuration of the replica that
+	// answers, stored nowhere; absent otherwise.
+	BeyondMaxTTL bool `json:"beyondMaxTTL,omitempty"`
 }
 
 // CreatedToken is the answer of a creation, the one time the secret is shown: the token and its
@@ -368,7 +373,7 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		return nil, "", tokenError("create a token of "+owner, err)
 	}
 	s.writeAudit(ctx, ev)
-	t := tokenResource(row, own)
+	t := s.resource(row, own, now)
 	return &t, secret, nil
 }
 
@@ -403,7 +408,7 @@ func (s *Tokens) List(ctx context.Context, user string) ([]Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the tokens of user %s: %w", user, err)
 	}
-	return resources(rows, TokenPAT, tokenOwner{user: u.Name}), nil
+	return s.resources(rows, TokenPAT, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}), nil
 }
 
 // ListDeploy returns the deploy tokens of the repo <format>/<name>, in the order of their
@@ -421,7 +426,7 @@ func (s *Tokens) ListDeploy(ctx context.Context, repo string) ([]Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the deploy tokens of %s: %w", repo, err)
 	}
-	return resources(rows, TokenDeploy, tokenOwner{repo: repo}), nil
+	return s.resources(rows, TokenDeploy, tokenOwner{repo: repo}), nil
 }
 
 // ListMaskDeploy returns the deploy tokens over mask, or over any mask when mask is "", in the
@@ -437,10 +442,10 @@ func (s *Tokens) ListMaskDeploy(ctx context.Context, mask string) ([]Token, erro
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the deploy tokens over a mask: %w", err)
 	}
-	out := []Token{}
+	out, now := []Token{}, s.now()
 	for i := range rows {
 		if t := &rows[i]; t.Kind == TokenDeploy && t.RepoMask != "" && (mask == "" || t.RepoMask == mask) {
-			out = append(out, tokenResource(t, tokenOwner{mask: t.RepoMask}))
+			out = append(out, s.resource(t, tokenOwner{mask: t.RepoMask}, now))
 		}
 	}
 	return out, nil
@@ -452,7 +457,7 @@ func (s *Tokens) Get(ctx context.Context, id int64) (*Token, error) {
 	if err != nil {
 		return nil, tokenError(fmt.Sprintf("get token %d", id), err)
 	}
-	t := tokenResource(row, own)
+	t := s.resource(row, own, s.now())
 	return &t, nil
 }
 
@@ -503,7 +508,7 @@ func find(ctx context.Context, r index.Reader, id int64) (*index.Token, tokenOwn
 }
 
 // tokenOwnerOf returns the owner of the token row: its mask, its user, by the name it had when it
-// was deleted for a deleted user, or its repo.
+// was deleted for a deleted user, and whether it is a service account, or its repo.
 func tokenOwnerOf(ctx context.Context, r index.Reader, row *index.Token) (tokenOwner, error) {
 	switch {
 	case row.RepoMask != "":
@@ -518,7 +523,7 @@ func tokenOwnerOf(ctx context.Context, r index.Reader, row *index.Token) (tokenO
 			if u.DeletedAt != nil {
 				name = u.DeletedName
 			}
-			return tokenOwner{user: name, uid: u.UID}, nil
+			return tokenOwner{user: name, uid: u.UID, service: u.Kind == KindService}, nil
 		}
 	case row.RepoID != nil:
 		repo, err := r.GetRepoByID(ctx, *row.RepoID)
@@ -561,7 +566,7 @@ func (s *Tokens) Page(ctx context.Context, q TokenQuery) ([]Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the tokens: %w", err)
 	}
-	out := make([]Token, 0, len(rows))
+	out, now := make([]Token, 0, len(rows)), s.now()
 	owners := map[string]tokenOwner{} // a page reads each owner once
 	for i := range rows {
 		row := &rows[i]
@@ -578,7 +583,7 @@ func (s *Tokens) Page(ctx context.Context, q TokenQuery) ([]Token, error) {
 			}
 			owners[key] = own
 		}
-		out = append(out, tokenResource(row, own))
+		out = append(out, s.resource(row, own, now))
 	}
 	return out, nil
 }
@@ -810,14 +815,109 @@ func subjectOf(own tokenOwner) string {
 }
 
 // resources returns the Tokens of rows of kind, whose owner is own.
-func resources(rows []index.Token, kind string, own tokenOwner) []Token {
-	out := make([]Token, 0, len(rows))
+func (s *Tokens) resources(rows []index.Token, kind string, own tokenOwner) []Token {
+	out, now := make([]Token, 0, len(rows)), s.now()
 	for i := range rows {
 		if rows[i].Kind == kind {
-			out = append(out, tokenResource(&rows[i], own))
+			out = append(out, s.resource(&rows[i], own, now))
 		}
 	}
 	return out
+}
+
+// resource returns the Token of the tokens row t whose owner is own, with UTC times, marked
+// BeyondMaxTTL when it is a live token beyond the bound of its kind at now.
+func (s *Tokens) resource(t *index.Token, own tokenOwner, now time.Time) Token {
+	r := tokenResource(t, own)
+	r.BeyondMaxTTL = s.beyond(t, own, now)
+	return r
+}
+
+// storedPrecision is the precision of the times of the index, a microsecond on PostgreSQL: the
+// expiry a bound gives a token is at most that much after createdAt plus the bound once both
+// are stored.
+const storedPrecision = time.Microsecond
+
+// beyond reports whether t, whose owner is own, is a live token at now beyond the bound of the
+// configuration of its kind (docs/spec/rbac.md §1, #1286): a deploy token beyond
+// DeployMaxLifetime or a service account's token beyond ServiceMaxLifetime, without an expiry or
+// expiring more than the bound after its creation. A token created under the bound never is;
+// one created before the bound was set or lowered may be. A person's token never is: its bound
+// is a constant.
+func (s *Tokens) beyond(t *index.Token, own tokenOwner, now time.Time) bool {
+	l := s.lifetime(t.Kind, own)
+	if l.key == "" || l.max <= 0 || !alive(t, now) {
+		return false
+	}
+	return t.ExpiresAt == nil || t.ExpiresAt.Sub(t.CreatedAt) > l.max+storedPrecision
+}
+
+// countPage is the page of CountBeyondMaxTTL.
+const countPage = 500
+
+// CountBeyondMaxTTL counts the live tokens beyond the bound of their kind now (beyond): the deploy
+// tokens beyond DeployMaxLifetime and the tokens of live service accounts beyond
+// ServiceMaxLifetime, which GET /api/v1/tokens?live=true marks beyondMaxTTL. serve logs them at
+// start (docs/spec/rbac.md §1). A bound that is zero counts none.
+func (s *Tokens) CountBeyondMaxTTL(ctx context.Context) (deploy, service int, err error) {
+	now := s.now()
+	if s.DeployMaxLifetime > 0 {
+		if deploy, err = s.countDeployBeyond(ctx, now); err != nil {
+			return 0, 0, fmt.Errorf("auth: count the deploy tokens beyond auth.deployTokens.maxTTL: %w", err)
+		}
+	}
+	if s.ServiceMaxLifetime > 0 {
+		if service, err = s.countServiceBeyond(ctx, now); err != nil {
+			return 0, 0, fmt.Errorf("auth: count the service accounts' tokens beyond auth.serviceAccounts.maxTokenTTL: %w", err)
+		}
+	}
+	return deploy, service, nil
+}
+
+// countDeployBeyond counts the live deploy tokens beyond DeployMaxLifetime at now, a page at a
+// time.
+func (s *Tokens) countDeployBeyond(ctx context.Context, now time.Time) (int, error) {
+	n, f := 0, index.TokenFilter{Kind: TokenDeploy, LiveAt: now, Limit: countPage}
+	for {
+		rows, err := s.Index.ListTokenPage(ctx, f)
+		if err != nil {
+			return 0, err
+		}
+		for i := range rows {
+			if s.beyond(&rows[i], tokenOwner{}, now) {
+				n++
+			}
+		}
+		if len(rows) < f.Limit {
+			return n, nil
+		}
+		f.After = rows[len(rows)-1].ID
+	}
+}
+
+// countServiceBeyond counts the live tokens of the live service accounts beyond
+// ServiceMaxLifetime at now; a deleted account's tokens were revoked with it.
+func (s *Tokens) countServiceBeyond(ctx context.Context, now time.Time) (int, error) {
+	users, err := s.Index.ListUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range users {
+		if users[i].Kind != KindService {
+			continue
+		}
+		rows, err := s.Index.ListTokens(ctx, &users[i].ID, nil)
+		if err != nil {
+			return 0, err
+		}
+		for j := range rows {
+			if rows[j].Kind == TokenPAT && s.beyond(&rows[j], tokenOwner{service: true}, now) {
+				n++
+			}
+		}
+	}
+	return n, nil
 }
 
 // tokenResource returns the Token of a tokens row whose owner is own, with UTC times.

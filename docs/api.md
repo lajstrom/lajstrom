@@ -1586,6 +1586,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
 | `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
+| `beyondMaxTTL` | `true` on a live token beyond the bound of its kind, `auth.deployTokens.maxTTL` for a deploy token and `auth.serviceAccounts.maxTokenTTL` for a service account's ([auth.md](auth.md#rules)): made before the bound was set or lowered, it has no expiry, or expires more than the bound after its `createdAt`, and is to be replaced. Worked out when the token is answered, from the configuration of the replica that answers; left out otherwise, and on every token of a person (#1286) |
 
 ### Create: `POST /api/v1/users/<user>/tokens`, `POST /api/v1/repos/<format>/<repo>/deploy-tokens`
 
@@ -1682,6 +1683,14 @@ A personal access token that a web UI creates when a person signs in
 
 ```sh
 curl -s -u admin "$LAJSTROM/api/v1/tokens?kind=deploy&live=true&limit=50"
+```
+
+With `beyondMaxTTL` on each live token beyond the bound of its kind (the resource above),
+`kind=deploy&live=true` lists what a new `auth.deployTokens.maxTTL` leaves to replace, a page at
+a time:
+
+```sh
+curl -s -u admin "$LAJSTROM/api/v1/tokens?kind=deploy&live=true&limit=500" | jq '.tokens[] | select(.beyondMaxTTL) | {id, name, repo, repoMask, expiresAt}'
 ```
 
 ### Who may
