@@ -44,6 +44,7 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json, `state` text (`ok`, `pending`, `failed`, `unknown`; [below](#the-audit-row-of-a-registry-write)), `error` text null (why a failed row failed, its first 1024 bytes) | rows are never deleted, and only the row of a registry write changes, its state and details, once (below); retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name`; rows written before 0016 are `ok` |
 | `ci_policies` | `id`, `name` text, `issuer` text (the name of an issuer of `auth.ci.issuers`), `claims` json (each claim to its list of values), `grants` json (a list of `{role, mask}`), `state` text (`active`, `pending`, `expired`), `expires_at` ts null (a policy that grants write), `renewal_expires_at` ts null (the expiry of a renewal that waits for an approval), `created_by` text (the principal that made it), `created_at` ts, `updated_by` text (the principal of its latest create, change or renewal), `updated_at` ts, `approved_by` text null and `approved_at` ts null (its latest approval), `revision` bigint (1 on insert) | the CI trust policies made through the API (rbac.md §11, #937; 0033); unique `name`. `name` and `created_by` never change. Every update moves `revision` by one, and is made only at the revision the change read (a compare-and-set): of two changes of one revision, and of the replicas that mark one expiry, one writes. The policies of the configuration are not in it |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings`, every insert, update or delete of `repos` and of `ci_policies`, and every replacement of an identity's `identity_groups`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings, of the repos' `anonymous_read` and of the identities' groups when it moved (rbac.md §3) |
+| `config_state` | `id` int (always 1), `fingerprint` text (`sha256:<hex>`), `config` json (each key of the configuration that counts to its value), `release` text (the version of the `serve` that recorded it), `host` text (its host name), `recorded_at` ts | at most one row (#1284; 0035): the configuration last recorded by a `config.change` row (rbac.md §5), which holds no secret. A `serve` reads it at start (`GetConfigState`) and, when its own configuration differs, replaces it by its fingerprint only, `PutConfigState` with the fingerprint read (`""` inserts when there is no row), in the transaction that appends the row, so that of replicas that start together one records a change. Migration `0035_config_state.sql` only creates the table, empty: a replica of the release before neither reads nor writes it |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
 
 ### The audit row of a registry write
@@ -730,6 +731,7 @@ uses and which does not have it.
 | `repos`, `group_members`, `users` (the deleted ones too, with `owner` and `last_seen_at`), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937) | every row, with its id |
 | `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
 | `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
+| `config_state` | no: it is the configuration of the servers that ran on the database, not one to restore; a forced restore empties it, and the next start records its configuration with `initial` (rbac.md §5) |
 | `sessions` | no: their clients start them again, as after a restore of a backup |
 | `webhook_deliveries` | no: the outbox and the delivery log of the events before the snapshot. A restore sends none of them, the pending ones included, where a restore of a backup sends those again |
 | `auth_version`, `schema_migrations`, `policy_state` | no: the restore increments `auth_version` and `policy_state.generation`; the document's `schema` is the newest migration |
@@ -814,10 +816,10 @@ columns `tokens.dpop_jkt` and `oidc_logins.return_to`, `.code_challenge`, `.hand
 `versions.summary` and the index `files_digest` (#954, #956), `0030_policy.sql` the tables of
 policy and `index_cache.expires_at` (#101), `0031_blob_map.sql` the table `blob_map` (#114),
 `0032_revisions.sql` the columns `repos.revision`, `users.revision` and `webhooks.revision`
-(#796), and `0033_ci_policies.sql` the table `ci_policies` and the columns `tokens.auth_time`,
-`tokens.amr`, `oidc_logins.auth_time` and `oidc_logins.amr` (#937), and `0034_users_last_seen.sql`
-the column `users.last_seen_at`, filled (#1283); the others are named with
-their tables above. The runner,
+(#796), `0033_ci_policies.sql` the table `ci_policies` and the columns `tokens.auth_time`,
+`tokens.amr`, `oidc_logins.auth_time` and `oidc_logins.amr` (#937), `0034_users_last_seen.sql`
+the column `users.last_seen_at`, filled (#1283), and `0035_config_state.sql` the table
+`config_state` (#1284); the others are named with their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
