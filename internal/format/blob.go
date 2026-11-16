@@ -50,6 +50,9 @@ type ServeBlobOptions struct {
 	// answers in the error format of the distribution spec, a frontend through its own fail,
 	// which logs the cause of a 5xx: ServeBlob takes no logger.
 	Fail func(w http.ResponseWriter, err error)
+	// Decrypt is the key of an encrypted layer (Decryption): the blob is decrypted as it
+	// streams and never redirected, whatever Redirect says (getDecrypted). nil for a plain blob.
+	Decrypt *BlobKey
 }
 
 // ServeBlob answers GET and HEAD of the blob d of the OCI repository name (as the provider
@@ -69,6 +72,9 @@ type ServeBlobOptions struct {
 //     and Content-Type, ETag, Last-Modified, Docker-Content-Digest and Content-Disposition
 //     from opts, and streamed. A whole blob (200) is hashed as it streams, its last byte held
 //     back until the hash is known.
+//
+// An encrypted layer (opts.Decrypt) is decrypted as it streams and never redirected
+// (getDecrypted, docs/spec/manifest-profile.md §11).
 //
 // An error before the response started, the provider's among them (provider.ErrNotFound is
 // 404), is answered through opts.Fail. The error ServeBlob returns is a stream with a
@@ -105,6 +111,9 @@ func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, n
 	if r.Method == http.MethodHead {
 		a.head()
 		return nil
+	}
+	if opts.Decrypt != nil {
+		return a.getDecrypted()
 	}
 	return a.get()
 }

@@ -268,8 +268,14 @@ func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo
 		h.fail(w, r, err)
 		return
 	}
+	key, err := format.Decryption(r.Context(), h.deps, repo, index.ManifestPath(f.pkg, f.version), f.file)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(f.pkg, f.version)), f.file.Digest, format.ServeBlobOptions{
 		Subject:        format.VersionSubject(repo, f.pkg, f.version),
+		Decrypt:        key,
 		ContentType:    f.contentType,
 		LastModified:   f.version.CreatedAt,
 		ManifestDigest: f.version.Digest,
