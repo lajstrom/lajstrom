@@ -19,8 +19,8 @@ const (
 )
 
 // setOrigin writes the origin of a proxied artifact on a manifest that Build made: the URL and
-// the checksum the fetcher verified, the upstream's publish time as created when it gives one,
-// and no lajstrom.uploaded-by, since nobody uploaded it
+// the checksum the fetcher verified (none for a file fetched unchecked), the upstream's publish
+// time as created when it gives one, and no lajstrom.uploaded-by, since nobody uploaded it
 // (docs/spec/manifest-profile.md §3.1). The map is copied, the plugin's is left alone.
 func setOrigin(m *ocispec.Manifest, o *format.Origin) {
 	a := maps.Clone(m.Annotations)
@@ -29,7 +29,9 @@ func setOrigin(m *ocispec.Manifest, o *format.Origin) {
 	}
 	delete(a, profile.AnnotationUploadedBy)
 	a[profile.AnnotationOriginURL] = o.URL
-	a[profile.AnnotationOriginChecksum] = o.Checksum
+	if o.Checksum != "" {
+		a[profile.AnnotationOriginChecksum] = o.Checksum
+	}
 	if !o.Published.IsZero() {
 		a[ocispec.AnnotationCreated] = o.Published.UTC().Truncate(time.Second).Format(time.RFC3339)
 	}

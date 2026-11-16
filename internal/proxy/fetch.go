@@ -176,7 +176,8 @@ func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) 
 
 // entry returns the entry of the artifact in the name's document (§5, step 5), brought up to
 // date as a read of the document is, and the row it comes from. A version the document does
-// not list, or a file its entry does not have, is index.ErrNotFound.
+// not list, or a file its entry does not have, is index.ErrNotFound; so is a name the upstream
+// does not have, but a file the plugin takes unchecked without a document (unlisted).
 func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.UpstreamEntry, *index.ProxyMeta, error) {
 	upErr := c.refresh(ctx, p, a.ref.Name, a.key, a.ref.Kind)
 	row, err := metaRow(ctx, c.o.Index, p.repo.ID, a.key, a.ref.Kind)
@@ -186,6 +187,9 @@ func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.Upstr
 	case row == nil && upErr != nil:
 		return nil, nil, upErr
 	case row == nil || row.State == index.ProxyMetaAbsent:
+		if e, ok := unlisted(p, a); ok {
+			return e, row, nil
+		}
 		countFetch(p, fetchMissing)
 		return nil, nil, fmt.Errorf("%w: proxy: %s: upstream %s does not have %q", index.ErrNotFound, p.id(), p.settings.Upstream, a.ref.Name)
 	}
@@ -205,6 +209,21 @@ func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.Upstr
 	}
 	countFetch(p, fetchMissing)
 	return nil, nil, fmt.Errorf("%w: proxy: %s: upstream %s does not list %s", index.ErrNotFound, p.id(), p.settings.Upstream, a.ref.File)
+}
+
+// unlisted returns the entry of the artifact's file when its plugin takes it unchecked without
+// the document of its kind (format.Unlisted: maven's signature without a .sha1, §5, step 8): one
+// file, Unchecked, without checksums, the file asked.
+func unlisted(p *proxied, a artifact) (*format.UpstreamEntry, bool) {
+	u, ok := p.hooks.(format.Unlisted)
+	if !ok {
+		return nil, false
+	}
+	e, ok := u.UnlistedEntry(a.ref)
+	if !ok || len(e.Files) != 1 || e.Files[0].Name != a.ref.File || !e.Files[0].Unchecked || len(e.Files[0].Checksums) > 0 {
+		return nil, false
+	}
+	return &e, true
 }
 
 // fetch takes the artifact's claim and streams its file from the upstream into the registry
