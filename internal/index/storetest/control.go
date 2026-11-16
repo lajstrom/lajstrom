@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -134,21 +135,29 @@ func testUsers(t *testing.T, s index.Store) {
 	for i := range users {
 		must(t, s.CreateUser(ctx, &users[i]))
 	}
-	for _, want := range users {
+	// A service account (docs/spec/rbac.md §1): no password, an owner.
+	robot := index.User{Name: "robot", Kind: "service", Owner: "user:" + users[0].UID, CreatedAt: at(2)}
+	must(t, s.CreateUser(ctx, &robot))
+	for _, want := range append(slices.Clone(users), robot) {
 		got, err := s.GetUser(ctx, want.Name)
 		must(t, err)
 		same(t, "GetUser "+want.Name, want, *got)
 	}
 	all, err := s.ListUsers(ctx)
 	must(t, err)
-	same(t, "ListUsers", []index.User{users[1], users[0]}, all)
+	same(t, "ListUsers", []index.User{users[1], users[0], robot}, all)
+	robot.Owner = "group:ops"
+	must(t, s.UpdateUser(ctx, &robot))
+	got, err := s.GetUserByID(ctx, robot.ID)
+	must(t, err)
+	same(t, "the service account after UpdateUser of its owner", robot, *got)
 
 	for _, u := range users {
 		if !index.IsUID(u.UID) {
 			t.Errorf("CreateUser gave %s the uid %q", u.Name, u.UID)
 		}
 	}
-	got, err := s.GetUserByUID(ctx, users[0].UID)
+	got, err = s.GetUserByUID(ctx, users[0].UID)
 	must(t, err)
 	same(t, "GetUserByUID", users[0], *got)
 	got, err = s.GetUserByID(ctx, users[0].ID)

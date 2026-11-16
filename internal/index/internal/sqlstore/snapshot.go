@@ -268,7 +268,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	}
 	for _, u := range cp.Users {
 		add("users "+u.Name, "users", userCols, u.ID, u.UID, u.Name, textArg(u.PasswordHash), cmp.Or(u.Kind, "local"), u.Disabled,
-			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName))
+			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner))
 	}
 	for _, i := range cp.Identities {
 		add(fmt.Sprintf("identities id %d", i.ID), "identities", identityCols, i.ID, i.UserID, i.Issuer, i.Subject,
