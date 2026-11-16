@@ -550,6 +550,19 @@ encrypted layer.
 - a `reindex` that needs the keys, and a KMS request per layer with a KMS key;
 - a chunked upload of `/v2` that sends bytes in more than one request reads its blob back once.
 
+The cipher streams in constant memory: 1 GiB up and 1 GiB down through `/v2` of an encrypted
+repo took 4.6 s with 7 MiB of heap in use at the peak (`TestEncryptedStreamingMemory`, an
+M-series Mac, the registry in process), so the cost per byte is a few hundred MB/s of a core
+each way, small beside a network to the registry. What an encrypted repo does not do:
+
+- a cosign signature under the legacy tag `sha256-<hex>.sig`, which names the subject by the
+  digest the client knows: sign with `--registry-referrers-mode=oci-1-1`, the referrers API;
+- verify the attachments of its versions: their layers are encrypted, and they are listed with
+  `unsupported`;
+- the render of an apt or rpm index from a row whose metadata the index left out (a metadata
+  layer over 4 MiB, read from the registry): reindex, with the keys, writes the metadata of every
+  row of an encrypted repo.
+
 ### The bearer-token key
 
 The bearer tokens of `/v2` ([auth.md](auth.md#bearer-tokens-on-v2)) are signed with one server
@@ -1227,7 +1240,10 @@ The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary
 `internal/` and `cmd/`: none is on a blob's path; each reads one of the bounded documents above,
 renders an index, or is the opt-in spool of a `/v2` chunk. `TestStreamingMemory` (`internal/facade`) checks the
 same in `make test`: 1 GiB up and down through `/v2` against an in-process registry with the
-heap in use under 64 MiB.
+heap in use under 64 MiB. `TestEncryptedStreamingMemory` does it through the cipher of an
+encrypted repo ([Encryption at rest](#encryption-at-rest)): AES-256-CTR, the HMAC and the two
+sha256 of the upload, the HMAC and the digest of the download, 1 GiB each way in 4.6 s on an
+M-series Mac with 7 MiB of heap in use at the peak.
 
 ### The load test
 
