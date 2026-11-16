@@ -25,18 +25,19 @@ import (
 type fakeProvider struct {
 	mu                      sync.Mutex
 	state, nonce, challenge string
+	stepUp                  bool
 	id                      Identity
 	err, discoveryErr       error // of Exchange, of AuthCodeURL
 	code                    string
 }
 
-func (f *fakeProvider) AuthCodeURL(_ context.Context, state, nonce, challenge string) (string, error) {
+func (f *fakeProvider) AuthCodeURL(_ context.Context, state, nonce, challenge string, stepUp bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.discoveryErr != nil {
 		return "", f.discoveryErr
 	}
-	f.state, f.nonce, f.challenge = state, nonce, challenge
+	f.state, f.nonce, f.challenge, f.stepUp = state, nonce, challenge, stepUp
 	return "https://idp.example/auth?state=" + url.QueryEscape(state), nil
 }
 

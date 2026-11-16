@@ -17,8 +17,11 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // ErrRefused means the IdP refused the code, or the ID token or its claims did not verify. The
@@ -39,9 +42,10 @@ const DefaultTimeout = 10 * time.Second
 // Provider is the relying party as the login flows use it (docs/spec/layout.md, auth/oidc).
 type Provider interface {
 	// AuthCodeURL is the IdP's authorization endpoint with the parameters of the code flow:
-	// state, nonce and the S256 challenge of the PKCE verifier. Errors wrap ErrUnavailable when
-	// the discovery document cannot be read.
-	AuthCodeURL(ctx context.Context, state, nonce, challenge string) (string, error)
+	// state, nonce and the S256 challenge of the PKCE verifier, and with stepUp prompt=login and
+	// max_age, so that the person authenticates again (docs/spec/rbac.md §10). Errors wrap
+	// ErrUnavailable when the discovery document cannot be read.
+	AuthCodeURL(ctx context.Context, state, nonce, challenge string, stepUp bool) (string, error)
 	// Exchange redeems code with the verifier at the token endpoint and verifies the ID token
 	// against nonce. Errors wrap ErrRefused or ErrUnavailable.
 	Exchange(ctx context.Context, code, verifier, nonce string) (*Identity, error)
@@ -57,6 +61,11 @@ type Identity struct {
 	// docs/spec/rbac.md §8, in the IdP's order without repeats; the others are dropped and
 	// counted in a debug line.
 	Groups []string
+	// AuthTime is auth_time, when the person last authenticated at the IdP; nil when the token
+	// has none. AMR is amr (RFC 8176), its strings of at most maxAMRValue bytes, at most maxAMR
+	// of them; nil when it has none. A web UI's token keeps both (docs/spec/rbac.md §10).
+	AuthTime *time.Time
+	AMR      []string
 }
 
 // Config configures a Client: the keys of auth.oidc and how to reach the IdP.
@@ -149,8 +158,9 @@ func checkURL(what, s string, allowHTTP bool) error {
 }
 
 // AuthCodeURL returns the authorization endpoint of the discovery document with the parameters
-// of the code flow, its own query parameters kept.
-func (c *Client) AuthCodeURL(ctx context.Context, state, nonce, challenge string) (string, error) {
+// of the code flow, its own query parameters kept; with stepUp also prompt=login and max_age, the
+// seconds of auth.FreshSignInWindow.
+func (c *Client) AuthCodeURL(ctx context.Context, state, nonce, challenge string, stepUp bool) (string, error) {
 	m, err := c.disc.get(ctx)
 	if err != nil {
 		return "", err
@@ -165,6 +175,10 @@ func (c *Client) AuthCodeURL(ctx context.Context, state, nonce, challenge string
 	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	if stepUp {
+		q.Set("prompt", "login")
+		q.Set("max_age", strconv.Itoa(int(auth.FreshSignInWindow/time.Second)))
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }

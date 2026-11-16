@@ -103,7 +103,8 @@ func NewHandler(o LoginOptions) http.Handler {
 
 // login starts the authorization code flow: a login request with its state, nonce and PKCE
 // verifier, the browser's cookie, and the redirect to the IdP. With user_code it is the login
-// that approves that device request.
+// that approves that device request; a web UI's login with prompt=login asks the IdP to
+// authenticate the person again (uiLogin).
 func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	now := h.o.Now()
@@ -123,7 +124,7 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		h.o.Log.WarnContext(ctx, "oidc: expired login requests not deleted", "error", err.Error())
 	}
 	state, nonce, verifier, cookie := NewSecret(), NewSecret(), NewSecret(), NewSecret()
-	target, err := h.o.Provider.AuthCodeURL(ctx, state, nonce, Challenge(verifier))
+	target, err := h.o.Provider.AuthCodeURL(ctx, state, nonce, Challenge(verifier), ui.stepUp)
 	if err != nil {
 		h.unavailable(w, r, err)
 		return
@@ -215,6 +216,7 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row.ReturnTo != "" {
+		row.AuthTime, row.AMR = id.AuthTime, id.AMR
 		h.handOff(w, r, row, u)
 		return
 	}
@@ -280,8 +282,9 @@ func (h *handler) approve(w http.ResponseWriter, r *http.Request, id int64, u *i
 }
 
 // handOff ends the login row of a web UI for u (docs/spec/rbac.md §10): a new code, whose hash
-// the row keeps with the user, approved once, and 302 to the row's return_to with the code in
-// the fragment. The redirect has no body, so that the code is in the Location alone.
+// the row keeps with the user and the auth_time and amr the caller put on it, approved once, and
+// 302 to the row's return_to with the code in the fragment. The redirect has no body, so that
+// the code is in the Location alone.
 func (h *handler) handOff(w http.ResponseWriter, r *http.Request, row *index.OIDCLogin, u *index.User) {
 	code := NewSecret()
 	row.Status, row.UserID, row.Handoff = index.OIDCApproved, &u.ID, Hash(code)

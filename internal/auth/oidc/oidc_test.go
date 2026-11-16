@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -224,6 +225,45 @@ func TestExchange(t *testing.T) {
 	}
 }
 
+// TestSignInClaims: an ID token's auth_time and amr are read into the identity (docs/spec/rbac.md
+// §10): a time after the epoch, the strings of amr that are short; a claim of another type is
+// none.
+func TestSignInClaims(t *testing.T) {
+	rs, _, _ := keys(t)
+	p := newIDP(t, rs)
+	c := p.client(t, clockAt(testNow))
+	for name, tc := range map[string]struct {
+		authTime, amr any
+		at            *time.Time
+		want          []string
+	}{
+		"both":         {testNow.Add(-time.Minute).Unix(), []any{"pwd", "otp"}, ptrTo(testNow.Add(-time.Minute).UTC()), []string{"pwd", "otp"}},
+		"odd values":   {"yesterday", []any{"hwk", 7, "", strings.Repeat("x", 65), "pin"}, nil, []string{"hwk", "pin"}},
+		"amr a string": {0, "mfa", nil, nil},
+		"none":         {nil, nil, nil, nil},
+		"too many": {testNow.Unix(), []any{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"},
+			ptrTo(testNow.UTC()), []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"}},
+	} {
+		claims := p.claims("n-1")
+		if tc.authTime != nil {
+			claims["auth_time"] = tc.authTime
+		}
+		if tc.amr != nil {
+			claims["amr"] = tc.amr
+		}
+		p.answer(sign(t, rs, claims))
+		id, err := c.Exchange(context.Background(), testCode, testVerifier, "n-1")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if fmt.Sprint(id.AuthTime) != fmt.Sprint(tc.at) || !slices.Equal(id.AMR, tc.want) {
+			t.Errorf("%s: auth_time %v, amr %q; want %v, %q", name, id.AuthTime, id.AMR, tc.at, tc.want)
+		}
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
 // TestVerifyRefusals: every check of docs/spec/rbac.md §8 refuses with ErrRefused.
 func TestVerifyRefusals(t *testing.T) {
 	rs, es, _ := keys(t)
@@ -350,7 +390,7 @@ func TestDiscovery(t *testing.T) {
 	ctx := context.Background()
 	p := newIDP(t, rs)
 	c := p.client(t, clockAt(testNow))
-	u, err := c.AuthCodeURL(ctx, "st", "nn", "ch")
+	u, err := c.AuthCodeURL(ctx, "st", "nn", "ch", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,15 +402,25 @@ func TestDiscovery(t *testing.T) {
 			t.Errorf("AuthCodeURL %s = %q, want %q", k, q.Get(k), want)
 		}
 	}
+	if q.Has("prompt") || q.Has("max_age") {
+		t.Errorf("a login that is no step-up asks prompt or max_age: %s", u)
+	}
+	u, err = c.AuthCodeURL(ctx, "st", "nn", "ch", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := mustParse(t, u).Query(); q.Get("prompt") != "login" || q.Get("max_age") != "600" || q.Get("state") != "st" {
+		t.Errorf("a step-up asks %s, want prompt=login and max_age=600 beside the code flow's", u)
+	}
 
 	other := newIDP(t, rs)
 	other.issuer = "https://evil.example"
-	if _, err := other.client(t, clockAt(testNow)).AuthCodeURL(ctx, "s", "n", "c"); !errors.Is(err, ErrUnavailable) {
+	if _, err := other.client(t, clockAt(testNow)).AuthCodeURL(ctx, "s", "n", "c", false); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("a discovery document of another issuer: %v, want ErrUnavailable", err)
 	}
 	down := newIDP(t, rs)
 	down.down.Store(true)
-	if _, err := down.client(t, clockAt(testNow)).AuthCodeURL(ctx, "s", "n", "c"); !errors.Is(err, ErrUnavailable) {
+	if _, err := down.client(t, clockAt(testNow)).AuthCodeURL(ctx, "s", "n", "c", false); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("an IdP that does not answer: %v, want ErrUnavailable", err)
 	}
 	strict, err := New(Config{Issuer: "https://idp.example", ClientID: "c", RedirectURL: "https://l.example/-/oidc/callback"})

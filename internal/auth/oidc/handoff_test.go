@@ -191,6 +191,64 @@ func TestUIHandoffWrongKey(t *testing.T) {
 	}
 }
 
+// TestUIStepUp checks a web UI's login with prompt=login (docs/spec/rbac.md §10): the IdP is asked
+// to authenticate again, the callback keeps the ID token's auth_time and amr on the login, and
+// the token of its code keeps them, so that a request with it and its DPoP proof carries the
+// sign-in; a login whose ID token has no auth_time gives a token without one.
+func TestUIStepUp(t *testing.T) {
+	f := newLoginFixture(t)
+	ctx := context.Background()
+	at := f.now.Load().Add(-time.Minute)
+	f.p.id.AuthTime, f.p.id.AMR = &at, []string{"pwd", "otp"}
+	verifier := NewSecret()
+	state, cookie := f.start(uiQuery(uiOrigin+"/ui/", verifier) + "&prompt=login")
+	if !f.p.stepUp {
+		t.Error("a login with prompt=login did not ask the IdP for a step-up")
+	}
+	rr := f.callback(state, cookie)
+	code, _ := strings.CutPrefix(rr.Header().Get("Location"), uiOrigin+"/ui/#code=")
+	row, err := f.st.GetOIDCLoginByHandoff(ctx, Hash(code))
+	if err != nil || row.AuthTime == nil || !row.AuthTime.Equal(at) || !slices.Equal(row.AMR, []string{"pwd", "otp"}) {
+		t.Fatalf("the login row: %+v, %v", row, err)
+	}
+	tok, secret, err := f.handoffs(time.Hour).Redeem(ctx, code, verifier, testJKT, auth.Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
+	if err != nil || cred.SignIn == nil || !cred.SignIn.At.Equal(at) || !slices.Equal(cred.SignIn.AMR, []string{"pwd", "otp"}) {
+		t.Fatalf("the token's credential: %+v, %v", cred, err)
+	}
+	if err := auth.FreshSignIn(cred, *f.now.Load()); err != nil {
+		t.Errorf("a sign-in a minute old with pwd and otp: %v", err)
+	}
+	evs, _ := f.st.ListAudit(ctx, index.AuditFilter{Action: auth.ActionTokenCreate})
+	if len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"amr":["pwd","otp"]`) ||
+		!strings.Contains(string(evs[0].Details), `"authTime":"`+at.Format(time.RFC3339)+`"`) {
+		t.Errorf("the token.create row of %d: %+v", tok.ID, evs)
+	}
+	checkNoSignIn(t, f, verifier)
+}
+
+// checkNoSignIn checks that a login of the fixture f without prompt asks no step-up, and that,
+// its ID token without auth_time, its token carries no sign-in.
+func checkNoSignIn(t *testing.T, f *loginFixture, verifier string) {
+	t.Helper()
+	f.p.id.AuthTime, f.p.id.AMR = nil, nil
+	code := f.handOff(uiOrigin+"/ui/", verifier)
+	_, secret, err := f.handoffs(time.Hour).Redeem(context.Background(), code, verifier, testJKT, auth.Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.p.stepUp {
+		t.Error("a login without prompt asked the IdP for a step-up")
+	}
+	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(context.Background(), secret, testJKT)
+	if err != nil || cred.SignIn != nil {
+		t.Errorf("a login without auth_time: %+v, %v; want no sign-in", cred, err)
+	}
+}
+
 // TestUILoginRefused checks the logins with return_to that do not start: 400 with a page, no
 // cookie, nothing for the IdP.
 func TestUILoginRefused(t *testing.T) {
@@ -225,6 +283,8 @@ func TestUILoginRefused(t *testing.T) {
 		{q("dpop_jkt", testJKT), "go together"},
 		{q("return_to", uiOrigin+"/", "code_challenge", ch, "code_challenge_method", "S256", "dpop_jkt", testJKT[:42]), "not a JWK SHA-256 thumbprint"},
 		{q("return_to", uiOrigin+"/", "code_challenge", ch, "code_challenge_method", "S256", "dpop_jkt", testJKT+"="), "not a JWK SHA-256 thumbprint"},
+		{q("return_to", uiOrigin+"/", "code_challenge", ch, "code_challenge_method", "S256", "prompt", "consent"), "prompt must be login"},
+		{q("dpop_jkt", "", "prompt", "login"), "prompt goes with the login of a web UI"},
 	} {
 		f := newLoginFixture(t)
 		rr := f.do(http.MethodGet, "/-/oidc/login"+tc.query, nil)

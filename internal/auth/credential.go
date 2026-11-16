@@ -69,6 +69,10 @@ type Credential struct {
 	Grants []Grant
 	// CIToken is the id of a CredCI, the jti of its exchange's audit row.
 	CIToken string
+	// SignIn is the sign-in at the IdP of the token of a web UI's OIDC login (docs/spec/rbac.md
+	// §10), set when the request authenticated with that token and a proof of its DPoP key
+	// (Authenticator.AuthenticateDPoP) and the login's ID token had auth_time; nil otherwise.
+	SignIn *SignIn
 }
 
 // Limit is the part of the evaluation of docs/spec/rbac.md §3 that depends on the credential

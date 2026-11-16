@@ -28,25 +28,30 @@ const (
 )
 
 // uiParams are the parameters of a web UI's login: the page to return to, the S256 challenge of
-// its PKCE verifier, and the JWK SHA-256 thumbprint of its DPoP key (RFC 9449 §10).
+// its PKCE verifier, the JWK SHA-256 thumbprint of its DPoP key (RFC 9449 §10), and whether it
+// asks the IdP to authenticate the person again, prompt=login (a step-up, docs/spec/rbac.md §10).
 type uiParams struct {
 	returnTo, challenge, jkt string
+	stepUp                   bool
 }
 
 // uiLogin returns the parameters of a web UI's login from the query q, all "" for a login
 // without them, or why the login cannot start: return_to on an origin that is not one of
 // origins, a challenge that is not an S256 one, a method that is not S256, a dpop_jkt that is no
-// thumbprint, one of the three without the others, any with user_code.
+// thumbprint, one of the three without the others, any with user_code, a prompt that is not
+// login or that comes without them.
 func uiLogin(q url.Values, origins []string) (uiParams, string) {
 	if !q.Has("return_to") && !q.Has("code_challenge") && !q.Has("code_challenge_method") && !q.Has("dpop_jkt") {
-		return uiParams{}, ""
+		return uiParams{}, promptProblem(q, false)
 	}
-	ui := uiParams{returnTo: q.Get("return_to"), challenge: q.Get("code_challenge"), jkt: q.Get("dpop_jkt")}
+	ui := uiParams{returnTo: q.Get("return_to"), challenge: q.Get("code_challenge"), jkt: q.Get("dpop_jkt"), stepUp: q.Has("prompt")}
 	switch {
 	case q.Has("user_code"):
 		return uiParams{}, "the login of a terminal takes no return_to"
 	case ui.returnTo == "" || ui.challenge == "" || ui.jkt == "":
 		return uiParams{}, "return_to, code_challenge and dpop_jkt go together"
+	case promptProblem(q, true) != "":
+		return uiParams{}, promptProblem(q, true)
 	case q.Get("code_challenge_method") != "S256":
 		return uiParams{}, "the code challenge method must be S256"
 	case !s256Challenge(ui.challenge):
@@ -58,6 +63,20 @@ func uiLogin(q url.Values, origins []string) (uiParams, string) {
 		return uiParams{}, why
 	}
 	return ui, ""
+}
+
+// promptProblem returns why the prompt of the query q cannot be: one of a login that is not a web
+// UI's (ui false), or one that is not login; "" without one.
+func promptProblem(q url.Values, ui bool) string {
+	switch {
+	case !q.Has("prompt"):
+		return ""
+	case !ui:
+		return "prompt goes with the login of a web UI, return_to"
+	case q.Get("prompt") != "login":
+		return "prompt must be login"
+	}
+	return ""
 }
 
 // returnToProblem returns why returnTo is not a page a web UI's login may return to, or "": an
@@ -129,7 +148,8 @@ const errHandoff = "code: unknown, used, expired, or of another verifier or key:
 // started it and jkt, the thumbprint of the key of the request's DPoP proof, which must be the
 // login's dpop_jkt (RFC 9449 §10): the login request of the code, approved and not expired, is
 // marked redeemed once, on any replica, and the token of the login is minted for its user,
-// bound to that key (auth.Tokens.BoundLoginToken), with its token.create event, createdBy oidc.
+// bound to that key (auth.Tokens.BoundLoginToken), with its token.create event, createdBy oidc,
+// and the auth_time and amr of the login's ID token.
 // A verifier that is malformed, a code that is unknown, used or expired, a verifier of another
 // challenge and a key of another thumbprint are errors wrapping auth.ErrInvalid; a wrong
 // verifier or key marks the request denied, so that a code is tried once. A user disabled or
@@ -171,7 +191,16 @@ func (h *Handoffs) Redeem(ctx context.Context, code, verifier, jkt string, o aut
 	case u.Disabled || u.DeletedAt != nil:
 		return nil, "", &refusal{msg: "the user " + u.Name + " is disabled", err: auth.ErrBadCredentials}
 	}
-	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, o)
+	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), o)
+}
+
+// signInOf is the sign-in at the IdP that the login row kept from its ID token: nil without
+// auth_time.
+func signInOf(row *index.OIDCLogin) *auth.SignIn {
+	if row.AuthTime == nil {
+		return nil
+	}
+	return &auth.SignIn{At: *row.AuthTime, AMR: row.AMR}
 }
 
 // approved returns the login request of code, a code login approved for a user and not
