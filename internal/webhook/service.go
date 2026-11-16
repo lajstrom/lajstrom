@@ -119,14 +119,18 @@ func (s *Service) List(ctx context.Context, mask string) ([]index.Webhook, error
 }
 
 // Update changes the fields req sets of the webhook id, with its webhook.update row; req.Mask
-// set is ErrInvalid: a mask never changes.
+// set is ErrInvalid: a mask never changes. The condition of ctx (index.WithCondition) is checked
+// on the row the transaction read.
 func (s *Service) Update(ctx context.Context, id int64, req Request, o Origin) (*index.Webhook, error) {
 	if req.Mask != "" {
 		return nil, invalidf("mask: cannot change; delete the webhook and create one of the other mask")
 	}
 	var h *index.Webhook
-	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
+	err := s.Index.Tx(index.ConditionContext(ctx), func(w index.Writer) (err error) {
 		if h, err = w.GetWebhook(ctx, id); err != nil {
+			return err
+		}
+		if err := index.CheckCondition(ctx, h.ID, h.Revision); err != nil {
 			return err
 		}
 		if err := s.apply(h, req); err != nil {
@@ -143,11 +147,15 @@ func (s *Service) Update(ctx context.Context, id int64, req Request, o Origin) (
 	return h, nil
 }
 
-// Delete deletes the webhook id and its delivery log, with its webhook.delete row.
+// Delete deletes the webhook id and its delivery log, with its webhook.delete row. The
+// condition of ctx (index.WithCondition) is checked on the row the transaction read.
 func (s *Service) Delete(ctx context.Context, id int64, o Origin) error {
-	err := s.Index.Tx(ctx, func(w index.Writer) error {
+	err := s.Index.Tx(index.ConditionContext(ctx), func(w index.Writer) error {
 		h, err := w.GetWebhook(ctx, id)
 		if err != nil {
+			return err
+		}
+		if err := index.CheckCondition(ctx, h.ID, h.Revision); err != nil {
 			return err
 		}
 		if err := w.DeleteWebhook(ctx, id); err != nil {
