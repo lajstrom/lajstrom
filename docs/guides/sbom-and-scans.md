@@ -181,6 +181,53 @@ its layer) is kept: its delete is `409` naming the reports, until they are delet
 the last N per predicate type, [operations.md](../operations.md#retention)) meets the same rule, so
 it keeps the SBOMs its kept reports name. Nothing in Lajstrom prunes reports by itself.
 
+## 7. A reference job
+
+`deploy/jobs/scan/scan.sh` is a job of this kind, with a GitHub Actions workflow
+(`deploy/jobs/scan/github-actions.yml`) and a GitLab CI job (`deploy/jobs/scan/gitlab-ci.yml`)
+that run it every night. For each version of a repo without an SBOM it reads the version's files
+through `/v2`, makes a CycloneDX SBOM of them with syft and attaches it with `cosign attest --type
+cyclonedx`; for each version without a scan report, it makes the SBOM again and attaches trivy's
+report of it, `trivy sbom --format cosign-vuln`, with `cosign attest --type vuln`. Both are signed
+with the job's key and nothing goes to the public Sigstore.
+
+It is a reconciliation, not an event pipeline: each run asks the server what is still missing,
+`GET …/versions?without=sbom` and `?without=scan` (#89, [api.md](../api.md)), and a version it
+attached to is not listed again, so a run that was missed or failed loses nothing. Its credential
+is a deploy token with the scopes `read` and `attach`: `read` lists the versions and reads their
+files, and lets cosign read the version's manifest, `attach` pushes the attestations; it publishes
+nothing, and a manifest that is no referrer is `403` ([auth.md](../auth.md#what-a-token-may-do)).
+
+```sh
+lajstrom admin token create --repo pypi/internal --name scanner --scopes read,attach
+cosign generate-key-pair      # cosign.key for the job; cosign.pub in attachments.trust
+LAJSTROM_URL=https://art.example.com LAJSTROM_TOKEN=ljs_dep_… COSIGN_KEY=cosign.key \
+  COSIGN_PASSWORD=… deploy/jobs/scan/scan.sh pypi/internal
+```
+
+```text
+sbom  pypi/internal requests 2.32.3 py3-none-any sha256:5c11…
+scan  pypi/internal requests 2.32.3 py3-none-any sha256:5c11…
+2 attestations attached to pypi/internal
+```
+
+The tools are `syft`, `trivy` and `cosign` on `PATH`, or the commands in `SYFT`, `TRIVY` and
+`COSIGN`, containers of pinned versions as the GitHub workflow runs them. The job was run so on
+2026-11-16, against Lajstrom of the #89 stack on SQLite and Zot 2.1.23 (zot-minimal), with
+`anchore/syft:v1.33.0`, `aquasec/trivy:0.67.2` and `ghcr.io/sigstore/cosign/cosign:v3.1.4`, on a
+raw file and a deploy token with `read` and `attach`: the first run attached an SBOM and a scan,
+both `verified` by the trusted key, the tool and its version read from the predicates; the second
+run attached nothing; `?without=sbom&without=scan` was empty after it; and the same token's
+`PUT` of a file was `403`. What it leaves to you:
+
+- **A fresh scan.** `?without=scan` lists the versions without any report. A version scanned with
+  an older vulnerability database is not scanned again; a job that wants that compares the
+  report's `database` (the attachments list) with its own and scans again, one more report.
+- **The SBOM a report names.** `cosign attest` sets no manifest annotation, so its report has no
+  `input` and keeps no SBOM from a delete (§6). A job that pushes its report with
+  `oras attach --annotation lajstrom.attachment.input=<the SBOM's digest>` does keep it, but such a
+  report is `unsigned`.
+
 ## Not there yet
 
 - **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
@@ -188,5 +235,4 @@ it keeps the SBOMs its kept reports name. Nothing in Lajstrom prunes reports by 
   scan; a scan of an older vulnerability database still counts as one.
 - **Pruning old reports**: a job of yours, through the same `DELETE`; `lajstrom admin retention`
   deletes versions only.
-- **A reference scan job** under `deploy/jobs/scan/` (option F).
 - **Refusing to serve a version without a verified attachment**: #101.
