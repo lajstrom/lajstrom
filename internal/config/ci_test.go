@@ -181,3 +181,47 @@ func TestCheckCIPolicy(t *testing.T) {
 		t.Errorf("an unknown issuer: %v", errs)
 	}
 }
+
+// TestCIAPIWrite: auth.ci.apiWriteRepos are masks, and a mask of a grant is within one of them
+// when every repo it matches, one of them matches; auth.ci.apiWriteApproval is second-admin by
+// default, or none (docs/spec/rbac.md §11).
+func TestCIAPIWrite(t *testing.T) {
+	c, err := Load(writeConfig(t, minimal+`auth:
+  ci:
+    apiWriteRepos: ["pypi/*", "*/scratch", oci/app]
+`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := c.Auth.CI
+	if ci.APIWriteApproval != CIApprovalSecondAdmin {
+		t.Errorf("apiWriteApproval = %q, want the default %q", ci.APIWriteApproval, CIApprovalSecondAdmin)
+	}
+	for mask, want := range map[string]bool{"pypi/app": true, "pypi/*": true, "npm/scratch": true, "*/scratch": true,
+		"oci/app": true, "oci/*": false, "*/*": false, "npm/app": false, "*/app": false, "pypi": false} {
+		if got := ci.WriteReposAllow(mask); got != want {
+			t.Errorf("WriteReposAllow(%q) = %v, want %v", mask, got, want)
+		}
+	}
+	if (CI{}).WriteReposAllow("pypi/app") {
+		t.Error("no apiWriteRepos allows a mask")
+	}
+	c, err = Load(writeConfig(t, minimal+`auth:
+  ci:
+    apiWriteApproval: none
+`), nil)
+	if err != nil || c.Auth.CI.APIWriteApproval != CIApprovalNone {
+		t.Errorf("apiWriteApproval none: %v, %v", c, err)
+	}
+	_, err = Load(writeConfig(t, minimal+`auth:
+  ci:
+    apiWriteRepos: [pypi, "pypi/a/b"]
+    apiWriteApproval: anyone
+`), nil)
+	for _, w := range []string{`auth.ci.apiWriteRepos[0]: "pypi" is not <format>/<repo>`, `auth.ci.apiWriteRepos[1]`,
+		`auth.ci.apiWriteApproval: "anyone" is not second-admin or none`} {
+		if err == nil || !strings.Contains(err.Error(), w) {
+			t.Errorf("Load = %v\nwant %q", err, w)
+		}
+	}
+}

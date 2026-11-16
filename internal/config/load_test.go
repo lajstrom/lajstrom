@@ -66,7 +66,7 @@ func TestLoadDefaults(t *testing.T) {
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour},
 					ServiceAccounts: ServiceAccounts{MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"},
 					Login:           Login{TokenLifetime: 12 * time.Hour},
-					CI:              CI{TokenLifetime: 15 * time.Minute}},
+					CI:              CI{TokenLifetime: 15 * time.Minute, APIWriteApproval: "second-admin"}},
 				Keys:        Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 				Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: 1}},
 				Webhooks:    Webhooks{Timeout: 10 * time.Second, MaxAttempts: 8, Retention: 168 * time.Hour, Workers: 4},

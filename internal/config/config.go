@@ -834,7 +834,7 @@ func Default() *Config {
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
 			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},
 			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime},
-			CI:              CI{TokenLifetime: DefaultCITokenLifetime}},
+			CI:              CI{TokenLifetime: DefaultCITokenLifetime, APIWriteApproval: CIApprovalSecondAdmin}},
 		Keys:        Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 		Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: DefaultSignedCertificateTimestamps}},
 		Webhooks: Webhooks{Timeout: DefaultWebhookTimeout, MaxAttempts: DefaultWebhookMaxAttempts, Retention: DefaultWebhookRetention,

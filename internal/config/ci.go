@@ -24,7 +24,25 @@ type CI struct {
 	// Policies are the trust policies of the configuration; a token is exchanged when one or
 	// more policies of its issuer, of the configuration or of the API, match it.
 	Policies []CIPolicy `yaml:"policies"`
+	// APIWriteRepos are the repo masks within which a policy made through the API may grant
+	// writer or maintainer (docs/spec/rbac.md §11): the mask of each such grant must be within one
+	// of them (MaskWithin). Empty, the default: a policy of the API grants reader only, and a
+	// policy that writes is declared in Policies.
+	APIWriteRepos []string `yaml:"apiWriteRepos"`
+	// APIWriteApproval is who approves a policy of the API that grants writer or maintainer
+	// before it counts, beside the admin who made it: CIApprovalSecondAdmin, the default, or
+	// CIApprovalNone.
+	APIWriteApproval string `yaml:"apiWriteApproval"`
 }
+
+// The values of auth.ci.apiWriteApproval.
+const (
+	// CIApprovalSecondAdmin: a policy of the API that writes waits, pending, until an admin other
+	// than the one who made it, created, changed or renewed it, approves it.
+	CIApprovalSecondAdmin = "second-admin"
+	// CIApprovalNone: it counts once made, for an install with one admin.
+	CIApprovalNone = "none"
+)
 
 // Bounds of auth.ci.tokenLifetime.
 const (
@@ -197,10 +215,19 @@ var ciRoles = []string{"reader", "writer", "maintainer"}
 func CIWrites(role string) bool { return role == "writer" || role == "maintainer" }
 
 // validate checks auth.ci (docs/spec/rbac.md §11): the lifetime, the issuers
-// (validateIssuers), and each policy's unique name, its issuer, and validatePolicy.
+// (validateIssuers), each policy's unique name, its issuer, and validatePolicy, and the bounds
+// of the policies of the API that write.
 func (c CI) validate(p *problems, s Server) {
 	if c.TokenLifetime < MinCITokenLifetime || c.TokenLifetime > MaxCITokenLifetime {
 		p.add("auth.ci.tokenLifetime", "must be from 1m to 20m, the lifetime of a bearer of /v2")
+	}
+	for i, m := range c.APIWriteRepos {
+		if err := checkMask(m); err != nil {
+			p.add(fmt.Sprintf("auth.ci.apiWriteRepos[%d]", i), "%s", err)
+		}
+	}
+	if c.APIWriteApproval != CIApprovalSecondAdmin && c.APIWriteApproval != CIApprovalNone {
+		p.add("auth.ci.apiWriteApproval", "%q is not %s or %s", c.APIWriteApproval, CIApprovalSecondAdmin, CIApprovalNone)
 	}
 	platforms := c.validateIssuers(p, s)
 	names := map[string]bool{}
@@ -252,6 +279,24 @@ func (c CI) validateIssuers(p *problems, s Server) map[string]string {
 		}
 	}
 	return platforms
+}
+
+// WriteReposAllow reports whether a policy of the API may grant writer or maintainer on mask:
+// whether mask is within a mask of APIWriteRepos.
+func (c CI) WriteReposAllow(mask string) bool {
+	return slices.ContainsFunc(c.APIWriteRepos, func(outer string) bool { return MaskWithin(mask, outer) })
+}
+
+// MaskWithin reports whether every repo the mask inner matches, the mask outer matches too, each
+// <format>/<repo> with * for a whole segment: segment by segment, outer's is * or inner's. A mask
+// that does not parse is within nothing.
+func MaskWithin(inner, outer string) bool {
+	if checkMask(inner) != nil || checkMask(outer) != nil {
+		return false
+	}
+	f, r, _ := strings.Cut(inner, "/")
+	of, or, _ := strings.Cut(outer, "/")
+	return (of == "*" || of == f) && (or == "*" || or == r)
 }
 
 // CheckCIPolicy checks p, a policy made through the API, by the rules of a policy of
