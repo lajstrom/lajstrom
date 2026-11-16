@@ -521,7 +521,7 @@ blob. All are optional and unsigned: Lajstrom copies them into the index as they
 | `lajstrom.attachment.tool` | the producer: `trivy`, `syft`, `grype` |
 | `lajstrom.attachment.toolVersion` | its version: `0.60.0` |
 | `lajstrom.attachment.database` | the snapshot of the vulnerability database a scan used; absent on an SBOM |
-| `lajstrom.attachment.input` | the digest of the SBOM a scan was computed from, `<algorithm>:<hex>` |
+| `lajstrom.attachment.input` | the digest of the SBOM a scan was computed from, `<algorithm>:<hex>`: its referrer manifest's, or its layer's, the blob the scanner read; either keeps the SBOM from a delete (index-schema.md, Attachments) |
 
 They mirror the identity of a result (#89, decision 3): a scan is (tool, tool version,
 database, artifact, input), an SBOM (tool, tool version, artifact), the artifact being the

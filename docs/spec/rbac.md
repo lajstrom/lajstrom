@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
-| deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read` and/or `write`; expiry optional | yes |
+| deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
 | Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>`; a service-account token of a configured cluster, on `/v2/token` only (§9) | #1019 |
@@ -84,8 +84,15 @@ mask, the webhooks of any mask) and `audit`.
 | --- | --- |
 | `read` | GET/HEAD on the frontend; `pull` scope on `/v2`; list in `/api/v1/repos` |
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
+| `attach` | attach to a version: the `PUT` of a referrer on `/v2` (manifest-profile.md §6: a signature, an SBOM, a scan report, provenance, a verdict, any manifest with a `subject`) and the blob uploads it needs; the `push` scope on `/v2` for a principal without `write`, which the token carries as `attach` (§4) (#89) |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
 | `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)) |
+
+`write` implies `attach`: a role, a binding, a personal access token's scopes or a deploy
+token's scopes that have `write` have `attach` too, so a token made before `attach` existed keeps
+attaching (decided on #89, 2026-11-16). `attach` alone pushes no version: a manifest that is no
+referrer needs `write`. Attachments are written through `/v2` only; the management API lists them
+(`read`) and has no route that writes one (#89, option G). Deleting an attachment is `delete`.
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
@@ -98,12 +105,15 @@ package's journal and deletes nothing, and the version's files stay served.
 | Role | Actions |
 | --- | --- |
 | `reader` | read |
+| `attacher` | read, attach |
 | `writer` | read, write |
 | `maintainer` | read, write, delete, manage |
 | `admin` | everything on every repo plus `system` and `audit` (system role; the mask is ignored) |
 
 A `maintainer` binding on `*/*` has every action on every repo, and neither `system` nor
-`audit`: those need the `admin` role.
+`audit`: those need the `admin` role. `writer`, `maintainer` and `admin` attach through `write`;
+`attacher` is the role of a scanner or a signing job that reads a repo and attaches to its
+versions, and publishes nothing (#89).
 
 A **binding** is `(principal, role, repo_mask)`. Masks: exact `apt/ubuntu-internal`, format-wide
 `apt/*`, name-across-formats `*/payments`, everything `*/*`. Wildcards only as a whole segment.
@@ -119,7 +129,7 @@ A binding is refused with `400`, naming the field, when:
   `token:<id>` gets its repo, or the repos of its mask, and its scopes and nothing else, so
   neither has bindings;
 - its principal is a `cert:` or `k8s:` principal or pattern (§9) and its role is `admin`;
-- its role is not one of the four;
+- its role is not one of the five;
 - its mask is not two segments `<format>/<repo>`, each `*` or a name: a format of this build,
   and a repo name by manifest-profile.md §4.1. The repo need not exist: a binding may come
   before its repo, and outlives it;
@@ -138,7 +148,7 @@ credential, not on the bindings, and are checked first: a PAT's scopes narrow an
 1. `admin` binding → allow.
 2. Deploy token → allow iff the repo is the token's repo, or its mask matches the repo as a
    binding's mask matches (whole segments; never `system` nor `audit`), and `action` is in its
-   scopes (`read`/`write`); never `delete`/`manage`.
+   scopes (`read`/`write`/`attach`, `write` holding `attach`); never `delete`/`manage`.
 3. PAT → compute as for its user, then intersect with the PAT's scopes if set.
 4. User → any binding of the user, or of a group the user is in now (§8), whose mask matches
    the repo and whose role includes the action. A group is not a principal of a request: it
@@ -168,8 +178,10 @@ A denial on `<format>/<repo>` must not reveal whether the repo exists:
   exist alike, so that clients send credentials;
 - an authenticated principal with no access to the repo at all (not even `read`) gets `404`,
   the same answer as for a repo that does not exist;
-- `403` is only for a principal that can read the repo but lacks the action (`write`, `delete`,
-  `manage`): it already knows that the repo exists. A deploy token on its own repo gets `403`
+- `403` is only for a principal that can read the repo but lacks the action (`write`, `attach`,
+  `delete`, `manage`): it already knows that the repo exists. A principal with `attach` and
+  without `write` gets `403 DENIED` for a manifest `PUT` of `/v2` that is no referrer, once the
+  body is parsed (http-routing.md §2). A deploy token on its own repo gets `403`
   for an action outside its scopes, `read` included for a `write`-only one: it is bound to the
   repo and knows it. A deploy token over a mask is bound so to every repo its mask matches and
   gets the same `403` on each; its scopes, `read` or `write`, let it find which of them exist
@@ -233,7 +245,10 @@ MVP.
   The service is the server's own: a `service` that names another is ignored.
 - For each requested scope the facade keeps the actions the principal is allowed on
   `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`); on the path of an `oci`
-  group, `pull` at most, since nothing is pushed or deleted through it (§7). A scope with no allowed
+  group, `pull` at most, since nothing is pushed or deleted through it (§7). A `push` that the
+  principal may not have as `write` and may as `attach` is granted as the action `attach`, which
+  no client asks for: the access claim names it, and the facade takes with it the blob uploads
+  and the `PUT` of a referrer, and nothing else that `push` allows (#89). A scope with no allowed
   action stays in the token with `actions: []`, and so does the scope of a repo that does not
   exist: the client can read the token, and it names every repository asked for without telling
   which exist (§3). Asking for what one may not have is not an error of the token endpoint, as

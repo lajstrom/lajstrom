@@ -988,8 +988,9 @@ type Reader interface {
     GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
     ListVersions(ctx context.Context, packageID int64) ([]Version, error)
     // ListVersionPage: the rows of the limit versions of a package after `after` (nil: from the
-    // newest), newest first by VersionKey, every variant of each, a version's rows by variant
-    ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int) ([]Version, error)
+    // newest), newest first by VersionKey, every variant of each, a version's rows by variant;
+    // with without (attachment kinds, #89), the variants that have no attachment of any of them
+    ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, without ...string) ([]Version, error)
     // ListUnseenVersions: the versions of a repo whose IndexedAt is before seenBefore, with
     // their packages (the sweep of reindex)
     ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
@@ -1673,7 +1674,8 @@ type Referrer struct {
 // compare-and-delete of a version (format.Condition), checked under the locks: a failed one
 // deletes nothing and writes no audit row. Errors wrap provider.ErrUnsupported,
 // index.ErrNotFound, index.ErrConflict (other tags name the manifest; the error's OtherTags()
-// []string lists them, #284), provider.ErrConflict (the backend refused this one delete),
+// []string lists them, #284; or an attachment of the same version names the referrer as its
+// input, which the error's ReferencedBy() []digest.Digest lists, #89), provider.ErrConflict (the backend refused this one delete),
 // provider.ErrUnavailable (the registry did not take a referrer's subject index again, and the
 // referrer stays), or a *format.RefusedError (a condition failed).
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
@@ -1842,7 +1844,7 @@ var ErrInvalidPrincipal error
 func WithPrincipal(ctx context.Context, p Principal) context.Context
 func PrincipalFrom(ctx context.Context) Principal // Anonymous when nothing was stored
 
-type Action string                          // ActionRead, ActionWrite, ActionDelete, ActionManage
+type Action string                          // ActionRead, ActionWrite, ActionAttach, ActionDelete, ActionManage
 type Authorizer interface {
     Allowed(ctx context.Context, p Principal, a Action, format, repo string) (bool, error)
 }
