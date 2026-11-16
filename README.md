@@ -20,7 +20,7 @@ Every artifact is stored as an OCI artifact in the registry you already run: ECR
 GHCR, docker distribution. Lajstrom owns no bytes, only the index, and the index can always be
 rebuilt from the registry.
 
-*Lajstrom* is Hungarian for "register, inventory".
+*Lajstrom* is Hungarian for "register, inventory", pronounced /ˈlɒjʃtrom/, roughly "LOY-shtrom".
 
 Clients keep their own protocol: `pip`, `apt-get`, `mvn`, `npm` and `oras` talk to Lajstrom as
 to their usual repository, with no plugin. Each upload is checked, written to the registry and
