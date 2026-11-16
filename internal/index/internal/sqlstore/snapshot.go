@@ -259,8 +259,7 @@ func (c *conn) importRows(ctx context.Context, cp *index.ControlPlane) error {
 
 // rowsOf returns the rows of cp in the order importRows inserts them. A column that cp's schema
 // may lack takes its default: a repo's kind hosted, a user's kind local, a token's repo_mask and
-// dpop_jkt NULL,
-// an audit row's state ok.
+// dpop_jkt NULL, an audit row's state ok, the revision of a repo, a user and a webhook 1.
 func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	var rows []insertRow
 	add := func(what, table, cols string, args ...any) {
@@ -269,7 +268,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, r := range cp.Repos {
 		add(fmt.Sprintf("repos %s/%s", r.Format, r.Name), "repos", repoCols, r.ID, r.Format, r.Name, r.Registry, r.Prefix,
 			cmp.Or(r.Kind, index.KindHosted), r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream), rawArg(r.Group),
-			c.d.EncodeTime(r.CreatedAt), c.d.EncodeTime(cmp.Or(r.UpdatedAt, r.CreatedAt)))
+			c.d.EncodeTime(r.CreatedAt), c.d.EncodeTime(cmp.Or(r.UpdatedAt, r.CreatedAt)), cmp.Or(r.Revision, 1))
 	}
 	for _, g := range cp.GroupMembers {
 		add(fmt.Sprintf("group_members %d of %d", g.MemberID, g.GroupID), "group_members", "group_id, member_id, position",
@@ -277,7 +276,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	}
 	for _, u := range cp.Users {
 		add("users "+u.Name, "users", userCols, u.ID, u.UID, u.Name, textArg(u.PasswordHash), cmp.Or(u.Kind, "local"), u.Disabled,
-			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner))
+			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner), cmp.Or(u.Revision, 1))
 	}
 	for _, i := range cp.Identities {
 		add(fmt.Sprintf("identities id %d", i.ID), "identities", identityCols, i.ID, i.UserID, i.Issuer, i.Subject,
@@ -301,7 +300,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, h := range cp.Webhooks {
 		add(fmt.Sprintf("webhooks id %d", h.ID), "webhooks", webhookCols, h.ID, h.UID, h.Mask, h.URL, eventsArg(h.Events),
 			blobArg(h.SecretEnc), h.Active, h.Description, h.CreatedBy, c.d.EncodeTime(h.CreatedAt),
-			c.d.EncodeTime(cmp.Or(h.UpdatedAt, h.CreatedAt)))
+			c.d.EncodeTime(cmp.Or(h.UpdatedAt, h.CreatedAt)), cmp.Or(h.Revision, 1))
 	}
 	for _, r := range cp.PolicyRules {
 		add(fmt.Sprintf("policy_rules id %d", r.ID), "policy_rules", policyRuleCols, r.ID, r.RepoMask, r.Name, r.Version, r.Variant,

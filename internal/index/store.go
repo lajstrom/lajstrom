@@ -306,21 +306,22 @@ type Writer interface {
 
 	// Control plane.
 
-	// CreateRepo inserts r; (format, name) must be new. It increments AuthVersion, as
-	// UpdateRepo, DeleteRepo, CreateBinding and DeleteBinding do, in the same transaction.
+	// CreateRepo inserts r, at Revision 1; (format, name) must be new. It increments
+	// AuthVersion, as UpdateRepo, DeleteRepo, CreateBinding and DeleteBinding do, in the same
+	// transaction.
 	CreateRepo(ctx context.Context, r *Repo) error
-	// UpdateRepo stores r by r.ID and sets UpdatedAt. Format, Name and Kind cannot change: they
-	// are filled from the row.
+	// UpdateRepo stores r by r.ID, sets UpdatedAt and moves Revision by one. Format, Name and
+	// Kind cannot change: they are filled from the row, and so is Revision.
 	UpdateRepo(ctx context.Context, r *Repo) error
 	// DeleteRepo removes the repo and every row that refers to it, proxy_meta and a group's
 	// group_members rows included. A repo that is a member of a group is ErrConflict, and
 	// nothing is deleted.
 	DeleteRepo(ctx context.Context, id int64) error
 	// ConvertRepo makes the proxy repo id a hosted one (docs/spec/proxy-and-group.md §2.6):
-	// Kind KindHosted, Upstream NULL, UpdatedAt now, and AuthVersion incremented. It is the one
-	// change of a kind; UpdateRepo makes none. A repo of another kind, or with a fetch claim that
-	// beat at or after staleBefore (a fetch running), is ErrConflict, and nothing changes; no repo
-	// is ErrNotFound.
+	// Kind KindHosted, Upstream NULL, UpdatedAt now, Revision moved by one, and AuthVersion
+	// incremented. It is the one change of a kind; UpdateRepo makes none. A repo of another
+	// kind, or with a fetch claim that beat at or after staleBefore (a fetch running), is
+	// ErrConflict, and nothing changes; no repo is ErrNotFound.
 	ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error
 	// SetGroupMembers makes the group_members rows of the group groupID exactly memberIDs, in
 	// that order, and invalidates the group's cached documents (InvalidateIndexCache of every
@@ -328,10 +329,12 @@ type Writer interface {
 	// writes the group's repos row in the same transaction, so that AuthVersion moves with it.
 	SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
 
-	// CreateUser inserts u; the name must be new. UID is made (NewUID) when it is empty.
+	// CreateUser inserts u, at Revision 1; the name must be new. UID is made (NewUID) when it
+	// is empty.
 	CreateUser(ctx context.Context, u *User) error
 	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt, DeletedName and Owner of
-	// u by u.ID and fills UID and CreatedAt from the row. A name another user has is ErrConflict.
+	// u by u.ID, moves Revision by one, and fills UID, CreatedAt and Revision from the row. A
+	// name another user has is ErrConflict.
 	UpdateUser(ctx context.Context, u *User) error
 
 	// CreateToken inserts t; the hash must be new.
@@ -407,10 +410,11 @@ type Writer interface {
 	// Webhooks (docs/spec/webhooks.md, docs/spec/index-schema.md, Webhooks): control plane.
 
 	// CreateWebhook inserts h and fills ID, UID (NewUID) when it is empty, CreatedAt when it is
-	// zero, and UpdatedAt.
+	// zero, UpdatedAt, and Revision, 1.
 	CreateWebhook(ctx context.Context, h *Webhook) error
 	// UpdateWebhook stores URL, Events, SecretEnc, Active and Description of h by h.ID, sets
-	// UpdatedAt, and fills UID, Mask, CreatedBy and CreatedAt from the row: they never change.
+	// UpdatedAt, moves Revision by one, and fills UID, Mask, CreatedBy and CreatedAt from the
+	// row, which never change, and Revision.
 	UpdateWebhook(ctx context.Context, h *Webhook) error
 	// DeleteWebhook removes the webhook and its deliveries.
 	DeleteWebhook(ctx context.Context, id int64) error

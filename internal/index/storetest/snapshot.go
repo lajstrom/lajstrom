@@ -38,6 +38,7 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 		Policy: json.RawMessage(`{"maxFileSize": 1024}`), Upstream: json.RawMessage(`{"name": "npmjs", "metadataTTL": "5m"}`),
 		CreatedAt: at(1)}
 	must(t, s.CreateRepo(ctx, &proxy))
+	must(t, s.UpdateRepo(ctx, &proxy)) // revision 2, which the snapshot keeps
 	hosted := newRepo(t, s, "npm", "internal")
 	group := index.Repo{Format: "npm", Name: "all", Prefix: "npm/all", Kind: index.KindGroup, Group: json.RawMessage(`{"merge": []}`)}
 	must(t, s.CreateRepo(ctx, &group))
@@ -77,6 +78,7 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	hook := index.Webhook{Mask: "npm/*", URL: "https://ci.example.com/hook", Events: []string{"version.published", "version.deleted"},
 		SecretEnc: []byte("sealed secret"), Active: true, Description: "CI", CreatedBy: "token:5", CreatedAt: at(5)}
 	must(t, s.CreateWebhook(ctx, &hook))
+	must(t, s.UpdateWebhook(ctx, &hook))
 	off := index.Webhook{Mask: "*/*", URL: "https://audit.example.com/hook", SecretEnc: []byte("sealed other"),
 		CreatedBy: "user:" + alice.UID, CreatedAt: at(6)}
 	must(t, s.CreateWebhook(ctx, &off))
