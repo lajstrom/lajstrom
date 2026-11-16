@@ -360,7 +360,7 @@ Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose ro
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
-| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `summary` text null (the manifest's summary, manifest-profile.md §2, read from `metadata`, so NULL when it is; written by ingest, and by reindex whenever it reads the manifest: a digest it does not know, a degraded row, every manifest with `verify`. Migration 0029 adds it NULL: a version written before, or by the release before during the update, has none until a reindex with `verify` reads it again), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2), `oci_repo` text null (the package path, as `name_oci`, of the OCI repository that holds the manifest when it is not the package's `name_oci`: a split, [below](#invariants-and-rules); NULL otherwise. Written by reindex only: ingest writes to `name_oci`, and NULL) | unique `(package_id, version, variant)`; unique `(package_id, tag)`; index `versions_digest` on `(digest)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
+| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `summary` text null (the manifest's summary, manifest-profile.md §2, read from `metadata`: `''` when the manifest has none, NULL when `metadata` is; written by ingest, and by reindex whenever it reads the manifest: a digest it does not know, a degraded row, every manifest with `verify`. Migration 0029 adds it NULL: a version written before, or by the release before during the update, has none until `serve` fills it from `metadata` at its next start, [below](#the-summaries-of-the-rows-before-0029), or, when `metadata` is NULL, until a reindex with `verify` reads it again), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2), `oci_repo` text null (the package path, as `name_oci`, of the OCI repository that holds the manifest when it is not the package's `name_oci`: a split, [below](#invariants-and-rules); NULL otherwise. Written by reindex only: ingest writes to `name_oci`, and NULL) | unique `(package_id, version, variant)`; unique `(package_id, tag)`; index `versions_digest` on `(digest)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | indexes `(version_id, name)` and `files_name` on `(name)`: apt pool, rpm `Packages/` and maven lookups go by `(repo, name)`; `files_digest` on `(digest)`: the search by a digest's prefix (#956) |
 | `index_cache` | `id`, `repo_id`, `scope` text (apt the suite, `jammy`; pypi `simple` or `simple/<project>`, and a proxy's page `<project>`, its key; maven `<groupId>/<artifactId>`, and `<groupId>/<artifactId>/<version>` for the document of a SNAPSHOT version, `com.example/lib-core/1.0-SNAPSHOT`, and the key `<groupId>:<artifactId>` for the documents of a proxy repo and those a group reads of its hosted member, the kinds `maven-metadata` and `maven-metadata:<base>-SNAPSHOT`; npm the package name; raw the directory prefix; rpm `repodata`; terraform the package path of a module, `vpc/aws`), `kind` text (apt the path below `dists/<suite>/`: `Release`, `InRelease`, `Release.gpg`, `main/binary-amd64/Packages.gz`, `main/source/Sources.xz`, `main/Contents-amd64.gz`; pypi `simple.html`, `simple.json`; maven `maven-metadata`, `maven-metadata.sha1`; npm `packument`, `packument-abbreviated`; raw `listing`; terraform `versions`; rpm `repomd.xml`, which holds the checksum-named `primary`, `filelists` and `other` documents with it), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | unique `(repo_id, scope, kind)`; invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`, rpm `repomd.xml.asc`) has the `rendered_at` of the document it signs and its own `signed_at` |
 | `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0017_index_cache_generations.sql` (#477) |
@@ -420,11 +420,15 @@ The package list with its parameters, one package and the search (http-routing.m
   of the 26 letters on CockroachDB, whose `lower` folds others too; attrs read `versions.attrs`
   by key, `json_extract` on SQLite and `->>` on Postgres and CockroachDB. The page keeps the rows
   after the key as a row comparison, `(value, name) > (?, ?)`, or `<` descending.
-- **`ListPackageFacts(packageIDs)`** returns for each package the counts of its versions and
-  manifests, the size of its file layers, the publish time of its newest manifest, its latest
-  version (the first by `VersionKey`) with that version's variants, and its head row (the latest
-  version's first variant in byte order) without `metadata`: three statements over the rows of
-  the packages, the latest version picked with `ROW_NUMBER() OVER (PARTITION BY package_id …)`.
+- **`ListPackageFacts(packageIDs, latest)`** returns for each package the counts of its versions
+  and manifests, the size of its file layers, the publish time of its newest manifest, its last
+  published version (the first by `VersionKey`), its latest version, which the caller's `latest`
+  picks among its versions with the package's journal state (the format's order lives in the
+  plugin, http-routing.md §4), with that version's variants, the dist-tags of its journal state
+  that name one of its versions, and its head row (the first variant in byte order of the latest
+  version, else of the last published one) without `metadata`: five statements over the rows of
+  the packages, the counts, the sizes, the distinct versions with their first publish times, the
+  journal state, and the rows of the versions picked.
 - **`ListAttrValues(repoID, key)`** returns the values of a key in the repo's `versions.attrs`,
   each with the number of packages that have it, in byte order: the store sorts them, since `->>`
   answers text in the database's collation on Postgres.
@@ -440,6 +444,20 @@ proportion to the repo, or to the repos searched, and no index serves them; the 
 and the page by name do not. On a repo of 10 000 manifests in 1 000 packages, a page of 100
 packages with their facts, a facet, and a search over two such repos each take at most 20 ms on
 SQLite and on Postgres (`storetest.Bench`, `BenchmarkPackageList`).
+
+### The summaries of the rows before 0029
+
+Migration 0029 adds `versions.summary` NULL. `serve` fills it in the background when it starts,
+on every replica, from the `metadata` the rows keep (#954): `ListVersionsWithoutSummary` reads
+the rows whose `summary` is NULL and whose `metadata` is not, 25 at a time in `id` order after
+the last one read; the summary of each is computed as ingest computes it (manifest-profile.md
+§2), and `SetVersionSummaries` writes the batch in one transaction, `''` for a manifest without
+one, to the rows whose `summary` is still NULL. It is the same statements on the three engines.
+Two replicas that fill at once write the same values; a row that ingest or reindex wrote
+meanwhile keeps theirs; a row deleted meanwhile is skipped. Its log says how many rows it read
+and wrote, and how many have a summary; a failure is logged and stops it until the next start.
+A row whose `metadata` is NULL (omitted for size, or degraded) keeps NULL until a reindex with
+`verify` reads its manifest again.
 
 ### The generation of a repo's documents
 
