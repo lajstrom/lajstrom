@@ -25,6 +25,9 @@ import (
 //     lajstrom.maven.* annotation; lajstrom.name is groupId:artifactId; the coordinates are well
 //     formed and the version a release or a SNAPSHOT build (whichever the repo's policy takes:
 //     Admit asks that, on a publish only);
+//   - but a file that a proxy repo fetched (docs/spec/manifest-profile.md §4.2): lajstrom.variant
+//     with lajstrom.origin.url, which only the fetcher writes, no .packaging, and one file layer,
+//     whose name gives the variant (Variant), the POM or another, whose bytes are not read;
 //   - every file layer is titled <artifactId>-<version>[-<classifier>].<extension>
 //     (ParseFilename), each title once, digested with sha256; the POM, <artifactId>-<version>.pom,
 //     is the one layer typed pom and has no lajstrom.* annotations; every other layer is typed
@@ -50,7 +53,7 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 	if err != nil {
 		return nil, err
 	}
-	files, pom, err := checkLayers(c, parsed.Files)
+	files, pom, err := checkLayers(c, parsed.Files, a.Variant)
 	if err != nil {
 		return nil, err
 	}
@@ -67,32 +70,24 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 	if err := md.check(c, packaging, parsed.Files, files); err != nil {
 		return nil, err
 	}
-	if err := md.checkPOM(ctx, fetch, parsed.Files[pom], packaging); err != nil {
-		return nil, err
+	if a.Variant == "" {
+		if err := md.checkPOM(ctx, fetch, parsed.Files[pom], packaging); err != nil {
+			return nil, err
+		}
 	}
 	entryFiles := make([]format.FileEntry, len(parsed.Files))
 	for i, l := range parsed.Files {
 		entryFiles[i] = format.FileEntry{Name: l.Title, MediaType: l.MediaType, Digest: l.Digest, Size: l.Size, Attrs: l.Annotations}
 	}
-	return &format.Entry{Name: a.Name, Version: a.Version, Attrs: a.Attrs, Files: entryFiles, Metadata: raw}, nil
+	return &format.Entry{Name: a.Name, Version: a.Version, Variant: a.Variant, Attrs: a.Attrs, Files: entryFiles, Metadata: raw}, nil
 }
 
 // checkAnnotations checks the manifest annotations of a maven manifest and returns the
-// coordinates and the packaging they name.
+// coordinates and the packaging they name, "" for a file a proxy repo fetched.
 func checkAnnotations(a profile.Annotations) (Coordinates, string, error) {
-	if a.Variant != "" {
-		return Coordinates{}, "", fmt.Errorf("%w: a maven manifest has no %s, this one %q", format.ErrInvalid, profile.AnnotationVariant, a.Variant)
-	}
-	keys := []string{profile.AnnotationMavenGroupID, profile.AnnotationMavenArtifactID, profile.AnnotationMavenPackaging}
-	for k := range a.Attrs {
-		if !slices.Contains(keys, k) {
-			return Coordinates{}, "", fmt.Errorf("%w: %s is not an annotation of a maven manifest", format.ErrInvalid, k)
-		}
-	}
-	for _, k := range keys {
-		if a.Attrs[k] == "" {
-			return Coordinates{}, "", fmt.Errorf("%w: a maven manifest has %s", format.ErrInvalid, k)
-		}
+	fetched := a.Variant != ""
+	if err := checkKeys(a, fetched); err != nil {
+		return Coordinates{}, "", err
 	}
 	c := Coordinates{GroupID: a.Attrs[profile.AnnotationMavenGroupID], ArtifactID: a.Attrs[profile.AnnotationMavenArtifactID], Version: a.Version}
 	if err := c.check(); err != nil {
@@ -103,15 +98,43 @@ func checkAnnotations(a profile.Annotations) (Coordinates, string, error) {
 			profile.AnnotationMavenGroupID, profile.AnnotationMavenArtifactID, c.Name())
 	}
 	packaging := a.Attrs[profile.AnnotationMavenPackaging]
-	if !artifactIDPattern.MatchString(packaging) {
+	if !fetched && !artifactIDPattern.MatchString(packaging) {
 		return Coordinates{}, "", fmt.Errorf("%w: %s %q is not letters, digits, \"_\", \"-\" and \".\"", format.ErrInvalid, profile.AnnotationMavenPackaging, packaging)
 	}
 	return c, packaging, nil
 }
 
+// checkKeys checks the lajstrom.maven.* annotations of a maven manifest, and the origin of a
+// file a proxy repo fetched: groupId and artifactId, and packaging but on a fetched file, which
+// has lajstrom.origin.url instead; lajstrom.origin.* keys are the fetcher's, and any other key is
+// refused.
+func checkKeys(a profile.Annotations, fetched bool) error {
+	if fetched && a.Attrs[profile.AnnotationOriginURL] == "" {
+		return fmt.Errorf("%w: a maven manifest has %s %q, which only a file a proxy repo fetched has, without %s",
+			format.ErrInvalid, profile.AnnotationVariant, a.Variant, profile.AnnotationOriginURL)
+	}
+	keys := []string{profile.AnnotationMavenGroupID, profile.AnnotationMavenArtifactID, profile.AnnotationMavenPackaging}
+	for k := range a.Attrs {
+		if !slices.Contains(keys, k) && !strings.HasPrefix(k, profile.AnnotationOriginPrefix) {
+			return fmt.Errorf("%w: %s is not an annotation of a maven manifest", format.ErrInvalid, k)
+		}
+	}
+	for _, k := range keys {
+		optional := fetched && k == profile.AnnotationMavenPackaging
+		switch {
+		case optional && a.Attrs[k] != "":
+			return fmt.Errorf("%w: a file a proxy repo fetched has no %s", format.ErrInvalid, k)
+		case !optional && a.Attrs[k] == "":
+			return fmt.Errorf("%w: a maven manifest has %s", format.ErrInvalid, k)
+		}
+	}
+	return nil
+}
+
 // checkLayers checks the file layers of the version c and returns what each title says and the
-// index of the POM.
-func checkLayers(c Coordinates, layers []profile.Layer) ([]File, int, error) {
+// index of the POM, -1 for a file a proxy repo fetched that is not the POM: the variant is "",
+// or the Variant of the one layer.
+func checkLayers(c Coordinates, layers []profile.Layer, variant string) ([]File, int, error) {
 	files := make([]File, len(layers))
 	seen := map[string]bool{}
 	pom := -1
@@ -135,7 +158,11 @@ func checkLayers(c Coordinates, layers []profile.Layer) ([]File, int, error) {
 		}
 		files[i] = f
 	}
-	if pom < 0 {
+	switch {
+	case variant != "" && (len(files) != 1 || Variant(files[0]) != variant):
+		return nil, 0, fmt.Errorf("%w: a maven manifest of %s %q has one file layer, of that extension and classifier",
+			format.ErrInvalid, profile.AnnotationVariant, variant)
+	case variant == "" && pom < 0:
 		return nil, 0, fmt.Errorf("%w: a maven manifest has the POM %s as a layer", format.ErrInvalid, File{Coordinates: c, Extension: "pom"}.Filename())
 	}
 	return files, pom, nil
