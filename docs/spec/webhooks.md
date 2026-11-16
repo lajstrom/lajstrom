@@ -7,7 +7,7 @@
   [guarantees.md](guarantees.md) INV-43 and INV-44.
 
 A webhook is a URL that Lajstrom sends an HTTP `POST` to when a write it asks for commits: a
-version published or deleted, a repo created or deleted. The request is a CloudEvent, signed
+version published or deleted, a repo created or deleted, a CI trust policy changed. The request is a CloudEvent, signed
 with the webhook's secret, sent from an outbox in the index database by any replica, again
 until the receiver answers `2xx` or the attempts run out. Webhooks are control plane: they and
 their deliveries are rows of the index that reindex neither reads nor rebuilds.
@@ -24,6 +24,12 @@ their deliveries are rows of the index that reindex neither reads nor rebuilds.
 | `policy.rule.deleted` | `dev.lajstrom.policy.rule.deleted` | a policy rule is deleted, `data.action` `policy.rule.delete` |
 | `policy.verdict.created` | `dev.lajstrom.policy.verdict.created` | ingest writes the rows of a verdict that verifies: a referrer pushed through `/v2`, the deny of the management API, a quarantine over (policy.md §2, §4, §7), `data.action` `policy.verdict.create` |
 | `policy.verdict.deleted` | `dev.lajstrom.policy.verdict.deleted` | ingest deletes the rows of a verdict with its referrer, `data.action` `policy.verdict.delete` |
+| `ci.policy.created` | `dev.lajstrom.ci.policy.created` | a CI trust policy is made through the API or `lajstrom admin ci-policy` (rbac.md §11, #937), `data.action` `ci.policy.create` |
+| `ci.policy.updated` | `dev.lajstrom.ci.policy.updated` | a CI trust policy of the API is changed, `data.action` `ci.policy.update` |
+| `ci.policy.renewed` | `dev.lajstrom.ci.policy.renewed` | a CI trust policy of the API that writes is renewed, `data.action` `ci.policy.renew` |
+| `ci.policy.approved` | `dev.lajstrom.ci.policy.approved` | a second admin approves a CI trust policy of the API that writes, or its renewal, `data.action` `ci.policy.approve` |
+| `ci.policy.expired` | `dev.lajstrom.ci.policy.expired` | a replica marks a CI trust policy of the API expired, once on any replica, `data.action` `ci.policy.expire` |
+| `ci.policy.deleted` | `dev.lajstrom.ci.policy.deleted` | a CI trust policy of the API is deleted, `data.action` `ci.policy.delete` |
 | (none) | `dev.lajstrom.webhook.ping` | only by the test of one webhook (http-routing.md §4) |
 
 Each event is the write of an audit row, and is written in that row's transaction (§4). Not
@@ -61,9 +67,9 @@ The document:
 | --- | --- |
 | `specversion` | `1.0` |
 | `id` | a UUID v7, made when the event is written: one per event, the same for every webhook that gets it and on every attempt. A receiver deduplicates on it |
-| `source` | `<server.externalURL>/<format>/<repo>`; for a ping `<server.externalURL>/api/v1/webhooks/<id>`. Without `server.externalURL` (the dev stack), the path alone |
+| `source` | `<server.externalURL>/<format>/<repo>`; for a ping `<server.externalURL>/api/v1/webhooks/<id>`, for a policy rule's and a CI trust policy's that of their routes (§3). Without `server.externalURL` (the dev stack), the path alone |
 | `type` | of §1 |
-| `subject` | the audit row's subject: `<package> <version>[ <variant>]` for a version; absent for a repo and a ping |
+| `subject` | the audit row's subject: `<package> <version>[ <variant>]` for a version, the name of a CI trust policy; absent for a repo and a ping |
 | `time` | the time of the event's write, RFC 3339, UTC |
 | `datacontenttype` | `application/json` |
 | `data` | §3 |
@@ -81,7 +87,7 @@ Every event:
 | Field | Value |
 | --- | --- |
 | `schema` | `1` |
-| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `policy.rule.create`, `policy.rule.delete`, `policy.verdict.create`, `policy.verdict.delete`, `webhook.test` |
+| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `policy.rule.create`, `policy.rule.delete`, `policy.verdict.create`, `policy.verdict.delete`, `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.expire`, `ci.policy.delete`, `webhook.test` |
 | `actor` | `{"principal", "name"}`: the principal of the write as rbac.md §1 writes it (`user:<uid>`, `token:<id>`, `anonymous`), and a user's name at the time of the event (absent for the others) |
 | `audit` | the id of the event's audit row; absent for a ping |
 | `requestId` | the request's id, when the write came from a request |
@@ -109,6 +115,14 @@ version's, `digest` the judged manifest's, and `verdict`: `{"verdict", "reason",
 "scope", "validUntil", "attestation"}`, `attestation` the referrer's digest; on an `oci` repo
 `package` is the path and `version` absent.
 
+A CI trust policy (`ci.policy.*`) adds `policy`: `{"name", "issuer", "claims", "grants", "state",
+"expiresAt", "renewalExpiresAt"}`, as the change left it (as it was, for a delete), `expiresAt`
+null for a policy that reads and `renewalExpiresAt` absent when no renewal waits. Its event goes
+only to the webhooks of the admin, whose mask has a `*`, that cover a mask of its grants, before
+or after the change: a webhook of one repo, whose maintainer may not read the policies (rbac.md
+§2), gets none. Its `source` is `<server.externalURL>/api/v1/ci/policies`, and its `subject` the
+policy's name.
+
 A repo (`repo.created`, `repo.deleted`) adds `repo`, as above; `repo.deleted` also `versions`,
 the number of versions it had, and `force`. A ping adds `webhook`: `{"id", "mask"}`.
 
@@ -121,9 +135,10 @@ needs more than `read` on its repo but `actor`, which the audit log shows to the
 ## 4. Delivery
 
 **The outbox.** An event is written in the transaction that writes its audit row `ok` (a
-publish's and a delete's, rbac.md §5), or that appends it (a repo's): one `webhook_deliveries`
-row per active webhook whose mask matches the repo (rbac.md §3, as a binding's) and whose
-`events` include the type, each with the body of §2. So an event is never lost once its write
+publish's and a delete's, rbac.md §5), or that appends it (a repo's, a rule's, a CI trust
+policy's): one `webhook_deliveries` row per active webhook whose mask matches the repo (rbac.md
+§3, as a binding's), or covers the rule's or the policy's (§3), and whose `events` include the
+type, each with the body of §2. So an event is never lost once its write
 committed, and never sent for a write that rolled back. A transaction whose event no webhook
 matches reads the webhooks and writes nothing more. A webhook created after the commit does not
 get the event; one deleted before its delivery does not either.
