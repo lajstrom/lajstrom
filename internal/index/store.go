@@ -88,6 +88,10 @@ type Reader interface {
 	// checks UsedAt and ExpiresAt.
 	GetBootstrapToken(ctx context.Context) (*BootstrapToken, error)
 
+	// GetConfigState returns the configuration last recorded (docs/spec/rbac.md §5), or an
+	// error wrapping ErrNotFound when none was.
+	GetConfigState(ctx context.Context) (*ConfigState, error)
+
 	// ListBindings returns the bindings of principal (canonical form, docs/spec/rbac.md §1),
 	// or every binding when principal is "".
 	ListBindings(ctx context.Context, principal string) ([]Binding, error)
@@ -364,6 +368,13 @@ type Writer interface {
 	// in between), nothing changes and the error wraps ErrConflict: of replicas that start
 	// together, one token is made. CreatedAt is now when zero.
 	PutBootstrapToken(ctx context.Context, t *BootstrapToken, old string) error
+	// PutConfigState makes c the configuration recorded when the stored one is still the one of
+	// fingerprint old: with old "" it inserts c when there is no row, otherwise it replaces the
+	// row whose fingerprint is old. When the row is another (a replica recorded another
+	// configuration in between), nothing changes and the error wraps ErrConflict, so that of
+	// replicas that start together one records a change. Its caller appends the config.change
+	// row in the same transaction. RecordedAt is now when zero.
+	PutConfigState(ctx context.Context, c *ConfigState, old string) error
 	// UseBootstrapToken sets UsedAt of the bootstrap token to at when its hash is hash, it is
 	// not used and its ExpiresAt is after at; otherwise ErrNotFound. In a transaction it holds
 	// the row until the transaction ends, so that of two exchanges of the token one commits and
