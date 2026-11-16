@@ -34,7 +34,7 @@ import (
 const dsnEnv = "LAJSTROM_TEST_POSTGRES_DSN"
 
 // testDSN returns the DSN of the test database, or skips the test.
-func testDSN(t *testing.T) string {
+func testDSN(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(dsnEnv)
 	if dsn == "" {
@@ -54,7 +54,7 @@ const isolationEnv = "LAJSTROM_TEST_POSTGRES_ISOLATION"
 
 // isolatedDSN creates an empty namespace (newNamespace), drops it when the test ends, and
 // returns dsn in it: every test runs in a namespace of its own.
-func isolatedDSN(t *testing.T, dsn string) string {
+func isolatedDSN(t testing.TB, dsn string) string {
 	t.Helper()
 	return newNamespace(t, dsn).dsn(dsn)
 }
@@ -64,7 +64,7 @@ func isolatedDSN(t *testing.T, dsn string) string {
 type namespace struct{ schema, database string }
 
 // newNamespace creates an empty namespace, drops it when the test ends, and returns it.
-func newNamespace(t *testing.T, dsn string) namespace {
+func newNamespace(t testing.TB, dsn string) namespace {
 	t.Helper()
 	name := "lajstrom_test_" + strings.ToLower(rand.Text())
 	ns, kind, force := namespace{schema: name}, "SCHEMA", " CASCADE"
@@ -118,7 +118,7 @@ func withParam(dsn, key, value string) string {
 }
 
 // openMigrated opens dsn, migrates it and closes it when the test ends.
-func openMigrated(t *testing.T, dsn string) *Store {
+func openMigrated(t testing.TB, dsn string) *Store {
 	t.Helper()
 	s, err := Open(t.Context(), dsn)
 	if err != nil {
@@ -144,6 +144,12 @@ func TestConformance(t *testing.T) {
 
 // TestConcurrentMigrate migrates one empty schema from two stores at once, as two replicas
 // starting together do: the advisory lock lets each migration apply once.
+// BenchmarkPackageList measures the reads of the package list on a repo of 10 000 manifests
+// (storetest.Bench).
+func BenchmarkPackageList(b *testing.B) {
+	storetest.Bench(b, openMigrated(b, isolatedDSN(b, testDSN(b))))
+}
+
 func TestConcurrentMigrate(t *testing.T) {
 	ctx := t.Context()
 	dsn := isolatedDSN(t, testDSN(t))

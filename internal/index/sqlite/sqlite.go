@@ -53,6 +53,8 @@ var dialect = sqlstore.Dialect{
 	IsForeignKey:  isForeignKey,
 	IsUnavailable: isUnavailable,
 	Clock:         "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", // the host's clock, in milliseconds
+	FoldASCII:     "lower(%s)",                                    // ASCII only, without ICU
+	AttrText:      `json_extract(%s, '$."' || ? || '"')`,
 }
 
 // Open opens the SQLite database of dsn, a file name or a file: URI (docs/configuration.md):

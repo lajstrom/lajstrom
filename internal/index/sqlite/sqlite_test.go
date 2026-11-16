@@ -25,7 +25,7 @@ import (
 var memoryDBs atomic.Int64
 
 // openMigrated opens dsn, migrates it and closes it when the test ends.
-func openMigrated(t *testing.T, dsn string) *Store {
+func openMigrated(t testing.TB, dsn string) *Store {
 	t.Helper()
 	s, err := Open(t.Context(), dsn)
 	if err != nil {
@@ -48,6 +48,12 @@ func TestConformance(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) index.Store {
 		return openMigrated(t, fmt.Sprintf("file:storetest-%d?mode=memory&cache=shared", memoryDBs.Add(1)))
 	})
+}
+
+// BenchmarkPackageList measures the reads of the package list on a repo of 10 000 manifests
+// (storetest.Bench), in a file as a server keeps it.
+func BenchmarkPackageList(b *testing.B) {
+	storetest.Bench(b, openMigrated(b, "file:"+filepath.Join(b.TempDir(), "bench.db")))
 }
 
 func TestWithParams(t *testing.T) {
