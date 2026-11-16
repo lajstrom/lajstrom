@@ -194,11 +194,8 @@ func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential, no
 	}
 	system := repo.format == System || repo.name == System
 	switch p.Kind {
-	case KindToken:
-		// Step 2: its own repo or a repo of its mask, its scopes, never delete or manage
-		// (Credential.Limit).
-		return !system && c.Kind == CredDeploy && strconv.FormatInt(c.TokenID, 10) == p.Name &&
-			c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) == nil
+	case KindToken, KindCI:
+		return !system && byCredential(p, a, repo, c)
 	case KindUser:
 		if allow, decided := s.user(p, a, repo, system, c, now); decided {
 			return allow
@@ -215,6 +212,18 @@ func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential, no
 	}
 	// Step 5, for every principal that got here; step 6.
 	return !system && a == ActionRead && s.anonymousRead && s.anon[repo]
+}
+
+// byCredential is step 2, decided by the credential c of p alone (Credential.Limit): a deploy
+// token reaches its own repo or a repo of its mask with its scopes, never delete or manage; a CI
+// token the repos of its grants with their roles (docs/spec/rbac.md §11). Neither reads a binding.
+func byCredential(p Principal, a Action, repo repoKey, c Credential) bool {
+	switch {
+	case p.Kind == KindToken && (c.Kind != CredDeploy || strconv.FormatInt(c.TokenID, 10) != p.Name),
+		p.Kind == KindCI && c.Kind != CredCI:
+		return false
+	}
+	return c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) == nil
 }
 
 // user is steps 1, 3 and 4 for the user p, its own bindings and those of its groups that have
@@ -391,6 +400,8 @@ func (s *snapshot) add(b index.Binding) error {
 		if b.Role == RoleAdmin {
 			return fmt.Errorf("%w: the admin role is not for %s: principals", errBinding, p.Kind)
 		}
+	case p.Kind == KindCI:
+		return fmt.Errorf("%w: a ci: principal has no bindings, its trust policies grant", errBinding)
 	case p.Kind != KindUser:
 		return fmt.Errorf("%w: the principal of a binding is user:<name>, group:<name>, cert:<name> or k8s:<name>", errBinding)
 	}

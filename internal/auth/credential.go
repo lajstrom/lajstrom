@@ -38,6 +38,9 @@ const (
 	// CredKubernetes is a Kubernetes service-account token on /v2/token (docs/spec/rbac.md §9):
 	// the principal is k8s:<name>, and its bindings decide.
 	CredKubernetes CredentialKind = "kubernetes"
+	// CredCI is a CI token (docs/spec/rbac.md §11): the principal is ci:<name>, and the grants
+	// of its trust policies decide, not bindings.
+	CredCI CredentialKind = "ci"
 )
 
 // Credential is how the principal of a request authenticated, beside the principal in the
@@ -61,6 +64,11 @@ type Credential struct {
 	// Scopes are the scopes of the token, read, write and attach, one or more. An empty list on
 	// a CredPAT means the user's full rights.
 	Scopes []string
+	// Grants are the grants of the trust policies a CredCI names, as this replica's configuration
+	// has them (docs/spec/rbac.md §11).
+	Grants []Grant
+	// CIToken is the id of a CredCI, the jti of its exchange's audit row.
+	CIToken string
 }
 
 // Limit is the part of the evaluation of docs/spec/rbac.md §3 that depends on the credential
@@ -76,6 +84,9 @@ type Credential struct {
 //     whether the repo exists (404). On its own repo, or one of its mask, it allows read, write
 //     and attach per its scopes, write holding attach, and never delete or manage (ErrScope: it
 //     is bound to the repo, so the denial is a 403).
+//   - A CI token (docs/spec/rbac.md §11) on a repo that no mask of its grants matches is an
+//     error wrapping index.ErrNotFound; on one that a mask matches it allows the actions of the
+//     roles of those grants, and anything else is ErrScope.
 //
 // A deploy token of one repo matches it by <format>/<name>, and by id as well when repo.ID is
 // set: the names of a repo never change, and a repo deleted takes its deploy tokens with it. A
@@ -96,6 +107,8 @@ func (c Credential) Limit(a Action, repo index.Repo) error {
 			return nil
 		}
 		return fmt.Errorf("%w: the deploy token has %s", ErrScope, scopeList(c.Scopes))
+	case CredCI:
+		return c.ciLimit(a, repo.Format, repo.Name)
 	case CredPassword, CredOIDC, CredCertificate, CredKubernetes:
 	}
 	return nil

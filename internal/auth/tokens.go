@@ -176,10 +176,11 @@ func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []stri
 // token, with scopes or without, and a deploy token may not, an error wrapping ErrScope: a
 // stolen token would otherwise mint tokens that outlive its revocation (decided on #249,
 // docs/auth.md, Rules). Nor may a client certificate or a Kubernetes service-account token,
-// which authenticate /v2/token only (docs/spec/rbac.md §9).
+// which authenticate /v2/token only (docs/spec/rbac.md §9), nor a CI token, whose minutes must
+// not become a secret that lasts (§11).
 func MayCreatePAT(ctx context.Context) error {
 	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredCertificate, CredKubernetes:
+	case CredPAT, CredDeploy, CredCertificate, CredKubernetes, CredCI:
 		return &authError{msg: "a personal access token is created with a password, not with a token", err: ErrScope}
 	case CredPassword, CredOIDC:
 	}
@@ -195,9 +196,23 @@ func MayCreatePAT(ctx context.Context) error {
 // of its mask and outlives its revocation (decided on #911, 2026-11-14).
 func MayCreateMaskDeploy(ctx context.Context) error {
 	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredOIDC, CredCertificate, CredKubernetes:
+	case CredPAT, CredDeploy, CredOIDC, CredCertificate, CredKubernetes, CredCI:
 		return &authError{msg: "a deploy token over a mask is created with the admin's password, not with a token", err: ErrScope}
 	case CredPassword:
+	}
+	return nil
+}
+
+// MayCreateDeploy returns nil when the credential of ctx may create a deploy token of a repo,
+// which its rights on the repo then decide: every credential but a CI token (docs/spec/rbac.md
+// §11), whatever its grants, an error wrapping ErrScope: a token of minutes must not mint a
+// secret that lasts. A client certificate and a Kubernetes service-account token, which
+// authenticate /v2/token only (§9), may not either.
+func MayCreateDeploy(ctx context.Context) error {
+	switch CredentialFrom(ctx).Kind {
+	case CredCI, CredCertificate, CredKubernetes:
+		return &authError{msg: "a CI token creates no token: a deploy token is created with a password or a personal access token", err: ErrScope}
+	case CredPassword, CredPAT, CredDeploy, CredOIDC:
 	}
 	return nil
 }
@@ -210,7 +225,7 @@ func createdBy(c Credential) string {
 		return string(c.Kind)
 	case CredPAT, CredDeploy:
 		return "token:" + strconv.FormatInt(c.TokenID, 10)
-	case CredCertificate, CredKubernetes: // authenticate /v2/token only, and create no token
+	case CredCertificate, CredKubernetes, CredCI: // create no token
 	}
 	return ""
 }

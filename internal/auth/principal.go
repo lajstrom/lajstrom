@@ -34,16 +34,20 @@ const (
 	// KindKubernetes is a Kubernetes service account, by its token (docs/spec/rbac.md §9):
 	// k8s:<cluster>/<namespace>/<service account>.
 	KindKubernetes Kind = "k8s"
+	// KindCI is a CI job, by the CI token a trust policy minted for its platform's OIDC token
+	// (docs/spec/rbac.md §11): ci:<issuer>/<project>. It has no bindings.
+	KindCI Kind = "ci"
 )
 
 // Principal is who performs a request. Its canonical string form, used in bindings, sessions,
 // the audit log and the sub of a bearer token, is user:<uid>, token:<id>, group:<name>,
-// anonymous (docs/spec/rbac.md §1), cert:<name> or k8s:<name> (§9). The zero value is not a
-// valid principal.
+// anonymous (docs/spec/rbac.md §1), cert:<name> or k8s:<name> (§9), or ci:<name> (§11). The
+// zero value is not a valid principal.
 type Principal struct {
 	Kind Kind
-	// Name is a user's uid (index.NewUID), a group's name, the decimal id of a deploy token, or
-	// the identity of a certificate or a service account (docs/spec/rbac.md §9); empty for
+	// Name is a user's uid (index.NewUID), a group's name, the decimal id of a deploy token, the
+	// identity of a certificate or a service account (docs/spec/rbac.md §9), or a CI job's
+	// <issuer>/<project> (§11); empty for
 	// anonymous. Where a person names a user, user:<name> parses too, with the name
 	// here; LookupUser finds the user either way.
 	Name string
@@ -107,7 +111,8 @@ func (p Principal) String() string {
 
 // ParsePrincipal parses the canonical form produced by Principal.String; a cert: or k8s:
 // principal must keep the grammar of docs/spec/rbac.md §9, and may be a pattern
-// (Principal.IsPattern). Errors wrap ErrInvalidPrincipal.
+// (Principal.IsPattern); a ci: principal that of §11, never a pattern. Errors wrap
+// ErrInvalidPrincipal.
 func ParsePrincipal(s string) (Principal, error) {
 	if s == string(KindAnonymous) {
 		return Anonymous, nil
@@ -126,6 +131,11 @@ func ParsePrincipal(s string) (Principal, error) {
 		return Principal{Kind: k, Name: name}, nil
 	case KindCert, KindKubernetes:
 		if err := checkWorkloadName(k, name); err != nil {
+			return Principal{}, fmt.Errorf("%w: %q: %w", ErrInvalidPrincipal, s, err)
+		}
+		return Principal{Kind: k, Name: name}, nil
+	case KindCI:
+		if err := checkCIName(name); err != nil {
 			return Principal{}, fmt.Errorf("%w: %q: %w", ErrInvalidPrincipal, s, err)
 		}
 		return Principal{Kind: k, Name: name}, nil
