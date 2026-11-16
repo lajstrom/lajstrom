@@ -1049,6 +1049,21 @@ paths:
             application/x-pem-file:
               schema: {type: string}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/policy/denylist:
+    get:
+      tags: [policy]
+      operationId: getDenylist
+      summary: >-
+        The deny list (docs/spec/policy.md §8), read from the index now, with the entries of the
+        repos the caller may read: the rules in force that deny, the verdicts in force that refuse,
+        the digests and the URL paths they refuse.
+      responses:
+        "200":
+          description: The deny list.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Denylist"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -2667,6 +2682,26 @@ components:
         items:
           type: array
           items: {$ref: "#/components/schemas/Verdict"}
+    Denylist:
+      description: The deny list (docs/spec/policy.md §8).
+      type: object
+      required: [version, generation, createdAt, rules, verdicts, digests, prefixes]
+      properties:
+        version: {type: integer}
+        generation: {type: integer}
+        createdAt: {type: string, format: date-time}
+        rules:
+          type: array
+          items: {type: object}
+        verdicts:
+          type: array
+          items: {type: object}
+        digests:
+          type: array
+          items: {type: string}
+        prefixes:
+          type: array
+          items: {type: string}
     DenyRequest:
       description: The body of a deny.
       type: object
