@@ -134,8 +134,8 @@ referrer needs `write`. Attachments are written through `/v2` only; the manageme
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
-packument update leaves out included. A verdict pushed through `/v2` as a referrer needs `write`,
-as every referrer does until #89 decides an `attach` action (ADR 0008, Amendment I). Yanking and unyanking a pypi version through the
+packument update leaves out included. A verdict pushed through `/v2` as a referrer needs `attach`,
+as every referrer does, and `write` holds it (#89, option C; ADR 0008, Amendment I). Yanking and unyanking a pypi version through the
 management API (http-routing.md §4, #81) is `write` too: like a deprecation it is an entry of the
 package's journal and deletes nothing, and the version's files stay served.
 
