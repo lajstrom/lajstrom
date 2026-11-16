@@ -217,6 +217,24 @@ func testUsersDeleted(t *testing.T, s index.Store) {
 	}
 }
 
+// testTokenRevokeOnce: RevokeToken revokes a live token; a token revoked already keeps its time
+// and wraps ErrConflict, so that of callers that revoke it at once one does and writes its audit
+// row (#1277); no token is ErrNotFound.
+func testTokenRevokeOnce(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	alice := newUser(t, s, "alice")
+	tok := index.Token{Kind: "pat", UserID: &alice.ID, Name: "login", Hash: "h-once", ExpiresAt: ptr(at(3600))}
+	must(t, s.CreateToken(ctx, &tok))
+	must(t, s.RevokeToken(ctx, tok.ID, at(10)))
+	wantErr(t, "RevokeToken revoked", s.RevokeToken(ctx, tok.ID, at(30)), index.ErrConflict)
+	got, err := s.GetTokenByHash(ctx, "h-once")
+	must(t, err)
+	if got.RevokedAt == nil || !got.RevokedAt.Equal(at(10)) {
+		t.Errorf("a token revoked again: RevokedAt %v, want %v", got.RevokedAt, at(10))
+	}
+	wantErr(t, "RevokeToken missing", s.RevokeToken(ctx, 999999, at(1)), index.ErrNotFound)
+}
+
 func testTokens(t *testing.T, s index.Store) {
 	ctx := t.Context()
 	alice := newUser(t, s, "alice")

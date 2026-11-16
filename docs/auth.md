@@ -199,7 +199,9 @@ endpoints (`/-/healthz`, `/-/readyz`, `/-/version`) alike:
 - **`DPoP ljs_pat_…`** on `/api/` only ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449)):
   the token of a web UI's sign-in, bound to a key of the browser, with a proof of that key in the
   header `DPoP` ([api.md](api.md#the-dpop-bound-token)). A refused proof or token is `401` with
-  `WWW-Authenticate: DPoP error="invalid_dpop_proof"` or `error="invalid_token"`. Such a token
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof"` or `error="invalid_token"`, with
+  `error_description="idle"` for a token unused for longer than `auth.login.idleTimeout`, which
+  the server then revokes ([rbac.md](spec/rbac.md) §10, #1277). Such a token
   is refused in Basic credentials and as a bearer, on every route; `DPoP` outside `/api/` is
   refused too.
 - **Any other `Bearer`**, any bearer under `/v2`, and any other scheme: the request goes on as
@@ -914,7 +916,9 @@ credential of the request: `password`, or `token:<id>` for a token, which a depl
 with a personal access token has; none from the CLI; and `maxTTL`, the seconds of
 `auth.deployTokens.maxTTL` or `auth.serviceAccounts.maxTokenTTL` for a deploy token or a service
 account's token created under that bound, none without one) and `token.revoke` (`id`, `kind`,
-`name`), by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
+`name`; and `reason` `idle`, `lastUsedAt` and `idleTimeout` for a web UI's sign-in that the server
+revoked as idle, by `anonymous` with the source `idle`: [rbac.md](spec/rbac.md) §10),
+by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
 deploy token, whose repo is also the row's `repo`; for a deploy token over a mask it is the mask,
 and the row has no `repo`. Never the secret, never its hash. Revoking a
 revoked token writes nothing. The use of a token is not audited, as reads are not; `lastUsedAt`

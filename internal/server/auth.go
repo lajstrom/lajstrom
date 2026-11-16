@@ -37,7 +37,12 @@ const (
 	msgThrottled       = "too many failed logins: try again after Retry-After seconds"
 	msgTooManyRequests = "too many token requests: try again after Retry-After seconds"
 	msgBound           = "the token is bound to a DPoP key: send it as Authorization: DPoP with a proof"
+	msgIdle            = "the sign-in was idle for longer than the server allows: sign in again"
 )
+
+// idleDescription is the error_description of the DPoP challenge of an idle sign-in
+// (docs/spec/http-routing.md §4, #1277), which a web UI reads to say why it signs the person out.
+const idleDescription = "idle"
 
 // principalHolder carries the principal the authentication middleware settled on back to the
 // access log, which runs outside it and sees only its own request.
@@ -221,6 +226,11 @@ func (s *Server) authenticateDPoP(w http.ResponseWriter, r *http.Request, next h
 		return
 	}
 	p, cred, err := s.opts.Authenticator.AuthenticateDPoP(r.Context(), secret, proof.JKT)
+	var idle *auth.IdleError
+	if errors.As(err, &idle) {
+		s.refuseIdle(w, r, proof, idle)
+		return
+	}
 	if errors.Is(err, auth.ErrBadCredentials) {
 		s.refuseDPoP(w, r, "invalid_token", "")
 		return
@@ -240,6 +250,11 @@ func (s *Server) authenticateDPoP(w http.ResponseWriter, r *http.Request, next h
 // text of dpop.Why or of this package, never the client's; the answer is the envelope of /api/,
 // UNAUTHENTICATED with why as its message, or msgBadCredentials.
 func (s *Server) refuseDPoP(w http.ResponseWriter, r *http.Request, code, why string) {
+	s.refuseDPoPWith(w, r, code, why, cmp.Or(why, msgBadCredentials))
+}
+
+// refuseDPoPWith is refuseDPoP with msg as the message of the envelope.
+func (s *Server) refuseDPoPWith(w http.ResponseWriter, r *http.Request, code, why, msg string) {
 	s.log.DebugContext(r.Context(), "authentication refused", "reason", cmp.Or(why, "a DPoP token refused"),
 		"requestId", RequestID(r.Context()))
 	challenge := `DPoP error="` + code + `"`
@@ -248,7 +263,38 @@ func (s *Server) refuseDPoP(w http.ResponseWriter, r *http.Request, code, why st
 	}
 	w.Header().Set("WWW-Authenticate", challenge+`, algs="`+dpop.Algorithm+`"`)
 	writeJSONRefusal(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "UNAUTHENTICATED",
-		"message": cmp.Or(why, msgBadCredentials)}})
+		"message": msg}})
+}
+
+// refuseIdle answers the token of a web UI's sign-in that the authenticator refused as idle
+// (auth.IdleError, docs/spec/rbac.md §10, #1277). The proof's jti is spent first, as for a token
+// that passes, so that a replayed proof is refused as one and revokes nothing; then the token is
+// revoked (Options.IdleRevoker), and the answer is 401 with the challenge error="invalid_token",
+// error_description="idle". A revocation that fails is logged at error and the token refused all
+// the same: every replica refuses it while it is idle, and its next request revokes it.
+func (s *Server) refuseIdle(w http.ResponseWriter, r *http.Request, proof *dpop.Proof, idle *auth.IdleError) {
+	err := s.opts.DPoP.Spend(r.Context(), proof)
+	if why := dpop.Why(err); why != "" {
+		s.refuseDPoP(w, r, "invalid_dpop_proof", why)
+		return
+	}
+	if err != nil {
+		s.settle(w, r, nil, auth.Principal{}, auth.Credential{}, err)
+		return
+	}
+	if s.opts.IdleRevoker != nil {
+		ctx := r.Context()
+		if err := s.opts.IdleRevoker.RevokeIdle(ctx, idle, auth.Origin{IP: ClientAddr(ctx), RequestID: RequestID(ctx)}); err != nil {
+			s.log.ErrorContext(ctx, "an idle sign-in is not revoked", "token", idle.TokenID, "error", err.Error(), "requestId", RequestID(ctx))
+		}
+	}
+	s.refuseDPoPWith(w, r, "invalid_token", idleDescription, msgIdle)
+}
+
+// IdleRevoker revokes the token of a sign-in refused as idle, with its audit row
+// (auth.Tokens.RevokeIdle).
+type IdleRevoker interface {
+	RevokeIdle(ctx context.Context, e *auth.IdleError, o auth.Origin) error
 }
 
 // authenticateForm authenticates POST /v2/token, the token request in the OAuth2 form that

@@ -57,9 +57,12 @@ type Info struct {
 
 // LoginInfo is what GET /api/v1/info tells a web UI of POST /api/v1/login: that the server has
 // it, whose token is DPoP-bound, and with oidc in authModes that /-/oidc/login takes return_to,
-// code_challenge and dpop_jkt (docs/spec/rbac.md §10); and the lifetime of its token, in seconds.
+// code_challenge and dpop_jkt (docs/spec/rbac.md §10); the lifetime of its token, and how long it
+// may go unused before the server refuses it (auth.login.idleTimeout, 0 off; #1277), in seconds,
+// so that the UI warns the person before.
 type LoginInfo struct {
 	TokenLifetime int64 `json:"tokenLifetime"`
+	IdleTimeout   int64 `json:"idleTimeout"`
 }
 
 // Caller is the request's principal as GET /api/v1/whoami answers it, and whether the
@@ -89,7 +92,9 @@ func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusOK, Info{
 		Version: b.Version, Commit: b.Commit, Date: b.Date,
 		ExternalURL: h.info.ExternalURL, AnonymousRead: h.info.AnonymousRead,
-		Formats: h.info.Formats, AuthModes: h.authModes(), Login: LoginInfo{TokenLifetime: int64(h.loginLifetime / time.Second)},
+		Formats: h.info.Formats, AuthModes: h.authModes(), Login: LoginInfo{
+			TokenLifetime: int64(h.loginLifetime / time.Second), IdleTimeout: int64(h.loginIdle / time.Second),
+		},
 		Caller: caller,
 	}, nil
 }

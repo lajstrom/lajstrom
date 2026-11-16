@@ -83,6 +83,10 @@ type Options struct {
 	// DPoP checks the proofs of the token of a web UI's sign-in, Authorization: DPoP on /api/
 	// (docs/spec/rbac.md §10, RFC 9449). nil refuses that scheme.
 	DPoP *dpop.Verifier
+	// IdleRevoker revokes the token of a web UI's sign-in that the Authenticator refused as idle
+	// (auth.login.idleTimeout, docs/spec/rbac.md §10, #1277): auth.Tokens. nil refuses it without
+	// revoking it.
+	IdleRevoker IdleRevoker
 	// MetricsListen is the address of the metrics listener, host:port (server.metricsListen):
 	// GET /metrics, and /debug/pprof/ with Pprof. Empty means no metrics listener. The main
 	// listener never serves them (docs/spec/http-routing.md §5).
