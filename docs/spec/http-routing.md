@@ -779,7 +779,7 @@ module "vpc" {
 
 ## 4. Management API `/api/v1`
 
-JSON, bearer (PAT) or Basic. Shapes are in [api.md](../api.md) and `internal/api/openapi.yaml`;
+JSON, bearer (PAT) or Basic, or `DPoP` with the token of a web UI's sign-in (below). Shapes are in [api.md](../api.md) and `internal/api/openapi.yaml`;
 listed here so frontends do not invent their own. What each call needs, in the actions of rbac.md
 §2 (decided on #136, 2026-11-09):
 
@@ -794,6 +794,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
 | `POST /api/v1/bootstrap` (#440) | nothing: the one-time bootstrap token in the body is the credential; `404` once an enabled user has an admin binding |
+| `POST /api/v1/login` (#70) | nothing: the password, or the OIDC code and its verifier, in the body is the credential, with a DPoP proof of the key the token is bound to; the request's `Authorization` is ignored |
 
 | Resource | Endpoints |
 | --- | --- |
@@ -807,10 +808,12 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | webhooks (#77, [webhooks.md](webhooks.md)) | a repo's: `GET/POST /api/v1/repos/<format>/<repo>/webhooks`, `GET/PATCH/DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`; every mask: the same under `/api/v1/webhooks` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
+| login | `POST /api/v1/login` |
 | the API's description | `GET /api/v1/openapi.yaml` |
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|UNAUTHENTICATED|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
-A `401` (no credentials, or credentials refused, with the Basic challenge) is `UNAUTHENTICATED`,
+A `401` (no credentials, or credentials refused, with the Basic challenge, or the DPoP challenge
+of a web UI's token, below) is `UNAUTHENTICATED`,
 a `403` (the caller lacks the action) `FORBIDDEN` (#579), and so is the `403` of a write the
 registry refuses for a limit or a quota of its own (`provider.ErrLimit`, §2; a prefetch), whose
 message names the limit. A `429` (a throttle of failed logins,
@@ -884,24 +887,35 @@ signs in:
 - `anonymousRead`: `auth.anonymousRead`, the server-wide switch;
 - `formats`: the format plugins the server serves, by `name`, each with its `artifactType`.
   `oci` repos need no plugin and are not listed;
-- `authModes`: how a person signs in. `password` is a local user's password over Basic; `token`
-  is a personal access token. The OIDC login (#69) adds `oidc`;
+- `authModes`: how a person signs in. `password` is a local user's password, over Basic and to
+  `POST /api/v1/login`; `token` is a personal access token; `oidc`, while `auth.oidc` is on, the
+  OIDC login (#69);
+- `login`: `{"tokenLifetime"}`, the seconds of `auth.login.tokenLifetime`: the server has
+  `POST /api/v1/login`, whose token is DPoP-bound, and with `oidc` in `authModes` its
+  `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` (§7). A server without them
+  answers no `login`;
 - `caller`: the request's principal, as `GET /api/v1/whoami` answers it, and `admin`, whether
   the request's credential reaches the admin role (a personal access token with scopes does not).
 
 Unlike whoami, a request without credentials gets `200`, with the caller `anonymous`. Credentials
 that are refused get `401`, as on every route.
 
-A browser (#136): the API sets no cookie and reads none. A web UI signs in by creating a
-personal access token: `POST /api/v1/users/<name>/tokens` with the user's password over Basic,
-since a token creates none. It sends that token as `Authorization: Bearer` on every request, and
-signing out revokes it (`DELETE …/tokens/<id>`). A token the person already has is sent the
-same way. The OIDC login (#69) mints a personal access token too, and the UI uses it alike. Its
-cookie `lajstrom_oidc` has the path `/-/oidc/` and never authenticates `/api/v1`.
+A browser (#136): the API sets no cookie and reads none. A web UI signs in with
+`POST /api/v1/login` (below), which answers a personal access token bound to a key that the
+browser holds (DPoP, RFC 9449), or by creating one: `POST /api/v1/users/<name>/tokens` with the
+user's password over Basic, since a token creates none. It sends the bound token as
+`Authorization: DPoP` with a proof of the key on every request (below), any other token as
+`Authorization: Bearer`, and signing out revokes it (`DELETE …/tokens/<id>`, with the token
+itself). A token the person already has is sent as a bearer. The OIDC login (#69) mints a
+personal access token too, and the UI gets a bound one from `POST /api/v1/login` with the code its
+callback hands over (§7). Its cookie `lajstrom_oidc` has the path `/-/oidc/` and never
+authenticates `/api/v1`.
 
 - **Where the token is kept** is the UI's choice. Any script of the origin can read any storage
   of it. No answer of Lajstrom on that origin runs a script ([operations.md](../operations.md),
-  What Lajstrom answers browsers).
+  What Lajstrom answers browsers). A bound token is of no use without its key, which the UI keeps
+  where no script can read it out (a non-extractable WebCrypto key): a script of the origin can
+  still sign proofs with it while the page is open.
 - **The browser's own Basic handling.** The UI sends its requests with `credentials: "omit"`, so
   that the Basic challenge of a `401` opens no browser dialog and no cached Basic credentials go
   along.
@@ -940,6 +954,67 @@ While the list is not empty, every answer of these paths has `Vary: Origin`. An 
 does not have gets no `Access-Control-*` header, and its `OPTIONS` is `404`, as with an empty
 list. The frontends, `/v2`, `/-/oidc/` and the other system endpoints answer no CORS to any
 origin: a link to a file or to the login is a navigation, which needs none.
+
+Signing in (#70, [ADR 0022](../adr/0022-web-ui-sign-in-with-short-lived-tokens.md), rbac.md
+§10): `POST /api/v1/login` takes no credential; the request's `Authorization` header is ignored,
+so that a UI whose stored token was revoked is not refused before it signs in. It takes a DPoP
+proof (RFC 9449 §4) in the header `DPoP`, checked as below but for `ath`, which it needs not:
+the token it answers is bound to the proof's key. A login without a proof, or whose proof is
+refused or used already, is `400 INVALID`, the message saying why, before its credential is
+checked. Its body is one of:
+
+- `{"username", "password"}`: a local user's password, checked as Basic credentials are, with
+  the same throttles of failed logins (rbac.md §1). A refusal is `401 UNAUTHENTICATED`, whatever
+  the reason (an unknown, disabled or password-less user, a wrong password, a token in place of
+  the password), and a throttled account or address `429` with `Retry-After`;
+- `{"code", "codeVerifier"}`: the code that the callback of an OIDC login with `return_to` handed
+  to the UI (§7), and the PKCE verifier (RFC 7636, 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`)
+  whose S256 challenge started that login; the proof's key must be the one whose thumbprint that
+  login named in `dpop_jkt` (RFC 9449 §10). A code that is unknown, used, expired, of another
+  verifier or of another key is `400 INVALID`, and a wrong verifier or key uses the code up; a
+  user disabled or deleted since the callback is `401`.
+
+A body with neither, both, or another field is `400`. Either way the answer is `201` with the
+new personal access token as `POST …/tokens` answers it (`CreatedToken`: `id`, `user`, `name`,
+`expiresAt`, `dpopJkt`, …, and `secret`, shown once), with `tokenType: "DPoP"` (the `token_type`
+of RFC 9449 §5), and its `Location`, `/api/v1/users/<name>/tokens/<id>`. The token has no scopes
+and expires after `auth.login.tokenLifetime` (configuration.md), and after
+`auth.oidc.tokenLifetime` for an OIDC code when that is shorter. There is no refresh: the UI signs
+in again. No answer sets a cookie.
+
+The DPoP-bound token (RFC 9449, decided on #1170, 2026-11-16): the token of `POST /api/v1/login`
+is bound to its proof's key; `dpopJkt` is that key's JWK SHA-256 thumbprint (RFC 7638, base64url;
+the `cnf.jkt` of RFC 9449 §6.1). It authenticates on `/api/` only, as `Authorization: DPoP
+<token>` with one proof in the header `DPoP` on every request:
+
+- the proof is a JWT whose header has `typ` `dpop+jwt`, `alg` `ES256`, the one algorithm taken,
+  and `jwk`, a public P-256 key (`kty` `EC`, `crv` `P-256`, `x`, `y`; a private member is
+  refused), and whose signature verifies with that key; at most 4096 bytes;
+- its claims: `htm`, the request's method; `htu`, the request's URI without its query and
+  fragment, that is `server.externalURL` and the request's path, the URL that the browser sees
+  behind the edge (with `server.externalURL` empty, the dev stack, the request's `Host`), the two
+  compared after the syntax- and scheme-based normalization of RFC 3986 §6.2.2 and §6.2.3 (the
+  case of the scheme and the host, percent-encoding, dot segments, the default port, an empty
+  path as `/`); `iat`, within 5 minutes of the server's clock, before or after; `jti`, 1 to 256
+  bytes, used once (below); `ath`, the base64url SHA-256 of the token;
+- the proof's key is the token's: its thumbprint is the token's `dpopJkt`;
+- a proof is used once on any replica: the sha256 of the key's thumbprint and the `jti` is kept
+  until `iat` and 5 minutes (index-schema.md, `dpop_proofs`), and a proof found there is
+  refused;
+- no server nonce (RFC 9449 §9): no answer has `DPoP-Nonce`, and a `nonce` claim is ignored. A
+  UI whose clock is off takes the server's from the `Date` of an answer, exposed to a listed
+  origin (above), and sets `iat` by it.
+
+A refused proof is `401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP
+error="invalid_dpop_proof", error_description="<why>", algs="ES256"`; a token that is unknown,
+revoked, expired, of a disabled user, bound to another key or to none (a token that is not a
+sign-in's, sent as `DPoP`) is `401` with `WWW-Authenticate: DPoP error="invalid_token",
+algs="ES256"`. A bound token is refused everywhere else, `401` as credentials refused: as
+`Authorization: Bearer` or in Basic credentials on `/api/`, with
+`WWW-Authenticate: DPoP error="invalid_token", …` (RFC 9449 §7.2); on the frontends, `/v2` and
+`/v2/token`, in any form, with the route's challenge. `Authorization: DPoP` outside `/api/` is
+refused alike. A bound token is so of no use to docker, pip or npm, nor to whoever copies it off
+the browser without the key.
 
 Deleting a version (`delete`): `<name>` is the package name in the format's spelling, one path
 segment (a raw path escapes its `/` as `%2F`). Without `variant` every variant of the version
@@ -1102,7 +1177,8 @@ takes a credential; a request's `Authorization` header is ignored on them.
 | Method and path | Behaviour |
 | --- | --- |
 | `GET /-/oidc/login[?user_code=]` | starts the authorization code flow: `302` to the IdP with `state`, `nonce` and the PKCE challenge, and the cookie `lajstrom_oidc` (rbac.md §8). With `user_code`, the login approves that device request: one that is unknown, expired or approved is `400` with the page of `/-/oidc/device`. `503` when the IdP's discovery does not answer, `Retry-After: 30` |
-| `GET /-/oidc/callback?code=&state=` | the IdP's redirect: one redemption of the state, the code exchange, the ID token checks, the user and its groups. `200` with the page that shows the new personal access token once (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`), or, for a device request, the page that says to return to the terminal. `400` with a page for every refusal of rbac.md §8; `503` when the IdP does not answer the exchange |
+| `GET /-/oidc/login?return_to=&code_challenge=&code_challenge_method=S256&dpop_jkt=` | the same login for a web UI (rbac.md §10): `return_to`, an absolute URL of at most 2048 bytes on the origin of `server.externalURL` or of `server.corsOrigins`, without a fragment, `code_challenge`, the S256 challenge of the UI's PKCE verifier (43 characters of base64url), and `dpop_jkt`, the JWK SHA-256 thumbprint of the DPoP key the UI redeems the code with (RFC 9449 §10, 43 characters of base64url), are kept on the login request. A `return_to` on another origin, a challenge or a thumbprint that is not one, a method that is not `S256`, one of the three without the others, and any with `user_code` are `400` with a page |
+| `GET /-/oidc/callback?code=&state=` | the IdP's redirect: one redemption of the state, the code exchange, the ID token checks, the user and its groups. `200` with the page that shows the new personal access token once (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`), or, for a device request, the page that says to return to the terminal, or, for a login with `return_to`, `302` to `<return_to>#code=<code>`, the code that `POST /api/v1/login` redeems (§4). `400` with a page for every refusal of rbac.md §8, a login with `return_to` too; `503` when the IdP does not answer the exchange |
 | `GET /-/oidc/device[?user_code=]` | the page where the person types or confirms the user code; its form is a `GET` of `/-/oidc/login?user_code=` |
 | `POST /-/oidc/device/code` | starts a device request (RFC 8628 §3.1, `application/x-www-form-urlencoded`, its `client_id` and `scope` ignored): `200` `{"device_code", "user_code", "verification_uri", "verification_uri_complete", "expires_in", "interval"}`; `429` with `Retry-After` beyond the throttle |
 | `POST /-/oidc/token` | `grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=` (RFC 8628 §3.4): `200` `{"access_token", "token_type": "Bearer", "expires_in", "user"}` once the device request is approved, the personal access token minted then; else `400` `{"error", "error_description"}` with `authorization_pending`, `slow_down`, `expired_token`, `access_denied` or `invalid_grant`; another `grant_type` is `400` `unsupported_grant_type` |

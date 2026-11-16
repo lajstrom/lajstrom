@@ -51,6 +51,7 @@ internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token veri
                               verification of a Kubernetes service-account token of auth.kubernetes (rbac.md §9)
 internal/auth/clientcert/     client certificates (rbac.md §9): the bundles, a chain verified against them, the name
                               of the leaf, the header an edge forwards a certificate in
+internal/auth/dpop/           the DPoP proofs of a web UI's token (RFC 9449, #1170): verify, used once on any replica
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020)
 internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign over net/http, SigV4 of aws-sdk-go-v2
@@ -965,12 +966,13 @@ type Reader interface {
     GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
     GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
     GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
-    // the flows of rbac.md §8 (index-schema.md, oidc_logins); state and deviceCode are the
-    // sha256 hex of the secret, userCode as shown without its hyphen
+    // the flows of rbac.md §8 and §10 (index-schema.md, oidc_logins); state, deviceCode and
+    // handoff are the sha256 hex of the secret, userCode as shown without its hyphen
     GetOIDCLogin(ctx context.Context, id int64) (*OIDCLogin, error)
     GetOIDCLoginByState(ctx context.Context, state string) (*OIDCLogin, error)
     GetOIDCLoginByDeviceCode(ctx context.Context, deviceCode string) (*OIDCLogin, error)
     GetOIDCLoginByUserCode(ctx context.Context, userCode string) (*OIDCLogin, error)
+    GetOIDCLoginByHandoff(ctx context.Context, handoff string) (*OIDCLogin, error)
     // LatestReindexRun: the newest run that covered repoID, its own or a run of every repo;
     // repoID 0 selects the runs of every repo only
     LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
@@ -1107,13 +1109,20 @@ type Writer interface {
     ClaimFetch(ctx context.Context, c *FetchClaim, staleBefore time.Time) error
     HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error // ErrNotFound: released or taken over
     ReleaseFetchClaim(ctx context.Context, id int64) error
-    // CreateOIDCLogin inserts l and fills ID; a state, device code or user code taken wraps
-    // ErrConflict. UpdateOIDCLogin stores Status, UserID and PolledAt of l while the row's status
-    // is from, else ErrConflict and nothing changes: one redemption of a state, one approval,
-    // one device code. ExpireOIDCLogins deletes the rows whose ExpiresAt is before before
+    // CreateOIDCLogin inserts l and fills ID; a state, device code, user code or handoff taken
+    // wraps ErrConflict. UpdateOIDCLogin stores Status, UserID, PolledAt and Handoff of l while
+    // the row's status is from, else ErrConflict and nothing changes: one redemption of a state,
+    // one approval, one device code, one handoff. ExpireOIDCLogins deletes the rows whose
+    // ExpiresAt is before before
     CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
     UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
     ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
+    // UseDPoPProof stores key, the sha256 hex of a DPoP proof's key thumbprint and jti
+    // (rbac.md §10, index-schema.md, dpop_proofs), until expiresAt; a key stored that expires at
+    // now or later wraps ErrConflict, a replay, and nothing changes. ExpireDPoPProofs deletes
+    // the keys whose expiresAt is before before
+    UseDPoPProof(ctx context.Context, key string, expiresAt, now time.Time) error
+    ExpireDPoPProofs(ctx context.Context, before time.Time) (int, error)
     ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)  // HeartbeatAt before before; reindex, reconcile
     // StartReplica deletes the rows whose HeartbeatAt is before staleBefore and inserts r, a
     // serve process (index-schema.md, Coordination); on SQLite a fresh row of another replica
