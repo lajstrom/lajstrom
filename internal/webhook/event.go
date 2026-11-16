@@ -26,13 +26,21 @@ const (
 	TypePolicyRuleDeleted    = "policy.rule.deleted"
 	TypePolicyVerdictCreated = "policy.verdict.created"
 	TypePolicyVerdictDeleted = "policy.verdict.deleted"
+	// The events of a CI trust policy of the API (#937; docs/spec/rbac.md §11).
+	TypeCIPolicyCreated  = "ci.policy.created"
+	TypeCIPolicyUpdated  = "ci.policy.updated"
+	TypeCIPolicyRenewed  = "ci.policy.renewed"
+	TypeCIPolicyApproved = "ci.policy.approved"
+	TypeCIPolicyExpired  = "ci.policy.expired"
+	TypeCIPolicyDeleted  = "ci.policy.deleted"
 	// TypePing is sent only by the test of one webhook; no webhook asks for it.
 	TypePing = "webhook.ping"
 )
 
 // Types are the types a webhook may ask for, in the order of webhooks.md §1.
 var Types = []string{TypeVersionPublished, TypeVersionDeleted, TypeRepoCreated, TypeRepoDeleted,
-	TypePolicyRuleCreated, TypePolicyRuleDeleted, TypePolicyVerdictCreated, TypePolicyVerdictDeleted}
+	TypePolicyRuleCreated, TypePolicyRuleDeleted, TypePolicyVerdictCreated, TypePolicyVerdictDeleted,
+	TypeCIPolicyCreated, TypeCIPolicyUpdated, TypeCIPolicyRenewed, TypeCIPolicyApproved, TypeCIPolicyExpired, TypeCIPolicyDeleted}
 
 // typePrefix makes a type a CloudEvents type: the reverse domain name of lajstrom.dev.
 const typePrefix = "dev.lajstrom."
@@ -46,10 +54,14 @@ type Event struct {
 	Type    string
 	Repo    index.Repo // Format, Name and Kind are read
 	Subject string     // the audit row's subject; "" for a repo
-	Data    any        // VersionData, RepoData, RuleData, VerdictData or PingData, marshalled as it is
+	Data    any        // VersionData, RepoData, RuleData, VerdictData, CIPolicyData or PingData, marshalled as it is
 	// Mask is the repo mask of a policy rule's event, which goes to the webhooks whose mask
 	// covers it (Covers) instead of those whose mask matches Repo; its source is the rules'.
 	Mask string
+	// Masks are the masks of the grants of a CI trust policy's event, before and after its
+	// change: it goes to the webhooks of the admin, whose mask has a *, that cover one of them
+	// (Covers), instead of those whose mask matches Repo; its source is the policies'.
+	Masks []string
 }
 
 // Actor is the principal of a write and a user's name at the time.
@@ -167,6 +179,31 @@ type Verdict struct {
 	Attestation digest.Digest `json:"attestation"`
 }
 
+// CIPolicyData is the data of the event of a CI trust policy of the API: ci.policy.created,
+// .updated, .renewed, .approved, .expired or .deleted (docs/spec/webhooks.md §3).
+type CIPolicyData struct {
+	Common
+	Policy CIPolicy `json:"policy"`
+}
+
+// CIPolicy is a CI trust policy in an event, as the change left it; a deleted one as it was.
+type CIPolicy struct {
+	Name      string              `json:"name"`
+	Issuer    string              `json:"issuer"`
+	Claims    map[string][]string `json:"claims"`
+	Grants    []index.CIGrant     `json:"grants"`
+	State     string              `json:"state"`
+	ExpiresAt *time.Time          `json:"expiresAt"`
+	// RenewalExpiresAt is the expiry of a renewal that waits for an admin's approval.
+	RenewalExpiresAt *time.Time `json:"renewalExpiresAt,omitempty"`
+}
+
+// CIPolicyOf is the CIPolicy of r.
+func CIPolicyOf(r index.CIPolicy) CIPolicy {
+	return CIPolicy{Name: r.Name, Issuer: r.Issuer, Claims: r.Claims, Grants: r.Grants, State: r.State, ExpiresAt: r.ExpiresAt,
+		RenewalExpiresAt: r.RenewalExpiresAt}
+}
+
 // PingData is the data of a webhook.ping.
 type PingData struct {
 	Common
@@ -197,8 +234,9 @@ type Outbox struct {
 	Now func() time.Time
 }
 
-// Enqueue writes on w one delivery of ev per active webhook whose mask matches ev.Repo and whose
-// events include ev.Type, each with the same body and event id; nothing when none matches.
+// Enqueue writes on w one delivery of ev per active webhook whose mask matches ev.Repo (or covers
+// ev.Mask, or, of the admin, one of ev.Masks) and whose events include ev.Type, each with the same
+// body and event id; nothing when none matches.
 func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	if o == nil {
 		return nil
@@ -209,11 +247,7 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	}
 	var matched []index.Webhook
 	for _, h := range hooks {
-		match := Matches(h.Mask, ev.Repo.Format, ev.Repo.Name)
-		if ev.Mask != "" {
-			match = Covers(h.Mask, ev.Mask)
-		}
-		if h.Active && match && Wants(h.Events, ev.Type) {
+		if h.Active && ev.goesTo(h.Mask) && Wants(h.Events, ev.Type) {
 			matched = append(matched, h)
 		}
 	}
@@ -222,8 +256,11 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	}
 	at := o.now()
 	source := o.Source + "/" + ev.Repo.Format + "/" + ev.Repo.Name
-	if ev.Mask != "" {
+	switch {
+	case ev.Mask != "":
 		source = o.Source + "/api/v1/policy/rules"
+	case ev.Masks != nil:
+		source = o.Source + "/api/v1/ci/policies"
 	}
 	id, body, err := o.document(ev, at, source)
 	if err != nil {
@@ -237,6 +274,19 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 		return fmt.Errorf("webhook: the deliveries of a %s: %w", ev.Type, err)
 	}
 	return nil
+}
+
+// goesTo reports whether ev goes to a webhook of mask, whatever its events: one that matches its
+// repo, that covers the mask of a policy rule's, or, of the admin, one of the masks of a CI trust
+// policy's.
+func (ev Event) goesTo(mask string) bool {
+	switch {
+	case ev.Mask != "":
+		return Covers(mask, ev.Mask)
+	case ev.Masks != nil:
+		return strings.Contains(mask, "*") && slices.ContainsFunc(ev.Masks, func(m string) bool { return Covers(mask, m) })
+	}
+	return Matches(mask, ev.Repo.Format, ev.Repo.Name)
 }
 
 // document returns the id and the body of ev at at, from source.
