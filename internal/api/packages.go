@@ -16,13 +16,6 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// PackageList is the answer of GET …/packages: a page of the repo's packages by name, and in
-// Next the cursor of the page after it, absent on the last page.
-type PackageList struct {
-	Packages []PackageEntry `json:"packages"`
-	Next     string         `json:"next,omitempty"`
-}
-
 // PackageEntry is a package as the API answers it (docs/api.md, List packages): its row and
 // its facts, read from the derived tables.
 type PackageEntry struct {
@@ -304,41 +297,6 @@ func orEmpty(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
-}
-
-// listPackages answers GET /api/v1/repos/{format}/{repo}/packages: a page of the repo's packages
-// whose name starts with ?prefix, ordered by name, ?limit of them after the name of ?cursor. The
-// cursor is that name, so packages published or deleted meanwhile shift nothing. It needs read.
-func (h *handler) listPackages(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	f, name := r.PathValue("format"), r.PathValue("repo")
-	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
-		return 0, nil, err
-	}
-	limit, after, err := page(r)
-	if err != nil {
-		return 0, nil, err
-	}
-	ctx := r.Context()
-	repo, err := h.repos.Index.GetRepo(ctx, f, name)
-	if err != nil {
-		return 0, nil, repoError("list the packages of", f, name, err)
-	}
-	// One more than the page: whether another follows. The store orders by bytes, as the
-	// cursor compares.
-	pkgs, err := h.repos.Index.ListPackagesAfter(ctx, repo.ID, r.URL.Query().Get("prefix"), after, limit+1)
-	if err != nil {
-		return 0, nil, fmt.Errorf("api: packages of %s/%s: %w", f, name, err)
-	}
-	list := PackageList{}
-	if len(pkgs) > limit {
-		pkgs = pkgs[:limit]
-		list.Next = cursor(pkgs[limit-1].Name)
-	}
-	latest := h.latestOf(pkgs, map[int64]string{repo.ID: repo.Format})
-	if list.Packages, err = packageEntries(ctx, h.repos.Index, pkgs, latest); err != nil {
-		return 0, nil, err
-	}
-	return http.StatusOK, list, nil
 }
 
 // listVersions answers GET /api/v1/repos/{format}/{repo}/packages/{name}/versions: a page of the
