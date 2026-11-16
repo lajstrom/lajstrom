@@ -1011,6 +1011,7 @@ type Reader interface {
     // (index-schema.md, Pages of tokens and of open sessions)
     ListTokenPage(ctx context.Context, f TokenFilter) ([]Token, error)
     GetBootstrapToken(ctx context.Context) (*BootstrapToken, error) // used and expired too; the caller checks
+    GetConfigState(ctx context.Context) (*ConfigState, error)       // last recorded (rbac.md §5); none: ErrNotFound
     ListBindings(ctx context.Context, principal string) ([]Binding, error)
     // AuthVersion: the counter of auth_version, which every write of bindings and repos
     // increments in its transaction (rbac.md §3); an evaluator reads it before its snapshot
@@ -1148,6 +1149,10 @@ type Writer interface {
     // and not expired at at, else ErrNotFound, holding the row until the transaction ends
     PutBootstrapToken(ctx context.Context, t *BootstrapToken, old string) error
     UseBootstrapToken(ctx context.Context, hash string, at time.Time) error
+    // PutConfigState makes c the configuration recorded while the stored one is the one of
+    // fingerprint old ("": none); another row there wraps ErrConflict, so that of replicas that
+    // start together one records a change. Its caller appends config.change in the transaction
+    PutConfigState(ctx context.Context, c *ConfigState, old string) error
     CreateBinding(ctx context.Context, b *Binding) error
     DeleteBinding(ctx context.Context, id int64) error
     // OIDC: CreateIdentity fills ID and CreatedAt when zero; (Issuer, Subject) taken wraps
