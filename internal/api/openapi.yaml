@@ -175,17 +175,57 @@ paths:
     get:
       tags: [repos]
       operationId: listPackages
-      summary: A page of the repo's packages, by name (read).
+      summary: A page of the repo's packages, by name unless sort says otherwise (read).
       parameters:
         - name: prefix
           in: query
           description: Only the packages whose name starts with it.
           schema: {type: string}
+        - name: q
+          in: query
+          description: >-
+            Only the packages whose name, or the summary of one of whose manifests, contains it;
+            ASCII letters in either case.
+          schema: {type: string}
+        - name: attr
+          in: query
+          description: >-
+            Only the packages with a manifest that has the attribute, <key>:<value> with the
+            annotation's full key (lajstrom.deb.suite:jammy). Two values of one key are
+            alternatives; different keys hold on the same manifest. At most 16.
+          schema:
+            type: array
+            maxItems: 16
+            items: {type: string, pattern: '^lajstrom\.[A-Za-z0-9._-]+:'}
+          style: form
+          explode: true
+        - name: sort
+          in: query
+          description: >-
+            The order: name, updated (the newest manifest's publish time), versions (how many) or
+            size (of all its files); name when absent. A tie follows by name.
+          schema: {type: string, enum: [name, updated, versions, size], default: name}
+        - name: order
+          in: query
+          description: asc or desc; asc for name and desc for the other sorts when absent.
+          schema: {type: string, enum: [asc, desc]}
+        - name: facet
+          in: query
+          description: >-
+            Adds facets: the values of this key in the repo's manifests, each with the number of
+            packages that have it. They count the whole repo, whatever the other parameters. At
+            most 16.
+          schema:
+            type: array
+            maxItems: 16
+            items: {type: string, pattern: '^lajstrom\.[A-Za-z0-9._-]+$'}
+          style: form
+          explode: true
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
       responses:
         "200":
-          description: The page; the cursor holds the place of its last package.
+          description: The page; the cursor holds the place of its last package in the order of sort.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/PackageList"}
@@ -2050,7 +2090,22 @@ components:
         packages:
           type: array
           items: {$ref: "#/components/schemas/Package"}
+        facets:
+          type: object
+          description: >-
+            With facet only: for each key, its values in the repo's manifests in byte order, at
+            most 1000.
+          additionalProperties:
+            type: array
+            items: {$ref: "#/components/schemas/FacetValue"}
         next: {type: string}
+    FacetValue:
+      description: A value of an attribute in the repo's manifests.
+      type: object
+      required: [value, count]
+      properties:
+        value: {type: string}
+        count: {type: integer, format: int64, description: How many packages have a manifest with the value.}
     Version:
       type: object
       required: [version, publishedAt, lastModified, variants, pointers]
