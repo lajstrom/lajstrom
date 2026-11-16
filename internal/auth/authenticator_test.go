@@ -60,7 +60,7 @@ func testUID(id int64) string { return fmt.Sprintf("00000000-0000-7000-8000-%012
 
 // userP is the principal of a user of newAuthFixture: alice 1, bob 2, carol 3.
 func userP(name string) Principal {
-	return Principal{Kind: KindUser, Name: testUID(map[string]int64{"alice": 1, "bob": 2, "carol": 3}[name])}
+	return Principal{Kind: KindUser, Name: testUID(map[string]int64{"alice": 1, "bob": 2, "carol": 3, "robot": 4}[name])}
 }
 
 // byName returns the live user called name.
@@ -137,6 +137,7 @@ func newAuthFixture(t *testing.T, o Options) *authFixture {
 			"alice": {ID: 1, UID: testUID(1), Name: "alice", PasswordHash: hashWith(cheap, alicePassword), Kind: KindLocal},
 			"bob":   {ID: 2, UID: testUID(2), Name: "bob", PasswordHash: hashWith(cheap, bobPassword), Kind: KindLocal, Disabled: true},
 			"carol": {ID: 3, UID: testUID(3), Name: "carol", Kind: KindLocal},
+			"robot": {ID: 4, UID: testUID(4), Name: "robot", Kind: KindService, Owner: "user:" + testUID(1)},
 		}},
 		clock: &clock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)},
 		logs:  &bytes.Buffer{},

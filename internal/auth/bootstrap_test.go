@@ -187,7 +187,7 @@ func TestBootstrapReplicas(t *testing.T) {
 	}
 
 	admins := exchangeAll(t, bs, secret)
-	list, err := users.List(ctx)
+	list, err := users.List(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}

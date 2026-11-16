@@ -504,6 +504,8 @@ type Auth struct {
 	// Kubernetes are the clusters whose service-account tokens are a credential of /v2/token
 	// (docs/spec/rbac.md §9, KEP-4412); off while it has no cluster.
 	Kubernetes Kubernetes `yaml:"kubernetes"`
+	// ServiceAccounts is the policy of the service accounts (docs/spec/rbac.md §1, #1020).
+	ServiceAccounts ServiceAccounts `yaml:"serviceAccounts"`
 }
 
 // Kubernetes configures Kubernetes service-account tokens as a credential of /v2/token
@@ -579,6 +581,31 @@ const (
 // XForwardedClientCert is the header of Envoy and Istio, read as Envoy writes it when it is
 // auth.clientCertificates.forwardedHeader.
 const XForwardedClientCert = "X-Forwarded-Client-Cert"
+
+// ServiceAccounts configures the service accounts: users of kind service, for systems, which
+// authenticate with their personal access tokens only (docs/spec/rbac.md §1).
+type ServiceAccounts struct {
+	// MaxTokenTTL bounds the lifetime of a service account's personal access token, instead of
+	// the year of a person's: a token created without an expiry expires at it, and one asked to
+	// expire later is refused. DefaultServiceTokenTTL when the file leaves it out; 0 bounds
+	// nothing, and a token created without an expiry then never expires. Must not be negative.
+	MaxTokenTTL time.Duration `yaml:"maxTokenTTL"`
+	// OnOwnerDisabled is what disabling a user owner does to its service accounts: OwnerFlag (the
+	// default) nothing but the users API's ownerDisabled, OwnerDisable disables its enabled
+	// service accounts with it. Enabling the owner again enables none of them.
+	OnOwnerDisabled string `yaml:"onOwnerDisabled"`
+}
+
+// DefaultServiceTokenTTL is the default of auth.serviceAccounts.maxTokenTTL: 365 days.
+const DefaultServiceTokenTTL = 365 * 24 * time.Hour
+
+// The values of auth.serviceAccounts.onOwnerDisabled.
+const (
+	// OwnerFlag leaves the service accounts of a disabled owner enabled, marked ownerDisabled.
+	OwnerFlag = "flag"
+	// OwnerDisable disables the enabled service accounts of an owner when the owner is disabled.
+	OwnerDisable = "disable"
+)
 
 // OIDC configures the OIDC login (docs/spec/rbac.md §8): one IdP, whose relying party Lajstrom
 // is, a confidential client with the redirect URI <server.externalURL>/-/oidc/callback.
@@ -781,7 +808,8 @@ func Default() *Config {
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth: Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
-			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime}},
+			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
+			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag}},
 		Keys:        Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 		Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: DefaultSignedCertificateTimestamps}},
 		Webhooks: Webhooks{Timeout: DefaultWebhookTimeout, MaxAttempts: DefaultWebhookMaxAttempts, Retention: DefaultWebhookRetention,

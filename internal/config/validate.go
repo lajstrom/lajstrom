@@ -894,6 +894,12 @@ func (a Auth) validate(p *problems, s Server) {
 	if a.Bootstrap.TTL <= 0 {
 		p.add("auth.bootstrap.ttl", "must be positive")
 	}
+	if a.ServiceAccounts.MaxTokenTTL < 0 {
+		p.add("auth.serviceAccounts.maxTokenTTL", "must not be negative; 0 bounds nothing")
+	}
+	if o := a.ServiceAccounts.OnOwnerDisabled; o != OwnerFlag && o != OwnerDisable {
+		p.add("auth.serviceAccounts.onOwnerDisabled", "%q is not flag or disable", o)
+	}
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
 	a.Kubernetes.validate(p, s)
