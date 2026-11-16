@@ -1,0 +1,54 @@
+# The reference scan job of #89 on GitHub Actions: every night, deploy/jobs/scan/scan.sh attaches
+# a signed CycloneDX SBOM (syft) and a signed vulnerability report (trivy) to each version of a
+# Lajstrom repo that has none (docs/guides/sbom-and-scans.md, A reference job). Copy this file to
+# .github/workflows/ of a repository that holds scan.sh at the same path, and set:
+#
+#   variables  LAJSTROM_URL (https://art.example.com), LAJSTROM_REPO (pypi/internal)
+#   secrets    LAJSTROM_TOKEN: a deploy token of the repo with the scopes read and attach, made
+#              with  lajstrom admin token create --repo pypi/internal --name scanner --scopes read,attach
+#              COSIGN_PRIVATE_KEY, COSIGN_PASSWORD: the job's key pair (cosign generate-key-pair),
+#              whose public key the server trusts (attachments.trust)
+#
+# The tools run in containers of pinned versions, which see the job's files at the same path
+# (RUNNER_TEMP). The token reads the versions and attaches to them; it cannot publish a version.
+name: lajstrom-scan
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lajstrom-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LAJSTROM_URL: ${{ vars.LAJSTROM_URL }}
+      LAJSTROM_REPO: ${{ vars.LAJSTROM_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The job's key
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$COSIGN_PRIVATE_KEY" >"$RUNNER_TEMP/cosign.key"
+      - name: Attach what is missing
+        env:
+          LAJSTROM_TOKEN: ${{ secrets.LAJSTROM_TOKEN }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY: ${{ runner.temp }}/cosign.key
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          run="docker run --rm --user $(id -u):$(id -g) -v $RUNNER_TEMP:$RUNNER_TEMP -e HOME=$RUNNER_TEMP"
+          export SYFT="$run anchore/syft:v1.33.0"
+          export TRIVY="$run -e TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache aquasec/trivy:0.67.2"
+          export COSIGN="$run -i --network host -e DOCKER_CONFIG=$RUNNER_TEMP/cosign-docker -e COSIGN_PASSWORD ghcr.io/sigstore/cosign/cosign:v3.1.4"
+          deploy/jobs/scan/scan.sh "$LAJSTROM_REPO"
