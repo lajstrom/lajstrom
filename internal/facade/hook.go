@@ -83,12 +83,24 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	if err := h.checkCreated(ctx, t, desc.Digest, parsed.Annotations.Created); err != nil {
 		return err
 	}
-	if err := h.checkLayers(ctx, t, m.Layers); err != nil {
+	if err := h.checkPushedLayers(ctx, t, parsed); err != nil {
 		return err
 	}
 	res, err := h.o.Ingest.Ingest(ctx, t.repo, t.path, tag, m, body, auth.PrincipalFrom(ctx))
 	if err != nil {
 		return ingestError(t, m, err)
+	}
+	managedCreated(w, t, refDigest, res, m)
+	return nil
+}
+
+// managedCreated answers 201 to the PUT of the manifest m that ingest published as res
+// (putManaged): Location, the digest, or the tag of a push by digest; Docker-Content-Digest, the
+// client's digest of a manifest it answers in the client's form (§2.1); and OCI-Subject for a
+// manifest with a subject.
+func managedCreated(w http.ResponseWriter, t *target, refDigest digest.Digest, res *ingest.Result, m ocispec.Manifest) {
+	if res.View != "" {
+		res.Digest = res.View // the client's digest: its manifest is answered in its form (§2.1)
 	}
 	loc := res.Digest.String()
 	if refDigest != "" {
@@ -103,7 +115,6 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	}
 	hdr.Set("Content-Length", "0")
 	w.WriteHeader(http.StatusCreated)
-	return nil
 }
 
 // proxyRefusal is the answer to a manifest pushed to the proxy repo of t that is not a

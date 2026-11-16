@@ -61,8 +61,9 @@ type env struct {
 	tokens token.Keys
 	extURL string // Options.ExternalURL
 	logs   *logBuffer
-	h      http.Handler // replica A
-	proxy  OCIProxy     // Options.OCIProxy
+	h      http.Handler     // replica A
+	proxy  OCIProxy         // Options.OCIProxy
+	enc    *keys.Encryption // Options.Encryption: the keys of encrypted repos; nil without
 	policy *policy.Decider
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
@@ -79,6 +80,7 @@ type envOptions struct {
 	externalURL string                                     // Options.ExternalURL
 	ociProxy    OCIProxy                                   // Options.OCIProxy
 	policy      bool                                       // a Decider over the store, in Options.Policy and ingest's
+	encrypted   bool                                       // raw/assets encrypts at rest, with keys over the store
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
@@ -103,14 +105,27 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.policy {
 		e.policy = policy.New(policy.Options{Index: e.idx, Now: e.clock.Now})
 	}
+	if o.encrypted {
+		m, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
+		must(t, err)
+		e.enc, err = keys.NewEncryption(keys.EncryptionOptions{Index: e.idx, Master: m, Log: slog.New(slog.DiscardHandler)})
+		must(t, err)
+	}
 	if e.ingest == nil {
-		e.ingest = ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: e.idx,
-			Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now, Policy: e.policy})
+		io := ingest.Options{Providers: provider.Map{"local": e.reg}, Index: e.idx, Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now,
+			Policy: e.policy}
+		if e.enc != nil {
+			io.Encryption = e.enc
+		}
+		e.ingest = ingest.New(io)
 	}
 	for _, r := range []*index.Repo{&e.raw, &e.oci} {
 		*r = index.Repo{Registry: "local", Kind: "hosted"}
 	}
 	e.raw.Format, e.raw.Name, e.raw.Prefix = "raw", "assets", "raw/assets"
+	if o.encrypted {
+		e.raw.Policy = json.RawMessage(`{"encryption":{"mode":"at-rest"}}`)
+	}
 	e.oci.Format, e.oci.Name, e.oci.Prefix = "oci", "images", "oci/images"
 	must(t, st.CreateRepo(ctx, &e.raw))
 	must(t, st.CreateRepo(ctx, &e.oci))
@@ -127,10 +142,14 @@ func (e *env) replica() http.Handler {
 
 // replicaWith returns a replica whose token keys are k.
 func (e *env) replicaWith(k token.Keys) http.Handler {
-	h := New(Options{Index: e.idx, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
+	o := Options{Index: e.idx, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
 		MaxManifestSize: e.max, MaxCreatedBehind: e.behind, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
-		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1], OCIProxy: e.proxy, Policy: e.policy})
+		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1], OCIProxy: e.proxy, Policy: e.policy}
+	if e.enc != nil {
+		o.Encryption = e.enc
+	}
+	h := New(o)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), userP(name)))

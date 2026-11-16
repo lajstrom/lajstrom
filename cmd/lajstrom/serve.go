@@ -202,7 +202,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
-				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore, Policy: decider})
+				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}

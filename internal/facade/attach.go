@@ -33,6 +33,12 @@ func (h *handler) putReferrer(w http.ResponseWriter, r *http.Request, t *target,
 	} else if m.Subject != nil {
 		subject = m.Subject.Digest
 	}
+	if encrypted, err := h.encrypts(t); encrypted || err != nil {
+		if err != nil {
+			return err
+		}
+		return h.putEncryptedReferrer(w, r, t, tag, desc, body, m, subject)
+	}
 	if err := h.checkLayers(ctx, t, append([]ocispec.Descriptor{m.Config}, m.Layers...)); err != nil {
 		return err
 	}
