@@ -106,7 +106,7 @@ func TestUsersCreate(t *testing.T) {
 	users, st, _ := newUsers(t)
 	u := createAdminAndAlice(t, users)
 	b, _ := json.Marshal(u)
-	if want := `{"uid":"` + u.UID + `","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z"}`; !index.IsUID(u.UID) || string(b) != want {
+	if want := `{"uid":"` + u.UID + `","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z","lastSeenAt":null}`; !index.IsUID(u.UID) || string(b) != want {
 		t.Errorf("user = %s, want %s", b, want)
 	}
 	row, err := st.GetUser(ctx, "admin")

@@ -1053,6 +1053,57 @@ there, and a token without one, which only the bound `0` makes, is refused (`401
 `0`, create expiring tokens until every replica runs the new release, or update the replicas
 first.
 
+## Inactive users
+
+PCI DSS 8.2.6 asks that an account inactive for 90 days be disabled ([rbac.md](spec/rbac.md) §1,
+Inactive users; [compliance.md](compliance.md)). Lajstrom does it at the account's next
+authentication, with no task that looks for inactive users:
+
+```yaml
+auth:
+  disableInactiveUsersAfter: 2160h # 90 days; 0, the default, disables nobody; else at least 24h
+```
+
+**The last activity.** Every user has `lastSeenAt` (the users API, `lajstrom admin user list`):
+the time of its last successful authentication, with its password (HTTP Basic, `docker login`'s
+`/v2/token`, `npm login`, a web UI's sign-in), a personal access token of its own, or an OIDC
+login. A service account authenticates with its tokens only, so their use is its activity. It is
+written as a token's `lastUsedAt` is, when the value read with the user is a minute old or more,
+so it is less than a minute behind. A `/v2` bearer is issued for an authentication, which counts;
+its own use does not. An admin's change of the user is not the user's activity. Recording an
+activity moves neither the user's revision nor its `ETag`.
+
+**Inactive.** A user is inactive once the setting has passed since its last activity, or since
+its creation when it has none. The users API answers `inactive: true` for it, `lajstrom admin
+user list` writes `(inactive)` after its LAST SEEN, and `serve` warns at start how many there
+are, naming the last enabled admin when it is among them. Read the list before turning the setting
+on, or before lowering it: the users it reaches are inactive at once.
+
+**At its next authentication** a credential of an inactive user that verifies is refused, `401` as
+a disabled user's (a password counts as a failed login), and the user is disabled: a
+`user.disable` row by `anonymous` with `source: inactivity`, the client's address and the request
+id, and `reason: inactive`, `lastSeenAt` and the setting as `after` in its details. A wrong
+password or token disables nobody. The page of an OIDC login says that the account was disabled
+for inactivity, and that an admin can enable it; the IdP's sign-in does not make the user active.
+With `auth.serviceAccounts.onOwnerDisabled: disable`, its service accounts are disabled with it,
+as with every disabling. From the moment the setting has passed, no credential of the user is
+taken on any replica; the row says `disabled` from the first one tried.
+
+**Coming back.** `lajstrom admin user enable alice` (or `PATCH` with `"disabled": false`) sets
+`lastSeenAt` to the time of the enabling, so that alice's next request does not disable her again.
+
+**The last enabled admin** is never disabled so: its credential is taken, its activity recorded,
+and a warning is logged. A service account's and a group's admin bindings do not count for that
+rule: an inactive service account with the admin role is disabled as any.
+
+**Upgrading** to the release that brings it (migration 0034): a user with a password counts from
+the upgrade, since its password logins left no record before; a service account or an OIDC user
+counts from the last use of its tokens or its last login, so one unused for longer than the
+setting is inactive at once. A snapshot taken before 0034 is restored alike. During a rolling
+update, a replica of the release before records no activity and disables nobody, and a user
+enabled there may be disabled again at its first authentication on a newer one: enable it again
+there.
+
 ## Bootstrap: the first admin
 
 There is no admin password in the environment or in the configuration. A password there is

@@ -1245,7 +1245,8 @@ and its name, is in [auth.md](auth.md#the-uid-and-the-name), and what a service 
   "name": "alice",
   "kind": "local",
   "disabled": false,
-  "createdAt": "2026-11-09T16:48:44Z"
+  "createdAt": "2026-11-09T16:48:44Z",
+  "lastSeenAt": "2026-11-16T09:12:30Z"
 }
 ```
 
@@ -1256,6 +1257,8 @@ and its name, is in [auth.md](auth.md#the-uid-and-the-name), and what a service 
 | `kind` | `local`; `oidc`, made by its first OIDC login; `service`, a service account. Set at the creation, never changed |
 | `disabled` | a disabled user's credentials and tokens are refused from the next request on |
 | `createdAt` | set by the server |
+| `lastSeenAt` | the user's last activity: its last successful authentication (a password, a personal access token, an OIDC login; a service account's token), less than a minute behind, or its enabling when later; `null` before any record. It moves no revision: the `ETag` stands for what a `PATCH` changes ([Inactive users](auth.md#inactive-users)) |
+| `inactive` | `true` while `auth.disableInactiveUsersAfter` is set and the user, enabled, has had no activity for longer: its next authentication disables it, unless it is the last enabled admin. Left out when `false` |
 | `owner` | a service account's owner: `user:<uid>` of a person, or `group:<name>`; left out for every other kind |
 | `ownerName` | the name of a user owner; left out for a group |
 | `ownerDisabled` | `true` while a user owner is disabled; the service account keeps working unless `auth.serviceAccounts.onOwnerDisabled` is `disable` ([Change](#change-patch-apiv1usersuser)). Left out when `false` |
@@ -1269,6 +1272,7 @@ A password is never answered.
   "kind": "service",
   "disabled": false,
   "createdAt": "2026-11-15T10:00:00Z",
+  "lastSeenAt": null,
   "owner": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
   "ownerName": "alice"
 }

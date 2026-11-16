@@ -279,14 +279,16 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 
 // withUsers opens the index database of the configuration, runs fn with the users service over
 // it, which disables the service accounts of an owner it disables when
-// auth.serviceAccounts.onOwnerDisabled is disable, and closes the database.
+// auth.serviceAccounts.onOwnerDisabled is disable and marks the users inactive beyond
+// auth.disableInactiveUsersAfter, and closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable})
+	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
+		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter})
 }
 
 // errNoPassword is the error when no source gives a password.
@@ -358,13 +360,15 @@ func promptPassword(out io.Writer, fd int, label string) (string, error) {
 	return string(b), nil
 }
 
-// writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED, CREATED and
-// OWNER: a service account's, user:<name> of a person, with (disabled) while that user is, or
+// writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED, CREATED, LAST
+// SEEN and OWNER. LAST SEEN is the user's last activity, - before any record, with (inactive) for
+// a user inactive beyond auth.disableInactiveUsersAfter (docs/spec/rbac.md §1, Inactive users).
+// OWNER is a service account's, user:<name> of a person, with (disabled) while that user is, or
 // group:<name>; - for every other kind.
 func writeUserTable(out io.Writer, users []auth.User) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = io.WriteString(tw, "NAME\tUID\tKIND\tDISABLED\tCREATED\tOWNER\n") // a bytes.Buffer does not fail
+	_, _ = io.WriteString(tw, "NAME\tUID\tKIND\tDISABLED\tCREATED\tLAST SEEN\tOWNER\n") // a bytes.Buffer does not fail
 	for _, u := range users {
 		owner := cmp.Or(u.Owner, "-")
 		if u.OwnerName != "" {
@@ -373,7 +377,15 @@ func writeUserTable(out io.Writer, users []auth.User) error {
 		if u.OwnerDisabled {
 			owner += " (disabled)"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339), owner)
+		seen := "-"
+		if u.LastSeenAt != nil {
+			seen = u.LastSeenAt.Format(time.RFC3339)
+		}
+		if u.Inactive {
+			seen += " (inactive)"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339),
+			seen, owner)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

@@ -229,6 +229,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
+				InactiveUsersAfter:      c.Auth.DisableInactiveUsersAfter,
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, LoginIdle: c.Auth.Login.IdleTimeout,
 				Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},

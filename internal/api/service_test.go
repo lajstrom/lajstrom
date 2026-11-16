@@ -25,7 +25,7 @@ func TestServiceAccountsAPI(t *testing.T) {
 		t.Errorf("Location = %q, want /api/v1/users/robot", loc)
 	}
 	wantJSON(t, "the service account", robot, `{"uid": "`+robot.UID+`", "name": "robot", "kind": "service", "disabled": false,
-		"createdAt": "2026-01-02T12:00:00Z", "owner": "user:`+aliceUID+`", "ownerName": "alice"}`)
+		"createdAt": "2026-01-02T12:00:00Z", "lastSeenAt": null, "owner": "user:`+aliceUID+`", "ownerName": "alice"}`)
 	wantStatus(t, f.do(http.MethodPost, "/api/v1/users", `{"name": "deployer", "kind": "service", "owner": "group:ops"}`, admin), http.StatusCreated)
 
 	for kind, want := range map[string]string{"service": `["deployer", "robot"]`, "local": `["alice"]`, "": `["alice", "deployer", "robot"]`} {
