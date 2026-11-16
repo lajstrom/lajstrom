@@ -181,7 +181,7 @@ func (pub *publish) checkVersion(ctx context.Context, w index.Writer) error {
 		return errExisted
 	}
 	if pub.repeatOnFiles {
-		same, err := sameFiles(ctx, w, v.ID, pub.parsed.Files)
+		same, err := sameFiles(ctx, w, pub.repo.ID, pub.pkgPath, v.ID, pub.plainFiles())
 		if err != nil {
 			return err
 		}
@@ -390,24 +390,29 @@ func (p *Pipeline) repeat(ctx context.Context, repo index.Repo, pkgPath string, 
 	if v == nil {
 		return nil, nil
 	}
-	same, err := sameFiles(ctx, p.index, v.ID, parsed.Files)
+	same, err := sameFiles(ctx, p.index, repo.ID, pkgPath, v.ID, parsed.Files)
 	if err != nil || !same {
 		return nil, err
 	}
 	return v, nil
 }
 
-// sameFiles reports whether the files of a version are the file layers, as a set: the same
-// digest, size, media type and title each, in any order. The metadata layer is not compared:
-// it is built from the files.
-func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []profile.Layer) (bool, error) {
+// sameFiles reports whether the files of a version, at the package path of the repo, are the
+// file layers, as a set: the same digest, size, media type and title each, in any order. The
+// digest of an encrypted file is its plaintext's, from blob_map: two uploads of the same file are
+// two ciphertexts. The metadata layer is not compared: it is built from the files.
+func sameFiles(ctx context.Context, r index.Reader, repoID int64, pkgPath string, versionID int64, layers []profile.Layer) (bool, error) {
 	files, err := r.ListFiles(ctx, versionID)
 	if err != nil {
 		return false, fmt.Errorf("ingest: files of version %d: %w", versionID, err)
 	}
 	had := make([]profile.Layer, len(files))
 	for i, f := range files {
-		had[i] = profile.Layer{Digest: f.Digest, Size: f.Size, MediaType: f.MediaType, Title: f.Name}
+		d, err := plainDigest(ctx, r, repoID, pkgPath, f)
+		if err != nil {
+			return false, err
+		}
+		had[i] = profile.Layer{Digest: d, Size: f.Size, MediaType: f.MediaType, Title: f.Name}
 	}
 	return sameLayers(had, layers), nil
 }

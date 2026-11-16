@@ -220,12 +220,24 @@ func (p *Pipeline) streamFile(ctx context.Context, t *target, name string, r io.
 	}
 	t.streamed = &streamed{w: w}
 	defer p.cancelStreamed(ctx, t)
+	if t.sealer, err = p.sealerFor(t.repo, t.pkgPath); err != nil {
+		return format.SessionFile{}, err
+	}
+	if err := t.encryptStreamed(); err != nil {
+		return format.SessionFile{}, err
+	}
 	f, err := t.streamed.read(t.repo, format.StreamUpload{File: format.UploadedFile{Name: name, Size: size}, Body: r},
 		format.Inspection{Checksums: []string{"md5", "sha1", "sha512"}})
 	if err != nil {
 		return format.SessionFile{}, fmt.Errorf("ingest: %s into %s: %w", name, t.name, err)
 	}
+	if err := t.sealStreamed(ctx); err != nil {
+		return format.SessionFile{}, err
+	}
 	if err := t.commit(ctx); err != nil {
+		return format.SessionFile{}, err
+	}
+	if err := p.recordSealed(ctx, t); err != nil {
 		return format.SessionFile{}, err
 	}
 	return format.SessionFile{Name: name, Digest: t.streamed.desc.Digest, Size: f.Size, Checksums: f.Checksums}, nil
@@ -343,10 +355,16 @@ func (p *Pipeline) commitFiles(ctx context.Context, repo index.Repo, s *index.Se
 	up := format.Upload{Params: make(map[string]string, len(params)+3)}
 	maps.Copy(up.Params, params)
 	maps.Copy(up.Params, map[string]string{"name": st.Name, "version": st.Version, "uploaded-by": s.Principal})
+	if t.sealer, err = p.sealerFor(repo, t.pkgPath); err != nil {
+		return nil, err
+	}
 	for _, f := range st.Files {
 		d := ocispec.Descriptor{MediaType: sessionBlobType, Digest: f.Digest, Size: f.Size}
-		up.Files = append(up.Files, format.UploadedFile{Name: f.Name, Size: f.Size, Checksums: f.Checksums,
-			Open: func() (io.ReadCloser, error) { return t.rr.Fetch(ctx, d) }})
+		open := func() (io.ReadCloser, error) { return t.rr.Fetch(ctx, d) }
+		if t.sealer != nil {
+			open = func() (io.ReadCloser, error) { return t.openSealed(ctx, d.Digest) }
+		}
+		up.Files = append(up.Files, format.UploadedFile{Name: f.Name, Size: f.Size, Checksums: f.Checksums, Open: open})
 	}
 	return p.Upload(ctx, repo, up, principal)
 }

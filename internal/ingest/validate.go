@@ -198,6 +198,13 @@ func (e *tooLarge) Unwrap() []error {
 func (pub *publish) checkBlobs(ctx context.Context, visibility time.Duration) error {
 	var deadline time.Time
 	for _, l := range pub.manifest.Layers {
+		if pub.sealer != nil && !pub.streamed.later(l.Digest) {
+			b, err := pub.sealer.lookup(ctx, l.Digest)
+			if err != nil {
+				return err
+			}
+			l = b.storedDesc()
+		}
 		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest || pub.streamed.later(l.Digest) {
 			continue
 		}
@@ -255,6 +262,9 @@ func (pub *publish) fetcher() format.BlobFetcher {
 			}
 			return verifiedBlob{verifier: newVerifier(rc, desc), Closer: rc}, nil
 		}
+		if pub.sealer != nil && d != pub.manifest.Config.Digest {
+			return pub.sealedFetched(ctx, desc)
+		}
 		return &fetchedBlob{ctx: ctx, t: pub.target, desc: desc, blocks: map[int64][]byte{}}, nil
 	}
 }
@@ -268,6 +278,9 @@ func (pub *publish) open(ctx context.Context, desc ocispec.Descriptor) (io.ReadC
 			return nil, fmt.Errorf("ingest: open blob %s: %w", desc.Digest, err)
 		}
 		return rc, nil
+	}
+	if pub.sealer != nil && desc.Digest != pub.manifest.Config.Digest {
+		return pub.openSealed(ctx, desc.Digest)
 	}
 	return pub.rr.Fetch(ctx, desc)
 }
@@ -297,8 +310,8 @@ func (pub *publish) descriptor(d digest.Digest) (ocispec.Descriptor, bool) {
 func (pub *publish) metadataUnreadable(ctx context.Context) (bool, error) {
 	l := pub.parsed.Metadata
 	desc := ocispec.Descriptor{MediaType: l.MediaType, Digest: l.Digest, Size: l.Size}
-	rc, err := pub.rr.Fetch(ctx, desc)
-	if errors.Is(err, provider.ErrNotFound) {
+	rc, err := pub.open(ctx, desc)
+	if errors.Is(err, provider.ErrNotFound) || pub.sealer != nil && errors.Is(err, ErrInvalid) {
 		return true, nil
 	}
 	if err != nil {
@@ -354,6 +367,9 @@ func (pub *publish) readMetadata(ctx context.Context) (json.RawMessage, error) {
 // UploadStream, which the push commits. UploadStream's blobs are held instead, and pushed with
 // the file (commit): a refused upload stores none of them.
 func (t *target) pushBlobs(ctx context.Context, built *format.Built) error {
+	if t.sealer != nil && t.streamed == nil {
+		return t.pushSealedBlobs(ctx, built)
+	}
 	have := map[digest.Digest]bool{}
 	for _, b := range built.Blobs {
 		have[b.Descriptor.Digest] = true
@@ -386,6 +402,9 @@ func (t *target) pushBlobs(ctx context.Context, built *format.Built) error {
 // nothing holds more than a buffer of them.
 func (t *target) pushBlob(ctx context.Context, b format.BlobSource) error {
 	d := b.Descriptor
+	if t.sealer != nil && d.Digest != profile.EmptyConfig.Digest && !t.sealer.ready[d.Digest] {
+		return t.pushSealed(ctx, b)
+	}
 	ok, err := t.rr.Exists(ctx, d)
 	if err != nil {
 		return fmt.Errorf("ingest: blob %s in %s: %w", d.Digest, t.name, err)
