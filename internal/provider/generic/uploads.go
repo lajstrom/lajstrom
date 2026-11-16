@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -131,7 +132,14 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 		return u, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return r.session(op, resp, u, u.Offset+cr.n)
+	// The registry answered once it had read the chunk: one of known size by its
+	// Content-Length; one of unknown size up to its last chunk, which the transport sends after
+	// the read that ended the body.
+	sent := size
+	if size < 0 {
+		sent = cr.n.Load()
+	}
+	return r.session(op, resp, u, u.Offset+sent)
 }
 
 // overBound reports whether a chunk of size bytes (-1: unknown) cannot go as one PATCH to a
@@ -184,8 +192,9 @@ func (p *Provider) refuseStreamed(op string) error {
 // no body: registries read the body of the closing PUT by its Content-Length, and JFrog drops
 // the body of a closing PUT that follows a PATCH and answers 201 for the short blob
 // (docs/registries/jfrog-jcr.md, item 2); a chunk of unknown size may be spooled there first.
-// When that PATCH fails, no PUT is sent. The registry's DIGEST_INVALID wraps
-// content.ErrMismatchedDigest.
+// When that PATCH fails, no PUT is sent. The size of the blob is the session's offset and the
+// length of the PUT's body, which the registry read whole before its 201. The registry's
+// DIGEST_INVALID wraps content.ErrMismatchedDigest.
 func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d digest.Digest, body io.Reader, size int64) (ocispec.Descriptor, error) {
 	op := r.op("finish upload", u.ID)
 	if err := d.Validate(); err != nil {
@@ -207,16 +216,16 @@ func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d 
 	q.Set("digest", d.String())
 	put.RawQuery = q.Encode()
 	var (
-		hdr http.Header
-		rd  io.Reader
-		cr  = &countingReader{}
+		hdr  http.Header
+		rd   io.Reader
+		sent int64
 	)
 	if body != nil && size > 0 {
 		r.prime(ctx, loc)
 		hdr = http.Header{"Content-Range": {contentRange(u.Offset, size)}}
-		cr.r, rd = body, cr
+		rd, sent = struct{ io.Reader }{body}, size // a stream: NewRequest gives it no GetBody
 	}
-	resp, err := r.send(ctx, op, http.MethodPut, put.String(), rd, size, hdr, http.StatusCreated)
+	resp, err := r.send(ctx, op, http.MethodPut, put.String(), rd, sent, hdr, http.StatusCreated)
 	var er *errcode.ErrorResponse
 	switch {
 	case errors.As(err, &er) && er.StatusCode == http.StatusBadRequest && hasCode(er, errcode.ErrorCodeDigestInvalid):
@@ -225,7 +234,7 @@ func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d 
 		return ocispec.Descriptor{}, err
 	}
 	_ = resp.Body.Close()
-	return ocispec.Descriptor{MediaType: octetStream, Digest: d, Size: u.Offset + cr.n}, nil
+	return ocispec.Descriptor{MediaType: octetStream, Digest: d, Size: u.Offset + sent}, nil
 }
 
 // BlobUploadStatus asks for the session's offset: GET <location>, 204 with Range and Location.
@@ -530,14 +539,17 @@ func withoutURL(err error) error {
 	return err
 }
 
-// countingReader counts the bytes read through it.
+// countingReader counts the bytes read through it. The transport reads a request's body in a
+// goroutine of its own, which may still read after RoundTrip returned (#1270): net/http reads a
+// body of known length once more after its last byte, and goes on reading when the registry
+// answered before the end; hence the atomic.
 type countingReader struct {
 	r io.Reader
-	n int64
+	n atomic.Int64
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	c.n += int64(n)
+	c.n.Add(int64(n))
 	return n, err
 }
