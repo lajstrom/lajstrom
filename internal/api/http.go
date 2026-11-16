@@ -248,6 +248,7 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
+		{"GET /api/v1/search", h.search},
 		{"POST /api/v1/bootstrap", h.bootstrap},
 		{"POST /api/v1/login", h.login},
 	}
