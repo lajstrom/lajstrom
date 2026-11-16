@@ -423,12 +423,13 @@ func (h *handler) createRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, err
 	}
 	w.Header().Set("Location", "/api/v1/repos/"+repo.Format+"/"+repo.Name)
+	w.Header().Set("ETag", repo.ETag())
 	return http.StatusCreated, repo, nil
 }
 
 // getRepo answers one repo, with what the request may do on it and what the index holds of it
-// (withFacts).
-func (h *handler) getRepo(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+// (withFacts), and with its ETag; 304 for an If-None-Match that has it.
+func (h *handler) getRepo(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
 		return 0, nil, err
@@ -441,13 +442,18 @@ func (h *handler) getRepo(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err := h.withFacts(r, one); err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, one[0], nil
+	return tagged(w, r, one[0].ETag(), one[0])
 }
 
-// updateRepo applies the UpdateRequest of the body and answers the repo as it is now.
+// updateRepo applies the UpdateRequest of the body and answers the repo as it is now, with its
+// ETag. With If-Match, the change is made only while the repo has a revision it names.
 func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionManage, f, name); err != nil {
+		return 0, nil, err
+	}
+	r, err := conditional(r, TableRepos, "repo "+f+"/"+name)
+	if err != nil {
 		return 0, nil, err
 	}
 	var body patchBody
@@ -455,7 +461,11 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, err
 	}
 	if body.Kind != nil {
-		return h.convertRepo(r, f, name, body)
+		status, out, err := h.convertRepo(r, f, name, body)
+		if repo, ok := out.(Repo); ok {
+			w.Header().Set("ETag", repo.ETag())
+		}
+		return status, out, err
 	}
 	req, err := body.request()
 	if err != nil {
@@ -479,13 +489,19 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
+	w.Header().Set("ETag", repo.ETag())
 	return http.StatusOK, repo, nil
 }
 
-// deleteRepo deletes a repo, refusing one with versions unless ?force=true: 204.
+// deleteRepo deletes a repo, refusing one with versions unless ?force=true: 204. With If-Match,
+// only while the repo has a revision it names.
 func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionManage, f, name); err != nil {
+		return 0, nil, err
+	}
+	r, err := conditional(r, TableRepos, "repo "+f+"/"+name)
+	if err != nil {
 		return 0, nil, err
 	}
 	force, err := boolParam(r, "force")
