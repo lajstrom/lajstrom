@@ -36,20 +36,11 @@ var validName = regexp.MustCompile(`^(?i:[a-z0-9]|[a-z0-9][a-z0-9._-]*[a-z0-9])$
 // ValidName reports whether name is a valid project name.
 func ValidName(name string) bool { return validName.MatchString(name) }
 
-// pep440 is the version scheme of PEP 440, the canonical pattern of its appendix B, anchored and
-// without regard to case: epoch, release, pre-release, post-release, development release and
-// local version, each with the separators PEP 440 allows.
-var pep440 = regexp.MustCompile(`^(?i:\s*v?` +
-	`(?:[0-9]+!)?` +
-	`[0-9]+(?:\.[0-9]+)*` +
-	`(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?[0-9]*)?` +
-	`(?:-[0-9]+|[-_.]?(?:post|rev|r)[-_.]?[0-9]*)?` +
-	`(?:[-_.]?dev[-_.]?[0-9]*)?` +
-	`(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?` +
-	`\s*)$`)
-
-// IsPEP440 reports whether version is a PEP 440 version.
-func IsPEP440(version string) bool { return pep440.MatchString(version) }
+// IsPEP440 reports whether version is a PEP 440 version (parseVersion).
+func IsPEP440(version string) bool {
+	_, err := parseVersion(version)
+	return err == nil
+}
 
 // Wheel is what the PEP 427 file name of a wheel says:
 // {distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl.
