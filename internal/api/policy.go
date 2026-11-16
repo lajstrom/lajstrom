@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 )
 
 // The keys of a repo's policy and their bounds (docs/api.md, the policy keys). Each key has a
@@ -22,6 +25,8 @@ const (
 	keySessionTimeout  = "sessionTimeout"
 	keyMaxSessionFiles = "maxSessionFiles"
 	keyVersionPolicy   = "versionPolicy"
+	keyEnforcePull     = policy.KeyEnforcePull // docs/spec/policy.md §9
+	keyQuarantine      = policy.KeyQuarantine
 
 	minSessionTimeout = time.Minute
 	maxSessionTimeout = 24 * time.Hour
@@ -34,7 +39,7 @@ const (
 // policyKeys are the keys of a policy, and mavenKeys those of policy.maven, as the messages
 // list them.
 var (
-	policyKeys = []string{keyMaxFileSize, keyBlobRedirect, keyMaven}
+	policyKeys = []string{keyMaxFileSize, keyBlobRedirect, keyMaven, keyEnforcePull, keyQuarantine}
 	mavenKeys  = []string{keyMaxSessionFiles, keySessionTimeout, keyVersionPolicy}
 )
 
@@ -144,6 +149,15 @@ func checkPolicyKeys(formatName string, obj policyObject) error {
 			}
 		case keyMaven:
 			err = checkMavenPolicy(formatName, v)
+		case keyEnforcePull:
+			if _, ok := v.(bool); !ok {
+				err = invalid("policy.enforcePull: must be true or false")
+			}
+		case keyQuarantine:
+			s, _ := v.(string)
+			if d, perr := time.ParseDuration(s); perr != nil || (d != 0 && (d < policy.MinQuarantine || d > policy.MaxQuarantine)) {
+				err = invalid(`policy.quarantineNewVersions: must be a duration from 1m to 8760h, or "0s", e.g. "72h"`)
+			}
 		default:
 			err = unknownKey("policy."+k, policyKeys)
 		}
@@ -219,4 +233,20 @@ func checkMavenKey(k string, v any) error {
 // unknownKey is the error of a key a policy does not have.
 func unknownKey(path string, known []string) error {
 	return invalid("%s: unknown key; the keys are %s", path, strings.Join(known, ", "))
+}
+
+// checkPolicyKind refuses the keys of a policy that a repo of kind does not have: quarantineNewVersions
+// is a proxy repo's (docs/spec/policy.md §9).
+func checkPolicyKind(kind string, p json.RawMessage) error {
+	if len(p) == 0 || kind == index.KindProxy {
+		return nil
+	}
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(p, &keys) != nil {
+		return nil
+	}
+	if _, ok := keys[keyQuarantine]; ok {
+		return invalid("policy.quarantineNewVersions: only a proxy repo has it, not a %s repo", kind)
+	}
+	return nil
 }

@@ -73,6 +73,14 @@ type Options struct {
 	// MaxManifestSize is the largest manifest GET …/versions/{version}/manifest reads, in bytes
 	// (server.maxManifestSize); zero or negative means 4 MiB.
 	MaxManifestSize int64
+	// Rules is the service behind /api/v1/policy/rules (docs/spec/policy.md §7); nil answers
+	// them 501.
+	Rules *Rules
+	// Verdicter attaches the verdicts of a deny: the ingest pipeline; nil answers a deny 501.
+	Verdicter Verdicter
+	// PolicyKey is the server's policy key (docs/spec/policy.md §5); nil answers a deny 501 and
+	// GET /api/v1/policy/key 404.
+	PolicyKey PolicyKey
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
@@ -142,6 +150,13 @@ const maxBody = 64 << 10
 //	POST   /api/v1/repos/{format}/{repo}/webhooks/{id}/test        send a ping now, answer its delivery
 //	GET    /api/v1/repos/{format}/{repo}/webhooks/{id}/deliveries[?limit=&cursor=]  its delivery log, newest first
 //	…      /api/v1/webhooks…                           the same for every mask, the admin role
+//	GET    /api/v1/policy/rules[?repo=]                the policy rules: every rule (admin), or those of a repo
+//	POST   /api/v1/policy/rules                        create one: manage on the repo of its mask, admin for a wildcard
+//	DELETE /api/v1/policy/rules/{id}                   delete one
+//	GET    /api/v1/policy/verdicts?digest=&repo=       the verdicts of a manifest or a repo
+//	POST   /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny[?variant=]  sign and attach a deny verdict
+//	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny[?variant=]  delete the manual verdicts
+//	GET    /api/v1/policy/key                          the policy key's public key, PEM, to anyone
 //	GET    /api/v1/users[?limit=&cursor=]              list the live users, a page at a time
 //	POST   /api/v1/users                               create a user
 //	GET    /api/v1/users/{user}                        one user, by name or uid
@@ -171,7 +186,8 @@ func New(o Options) http.Handler {
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
-		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize}
+		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
+		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -242,6 +258,13 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/deploy-tokens", h.createMaskToken},
 		{"DELETE /api/v1/deploy-tokens/{id}", h.revokeMaskToken},
 		{"GET /api/v1/tokens", h.listAllTokens},
+		{"GET /api/v1/policy/rules", h.listRules},
+		{"POST /api/v1/policy/rules", h.createRule},
+		{"DELETE /api/v1/policy/rules/{id}", h.deleteRule},
+		{"GET /api/v1/policy/verdicts", h.listVerdicts},
+		{"GET /api/v1/policy/key", h.policyKeyPEM},
+		{"POST /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny", h.denyVersion},
+		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny", h.undenyVersion},
 		{"GET /api/v1/repos/{format}/{repo}/webhooks", h.listWebhooks},
 		{"POST /api/v1/repos/{format}/{repo}/webhooks", h.createWebhook},
 		{"GET /api/v1/repos/{format}/{repo}/webhooks/{id}", h.getWebhook},
@@ -309,7 +332,11 @@ type handler struct {
 	// not positive.
 	providers   provider.Set
 	maxManifest int64
-	log         *slog.Logger
+	// rules, verdicter and policyKey are Options.Rules, Options.Verdicter and Options.PolicyKey.
+	rules     *Rules
+	verdicter Verdicter
+	policyKey PolicyKey
+	log       *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
@@ -323,6 +350,7 @@ func (h *handler) serve(fn endpoint) http.Handler {
 		switch {
 		case err != nil:
 			h.fail(w, r, err)
+		case body == nil && status == 0: // the endpoint wrote its answer
 		case body == nil:
 			w.WriteHeader(status)
 		default:

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -94,4 +95,22 @@ func serveTrust(ctx context.Context, c *config.Config, st index.Store, signer fo
 	}
 	trust, err := attachmentTrust(c.Attachments, log, entries...)
 	return key, trust, err
+}
+
+// newRules returns the service of the policy rules over st, for serve and lajstrom admin policy.
+func newRules(c *config.Config, st index.Store, log *slog.Logger) *api.Rules {
+	lookup := lookupIn(servedPlugins(c.Server.ExternalURL, nil))
+	served := func(name string) bool {
+		_, ok := lookup(name)
+		return ok || name == "oci"
+	}
+	return &api.Rules{Index: st, Formats: served, Order: versionOrder(lookup), Webhooks: newOutbox(c), Log: log}
+}
+
+// apiPolicyKey is key as the API takes it: nil, not a nil *keys.PolicyKey, without one.
+func apiPolicyKey(key *keys.PolicyKey) api.PolicyKey {
+	if key == nil {
+		return nil
+	}
+	return key
 }

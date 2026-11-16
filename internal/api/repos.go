@@ -392,6 +392,9 @@ func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 	}
 	if req.Policy != nil {
 		policy, err := mergePolicy(row.Format, row.Policy, req.Policy)
+		if err == nil {
+			err = checkPolicyKind(row.Kind, policy)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -612,6 +615,9 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, *proxy.GroupSettings, err
 			AnonymousRead: req.AnonymousRead, Group: group.Stored(), CreatedAt: now, UpdatedAt: now}, &group, nil
 	}
 	policy, err := checkPolicy(req.Format, req.Policy)
+	if err == nil {
+		err = checkPolicyKind(kind, policy)
+	}
 	if err != nil {
 		return index.Repo{}, nil, err
 	}
