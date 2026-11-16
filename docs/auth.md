@@ -737,8 +737,10 @@ many there are. Without a bound, a deploy token created without an expiry never 
 
 Expiry and revocation count at the next request, on every replica: the token is read from the
 database on every request. A token is expired once `expiresAt` is past, without leeway.
-`lastUsedAt` is the time of the last request with the token, written at most once a minute per
-token and replica; a write that fails is logged at debug and refuses nothing. A PAT is refused
+`lastUsedAt` is the time of the last request with the token, less than a minute behind it: a
+request writes it when the value read with the token is a minute old or more, and a write only
+moves it forward, so it is written at most once a minute per token on all replicas together. A
+write that fails is logged at debug, refuses nothing, and is made again at the next request. A PAT is refused
 while its user is disabled, and a repo deleted takes its deploy tokens with it, but not a token
 over a mask, which names no repo.
 

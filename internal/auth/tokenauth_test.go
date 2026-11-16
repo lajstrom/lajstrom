@@ -91,6 +91,7 @@ func (f *fakeUsers) ListUsers(context.Context) ([]index.User, error) {
 	return out, nil
 }
 
+// TouchToken records the call and, as the store does, moves the row's LastUsedAt forward only.
 func (f *fakeUsers) TouchToken(_ context.Context, id int64, at time.Time) error {
 	f.tmu.Lock()
 	defer f.tmu.Unlock()
@@ -101,7 +102,25 @@ func (f *fakeUsers) TouchToken(_ context.Context, id int64, at time.Time) error 
 		f.touched = map[int64][]time.Time{}
 	}
 	f.touched[id] = append(f.touched[id], at)
+	for hash, t := range f.tokens {
+		if t.ID == id && (t.LastUsedAt == nil || t.LastUsedAt.Before(at)) {
+			t.LastUsedAt = &at
+			f.tokens[hash] = t
+		}
+	}
 	return nil
+}
+
+// useElsewhere sets the LastUsedAt of token id, as another replica's record of its use does.
+func (f *fakeUsers) useElsewhere(id int64, at time.Time) {
+	f.tmu.Lock()
+	defer f.tmu.Unlock()
+	for hash, t := range f.tokens {
+		if t.ID == id {
+			t.LastUsedAt = &at
+			f.tokens[hash] = t
+		}
+	}
 }
 
 // addToken stores t with a new secret of prefix as its hash and returns the secret.
@@ -445,6 +464,45 @@ func TestTouch(t *testing.T) {
 	}
 	if n := small.a.touches.len(); n != 2 {
 		t.Errorf("%d uses remembered, want the bound 2", n)
+	}
+}
+
+// TestTouchShared checks that the use of a token is decided by its last use as read with it
+// (#1277): a use that another replica recorded in the last minute is not recorded again, and the
+// next one a minute after it is; and that a record that fails is tried again at the next request,
+// not a minute later.
+func TestTouchShared(t *testing.T) {
+	f := newTokenFixture(t, Options{})
+	ctx := context.Background()
+	use := func(name string) {
+		t.Helper()
+		if _, _, err := f.a.Authenticate(ctx, "alice", f.secrets[name]); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	f.users.useElsewhere(2, f.clock.Now().Add(-59*time.Second))
+	use("alice-read")
+	if got := f.users.touches(2); len(got) != 0 {
+		t.Errorf("touches of token 2 = %v, want none: another replica recorded it 59s ago", got)
+	}
+	f.clock.advance(time.Second)
+	use("alice-read")
+	if got := f.users.touches(2); len(got) != 1 || !got[0].Equal(f.clock.Now()) {
+		t.Errorf("touches of token 2 = %v, want one now: the last use read is a minute old", got)
+	}
+
+	f.users.touchErr = errors.New("index: database is read-only")
+	use("alice")
+	f.users.touchErr = nil
+	f.clock.advance(time.Second)
+	use("alice")
+	if got := f.users.touches(1); len(got) != 1 || !got[0].Equal(f.clock.Now()) {
+		t.Errorf("touches of token 1 = %v, want one now: a failed record is made again at the next request", got)
+	}
+	f.clock.advance(time.Second)
+	use("alice")
+	if got := f.users.touches(1); len(got) != 1 {
+		t.Errorf("touches of token 1 = %v, want still one: recorded a second ago", got)
 	}
 }
 

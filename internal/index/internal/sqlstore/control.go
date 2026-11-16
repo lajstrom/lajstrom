@@ -317,10 +317,20 @@ func (c *conn) RevokeToken(ctx context.Context, id int64, at time.Time) error {
 		"UPDATE tokens SET revoked_at = ? WHERE id = ?", c.d.EncodeTime(stamp(&at, now())), id)
 }
 
-// TouchToken sets LastUsedAt of the token; a zero lastUsed means now.
+// TouchToken sets LastUsedAt of the token to lastUsed when it is NULL or earlier, and changes
+// nothing otherwise: it only moves forward, so that of replicas that record a use at once, or a
+// late one, none moves it back (docs/spec/rbac.md §10, #1277). A zero lastUsed means now. Only
+// when nothing changed does it read the row, to tell a later last use from no token.
 func (c *conn) TouchToken(ctx context.Context, id int64, lastUsed time.Time) error {
-	return c.execOne(ctx, fmt.Sprintf("tokens id %d", id),
-		"UPDATE tokens SET last_used_at = ? WHERE id = ?", c.d.EncodeTime(stamp(&lastUsed, now())), id)
+	what := fmt.Sprintf("tokens id %d", id)
+	at := c.d.EncodeTime(stamp(&lastUsed, now()))
+	n, err := c.exec(ctx, what,
+		"UPDATE tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)", at, id, at)
+	if err != nil || n > 0 {
+		return err
+	}
+	var one int
+	return c.scanRow(ctx, what, "SELECT 1 FROM tokens WHERE id = ?", []any{id}, &one)
 }
 
 const bindingCols = "id, principal, role, repo_mask, created_at"
