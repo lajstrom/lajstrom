@@ -390,6 +390,11 @@ hundreds of `/simple/<project>/` pages, `apt-get update` is a handful of larger 
 behind NAT is one address. Limit downloads, if at all, by bandwidth per connection and by
 concurrent connections per address.
 
+`POST /-/oidc/token` is the same kind of request: the token exchange for CI verifies a CI
+platform's token and signs a CI token ([auth.md](auth.md#token-exchange-for-ci)), and Lajstrom
+counts it against the limit of `/v2/token` per address. A CI job exchanges once, or once more
+when it runs longer than its token; a limit of the edge on `/v2/token` fits it as it is.
+
 The nginx file sets 20 requests a second per address on `/v2/token`, with a burst of 40 served
 at once, and answers the rest `429` with `Retry-After: 1` in the error format of `/v2`. A login
 and a pull or push ask the token endpoint once or a few times, so a client stays far below that.
