@@ -129,6 +129,7 @@ best part of it:
 | [Behind a reverse proxy](docs/reverse-proxy.md) | TLS at the edge, `externalURL`, unbuffered uploads, rate limits on `/v2/token`; nginx and Caddy |
 | [Guarantees](docs/spec/guarantees.md) | what Lajstrom guarantees, and the test for each |
 | [Threat model](docs/security/threat-model.md) | what is protected and from whom, STRIDE over the flows, each threat with its mitigation or its issue, what the edge must do |
+| [Compliance](docs/compliance.md) | PCI DSS v4.0.1 and SOC 2: for each requirement that concerns a registry, what Lajstrom provides and the evidence it leaves, what the operator does, the gaps and their issues |
 | [Releasing](docs/release.md) | how a tag becomes binaries, images, SBOMs and signatures; verifying a release |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
 | [Comparison](docs/comparison.md) | Lajstrom next to Nexus, Artifactory, Harbor and others: a feature matrix with sources, where it differs, where it is not the right choice yet |
