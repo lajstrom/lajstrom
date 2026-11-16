@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -66,6 +67,27 @@ func checkCIName(name string) error {
 		return fmt.Errorf("the issuer: %w", err)
 	}
 	return CheckCIProject(project)
+}
+
+// ciTokenKey is the context key of the id of the CI token of a request that a bearer of /v2
+// carries (WithCIToken).
+type ciTokenKey struct{}
+
+// WithCIToken returns a copy of ctx that carries id, the CI token's id that the bearer of the
+// request names (its claim ci): the facade stores it, as it stores the bearer's principal.
+func WithCIToken(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, ciTokenKey{}, id)
+}
+
+// CITokenFrom returns the id of the CI token of the request of ctx: that of its CredCI, or that
+// of its bearer (WithCIToken); "" for a request without one. The audit rows of its writes carry
+// it as details.ciToken (docs/spec/rbac.md §11).
+func CITokenFrom(ctx context.Context) string {
+	if c := CredentialFrom(ctx); c.Kind == CredCI {
+		return c.CIToken
+	}
+	id, _ := ctx.Value(ciTokenKey{}).(string)
+	return id
 }
 
 // ciLimit is Credential.Limit for a CI token: the actions of the roles of the grants whose mask

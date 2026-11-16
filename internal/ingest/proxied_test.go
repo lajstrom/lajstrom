@@ -9,6 +9,7 @@ import (
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -94,6 +95,27 @@ func TestAuditVia(t *testing.T) {
 		var details map[string]any
 		must(t, json.Unmarshal(ev.Details, &details))
 		same(t, "details of "+ev.Action, want[ev.Action], details)
+	}
+}
+
+// TestAuditCIToken: the writes of a CI token name its id in details.ciToken of their audit rows
+// (docs/spec/rbac.md §11), with the credential's or the bearer's.
+func TestAuditCIToken(t *testing.T) {
+	e := newEnv(t)
+	job := auth.Principal{Kind: auth.KindCI, Name: "github/acme/app"}
+	ctx := auth.WithCredential(t.Context(), auth.Credential{Kind: auth.CredCI, CIToken: "jti-1"})
+	pub, err := e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool.tgz", "bytes"}), job)
+	must(t, err)
+	_, err = e.pipe.Delete(auth.WithCIToken(t.Context(), "jti-2"), e.repo, format.Deletion{Path: "tool", Reference: pub.Tag}, job)
+	must(t, err)
+	want := map[string]map[string]any{"push": {"ciToken": "jti-1"}, "delete": {"ciToken": "jti-2", "referrers": float64(0)}}
+	for _, ev := range e.rows(t).Audit {
+		var details map[string]any
+		must(t, json.Unmarshal(ev.Details, &details))
+		same(t, "details of "+ev.Action, want[ev.Action], details)
+		if ev.Principal != job.String() {
+			t.Errorf("%s by %s", ev.Action, ev.Principal)
+		}
 	}
 }
 

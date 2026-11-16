@@ -209,7 +209,7 @@ func newServeCmd(a *app) *cobra.Command {
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			repos.Encryption = encryption != nil
-			edge, err := edgeInputs(c, st, a.log)
+			edge, err := edgeInputs(c, st, tokens, a.log)
 			if err != nil {
 				return err
 			}
@@ -251,6 +251,8 @@ func newServeCmd(a *app) *cobra.Command {
 				TrustedProxies:   edge.proxies,
 				ClientCerts:      edge.certs,
 				Kubernetes:       edge.kubernetes,
+				CI:               edge.ci,
+				CIExchange:       edge.exchange,
 				ClientCertHeader: c.Auth.ClientCertificates.ForwardedHeader,
 				FQDNDomain:       c.Server.FQDN.Domain,
 				CORSOrigins:      c.Server.CORSOrigins,

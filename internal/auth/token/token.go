@@ -78,6 +78,9 @@ type Claims struct {
 	jwt.RegisteredClaims
 	// Access is what the token grants, sorted by type and name.
 	Access []Access `json:"access"`
+	// CI is the id of the CI token the token was issued on (docs/spec/rbac.md §11), for the
+	// audit rows of its writes; absent otherwise.
+	CI string `json:"ci,omitempty"`
 }
 
 // Token is a signed token. It prints as its kid and times, never as the JWT.
@@ -122,15 +125,16 @@ func NewIssuer(o Options) *Issuer {
 
 // Issue returns a token for p with access, for service: header alg the key's, kid its
 // fingerprint, typ JWT; claims iss and aud service, sub p's canonical form, iat and nbf now (to
-// the second), exp Lifetime later, jti 16 random bytes in base64url, and access sorted by type
-// and name. The key is the active one, read for every token (Keys.TokenSigner), and the
+// the second), exp Lifetime later, jti 16 random bytes in base64url, access sorted by type and
+// name, and ci, the id of the CI token of the request of ctx (auth.CITokenFrom), when it has one. The key is the active one, read for every token (Keys.TokenSigner), and the
 // Verifier of Options learns it before Issue returns.
 func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, access []Access) (*Token, error) {
 	sorted := append([]Access{}, access...)
 	slices.SortFunc(sorted, compareAccess)
+	ci := auth.CITokenFrom(ctx)
 	return i.sign(ctx, "", Lifetime, func(rc jwt.RegisteredClaims) jwt.Claims {
 		rc.Issuer, rc.Subject, rc.Audience = service, p.String(), jwt.ClaimStrings{service}
-		return Claims{RegisteredClaims: rc, Access: sorted}
+		return Claims{RegisteredClaims: rc, Access: sorted, CI: ci}
 	})
 }
 
@@ -188,6 +192,8 @@ type Grant struct {
 	Principal auth.Principal
 	// Access is the access claim.
 	Access []Access
+	// CI is the claim ci: the id of the CI token the token was issued on, or "".
+	CI string
 }
 
 // Repository returns the access entry of the repository name, and false when the token grants
@@ -276,7 +282,7 @@ func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, err
 		// A token of before #182 names its user by name: the client gets another.
 		return nil, v.refuse(ctx, kid, "the subject names a user by name, not by uid")
 	}
-	return &Grant{Principal: p, Access: c.Access}, nil
+	return &Grant{Principal: p, Access: c.Access, CI: c.CI}, nil
 }
 
 // loggedKid is how many bytes of a kid a refusal logs: a kid of Lajstrom's is the 64 hex digits

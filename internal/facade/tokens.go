@@ -158,7 +158,11 @@ func (h *handler) bearer(r *http.Request) (*http.Request, error) {
 		return r, fmt.Errorf("facade: bearer token: %w", err)
 	}
 	server.HoldPrincipal(ctx, g.Principal)
-	return r.WithContext(withGrant(auth.WithPrincipal(ctx, g.Principal), g)), nil
+	ctx = auth.WithPrincipal(ctx, g.Principal)
+	if g.CI != "" {
+		ctx = auth.WithCIToken(ctx, g.CI) // for the audit rows of its writes (docs/spec/rbac.md §11)
+	}
+	return r.WithContext(withGrant(ctx, g)), nil
 }
 
 // namedByToken decides by the access claims of g what does not depend on the action nor on

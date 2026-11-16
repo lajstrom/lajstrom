@@ -106,6 +106,14 @@ type Options struct {
 	// Kubernetes authenticates the service-account tokens of auth.kubernetes, as the password of
 	// Basic credentials or of the form on /v2/token (docs/spec/rbac.md §9); nil takes none.
 	Kubernetes *auth.Kubernetes
+	// CI authenticates the CI tokens of auth.ci (ci.Tokens, docs/spec/rbac.md §11) on every
+	// route: the password of Basic credentials or of the form, and a bearer outside /v2. nil
+	// refuses a secret with auth.CIPrefix.
+	CI CIAuthenticator
+	// CIExchange answers the token exchange of POST /-/oidc/token (ci.Exchange,
+	// docs/spec/http-routing.md §7) while auth.ci has an issuer; the device grant of that route
+	// stays OIDC's. nil serves the route through OIDC alone.
+	CIExchange http.Handler
 	// ClientCertHeader is the header in which a trusted proxy forwards the client certificate
 	// (auth.clientCertificates.forwardedHeader); empty reads none. It needs ClientCerts.
 	ClientCertHeader string

@@ -17,6 +17,8 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -179,5 +181,24 @@ func TestOCIPushAuditAlone(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "record the OCI repository") {
 		t.Error("the failed transaction is not logged")
+	}
+}
+
+// TestCITokenAudit: a push with a bearer that /v2/token issued on a CI token names the CI token's
+// id in details.ciToken of its row (docs/spec/rbac.md §11).
+func TestCITokenAudit(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	job := auth.Principal{Kind: auth.KindCI, Name: "github/acme/app"}
+	ctx := auth.WithCredential(t.Context(), auth.Credential{Kind: auth.CredCI, CIToken: "jti-1"})
+	tok, err := token.NewIssuer(token.Options{Keys: e.tokens, Now: e.clock.Now}).Issue(ctx, job, "example.com",
+		[]token.Access{repoAccess("oci/images/app", "pull", "push")})
+	must(t, err)
+	body, _ := manifest(t, []byte("layer"), "first")
+	wantStatus(t, "PUT", e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/v1", bytes.NewReader(body),
+		"Content-Type", ocispecManifest, "Authorization", "Bearer "+tok.Raw), http.StatusCreated)
+	evs, err := e.st.ListAudit(t.Context(), index.AuditFilter{Action: "push"})
+	must(t, err)
+	if len(evs) != 1 || evs[0].Principal != job.String() || string(evs[0].Details) != `{"ciToken":"jti-1","tag":"v1"}` {
+		t.Errorf("push rows %+v", evs)
 	}
 }
