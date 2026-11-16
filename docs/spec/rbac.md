@@ -15,15 +15,16 @@
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
 | Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>`; a service-account token of a configured cluster, on `/v2/token` only (§9) | #1019 |
+| CI job | `ci:<issuer>/<project>`; a token of minutes, `ljs_ci_…`, minted at `/-/oidc/token` for the OIDC token of a configured CI platform under the trust policies of the configuration, which grant its rights (§11) | #937 |
 | group | `group:<name>`; the groups claim of a user's latest OIDC login (§8) | M6 |
 | OIDC user | `user:<uid>`, of the user its identity, the `iss` and `sub` of its ID token, maps to; made at its first login, without a password (§8) | M6 |
 | service account | `user:<uid>` of a user of kind `service` (below); no password, no OIDC login; authenticates with its personal access tokens only; a required owner | #1020 |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
-(`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`, where
-Basic is taken too and evaluated on each request (§4). Outside
-`/v2`, `Authorization: Bearer <secret>` with a personal access token or a deploy token counts
-as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012), and
+(`user:password`, `user:PAT`, `deploy:<token>`, or a CI token under any user name, §11), and the
+resulting bearer on `/v2`, where Basic is taken too and evaluated on each request (§4). Outside
+`/v2`, `Authorization: Bearer <secret>` with a personal access token, a deploy token or a CI
+token counts as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012), and
 Terraform the token of its `credentials` block.
 The archive URL that the download of a terraform module answers carries a bearer token of §4
 in its query, made for the principal of the download, which downloads that version and nothing
@@ -162,7 +163,8 @@ A binding is refused with `400`, naming the field, when:
 
 - its principal is neither a live user, `user:<name>` (stored as the user's `user:<uid>`) or
   `user:<uid>`, nor a group, `group:<name>` with a name of §8, nor a `cert:` or `k8s:`
-  principal or pattern of §9. A group need not have members:
+  principal or pattern of §9. A `ci:` principal (§11) has no bindings: its rights are its
+  trust policies'. A group need not have members:
   a binding may come before anyone logs in with the group, as before its repo. `anonymous`
   reads through a repo's `anonymousRead` and gets nothing else, and a deploy token
   `token:<id>` gets its repo, or the repos of its mask, and its scopes and nothing else, so
@@ -189,6 +191,8 @@ credential, not on the bindings, and are checked first: a PAT's scopes narrow an
 2. Deploy token → allow iff the repo is the token's repo, or its mask matches the repo as a
    binding's mask matches (whole segments; never `system` nor `audit`), and `action` is in its
    scopes (`read`/`write`/`attach`, `write` holding `attach`); never `delete`/`manage`.
+   CI token (§11) → allow iff a grant of its trust policies has a mask that matches the repo as
+   a binding's does and a role that includes `action`; never `system` nor `audit`.
 3. PAT → compute as for its user, then intersect with the PAT's scopes if set.
 4. User → any binding of the user, or of a group the user is in now (§8), whose mask matches
    the repo and whose role includes the action. A group is not a principal of a request: it
@@ -225,7 +229,9 @@ A denial on `<format>/<repo>` must not reveal whether the repo exists:
   for an action outside its scopes, `read` included for a `write`-only one: it is bound to the
   repo and knows it. A deploy token over a mask is bound so to every repo its mask matches and
   gets the same `403` on each; its scopes, `read` or `write`, let it find which of them exist
-  anyway. A repo outside its mask is `404`, as for any principal with no access at all.
+  anyway. A repo outside its mask is `404`, as for any principal with no access at all. A CI
+  token (§11) is bound so to every repo a mask of its grants matches: `403` for an action its
+  roles lack there, `404` on a repo no mask of its grants matches.
 
 Every other route that could tell whether a repo exists keeps the rule too, and how is part of
 this spec, so that a review need not find it in the code:
@@ -238,6 +244,7 @@ this spec, so that a review need not find it in the code:
   need not name a repo that exists (above), so creating one tells nothing either.
 - **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
   answers of this rule. Its list holds its own tokens, not those over a mask that matches it.
+  A CI token (§11) creates none, whatever its grants: `403` before the body is read.
 - **A repo's open publication sessions** (`GET …/sessions`, http-routing.md §4) need `manage` on
   it, decided before the repo is looked up: the answers of this rule. Their files are not
   published yet, and `read` does not show them.
@@ -269,8 +276,8 @@ this spec, so that a review need not find it in the code:
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
   one itself (§8), and is no credential of this route. A service account has no password, so
-  only the admin role creates its tokens here (§1). A personal access token, with scopes or without, the admin's too, and a deploy token
-  get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
+  only the admin role creates its tokens here (§1). A personal access token, with scopes or without, the admin's too, a deploy token
+  and a CI token (§11) get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
   tokens that outlive its revocation (decided on #249, 2026-11-10). A personal access token
   without scopes still lists and revokes its user's tokens; one with scopes and a deploy token
   get `403`. The command line (`lajstrom admin token create`) has no credential and is the
@@ -377,7 +384,8 @@ policy refuses is `policy.refuse`, in a transaction of its own ([policy.md](poli
 one read that is audited, so that a refusal can be traced to its rule or verdict. A test delivery and the
 deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
-client gets one for every pull and push, and what a token allows is audited itself.
+client gets one for every pull and push, and what a token allows is audited itself. A CI token's
+exchange is: `token.exchange`, one row per token minted (§11).
 
 ## 6. Bootstrap
 
@@ -477,7 +485,8 @@ One OpenID Connect provider, `auth.oidc` (configuration.md), logs people in; OID
 URI is `<server.externalURL>/-/oidc/callback`. A login ends in a personal access token (§1),
 never in a token of the IdP: the clients send what they send today, and no request but a login
 asks the IdP anything. Token exchange for CI (a CI provider's OIDC token for a short-lived
-token) and joining an existing user to an identity are not in this section (decisions on #69).
+token) is §11, and joining an existing user to an identity is not in this section (decisions on
+#69).
 
 **The identity.** An identity is the pair (`iss`, `sub`) of a verified ID token
 (index-schema.md, `identities`), and maps to one user. The first login of an identity creates
@@ -747,3 +756,105 @@ the groups of the login count for `auth.oidc.tokenLifetime`, as for every login.
 or key marks the request `denied`, so a code is tried once: a code read from the history or from
 the page is of no use without the key that started the login. No code, verifier or challenge is
 logged, audited, or put in a URL but the one redirect.
+
+## 11. Token exchange for CI (after the MVP, #937)
+
+A CI job trades the OIDC token its platform issues it, GitHub Actions' or GitLab CI's, for a
+token of Lajstrom's of minutes, the **CI token**, at `POST /-/oidc/token` (RFC 8693,
+http-routing.md §7). Trust policies in the configuration decide which tokens are taken and what
+the CI token may do ([ADR 0026](../adr/0026-token-exchange-for-ci.md)). Nothing is stored per
+job but the audit row of the exchange.
+
+**Issuers.** `auth.ci.issuers` (configuration.md, `auth`) lists the platforms whose tokens are
+taken, each with a `name`, a `platform` (`github` or `gitlab`), the `issuer` (the exact `iss` of
+its tokens; https, http only with `server.insecureHTTP`), the `audience` (by default
+`server.externalURL` without a trailing `/`) and a `caFile` for an issuer whose TLS certificate a
+private CA signed. A name follows the rule of §9's names; no two issuers have the same name or
+the same issuer.
+
+**Trust policies.** `auth.ci.policies` lists the policies, each with a `name` (the rule of §9's
+names, unique), an `issuer` (the name of an issuer of `auth.ci.issuers`), `claims` and `grants`.
+`claims` maps a claim to a value or a list of values: a token matches the policy when, for every
+claim of the map, the token has the claim and its value matches one of the values. `grants` is a
+list of one or more `{role, mask}`: a role `reader`, `writer` or `maintainer` (`admin` is
+refused), and a mask of §3, two segments `<format>/<repo>`, each `*` or a name: a format name
+(http-routing.md §1) and a repo name by manifest-profile.md §4.1. A format that this build does
+not have matches no repo. The claims a policy may name, by platform:
+
+| Kind | GitHub | GitLab |
+| --- | --- | --- |
+| id | `repository_id`, `repository_owner_id`, `actor_id` | `project_id`, `namespace_id`, `user_id` |
+| name | `repository`, `repository_owner`, `actor` | `project_path`, `namespace_path`, `user_login` |
+| pattern | `ref`, `environment`, `workflow_ref`, `job_workflow_ref` | `ref`, `ref_path`, `environment`, `ci_config_ref_uri` |
+| value | `ref_type`, `ref_protected`, `event_name`, `runner_environment`, `repository_visibility` | `ref_type`, `ref_protected`, `environment_protected`, `pipeline_source`, `runner_environment`, `deployment_tier`, `project_visibility` |
+
+A claim of the token is compared as a string: a string as it is, a number or a boolean as its
+JSON text (`123`, `true`); any other value matches nothing. An id is decimal digits. A value of a
+pattern may hold `*`, which matches any run of characters but `/`, and `**`, which matches any
+run; no other character is special, and a value without `*` matches itself only. A value of
+any other claim matches itself only, and holds no `*`. The configuration is refused at start, naming the policy and the key,
+when a policy:
+
+- names a claim that is not in the table for its issuer's platform, or a value that is empty,
+  made only of `*`, not decimal for an id, or holds `*` in a claim that is not a pattern;
+- names its project by no id: neither `repository_id` nor `repository_owner_id` on GitHub,
+  neither `project_id` nor `namespace_id` on GitLab. A name beside an id is a condition too;
+- grants `writer` or `maintainer` and has no condition on `ref`, `ref_path` or `environment`;
+- grants `writer` or `maintainer` and its `event_name` (GitHub) or `pipeline_source` (GitLab)
+  names only events of a pull request (below);
+- grants `admin`, or a mask that breaks the grammar above, or nothing.
+
+**A pull request never writes.** A policy that grants `writer` or `maintainer` never matches a
+token of a pull request, whatever its conditions: on GitHub one whose `event_name` is
+`pull_request`, `pull_request_target`, `pull_request_review` or `pull_request_review_comment`; on
+GitLab one whose `pipeline_source` is `merge_request_event` or `external_pull_request_event`.
+Such a job may run the code of a fork with the identity of the base project. A policy that grants
+`reader` only matches them as its conditions say.
+
+**The exchange.** The subject token must be a JWT whose `iss`, read before it is verified, is the
+`issuer` of an issuer of `auth.ci.issuers`, and must verify as a Kubernetes token does (§9): its
+signature by the key of its `kid` in the issuer's JWKS, with an algorithm of §8, never `none` nor
+an HMAC; `iss` the issuer, which its discovery document must name exactly; `aud` containing the
+issuer's audience; `exp` present and passed by no more than 60 s, `iat` and `nbf` not more than
+60 s ahead. The discovery document and the JWKS are cached as §9 says, and nothing is read at
+start. Then its project is read: GitHub's `repository` or GitLab's `project_path`, one or more
+segments of letters, digits, `.`, `-` and `_` separated by `/` (two on GitHub), none `.` or `..`,
+at most 255 bytes. Every policy of the issuer is matched; the token is taken when at least one
+matches, and refused otherwise. A taken token is answered with a CI token, minted then, and the
+`token.exchange` row of its exchange.
+
+**The CI token.** Its principal is `ci:<issuer>/<project>`, `<issuer>` the name of the issuer in
+the configuration: `ci:github/acme/app`, `ci:gitlab/acme/platform/app`. The principal has no
+row, no password, no owner and no bindings: it exists through its token. The token is `ljs_ci_`
+followed by a JWT signed with the token key of §4 (its algorithm and `kid`), header `typ`
+`ljs-ci+jwt`, with the claims `iss` the service, `aud` `lajstrom:ci`, `sub` the principal, `jti`
+16 random bytes in base64url (the token's id), `iat`, `nbf`, `exp` `auth.ci.tokenLifetime` later
+(15 minutes by default, from 1 to 20), and `policies`, the names of the policies that matched.
+It is a credential wherever a deploy token is (§1): the password of Basic under any user name, on
+every route and on `/v2/token` (`GET`, and the `POST` form); `Authorization: Bearer` outside
+`/v2`. It must verify: the prefix, the signature by a token key that verifies (§4), the `typ`,
+`aud` `lajstrom:ci`, `exp` required, 60 s of leeway, `sub` a `ci:` principal. A token that does
+not verify is `401` with the challenge, and counts as no failed login.
+
+**What it may do.** The grants of the policies the token names, as the configuration of the
+replica that serves the request has them: step 2 of §3. A policy removed from the configuration
+grants nothing from that replica's restart on, and a token none of whose policies the replica has
+is `401`. It never reaches `system` nor `audit`, and creates no personal access token and no
+deploy token (§3). The bearer `/v2/token` issues on it names the `ci:` principal as its `sub` and
+is issued as any (§4): its access is reduced by the grants when it is issued, and it is trusted
+for its 20 minutes. It carries the CI token's id as the claim `ci`.
+
+**Revocation.** A CI token is not revoked alone. It ends at its `exp`; a policy removed ends it at
+the restart of each replica; `lajstrom admin key rotate --token --drop` ends it with every
+bearer (§4).
+
+**Audit.** A token minted is a `token.exchange` row (§5), in a transaction of its own, by the
+`ci:` principal: `subject` the principal, no `repo`, and `details` with `source` `ci`, `issuer`
+(the name), `policies`, `token` (the `jti`), `expiresAt`, and `claims`, the claims of the token
+that the table names for its platform, with `run_id`, `run_attempt` and `sha` on GitHub and
+`pipeline_id`, `job_id` and `sha` on GitLab, each a string of at most 256 bytes; never the subject
+token, the CI token, nor `user_email`. The rows that ingest and the facade write for a request of
+a CI token (its pushes, deletes and a proxy's fetches) are rows of its principal whose
+`details.ciToken` is the CI token's id, also through a bearer that names one (`ci`), and
+`lajstrom.uploaded-by` names the principal. A refused exchange writes no row: it is logged at info
+with its reason, the issuer, and the project when the token verified, never the token.
