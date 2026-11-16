@@ -2660,13 +2660,15 @@ components:
         expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
     User:
       type: object
-      required: [uid, name, kind, disabled, createdAt]
+      required: [uid, name, kind, disabled, createdAt, lastSeenAt]
       properties:
         uid: {type: string, format: uuid}
         name: {type: string}
         kind: {type: string, enum: [local, oidc, service], description: "service: a service account (docs/spec/rbac.md §1)."}
         disabled: {type: boolean}
         createdAt: {type: string, format: date-time}
+        lastSeenAt: {type: [string, "null"], format: date-time, description: "The user's last activity, its last successful authentication or its enabling, less than a minute behind; null before any record (docs/spec/rbac.md §1, Inactive users). It moves no revision."}
+        inactive: {type: boolean, description: "With auth.disableInactiveUsersAfter set, the user is inactive beyond it: its next authentication disables it, but for the last enabled admin. Absent when false."}
         owner: {type: string, description: "A service account's owner, user:<uid> or group:<name>; absent for every other kind."}
         ownerName: {type: string, description: The name of a user owner.}
         ownerDisabled: {type: boolean, description: "A user owner is disabled; the service account is not, for that, unless auth.serviceAccounts.onOwnerDisabled is disable."}

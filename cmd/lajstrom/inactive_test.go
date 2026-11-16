@@ -61,3 +61,23 @@ func TestWarnInactiveUsers(t *testing.T) {
 		t.Error("usersOf does not carry auth.serviceAccounts.onOwnerDisabled disable")
 	}
 }
+
+// TestWriteUserTableLastSeen: lajstrom admin user list writes each user's last activity, - before
+// any record, and (inactive) after it for an inactive user.
+func TestWriteUserTableLastSeen(t *testing.T) {
+	seen := time.Date(2026, 11, 16, 9, 12, 30, 0, time.UTC)
+	var out bytes.Buffer
+	err := writeUserTable(&out, []auth.User{
+		{Name: "alice", UID: "u1", Kind: auth.KindLocal, CreatedAt: seen, LastSeenAt: &seen},
+		{Name: "olga", UID: "u2", Kind: auth.KindOIDC, CreatedAt: seen, Inactive: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"LAST SEEN", "alice  u1   local  false     2026-11-16T09:12:30Z  2026-11-16T09:12:30Z  -",
+		"olga   u2   oidc   false     2026-11-16T09:12:30Z  - (inactive)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the table lacks %q:\n%s", want, out.String())
+		}
+	}
+}

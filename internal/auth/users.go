@@ -50,6 +50,13 @@ type User struct {
 	Kind      string    `json:"kind"`
 	Disabled  bool      `json:"disabled"`
 	CreatedAt time.Time `json:"createdAt"`
+	// LastSeenAt is the user's last activity, its last successful authentication, or its
+	// enabling when later; null before any record (docs/spec/rbac.md §1, Inactive users).
+	LastSeenAt *time.Time `json:"lastSeenAt"`
+	// Inactive is true while auth.disableInactiveUsersAfter (Users.InactiveAfter) is set and the
+	// user is inactive beyond it: its next authentication disables it, but for the last enabled
+	// admin. Left out when false.
+	Inactive bool `json:"inactive,omitempty"`
 	// Owner is a service account's owner, user:<uid> or group:<name>; OwnerName the name of a
 	// user owner, and OwnerDisabled whether that user is disabled. All three are empty for every
 	// other kind.
@@ -830,7 +837,11 @@ func userError(op, name string, err error) error {
 // uid, when it has the owner, else read on r.
 func (s *Users) resource(ctx context.Context, r index.Reader, u *index.User, byUID map[string]*index.User) (*User, error) {
 	out := &User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC(), Owner: u.Owner,
-		ID: u.ID, Revision: u.Revision}
+		ID: u.ID, Revision: u.Revision, Inactive: Inactive(u, s.InactiveAfter, s.now())}
+	if u.LastSeenAt != nil {
+		seen := u.LastSeenAt.UTC()
+		out.LastSeenAt = &seen
+	}
 	p, err := ParsePrincipal(u.Owner)
 	if err != nil || p.Kind != KindUser {
 		return out, nil //nolint:nilerr // no owner, or a group: no name of a user

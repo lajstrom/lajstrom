@@ -107,7 +107,7 @@ func TestAdminUser(t *testing.T) {
 		{stdin: "alice-password\n", args: []string{"admin", "user", "create", "--name", "alice", "--password-stdin"},
 			wantOut: `","name":"alice","kind":"local","disabled":false,`},
 		{args: []string{"admin", "user", "disable", "alice"}},
-		{args: []string{"admin", "user", "list"}, wantOut: "NAME   UID                                   KIND   DISABLED  CREATED               OWNER\nadmin  0"},
+		{args: []string{"admin", "user", "list"}, wantOut: "NAME   UID                                   KIND   DISABLED  CREATED               LAST SEEN  OWNER\nadmin  0"},
 		{args: []string{"admin", "user", "list"}, wantOut: "  local  true      20"},
 		{args: []string{"admin", "user", "enable", "alice"}},
 		{args: []string{"admin", "user", "list"}, wantOut: "\nalice  0"},
