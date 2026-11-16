@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -54,6 +55,11 @@ func (p *Pipeline) inspect(ctx context.Context, repo index.Repo, subject digest.
 	for _, a := range profile.Attachments(r.Tag, m) {
 		row := attachmentRow(r, m, a, trust, at)
 		in := attest.Input{Subject: subject, Layer: a.Layer, Annotated: a.PredicateType}
+		if strings.HasSuffix(a.Layer.MediaType, profile.EncryptedSuffix) { // an encrypted repo's (manifest-profile.md §11)
+			row.Verification, row.Reason = index.AttachmentUnsupported, "the layer is encrypted at rest"
+			rows = append(rows, row)
+			continue
+		}
 		if attest.Reads(a.Layer.MediaType) && a.Layer.Digest != "" {
 			if a.Layer.Size > p.maxAttachment {
 				row.Verification = index.AttachmentUnsupported

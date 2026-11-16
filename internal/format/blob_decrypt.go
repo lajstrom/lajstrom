@@ -24,13 +24,21 @@ type BlobKey struct {
 	HMAC    []byte
 }
 
+// Encrypted reports whether the file f is an encrypted layer: its annotations, in files.attrs,
+// carry the public options (docs/spec/manifest-profile.md §11). Its digest is the ciphertext's;
+// the file's own checksums are those of the version's metadata.
+func Encrypted(f index.File) bool {
+	_, ok := f.Attrs[profile.AnnotationEncPubOpts]
+	return ok
+}
+
 // Decryption returns the key of the file f of the version at the package path path of repo, for
 // ServeBlobOptions.Decrypt: nil for a plain layer; for an encrypted one, its row of blob_map
 // opened with the repo's key (Deps.Encryption). A row that is missing, or a server without the
 // keys, is an error (500): reindex writes the row, with the keys. A KMS that does not answer is
 // ErrUnavailable (503).
 func Decryption(ctx context.Context, d Deps, repo index.Repo, path string, f index.File) (*BlobKey, error) {
-	if _, ok := f.Attrs[profile.AnnotationEncPubOpts]; !ok {
+	if !Encrypted(f) {
 		return nil, nil
 	}
 	if d.Encryption == nil {
