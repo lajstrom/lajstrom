@@ -34,10 +34,12 @@ var memoryDBs atomic.Int64
 // index for the audit rows.
 type exchangeFixture struct {
 	ex           *Exchange
+	cfg          config.CI
 	gh, gl       *testutil.OIDCIssuer
 	tokens       *token.Verifier
 	st           *sqlite.Store
 	now          time.Time
+	exNow        time.Time // the clock of the Exchange: its audit rows and their rate
 	logs         *bytes.Buffer
 	ghTok, glTok func(over map[string]any) string
 }
@@ -60,6 +62,7 @@ func newExchangeFixture(t *testing.T) *exchangeFixture {
 				Grants: []config.CIGrant{{Role: "maintainer", Mask: "oci/*"}}},
 		},
 	}
+	f.cfg = c
 	ps, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +88,8 @@ func newExchangeFixture(t *testing.T) *exchangeFixture {
 	f.tokens = token.NewVerifier(token.Options{Keys: k})
 	f.ex = &Exchange{Policies: ps, Verifiers: verifiers, Tokens: token.NewIssuer(token.Options{Keys: k, Verifier: f.tokens}),
 		Lifetime: 15 * time.Minute, ExternalURL: audience, Index: f.st,
-		Log: slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		Log: slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})), Now: func() time.Time { return f.exNow }}
+	f.exNow = f.now
 	times := func() map[string]any {
 		return map[string]any{"aud": audience, "iat": f.now.Unix(), "nbf": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix()}
 	}
@@ -188,14 +192,14 @@ func checkGitHubRow(t *testing.T, row index.AuditEvent, g *token.CIGrant) {
 		t.Errorf("row = %+v", row)
 	}
 	var d struct {
-		Source, Issuer, Token, ExpiresAt string
-		Policies                         []string
-		Claims                           map[string]string
+		Source, Outcome, Issuer, Token, ExpiresAt string
+		Policies                                  []string
+		Claims                                    map[string]string
 	}
 	if err := json.Unmarshal(row.Details, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Source != "ci" || d.Issuer != "github" || d.Token != g.ID || !slices.Equal(d.Policies, []string{"app-release"}) ||
+	if d.Source != "ci" || d.Outcome != "minted" || d.Issuer != "github" || d.Token != g.ID || !slices.Equal(d.Policies, []string{"app-release"}) ||
 		d.ExpiresAt != g.ExpiresAt.UTC().Format(time.RFC3339) {
 		t.Errorf("details = %+v", d)
 	}
@@ -240,15 +244,88 @@ func TestExchangeRefused(t *testing.T) {
 			t.Errorf("%s: %d %v, want 400 invalid_grant with %q", tt.name, rr.Code, body, tt.msg)
 		}
 	}
-	if rows := f.audit(t); len(rows) != 0 {
-		t.Errorf("refusals wrote audit rows: %+v", rows)
-	}
+	// A minute later the next refusal of a key writes its row, with the count of those held back.
+	f.exNow = f.exNow.Add(refusalEvery)
+	f.post(t, "not.a.jwt", nil)
+	checkRefusalRows(t, f.audit(t))
 	// An issuer whose keys never loaded: those that did stay while it does not answer.
 	f = newExchangeFixture(t)
 	f.gl.Down.Store(true)
 	rr, body := f.post(t, f.glTok(nil), nil)
 	if rr.Code != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" || rr.Header().Get("Retry-After") != "30" {
 		t.Errorf("an issuer that does not answer: %d %v", rr.Code, body)
+	}
+}
+
+// checkRefusalRows checks the token.exchange rows of the refusals of TestExchangeRefused: one per
+// key (the project id of a token that verified, the client address otherwise), the refusals of a
+// key held back counted in its next row; the claims of a token that verified, and none of one that
+// did not.
+func checkRefusalRows(t *testing.T, rows []index.AuditEvent) {
+	t.Helper()
+	type row struct {
+		Principal, Issuer, Reason string
+		Suppressed                int
+		Claims                    map[string]string
+	}
+	var got []row
+	for i := len(rows) - 1; i >= 0; i-- {
+		var d struct {
+			Outcome, Issuer, Reason string
+			Suppressed              int
+			Claims                  map[string]string
+		}
+		if err := json.Unmarshal(rows[i].Details, &d); err != nil || d.Outcome != "refused" || rows[i].IP == "" {
+			t.Fatalf("row %+v: %v", rows[i], err)
+		}
+		got = append(got, row{rows[i].Principal, d.Issuer, d.Reason, d.Suppressed, d.Claims})
+	}
+	want := []struct {
+		principal, issuer, reason string
+		suppressed                int
+		claims                    string
+	}{
+		{"ci:github/acme/app", "github", "event_name pull_request_target", 0,
+			"map[environment:release event_name:pull_request_target ref:refs/heads/main ref_type:tag repository:acme/app repository_id:123 repository_owner_id:9]"},
+		{"ci:gitlab/acme/platform/app", "gitlab", "pipeline_source merge_request_event", 0,
+			"map[namespace_id:42 pipeline_source:merge_request_event project_id:7 project_path:acme/platform/app ref:main ref_type:branch]"},
+		{"anonymous", "github", "the subject token does not verify for github: ", 0, "map[]"},
+		{"ci:github/evil/app", "github", "repository evil/app", 0, ""},
+		{"anonymous", "", "the subject token is not a token of a configured issuer", 4, "map[]"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%d refusal rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.Principal != w.principal || g.Issuer != w.issuer || !strings.Contains(g.Reason, w.reason) || g.Suppressed != w.suppressed ||
+			(w.claims != "" && fmt.Sprint(g.Claims) != w.claims) {
+			t.Errorf("refusal row %d = %+v, want %+v", i, g, w)
+		}
+	}
+}
+
+// TestRefusalRate: a key gets a row a minute; beyond 10 000 keys a new one gets none until a
+// window closes with nothing held back.
+func TestRefusalRate(t *testing.T) {
+	var r refusals
+	t0 := time.Now()
+	for i := range maxRefusalKeys {
+		if ok, _ := r.take(fmt.Sprint(i), t0); !ok {
+			t.Fatalf("key %d: no row", i)
+		}
+	}
+	if ok, _ := r.take("one more", t0.Add(time.Second)); ok {
+		t.Error("a key beyond the bound got a row")
+	}
+	if ok, _ := r.take("0", t0.Add(2*time.Second)); ok {
+		t.Error("a second row of a key within its minute")
+	}
+	if ok, held := r.take("one more", t0.Add(refusalEvery)); !ok || held != 0 {
+		t.Errorf("a new key once the windows closed: %v, %d", ok, held)
+	}
+	if ok, held := r.take("0", t0.Add(refusalEvery)); !ok || held != 1 {
+		t.Errorf("key 0 after its minute: %v, held %d; want a row with 1 held back", ok, held)
 	}
 }
 
@@ -285,5 +362,46 @@ func TestExchangeForm(t *testing.T) {
 	f.ex.ServeHTTP(rr, r)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_request") {
 		t.Errorf("JSON: %d %s", rr.Code, rr.Body)
+	}
+}
+
+// TestExchangeLivePolicies: a policy made through the API counts at the next exchange on another
+// Exchange over the same index, as on another replica, and a policy deleted no more
+// (docs/spec/rbac.md §11).
+func TestExchangeLivePolicies(t *testing.T) {
+	f := newExchangeFixture(t)
+	replica := func() *Exchange {
+		live, err := NewLive(f.cfg, f.st, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &Exchange{Policies: live, Verifiers: f.ex.Verifiers, Tokens: f.ex.Tokens, Lifetime: f.ex.Lifetime,
+			ExternalURL: f.ex.ExternalURL, Index: f.st, Log: slog.New(slog.DiscardHandler)}
+	}
+	a, b := replica(), replica()
+	newRepo := f.ghTok(map[string]any{"repository": "acme/new", "repository_id": "555", "ref": "refs/heads/feature", "environment": nil})
+	f.ex = b
+	if rr, body := f.post(t, newRepo, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("before the policy: %d %v", rr.Code, body)
+	}
+	s := &Service{Index: f.st, Config: f.cfg}
+	ctx := auth.WithPrincipal(context.Background(), admin)
+	if _, err := s.Create(ctx, Policy{Name: "new-read", Issuer: "github", Claims: map[string][]string{"repository_id": {"555"}},
+		Grants: []index.CIGrant{{Role: "reader", Mask: "oci/*"}}}, auth.Origin{Source: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	if rr, body := f.post(t, newRepo, nil); rr.Code != http.StatusOK || body["principal"] != "ci:github/acme/new" ||
+		fmt.Sprint(body["policies"]) != "[new-read]" {
+		t.Errorf("on another replica after the create: %d %v", rr.Code, body)
+	}
+	f.ex = a
+	if rr, _ := f.post(t, newRepo, nil); rr.Code != http.StatusOK {
+		t.Errorf("on the first replica: %d", rr.Code)
+	}
+	if err := s.Delete(ctx, "new-read", auth.Origin{Source: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	if rr, _ := f.post(t, newRepo, nil); rr.Code != http.StatusBadRequest {
+		t.Errorf("after the delete: %d", rr.Code)
 	}
 }

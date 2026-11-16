@@ -47,8 +47,8 @@ const SourceCI = "ci"
 // matched against the trust policies, for a CI token, with the token.exchange row of its
 // exchange. Create it as a struct literal; it may serve requests concurrently.
 type Exchange struct {
-	// Policies are the issuers and their trust policies; required.
-	Policies *Policies
+	// Policies give the issuers and the trust policies that count now (Live); required.
+	Policies Source
 	// Verifiers verify the tokens of each issuer, by its name (oidc.Verifier); required for every
 	// issuer.
 	Verifiers map[string]auth.TokenVerifier
@@ -60,10 +60,12 @@ type Exchange struct {
 	ExternalURL string
 	// Index records the audit row of each exchange; required.
 	Index index.Store
-	// Now is the clock of the audit row; nil is time.Now.
+	// Now is the clock of the audit rows and of their rate; nil is time.Now.
 	Now func() time.Time
 	// Log gets the refusals at info level with their reason; nil is slog.Default().
 	Log *slog.Logger
+
+	refusals refusals // the rate of the audit rows of refusals
 }
 
 // exchangeResponse is the answer of an exchange (RFC 8693 §2.2.1), with the principal and the
@@ -94,9 +96,14 @@ func (e *Exchange) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		e.refuse(w, r, oe, "")
 		return
 	}
-	i := e.Policies.IssuerOf(unverifiedIssuer(subject))
+	ps, err := e.Policies.Current(ctx)
+	if err != nil {
+		e.fail(w, r, auth.Principal{}, err)
+		return
+	}
+	i := ps.IssuerOf(unverifiedIssuer(subject))
 	if i == nil {
-		e.refuse(w, r, &oauthError{http.StatusBadRequest, "invalid_grant", "the subject token is not a token of a configured issuer"}, "")
+		e.refuseToken(w, r, refusal{description: "the subject token is not a token of a configured issuer"})
 		return
 	}
 	claims, err := e.Verifiers[i.Name].Verify(ctx, subject)
@@ -108,16 +115,12 @@ func (e *Exchange) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error_description": "the issuer " + i.Name + " does not answer: try again after Retry-After seconds"})
 		return
 	case err != nil:
-		e.log().InfoContext(ctx, "ci: token exchange refused", "issuer", i.Name, "reason", err.Error(),
-			"address", server.ClientAddr(ctx), "requestId", server.RequestID(ctx))
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the subject token does not verify for "+i.Name)
+		e.refuseToken(w, r, refusal{description: "the subject token does not verify for " + i.Name, reason: err.Error(), issuer: i})
 		return
 	}
 	m, err := i.Match(claims)
 	if err != nil {
-		project, _ := claims[i.pf.Project].(string)
-		e.refuse(w, r, &oauthError{http.StatusBadRequest, "invalid_grant", strings.TrimPrefix(err.Error(), ErrRefused.Error()+": ")},
-			i.Name+" "+project)
+		e.refuseToken(w, r, refusal{description: strings.TrimPrefix(err.Error(), ErrRefused.Error()+": "), issuer: i, claims: claims})
 		return
 	}
 	_, service := token.Realm(e.ExternalURL, r)
@@ -126,9 +129,7 @@ func (e *Exchange) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = e.record(ctx, r, m, t)
 	}
 	if err != nil {
-		e.log().ErrorContext(ctx, "ci: token exchange failed", "principal", m.Principal.String(), "error", err.Error(),
-			"requestId", server.RequestID(ctx))
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "Lajstrom could not mint the token: try again")
+		e.fail(w, r, m.Principal, err)
 		return
 	}
 	e.log().InfoContext(ctx, "ci: token exchanged", "principal", m.Principal.String(), "policies", m.Policies, "token", t.ID,
@@ -137,11 +138,25 @@ func (e *Exchange) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn: int(t.ExpiresAt.Sub(t.IssuedAt) / time.Second), Principal: m.Principal.String(), Policies: m.Policies})
 }
 
+// fail answers 500 for a failure of the index or of the token key, logged with the principal, when
+// there is one, and the request id.
+func (e *Exchange) fail(w http.ResponseWriter, r *http.Request, p auth.Principal, err error) {
+	ctx := r.Context()
+	e.log().ErrorContext(ctx, "ci: token exchange failed", "principal", p.String(), "error", err.Error(), "requestId", server.RequestID(ctx))
+	writeOAuthError(w, http.StatusInternalServerError, "server_error", "Lajstrom could not mint the token: try again")
+}
+
 // record writes the token.exchange row of the CI token t of m, in a transaction of its own,
 // before the token is answered: a CI token is never out without its row.
 func (e *Exchange) record(ctx context.Context, r *http.Request, m *Match, t *token.Token) error {
-	details := map[string]any{"source": SourceCI, "issuer": m.Issuer, "policies": m.Policies, "token": t.ID,
-		"expiresAt": t.ExpiresAt.UTC().Format(time.RFC3339), "claims": m.Claims}
+	return e.appendRow(ctx, r, m.Principal, map[string]any{"outcome": outcomeMinted, "issuer": m.Issuer, "policies": m.Policies,
+		"token": t.ID, "expiresAt": t.ExpiresAt.UTC().Format(time.RFC3339), "claims": m.Claims})
+}
+
+// appendRow appends a token.exchange row of p, details with the source and the request id, from
+// the client of r, in a transaction of its own.
+func (e *Exchange) appendRow(ctx context.Context, r *http.Request, p auth.Principal, details map[string]any) error {
+	details["source"] = SourceCI
 	if id := server.RequestID(ctx); id != "" {
 		details["requestId"] = id
 	}
@@ -149,20 +164,29 @@ func (e *Exchange) record(ctx context.Context, r *http.Request, m *Match, t *tok
 	if err != nil {
 		return fmt.Errorf("ci: audit details: %w", err)
 	}
-	ip := server.ClientAddr(ctx)
-	if ip == "" {
-		ip, _, _ = net.SplitHostPort(r.RemoteAddr)
-	}
-	now := time.Now
-	if e.Now != nil {
-		now = e.Now
-	}
-	ev := index.AuditEvent{At: now(), Principal: m.Principal.String(), Action: ActionExchange, Subject: m.Principal.String(),
-		IP: ip, Details: raw}
+	ev := index.AuditEvent{At: e.now(), Principal: p.String(), Action: ActionExchange, Subject: p.String(), IP: clientOf(r),
+		Details: raw}
 	if err := e.Index.Tx(ctx, func(w index.Writer) error { return w.AppendAudit(ctx, &ev) }); err != nil {
 		return fmt.Errorf("ci: audit row of the exchange: %w", err)
 	}
 	return nil
+}
+
+// clientOf is the client address of r: the server's (behind a trusted proxy, the forwarded one),
+// or the peer's.
+func clientOf(r *http.Request) string {
+	if ip := server.ClientAddr(r.Context()); ip != "" {
+		return ip
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return ip
+}
+
+func (e *Exchange) now() time.Time {
+	if e.Now == nil {
+		return time.Now()
+	}
+	return e.Now()
 }
 
 // readForm reads the form of an exchange and returns its subject token, or the refusal of
