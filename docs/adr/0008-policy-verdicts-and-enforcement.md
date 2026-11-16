@@ -194,9 +194,9 @@ the spec. These are the choices the issue left open, each with the default the s
   deletion of its referrer.
 - **H. A verdict's `scope` is a repo mask**, the repo that holds the referrer when absent: a
   trusted signer may ban a digest wherever it is held.
-- **I. Who may.** #89 has not decided its `attach` action (option C). Verdicts pushed through
-  `/v2` need what every referrer needs on `main`, `write`; they follow option C if the maintainer
-  takes it. The deny of the management API, which the server signs, needs `manage`.
+- **I. Who may.** Verdicts pushed through `/v2` need what every referrer needs, `attach`
+  (#89 option C, taken by the maintainer on 2026-11-16), which `write` holds: a scanner's or a
+  reviewer's token with `read` and `attach` signs and pushes verdicts and publishes nothing. The deny of the management API, which the server signs, needs `manage`.
 - **J. A reason for pip and apt.** A version left out of an index is a version the client does
   not see, so `pip install requests==2.32.0` fails with "no matching distribution" and `apt-get
   install p=1.0` with "version not found", and neither shows the rule's reason: neither protocol
