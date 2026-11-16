@@ -239,3 +239,23 @@ func TestPolicyKeysOfRepo(t *testing.T) {
 		}
 	}
 }
+
+// TestPolicyDenylistFeed: the flat deny list holds the rules of the repos the caller may read.
+func TestPolicyDenylistFeed(t *testing.T) {
+	f := policyFixture(t, nil, nil)
+	wantStatus(t, f.do("POST", "/api/v1/policy/rules", `{"repoMask": "raw/open", "name": "evil", "version": "==1.0", "reason": "r"}`, admin), 201)
+	var doc struct {
+		Rules []struct {
+			Name string `json:"name"`
+		} `json:"rules"`
+		Generation int64 `json:"generation"`
+	}
+	decodeJSON(t, f.do("GET", "/api/v1/policy/denylist", "", alice), 200, &doc)
+	if len(doc.Rules) != 1 || doc.Rules[0].Name != "evil" || doc.Generation == 0 {
+		t.Errorf("the deny list of a reader of raw/open: %+v", doc)
+	}
+	decodeJSON(t, f.do("GET", "/api/v1/policy/denylist", "", bob), 200, &doc)
+	if len(doc.Rules) != 0 {
+		t.Errorf("the deny list of a stranger: %+v", doc)
+	}
+}

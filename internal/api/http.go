@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy/denylist"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 	"github.com/lajstrom/lajstrom/internal/webhook"
@@ -81,6 +82,9 @@ type Options struct {
 	// PolicyKey is the server's policy key (docs/spec/policy.md §5); nil answers a deny 501 and
 	// GET /api/v1/policy/key 404.
 	PolicyKey PolicyKey
+	// Locate gives a version's own download path for the deny list (format.Locator); nil gives
+	// none.
+	Locate denylist.Locate
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
@@ -157,6 +161,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny[?variant=]  sign and attach a deny verdict
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny[?variant=]  delete the manual verdicts
 //	GET    /api/v1/policy/key                          the policy key's public key, PEM, to anyone
+//	GET    /api/v1/policy/denylist                     the deny list of the repos the caller may read, as flat JSON
 //	GET    /api/v1/users[?limit=&cursor=]              list the live users, a page at a time
 //	POST   /api/v1/users                               create a user
 //	GET    /api/v1/users/{user}                        one user, by name or uid
@@ -187,7 +192,8 @@ func New(o Options) http.Handler {
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
-		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey}
+		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
+		locate: o.Locate}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -263,6 +269,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/policy/rules/{id}", h.deleteRule},
 		{"GET /api/v1/policy/verdicts", h.listVerdicts},
 		{"GET /api/v1/policy/key", h.policyKeyPEM},
+		{"GET /api/v1/policy/denylist", h.denylist},
 		{"POST /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny", h.denyVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny", h.undenyVersion},
 		{"GET /api/v1/repos/{format}/{repo}/webhooks", h.listWebhooks},
@@ -336,6 +343,7 @@ type handler struct {
 	rules     *Rules
 	verdicter Verdicter
 	policyKey PolicyKey
+	locate    denylist.Locate
 	log       *slog.Logger
 }
 
