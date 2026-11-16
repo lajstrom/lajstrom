@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -19,6 +20,8 @@ type ServerInfo struct {
 	AnonymousRead bool
 	// Formats are the format plugins the server serves (FormatsOf).
 	Formats []FormatInfo
+	// OIDC is whether the OIDC login is on (auth.oidc.issuer is set): authModes has oidc.
+	OIDC bool
 }
 
 // FormatInfo is a format plugin the server serves: its name and the artifact type of its
@@ -48,7 +51,15 @@ type Info struct {
 	AnonymousRead bool         `json:"anonymousRead"`
 	Formats       []FormatInfo `json:"formats"`
 	AuthModes     []string     `json:"authModes"`
+	Login         LoginInfo    `json:"login"`
 	Caller        Caller       `json:"caller"`
+}
+
+// LoginInfo is what GET /api/v1/info tells a web UI of POST /api/v1/login: that the server has
+// it, whose token is DPoP-bound, and with oidc in authModes that /-/oidc/login takes return_to,
+// code_challenge and dpop_jkt (docs/spec/rbac.md §10); and the lifetime of its token, in seconds.
+type LoginInfo struct {
+	TokenLifetime int64 `json:"tokenLifetime"`
 }
 
 // Caller is the request's principal as GET /api/v1/whoami answers it, and whether the
@@ -58,9 +69,14 @@ type Caller struct {
 	Admin bool `json:"admin"`
 }
 
-// authModes are the ways a person signs in: a local user's password over Basic, and a personal
-// access token. The OIDC login (#69) adds "oidc".
-var authModes = []string{"password", "token"}
+// authModes returns the ways a person signs in: a local user's password, over Basic and to POST
+// /api/v1/login, a personal access token, and the OIDC login (#69) while it is on.
+func (h *handler) authModes() []string {
+	if h.info.OIDC {
+		return []string{"password", "token", "oidc"}
+	}
+	return []string{"password", "token"}
+}
 
 // serverInfo answers GET /api/v1/info. No authorization is asked for: anyone may read it. Unlike
 // whoami, the anonymous principal gets 200, with itself as the caller.
@@ -73,7 +89,8 @@ func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusOK, Info{
 		Version: b.Version, Commit: b.Commit, Date: b.Date,
 		ExternalURL: h.info.ExternalURL, AnonymousRead: h.info.AnonymousRead,
-		Formats: h.info.Formats, AuthModes: authModes, Caller: caller,
+		Formats: h.info.Formats, AuthModes: h.authModes(), Login: LoginInfo{TokenLifetime: int64(h.loginLifetime / time.Second)},
+		Caller: caller,
 	}, nil
 }
 

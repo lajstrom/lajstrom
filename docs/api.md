@@ -1361,6 +1361,7 @@ curl -s "$LAJSTROM/api/v1/info"
   "anonymousRead": true,
   "formats": [{"name": "apt", "artifactType": "application/vnd.lajstrom.deb.v1"}, {"name": "maven", "artifactType": "application/vnd.lajstrom.maven.v1"}],
   "authModes": ["password", "token"],
+  "login": {"tokenLifetime": 43200},
   "caller": {"principal": "anonymous", "kind": "anonymous", "name": "anonymous", "admin": false}
 }
 ```
@@ -1371,7 +1372,8 @@ curl -s "$LAJSTROM/api/v1/info"
 | `externalURL` | `server.externalURL` ([configuration.md](configuration.md#server)); `""` on the dev stack when it leaves it empty |
 | `anonymousRead` | `auth.anonymousRead`, the server-wide switch: when `false`, no repo is readable without credentials, whatever its own `anonymousRead` |
 | `formats` | the format plugins the server serves, by name, each with the artifact type of its manifests. `oci` repos need no plugin and are not listed |
-| `authModes` | how a person signs in: `password`, a local user's password over Basic, and `token`, a personal access token. The OIDC login (#69) adds `oidc` |
+| `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login); `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
+| `login` | `{"tokenLifetime": 43200}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives that many seconds (`auth.login.tokenLifetime`); with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login` |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not). Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
@@ -1469,8 +1471,33 @@ refused or was used, is `400` saying why, before the password is checked.
 The password is checked as HTTP Basic checks it, with the same
 [throttles of failed logins](auth.md#failed-logins): `401` whatever the reason, an unknown user,
 a disabled one, one without a password (an OIDC user), a wrong password or a token in its place;
-`429` with `Retry-After` for a throttled account or client address. A body that is not
-`{"username", "password"}` is `400`.
+`429` with `Retry-After` for a throttled account or client address. A body that is neither
+`{"username", "password"}` nor `{"code", "codeVerifier"}` is `400`.
+
+**With OIDC** ([auth.md](auth.md#a-web-ui)), while `auth.oidc` is on, the UI signs a person in
+through the IdP and gets the same answer:
+
+1. It makes a PKCE verifier (RFC 7636: 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`), keeps it
+   in the tab, and sends the person to
+   `/-/oidc/login?return_to=<a page of the UI>&code_challenge=<base64url(sha256(verifier))>&code_challenge_method=S256&dpop_jkt=<thumbprint>`,
+   the thumbprint (RFC 7638) of the DPoP key it signs in with (RFC 9449 §10). `return_to` must
+   be on the origin of `server.externalURL` or of `server.corsOrigins`, without a fragment;
+   anything else, and one of the three without the others, is a `400` page.
+2. After the IdP's login, the callback answers `302` to `<return_to>#code=<code>`, instead of
+   the page that shows a token.
+3. The UI posts the code and the verifier, with a proof of that key:
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' -H "DPoP: $PROOF" \
+  -d '{"code": "<code>", "codeVerifier": "<verifier>"}' "$LAJSTROM/api/v1/login"
+```
+
+The answer is `201` with the token, named `oidc <time> <4 hex>` and bound to the key, which
+expires after the shorter of `auth.login.tokenLifetime` and `auth.oidc.tokenLifetime`; its
+`token.create` row says `createdBy` `oidc`. A code is redeemed once, within the 10 minutes of
+its login, with the verifier of its challenge and a proof of the key of its `dpop_jkt` only: a
+code that is unknown, used, expired, of another verifier or of another key is `400`, and a wrong
+verifier or key uses it up. A user disabled since the login is `401`.
 
 ### The DPoP-bound token
 

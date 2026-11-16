@@ -240,3 +240,65 @@ func TestLoginThrottled(t *testing.T) {
 	wantError(t, f.signIn(`{"username": "alice", "password": "x"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
 		http.StatusNotImplemented, codeUnavailable, "checks no passwords")
 }
+
+// fakeHandoffs redeems the code "good" with the verifier "v" and the key jkt into a token of
+// alice bound to it, refuses "disabled" as a user disabled since its login, and every other code
+// as one that does not redeem; it records the origin it was given.
+type fakeHandoffs struct {
+	jkt    string
+	origin auth.Origin
+}
+
+func (f *fakeHandoffs) Redeem(_ context.Context, code, verifier, jkt string, o auth.Origin) (*auth.Token, string, error) {
+	f.origin = o
+	switch {
+	case code == "good" && verifier == "v" && jkt == f.jkt:
+		exp := testNow.Add(time.Hour)
+		return &auth.Token{ID: 7, Kind: auth.TokenPAT, User: "alice", Name: "oidc 2026-01-02T12:00:00Z 0a1b", Scopes: []string{},
+			ExpiresAt: &exp, CreatedAt: testNow, HashPrefix: "01234567", DPoPJKT: jkt}, auth.PATPrefix + "secret", nil
+	case code == "disabled":
+		return nil, "", fmt.Errorf("the user alice is disabled: %w", auth.ErrBadCredentials)
+	}
+	return nil, "", fmt.Errorf("%w: code: unknown, used, expired, or of another verifier or key: sign in again", auth.ErrInvalid)
+}
+
+// TestLoginCode checks POST /api/v1/login with the code of an OIDC login (docs/spec/rbac.md §10):
+// 201 with the redeemed token, bound to the key of the proof, and its Location; 400 for a code
+// that does not redeem, of another key too, for every code while OIDC is off, for a body of both
+// forms or of half of one, and without a proof; 401 for a user disabled since its login.
+func TestLoginCode(t *testing.T) {
+	key, other := dpoptest.NewKey(t), dpoptest.NewKey(t)
+	h := &fakeHandoffs{jkt: key.JKT}
+	f := loginFixture(t, Options{Handoffs: h})
+	rr := f.signIn(`{"code": "good", "codeVerifier": "v"}`, loginProof(t, key), auth.Principal{}, auth.Credential{})
+	var c signedIn
+	decodeJSON(t, rr, http.StatusCreated, &c)
+	if c.ID != 7 || c.User != "alice" || c.Secret != auth.PATPrefix+"secret" || c.DPoPJKT != key.JKT || c.TokenType != "DPoP" ||
+		rr.Header().Get("Location") != "/api/v1/users/alice/tokens/7" {
+		t.Errorf("the answer: %+v, tokenType %q, Location %q", redacted(c.created), c.TokenType, rr.Header().Get("Location"))
+	}
+	wantError(t, f.signIn(`{"code": "good", "codeVerifier": "v"}`, loginProof(t, other), auth.Principal{}, auth.Credential{}),
+		http.StatusBadRequest, codeInvalid, "of another verifier or key")
+	wantError(t, f.signIn(`{"code": "good", "codeVerifier": "v"}`, "", auth.Principal{}, auth.Credential{}),
+		http.StatusBadRequest, codeInvalid, "DPoP: the request has no DPoP header")
+	if h.origin.Source != SourceAPI || h.origin.IP != "192.0.2.1" {
+		t.Errorf("the origin of the redemption: %+v", h.origin)
+	}
+	for _, tc := range []struct {
+		body   string
+		status int
+		code   string
+		msg    string
+	}{
+		{`{"code": "good", "codeVerifier": "w"}`, http.StatusBadRequest, codeInvalid, "code: unknown, used, expired, or of another verifier"},
+		{`{"code": "disabled", "codeVerifier": "v"}`, http.StatusUnauthorized, codeUnauthenticated, "disabled"},
+		{`{"code": "good"}`, http.StatusBadRequest, codeInvalid, `or {"code", "codeVerifier"}`},
+		{`{"code": "good", "codeVerifier": "v", "username": "alice", "password": "x"}`, http.StatusBadRequest, codeInvalid, `or {"code", "codeVerifier"}`},
+		{`{"codeVerifier": "v", "password": "x"}`, http.StatusBadRequest, codeInvalid, `or {"code", "codeVerifier"}`},
+	} {
+		wantError(t, f.signIn(tc.body, loginProof(t, key), auth.Principal{}, auth.Credential{}), tc.status, tc.code, tc.msg)
+	}
+	f = loginFixture(t, Options{})
+	wantError(t, f.signIn(`{"code": "good", "codeVerifier": "v"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
+		http.StatusBadRequest, codeInvalid, "code: unknown, used, expired, or of another verifier")
+}
