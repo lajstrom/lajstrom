@@ -197,13 +197,13 @@ func onYugabyte(t *testing.T, dsn string) bool {
 }
 
 // onCockroach reports whether db is CockroachDB, as its version() says.
-func onCockroach(t *testing.T, db *sql.DB) bool {
+func onCockroach(t testing.TB, db *sql.DB) bool {
 	t.Helper()
 	return strings.Contains(serverVersion(t, db), "CockroachDB")
 }
 
 // serverVersion returns the version() of db.
-func serverVersion(t *testing.T, db *sql.DB) string {
+func serverVersion(t testing.TB, db *sql.DB) string {
 	t.Helper()
 	var version string
 	if err := db.QueryRowContext(t.Context(), "SELECT version()").Scan(&version); err != nil {

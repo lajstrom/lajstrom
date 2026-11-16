@@ -73,6 +73,14 @@ type Dialect struct {
 	// so that two writers that then delete or update it deadlock, and one is aborted (40001),
 	// where Postgres takes no such lock. 0 or 1: once, and the error is returned.
 	Attempts int
+	// FoldASCII is the expression that folds the ASCII letters of the text %s to lowercase and
+	// leaves every other character: lower on SQLite and on Postgres, whose text columns are
+	// COLLATE "C"; translate of the 26 letters on CockroachDB, whose lower folds others too.
+	FoldASCII string
+	// AttrText is the expression of the value of a key of the json column %s, as text, with the
+	// key as its one parameter: json_extract with a path that quotes the key on SQLite, ->> on
+	// Postgres. The key has no character that a path must escape (attrKey).
+	AttrText string
 	// Isolation is the isolation level that every transaction the store begins asks for, but
 	// those of index.WithRepeatableRead: CockroachDB's read committed, which its transactions
 	// are not by default. sql.LevelDefault (Postgres, SQLite) asks for none, and a transaction

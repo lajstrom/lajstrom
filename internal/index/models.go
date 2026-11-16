@@ -409,6 +409,61 @@ type File struct {
 	Attrs     map[string]string // layer annotations
 }
 
+// PackageSort is the order of a PackageQuery (docs/spec/http-routing.md §4, the package list).
+type PackageSort string
+
+// The sorts of a PackageQuery: by name, by the newest CreatedAt of a package's versions rows, by
+// the count of its versions, by the size of its files.
+const (
+	SortName     PackageSort = "name"
+	SortUpdated  PackageSort = "updated"
+	SortVersions PackageSort = "versions"
+	SortSize     PackageSort = "size"
+)
+
+// PackageQuery is a page of a repo's packages as Reader.ListPackagePage reads it: the packages
+// that every filter given keeps, in the order of Sort, after the key After.
+type PackageQuery struct {
+	// Prefix keeps the packages whose name starts with it.
+	Prefix string
+	// Text keeps the packages whose name, or the Summary of one of whose versions rows, contains
+	// it, ASCII letters in either case.
+	Text string
+	// Attrs keeps the packages with a versions row whose Attrs have, for every key, one of its
+	// values. A key with a character other than a letter, a digit, '.', '_' and '-' matches
+	// nothing.
+	Attrs map[string][]string
+	// Sort is the order, SortName when ""; Desc reverses it. Packages with the same value
+	// follow by name, in the same direction.
+	Sort PackageSort
+	Desc bool
+	// After is the key of the last package of the page before; nil for the first page.
+	After *PackageKey
+	// Limit bounds the page; below 1 it is empty.
+	Limit int
+}
+
+// PackageKey is the place of a package in the order of a PackageQuery: its value of the sort,
+// Updated for SortUpdated and N for SortVersions and SortSize, then its name.
+type PackageKey struct {
+	Updated time.Time
+	N       int64
+	Name    string
+}
+
+// PackagePlace is a package of a page of Reader.ListPackagePage with its key.
+type PackagePlace struct {
+	Package Package
+	Key     PackageKey
+}
+
+// AttrValue is a value of a key of versions.attrs in a repo, and how many packages have a
+// versions row with it.
+type AttrValue struct {
+	Value    string
+	Packages int64
+}
+
 // PackageFacts is what Reader.ListPackageFacts answers of a package: counts and times over
 // its versions rows, its latest and its last published version, and the dist-tags of its journal
 // (docs/spec/index-schema.md, The package list, one package and search).
