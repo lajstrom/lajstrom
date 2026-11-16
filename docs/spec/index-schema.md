@@ -32,8 +32,8 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`, `proxy`, `group`; [below](#proxy-and-group-repos)), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, `maven.versionPolicy`, …), `upstream` json null, `group` json null, `created_at` ts, `updated_at` ts | unique `(format, name)` |
-| `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc`, a user made by its first OIDC login, without a password: rbac.md §8; `service`, a service account, without a password: rbac.md §1), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null, `owner` text null (a service account's owner, `user:<uid>` or `group:<name>`; NULL for every other kind; 0026) | the first admin is created through the bootstrap token (`bootstrap_token`) or by `lajstrom admin user create --admin`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) `kind` is set on insert and never changes. The service accounts of an owner are found by listing the users; the table is small. Migration `0026_users_owner.sql` only adds the column: a replica of the release before reads the table by named columns and takes a service account for a user without a password, whose tokens with an expiry work, and refuses one without (`401`) as it refuses every personal access token without an expiry |
+| `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`, `proxy`, `group`; [below](#proxy-and-group-repos)), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, `maven.versionPolicy`, …), `upstream` json null, `group` json null, `created_at` ts, `updated_at` ts, `revision` bigint ([Revisions](#revisions)) | unique `(format, name)` |
+| `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc`, a user made by its first OIDC login, without a password: rbac.md §8; `service`, a service account, without a password: rbac.md §1), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null, `owner` text null (a service account's owner, `user:<uid>` or `group:<name>`; NULL for every other kind; 0026), `revision` bigint ([Revisions](#revisions)) | the first admin is created through the bootstrap token (`bootstrap_token`) or by `lajstrom admin user create --admin`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) `kind` is set on insert and never changes. The service accounts of an owner are found by listing the users; the table is small. Migration `0026_users_owner.sql` only adds the column: a replica of the release before reads the table by named columns and takes a service account for a user without a password, whose tokens with an expiry work, and refuses one without (`401`) as it refuses every personal access token without an expiry |
 | `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `repo_mask` text null (a mask of rbac.md §3, `oci/*`; 0023), `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null, `dpop_jkt` text null (the JWK SHA-256 thumbprint, base64url, of the DPoP key a web UI's token is bound to: rbac.md §10; 0028) | unique `hash` (a secret is looked up by its hash). A PAT acts as its user (`user_id`), and has an `expires_at` unless its user is a service account (rbac.md §1); a deploy token is a principal of its own, bound to one repo (`repo_id`, which takes its tokens with it, `ON DELETE CASCADE`) or to a mask (`repo_mask`, which names no row and matches the repos created later too: rbac.md §1), one of the two and never both. The store lists the tokens over a mask with the others (`ListTokens` with no filter); the table is small. Migration `0023_tokens_repo_mask.sql` only adds the column: a replica of the release before it reads the table by named columns, and refuses a mask token as a deploy token without a repo (`401`), so that a mask token works on the replicas that know 0023 and on no other. A PAT with `dpop_jkt` authenticates only with a DPoP proof of that key, on `/api/`. Migration `0028_web_ui_sign_in.sql` only adds the column: a replica of the release before it reads the table by named columns and takes a bound token for a bearer, so a web UI signs in once every replica runs a release that knows 0028 |
 | `bootstrap_token` | `id` int (always 1), `hash` text (sha256 of the secret), `replica` text (host name and process id of the `serve` that made it), `created_at` ts, `expires_at` ts, `used_at` ts null | at most one row (0015): the token that makes the first admin, the same on every replica ([auth.md](../auth.md#bootstrap-the-first-admin)). `serve` makes or replaces it at start while no enabled user has an admin binding, by its old hash only, so that of replicas that start together one makes it; the exchange sets `used_at` in the transaction that creates the admin, by its hash, unused and before `expires_at`, so that it is used once |
 | `identities` | `id`, `user_id` → users, `issuer` text, `subject` text, `created_at` ts, `login_at` ts, `groups_expire_at` ts null | an OIDC identity, the `iss` and `sub` of its ID token, and the user it maps to (rbac.md §8; 0021). Unique `identities_subject` on `(issuer, subject)`; index `identities_user` on `(user_id)`. A login sets `login_at` and `groups_expire_at`, the end of the `auth.oidc.tokenLifetime` of that login; a login that finds the row's user deleted deletes the row and makes a new user and row |
@@ -96,6 +96,21 @@ The admin's list of every token and a repo's open publication sessions (http-rou
 A `limit` below 1 returns none; a caller asks for one more than its page to know whether
 another follows. Neither needs a migration.
 
+### Revisions
+
+`repos.revision`, `users.revision` and `webhooks.revision` (#796; migration
+`0032_revisions.sql`, `NOT NULL DEFAULT 1`) are the revision of the row: 1 on insert, moved by
+one in the statement of every update of the row (`UpdateRepo`, `ConvertRepo`, `UpdateUser`,
+`UpdateWebhook`), and by nothing else. A group's `group_members` are written in the transaction
+that updates its `repos` row, so its revision moves with them. The API's `ETag` names the id and
+the revision of the row ([api.md](../api.md#revisions)); a change with `If-Match` compares them
+with the row its transaction read, at repeatable read on Postgres, so that a change of the row
+committed after the read aborts the transaction, which runs again and compares again
+(`index.WithCondition`). The column is control plane, in a snapshot with its row. Expand: a
+replica of a release before 0032 neither reads nor writes it, and its updates leave it as it is,
+so that a change such a replica makes during a rolling update passes an `If-Match` of the
+revision before it.
+
 ## Proxy and group repos
 
 The tables and columns of the kinds `proxy` and `group` ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
@@ -155,7 +170,7 @@ need them. Migration `0024_webhooks.sql` creates them; it only adds.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `webhooks` | `id`, `uid` text (a UUID v7, `NewUID`), `mask` text (a repo mask of rbac.md §3), `url` text, `events` json null (the types of webhooks.md §1; NULL: every type), `secret_enc` blob (nonce ‖ AES-256-GCM(secret) with the master key, `uid` as additional data), `active` bool, `description` text, `created_by` text (the principal that created it), `created_at` ts, `updated_at` ts | unique `uid`. `mask`, `uid` and `created_by` never change. No reference to `repos`: a webhook outlives its repo, as a binding does |
+| `webhooks` | `id`, `uid` text (a UUID v7, `NewUID`), `mask` text (a repo mask of rbac.md §3), `url` text, `events` json null (the types of webhooks.md §1; NULL: every type), `secret_enc` blob (nonce ‖ AES-256-GCM(secret) with the master key, `uid` as additional data), `active` bool, `description` text, `created_by` text (the principal that created it), `created_at` ts, `updated_at` ts, `revision` bigint ([Revisions](#revisions)) | unique `uid`. `mask`, `uid` and `created_by` never change. No reference to `repos`: a webhook outlives its repo, as a binding does |
 | `webhook_deliveries` | `id`, `webhook_id` → webhooks (`ON DELETE CASCADE`), `event_id` text (the CloudEvents `id`, a UUID v7), `event_type` text, `payload` blob (the exact body sent), `state` text (`pending`, `delivered`, `failed`), `attempts` int, `next_at` ts, `claimed_by` text null (the replica's id), `claimed_at` ts null, `last_at` ts null, `last_status` int null, `last_error` text null (its first 1024 bytes), `created_at` ts, `delivered_at` ts null | the outbox and the delivery log. Index `webhook_deliveries_due` on `(next_at) WHERE state = 'pending'`, `webhook_deliveries_hook` on `(webhook_id, id)`, `webhook_deliveries_created` on `(created_at)` |
 
 A `webhook_deliveries` row is written in the transaction that writes its event's audit row `ok`
@@ -774,9 +789,9 @@ the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, an
 columns `tokens.dpop_jkt` and `oidc_logins.return_to`, `.code_challenge`, `.handoff` and
 `.dpop_jkt`, and the table `dpop_proofs` (#1170), `0029_versions_summary.sql` the column
 `versions.summary` and the index `files_digest` (#954, #956), `0030_policy.sql` the tables of
-policy and `index_cache.expires_at` (#101), and `0031_blob_map.sql` the table `blob_map` (#114);
-the others are named with
-their tables above. The runner,
+policy and `index_cache.expires_at` (#101), `0031_blob_map.sql` the table `blob_map` (#114), and
+`0032_revisions.sql` the columns `repos.revision`, `users.revision` and `webhooks.revision`
+(#796); the others are named with their tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
@@ -878,7 +893,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0031, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0032, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).

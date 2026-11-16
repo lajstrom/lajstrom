@@ -887,15 +887,15 @@ digest, after the read, so that a snapshot never holds its own row.
 | `createdAt` | the database's time of the read, RFC 3339 UTC |
 | `binary` | as `lajstrom.snapshot.binary` |
 | `auditSince` | the start of the window of `audit`, RFC 3339; absent when `audit` holds every row, or is absent |
-| `repos` | `[{"id", "format", "name", "registry", "prefix", "kind", "anonymousRead", "policy", "upstream", "group", "createdAt", "updatedAt"}]` |
+| `repos` | `[{"id", "format", "name", "registry", "prefix", "kind", "anonymousRead", "policy", "upstream", "group", "createdAt", "updatedAt", "revision"}]` |
 | `groupMembers` | `[{"group", "member", "position"}]`: repo ids, and the place from 0 |
-| `users` | `[{"id", "uid", "name", "passwordHash", "kind", "disabled", "createdAt", "deletedAt", "deletedName"}]`: the live and the deleted users; `passwordHash` the argon2id hash, absent without a password |
+| `users` | `[{"id", "uid", "name", "passwordHash", "kind", "disabled", "createdAt", "deletedAt", "deletedName", "revision"}]`: the live and the deleted users; `passwordHash` the argon2id hash, absent without a password |
 | `identities` | `[{"id", "user", "issuer", "subject", "createdAt", "loginAt", "groupsExpireAt"}]`: `user` a user id |
 | `identityGroups` | `[{"identity", "name"}]`: an identity id and a group |
 | `tokens` | `[{"id", "kind", "user", "repo", "repoMask", "name", "hash", "scopes", "expiresAt", "lastUsedAt", "createdAt", "revokedAt", "dpopJkt"}]`: `user` and `repo` ids, `repoMask` the mask of a deploy token over a mask (absent for every other token), `hash` the hex sha256 of the secret, `dpopJkt` the thumbprint of the DPoP key a web UI's token is bound to (absent for every other token; rbac.md §10) |
 | `bindings` | `[{"id", "principal", "role", "repoMask", "createdAt"}]` |
 | `keys` | `[{"id", "repo", "kind", "public", "privateEnc", "fingerprint", "createdAt", "retiredAt"}]`: `repo` a repo id, absent for a server key; `public` and `privateEnc` base64, `privateEnc` the ciphertext of the table (index-schema.md, `keys`) |
-| `webhooks` | `[{"id", "uid", "mask", "url", "events", "secretEnc", "active", "description", "createdBy", "createdAt", "updatedAt"}]`: `events` absent for every type; `secretEnc` base64, the ciphertext of the table (index-schema.md, Webhooks). Not their deliveries |
+| `webhooks` | `[{"id", "uid", "mask", "url", "events", "secretEnc", "active", "description", "createdBy", "createdAt", "updatedAt", "revision"}]`: `events` absent for every type; `secretEnc` base64, the ciphertext of the table (index-schema.md, Webhooks). Not their deliveries |
 | `policyRules` | `[{"id", "repoMask", "name", "version", "variant", "effect", "reason", "createdBy", "createdAt", "expiresAt"}]` (#101); absent in a snapshot of a database before 0030 |
 | `audit` | `[{"id", "at", "principal", "principalName", "action", "repo", "subject", "digest", "ip", "details", "state", "error"}]`; absent when the snapshot was made without audit rows, `[]` when its window held none |
 
