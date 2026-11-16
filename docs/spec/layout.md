@@ -1133,6 +1133,10 @@ type Writer interface {
     ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error
     CreateUser(ctx context.Context, u *User) error
     UpdateUser(ctx context.Context, u *User) error
+    // TouchUser sets LastSeenAt (users.last_seen_at) to seenAt when it is null or earlier, else
+    // changes nothing, as TouchToken does; it moves neither Revision nor auth_version; no user
+    // ErrNotFound (#1283)
+    TouchUser(ctx context.Context, id int64, seenAt time.Time) error
     CreateToken(ctx context.Context, t *Token) error
     RevokeToken(ctx context.Context, id int64, at time.Time) error
     // TouchToken sets LastUsedAt to lastUsed when it is null or earlier, else changes nothing:
