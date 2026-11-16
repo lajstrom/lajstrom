@@ -136,7 +136,8 @@ func (d *deletion) pushRepaired(ctx context.Context, tag string, r *ReferrersRep
 	p := d.p
 	ev := index.AuditEvent{At: p.now(), Principal: principal.String(), Action: actionRepair, Repo: d.repo.Format + "/" + d.repo.Name,
 		Subject: d.subject.String(), Digest: s.desc.Digest}
-	ev.Details, _ = json.Marshal(map[string]any{"path": r.Path, "added": added}) // strings always marshal
+	// the origin of a run of the command line (auth.WithOrigin), none for the server's
+	ev.Details, _ = json.Marshal(auth.OriginFrom(ctx).AddTo(map[string]any{"path": r.Path, "added": added})) // strings always marshal
 	if err := p.intend(ctx, &ev); err != nil {
 		return err
 	}

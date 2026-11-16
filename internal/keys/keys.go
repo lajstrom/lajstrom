@@ -445,11 +445,16 @@ func (s *Service) newKey(ctx context.Context, repo index.Repo, source string) (*
 	return row, &Entity{Key: *row, OpenPGP: key}, nil
 }
 
-// rotateEvent is the audit row of a rotation by the principal of ctx.
+// rotateEvent is the audit row of a rotation by the principal of ctx, with the origin of ctx
+// (auth.OriginFrom: the command line's) in its details.
 func (s *Service) rotateEvent(ctx context.Context, repo index.Repo, fingerprint, retired string) *index.AuditEvent {
-	var details json.RawMessage
+	d := auth.OriginFrom(ctx).AddTo(map[string]any{})
 	if retired != "" {
-		details, _ = json.Marshal(map[string]string{"retired": retired}) // a map of strings: never an error
+		d["retired"] = retired
+	}
+	var details json.RawMessage
+	if len(d) > 0 {
+		details, _ = json.Marshal(d) // strings: never an error
 	}
 	return &index.AuditEvent{At: s.now(), Principal: auth.PrincipalFrom(ctx).String(), Action: ActionRotate,
 		Repo: repoName(repo), Subject: fingerprint, Details: details}

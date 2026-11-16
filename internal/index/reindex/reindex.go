@@ -195,7 +195,8 @@ func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, err
 	if req.Repo != nil {
 		ev.Repo = req.Repo.Format + "/" + req.Repo.Name
 	}
-	details := map[string]any{"run": run.ID, "source": req.Source, "prune": req.Prune, "verify": req.Verify}
+	details := auth.OriginFrom(ctx).AddTo(map[string]any{"run": run.ID, "prune": req.Prune, "verify": req.Verify})
+	details["source"] = req.Source
 	if len(req.Repositories) > 0 {
 		details["attached"] = len(req.Repositories)
 	}

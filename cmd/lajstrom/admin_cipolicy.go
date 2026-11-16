@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/api"
-	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -64,7 +63,7 @@ func newCIPolicyCreateCmd(a *app) *cobra.Command {
 				p.Grants = append(p.Grants, index.CIGrant{Role: role, Mask: mask})
 			}
 			return a.withCIPolicies(cmd.Context(), func(ctx context.Context, s *ci.Service) error {
-				made, err := s.Create(ctx, p, auth.Origin(cliOrigin()))
+				made, err := s.Create(ctx, p, a.cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -119,7 +118,7 @@ func newCIPolicyDeleteCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return ifMatched(s.Delete(ctx, args[0], auth.Origin(cliOrigin())))
+				return ifMatched(s.Delete(ctx, args[0], a.cliOrigin()))
 			})
 		},
 	}

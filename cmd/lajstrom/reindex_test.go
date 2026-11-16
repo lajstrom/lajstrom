@@ -88,9 +88,16 @@ func TestReindex(t *testing.T) {
 		{args: []string{"admin", "repo", "create", "raw/assets", "--registry", "local"}},
 		{args: []string{"reindex", "--repo", "raw/assets", "--report"}, wantOut: "raw/assets: error :"},
 	})
-	out, _, err := run(t, nil, "reindex", "--json", "--config", cfg)
+	out, _, err := run(t, nil, "reindex", "--json", "--actor", "erin", "--reason", "after the restore", "--config", cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// every run's row has the origin of the command line (rbac.md §6), the last one its actor
+	dsn := "file:" + filepath.Join(dir, "lajstrom.db")
+	wantCLIAudit(t, dsn, "repo.reindex", 3)
+	evs, err := openTestStore(t, dsn).ListAudit(t.Context(), index.AuditFilter{Action: "repo.reindex", Limit: 1})
+	if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"actor":"erin","changeReason":"after the restore"`) {
+		t.Errorf("the last repo.reindex row %v, %v; want actor erin and its changeReason", evs, err)
 	}
 	var rep reindex.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {

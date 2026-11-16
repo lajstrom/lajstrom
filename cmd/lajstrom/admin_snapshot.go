@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
@@ -102,7 +103,7 @@ func newSnapshotCreateCmd(a *app) *cobra.Command {
 				return err
 			}
 			out := createdSnapshot{Registry: name, Repository: profile.SnapshotRepository, Info: info, Rows: rowCounts(cp)}
-			if err := st.AppendAudit(ctx, snapshotEvent(actionSnapshotCreate, out)); err != nil {
+			if err := st.AppendAudit(ctx, snapshotEvent(actionSnapshotCreate, out, a.cliOrigin())); err != nil {
 				return fmt.Errorf("the snapshot %s:%s is written, its audit row is not: %w", out.Repository, info.Tag, err)
 			}
 			return writeJSONLine(cmd.OutOrStdout(), out)
@@ -250,11 +251,10 @@ func rowCounts(cp *index.ControlPlane) map[string]int {
 }
 
 // snapshotEvent is the audit row of action on the snapshot s, by the anonymous principal with the
-// source cli and the host, as admin's changes are.
-func snapshotEvent(action string, s createdSnapshot) *index.AuditEvent {
-	o := cliOrigin()
-	details, _ := json.Marshal(map[string]any{"source": o.Source, "host": o.Host, "registry": s.Registry, "sealed": s.Sealed,
-		"schema": s.Schema, "rows": s.Rows}) // strings, a bool, ints: never an error
+// origin o of the command line, as admin's changes are.
+func snapshotEvent(action string, s createdSnapshot, o api.Origin) *index.AuditEvent {
+	details, _ := json.Marshal(o.AddTo(map[string]any{"registry": s.Registry, "sealed": s.Sealed,
+		"schema": s.Schema, "rows": s.Rows})) // strings, a bool, ints: never an error
 	subject := s.Repository + ":" + s.Tag
 	if s.Tag == "" { // read by its digest
 		subject = s.Repository + "@" + s.Digest.String()
@@ -314,7 +314,7 @@ func newSnapshotRestoreCmd(a *app) *cobra.Command {
 			}
 			out := restoredSnapshot{createdSnapshot: createdSnapshot{Registry: name, Repository: profile.SnapshotRepository, Info: info,
 				Rows: rowCounts(cp)}, Forced: force, Next: "lajstrom reindex"}
-			ev := snapshotEvent(actionSnapshotRestore, out.createdSnapshot)
+			ev := snapshotEvent(actionSnapshotRestore, out.createdSnapshot, a.cliOrigin())
 			err = st.ImportControlPlane(ctx, cp, index.ImportOptions{Force: force, Event: ev})
 			if errors.Is(err, index.ErrNotEmpty) {
 				return fmt.Errorf("%w; --force empties it first", err)

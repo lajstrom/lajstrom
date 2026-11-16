@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/config"
 )
 
@@ -20,6 +21,11 @@ type app struct {
 	configPath string
 	logLevel   string
 	logFormat  string
+
+	// actor and reason are the values of --actor and --reason, origin the command line's origin
+	// once a command of withOrigin checked them (origin.go).
+	actor, reason string
+	origin        *api.Origin
 
 	cfg *config.Config // loaded only for the commands marked with needsConfig
 	log *slog.Logger
@@ -72,6 +78,7 @@ func newRootCmd(lookupEnv func(string) (string, bool)) *cobra.Command {
 	for _, c := range root.Commands() {
 		refuseUnknown(c)
 	}
+	a.withOrigins(root)
 	return root
 }
 
