@@ -193,6 +193,46 @@ func TestWrapUnwrap(t *testing.T) {
 	if !bytes.Equal(got.Key, p.Key) || !bytes.Equal(got.Nonce(), p.Nonce()) || got.Digest != p.Digest {
 		t.Errorf("Unwrap = %v, want %v", got, p)
 	}
+	// ocicrypt joins wrappings with commas; the recipient may be in the second.
+	other2, _ := Wrap(p, []Recipient{other})
+	if _, err := Unwrap(other2+","+value, repo.KID, RSAKey{Key: repoKey}); err != nil {
+		t.Errorf("two wrappings: %v", err)
+	}
+}
+
+// TestKIDs: the kids of a wrapping of several recipients, and of one.
+func TestKIDs(t *testing.T) {
+	repoKey := testKey(t)
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	repo, _ := NewRecipient(&repoKey.PublicKey)
+	other, _ := NewRecipient(&ec.PublicKey)
+	p := NewPrivate()
+	value, err := Wrap(p, []Recipient{other, repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kids, err := KIDs(value); err != nil || len(kids) != 2 || kids[0] != other.KID || kids[1] != repo.KID {
+		t.Errorf("KIDs = %v, %v; want %s, %s", kids, err, other.KID, repo.KID)
+	}
+	one, _ := Wrap(p, []Recipient{repo})
+	if kids, err := KIDs(one); err != nil || len(kids) != 1 || kids[0] != repo.KID {
+		t.Errorf("KIDs of one recipient = %v, %v; want %s", kids, err, repo.KID)
+	}
+}
+
+// TestUnwrapRefuses: another kid, a failing decrypter, another key, garbage, and a wrap without
+// options or recipients.
+func TestUnwrapRefuses(t *testing.T) {
+	repoKey := testKey(t)
+	repo, err := NewRecipient(&repoKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPrivate()
+	value, err := Wrap(p, []Recipient{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Unwrap(value, "NOT-A-KID", RSAKey{Key: repoKey}); !errors.Is(err, ErrNoRecipient) {
 		t.Errorf("another kid: %v, want ErrNoRecipient", err)
 	}
@@ -211,11 +251,6 @@ func TestWrapUnwrap(t *testing.T) {
 	}
 	if _, err := Wrap(p, nil); err == nil {
 		t.Error("Wrap without recipients: no error")
-	}
-	// ocicrypt joins wrappings with commas; the recipient may be in the second.
-	other2, _ := Wrap(p, []Recipient{other})
-	if _, err := Unwrap(other2+","+value, repo.KID, RSAKey{Key: repoKey}); err != nil {
-		t.Errorf("two wrappings: %v", err)
 	}
 }
 

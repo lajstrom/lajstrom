@@ -76,6 +76,16 @@ type Options struct {
 	// Attachments): the ingest pipeline. nil means a run reads no attachments and leaves their
 	// rows as they are.
 	Attacher Attacher
+	// Keys are the keys of encrypted repos (#114), which the Inspector opens the layers with:
+	// keys.Encryption. nil means the server has no master key: a repo whose policy has
+	// encryption is skipped whole, and the repo's report says why.
+	Keys KeyChecker
+}
+
+// KeyChecker tells whether the keys of an encrypted repo open: its seals, with the master key,
+// and a client for each KMS that holds one. keys.Encryption implements it.
+type KeyChecker interface {
+	CanOpen(ctx context.Context, repo index.Repo) error
 }
 
 // Inspector checks a manifest found in the registry and returns the rows to write; the ingest
@@ -109,6 +119,7 @@ type Worker struct {
 	concurrency int
 	claimTTL    time.Duration
 	graceAge    time.Duration
+	keys        KeyChecker
 	heartbeat   time.Duration                        // heartbeatEvery; shorter in the tests
 	after       func(time.Duration) <-chan time.Time // time.After; the tests' clock
 	jitter      func(time.Duration) time.Duration    // randomPart; the tests' choice
@@ -117,7 +128,7 @@ type Worker struct {
 // New returns a Worker with the defaults of Options applied.
 func New(o Options) *Worker {
 	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, repairer: o.Repairer, attacher: o.Attacher, audit: o.Audit, now: o.Now, log: o.Log,
-		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, graceAge: o.GraceAge, heartbeat: heartbeatEvery, after: time.After,
+		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, graceAge: o.GraceAge, keys: o.Keys, heartbeat: heartbeatEvery, after: time.After,
 		jitter: randomPart}
 	if w.now == nil {
 		w.now = time.Now

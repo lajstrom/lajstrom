@@ -55,7 +55,13 @@ func (p *Pipeline) Inspect(ctx context.Context, repo index.Repo, pkgPath, tag st
 	}
 	pub := &publish{target: t, tag: tag, manifest: m, raw: raw, digest: digest.FromBytes(raw),
 		readOnly: true, allowDegraded: o.AllowDegraded}
+	if err := p.unseal(ctx, pub); err != nil {
+		return nil, err
+	}
 	if err := p.validate(ctx, pub); err != nil {
+		return nil, err
+	}
+	if err := p.seal(ctx, pub); err != nil {
 		return nil, err
 	}
 	rows := pub.rows(p.now())

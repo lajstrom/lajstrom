@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/go-jose/go-jose/v4"
@@ -201,4 +202,48 @@ func (o *opaque) DecryptKey(encryptedKey []byte, h jose.Header) ([]byte, error) 
 		o.err = fmt.Errorf("blobcrypt: unwrap for %s: %w", o.kid, err)
 	}
 	return cek, err
+}
+
+// KIDs returns the kids of the recipients of value, the value of AnnotationJWE, in order: the
+// fingerprints of the keys it is wrapped for. A JWE of one recipient names it in its protected
+// header, one of several in each recipient's header.
+func KIDs(value string) ([]string, error) {
+	type header struct {
+		KID string `json:"kid"`
+	}
+	var kids []string
+	add := func(h header) {
+		if h.KID != "" && !slices.Contains(kids, h.KID) {
+			kids = append(kids, h.KID)
+		}
+	}
+	for _, part := range strings.Split(strings.TrimSpace(value), ",") {
+		raw, err := base64.StdEncoding.DecodeString(part)
+		if err != nil {
+			return nil, fmt.Errorf("%w: the wrapping is not base64", ErrInvalid)
+		}
+		var obj struct {
+			Protected  string `json:"protected"`
+			Header     header `json:"header"`
+			Recipients []struct {
+				Header header `json:"header"`
+			} `json:"recipients"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return nil, fmt.Errorf("%w: the wrapping: %w", ErrInvalid, err)
+		}
+		if obj.Protected != "" {
+			b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(obj.Protected, "="))
+			var h header
+			if err != nil || json.Unmarshal(b, &h) != nil {
+				return nil, fmt.Errorf("%w: the protected header of the wrapping", ErrInvalid)
+			}
+			add(h)
+		}
+		add(obj.Header)
+		for _, r := range obj.Recipients {
+			add(r.Header)
+		}
+	}
+	return kids, nil
 }

@@ -165,7 +165,8 @@ func newServeCmd(a *app) *cobra.Command {
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize,
 				Webhooks: newOutbox(c), Policy: decider, Encryption: asEncryption(encryption)})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
-				Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
+				Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge,
+				Keys: asKeyChecker(encryption)})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
 			// background work first, also when serve returns without a signal, because the listener
 			// cannot bind or the server cannot be built: else the wait would never end, and serve
@@ -280,6 +281,14 @@ func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Stor
 	}
 	a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
 	return encryption, nil
+}
+
+// asKeyChecker is e as a reindex.KeyChecker: nil when there is none.
+func asKeyChecker(e *keys.Encryption) reindex.KeyChecker {
+	if e == nil {
+		return nil
+	}
+	return e
 }
 
 // asEncryption is e as a format.Encryption: nil, not an interface holding a nil pointer, when
