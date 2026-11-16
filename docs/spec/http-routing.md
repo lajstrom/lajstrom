@@ -359,8 +359,12 @@ mirrors a Maven 2 repository, its upstream's URL the root of the layout
   lists it is the upstream's `.sha1` of the file (kind `file:<version directory>/<file name>`,
   `file:1.2.0/lib-core-1.2.0.jar`), the lowercase hex of its first word; a `404` there is the
   file's `404` and a negative row. Its sha1 is the checksum the fetcher verifies. A file whose
-  `.sha1` the upstream does not have is `404`, a signature published without checksums among
-  them. Each file fetched is a version of its own, of that one file, whose variant is its
+  `.sha1` the upstream does not have is `404`, but a signature (`.asc`, of any file): one that the
+  upstream publishes without a `.sha1` is fetched and served unchecked, as the upstream serves it,
+  over the transport of every fetch (TLS to an `https` upstream) and within the same bounds
+  (`policy.maxFileSize`, `capabilities.maxBlobSize`), and its manifest has no
+  `lajstrom.origin.checksum` (manifest-profile.md §3.1); a forged signature fails its
+  verification by itself. A signature with a `.sha1` is checked as every file. Each file fetched is a version of its own, of that one file, whose variant is its
   extension and classifier (manifest-profile.md §4.2): the repo holds the files that clients
   asked for, not every file of the version.
 - A checksum file of a file (`.md5`, `.sha1`, `.sha256`, `.sha512`) is served from the metadata

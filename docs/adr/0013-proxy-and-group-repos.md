@@ -4,7 +4,7 @@
   [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md); for groups of `oci` repos, the
   plugin's hooks of point 1 and points 6 and 7, but for the read on the group, superseded by
   [0019](0019-oci-groups-one-member-per-repository-path.md); amended for maven by #1152 (below,
-  Amendment)
+  Amendment; accepted on #1152 on 2026-11-16, with unchecked signatures)
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -180,4 +180,10 @@ that one file with a variant, its extension and classifier (manifest-profile.md 
 document that lists a file is the upstream's `.sha1` of it, cached as any document is, and its
 sha1 is what the fetcher checks. A hosted maven repo keeps a version as one manifest; a group
 serves a file from the first member that holds it, either way. The cost: a proxy's versions have
-one manifest per file, and a signature whose upstream publishes no checksum is not served.
+one manifest per file.
+
+A signature (`.asc`) whose upstream publishes no checksum, as Maven Central does for many recent
+ones, is fetched and served unchecked (decided on #1152, 2026-11-16): a forged signature fails its
+verification by itself, and a `404` would fail every build that verifies signatures. It is fetched
+over the transport of every fetch and within the same size bounds, and its manifest has no
+`lajstrom.origin.checksum`. Any other file without a `.sha1` stays `404`.

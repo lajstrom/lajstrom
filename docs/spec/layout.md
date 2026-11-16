@@ -239,7 +239,7 @@ type Upload struct {                        // the principal is a parameter of P
 type Origin struct {
     Upstream string                         // upstreams[].name, details.upstream of the audit row
     URL      string                         // the first file's URL as asked, before redirects, without userinfo, query, fragment
-    Checksum string                         // <algorithm>:<lowercase hex>, the upstream's checksum that was verified
+    Checksum string                         // <algorithm>:<lowercase hex>, the upstream's checksum that was verified; "" for a file fetched unchecked
     Published time.Time                     // the upstream's publish time of the version, org.opencontainers.image.created; zero: the time of the fetch
 }
 type UploadedFile struct {
@@ -557,6 +557,7 @@ type UpstreamFile struct {
     Name      string                        // UploadedFile.Name, and the name of the files row
     URL       string                        // absolute, or relative to upstreams[].url
     Checksums map[string]string             // sha512, sha256, sha1 → lowercase hex; the strongest is verified
+    Unchecked bool                          // no Checksums: the format takes the file unchecked (Unlisted)
 }
 type ArtifactRef struct {
     Name, Version, Variant string           // the package name as the format spells it, the version, the variant ("" when none)
@@ -579,6 +580,18 @@ type Grouper interface {
 type MemberDocument struct {
     Repo    index.Repo                       // the member; its Kind tells the hosted member from a proxy
     Content []byte                           // its document of the kind, as it serves it
+}
+
+// Unlisted is implemented by a Proxier with files that the format takes unchecked when the
+// upstream has no document that lists them (§5, steps 5 and 8): maven's signatures without a
+// .sha1 (ADR 0013, Amendment).
+type Unlisted interface {
+    Proxier
+    // UnlistedEntry returns the entry of the file that ref names, its one file Unchecked and
+    // without Checksums, when the upstream does not have the document of ref.Kind; false for a
+    // file the format does not take so. The core then fetches the file as any other, bounded,
+    // without a check, and Origin.Checksum is "".
+    UnlistedEntry(ref ArtifactRef) (UpstreamEntry, bool)
 }
 
 // Adopter is implemented by a Proxier whose proxy repos may become hosted repos (§2.6, #441).
@@ -1559,7 +1572,7 @@ func (e *NotVisibleError) Missing() []string
 func (e *NotVisibleError) Explain() string
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does. With
 // up.Origin (the proxy fetcher, ADR 0013) it sets lajstrom.origin.url and lajstrom.origin.checksum
-// on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
+// (none for a file fetched unchecked) on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
 // details {"upstream", "url", "checksum", "size"}, size the sum of the file layers'; without one,
 // a built manifest with a lajstrom.origin.* key is ErrInvalid. Upload, Delete and Journal made
 // with a context of format.WithVia (a write through a group, a fetch of a group's proxy member)
