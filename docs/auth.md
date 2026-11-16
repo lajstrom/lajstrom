@@ -703,7 +703,9 @@ credential is a personal access token, with scopes or without, the admin's too, 
 token gets `403` on `POST /api/v1/users/<name>/tokens` before its body is read. A stolen token
 would otherwise mint tokens that last up to a year and outlive its revocation. An OIDC login
 mints one itself ([OIDC login and groups](#oidc-login-and-groups)); `npm login` checks the password (#308), and
-`lajstrom admin token create` needs no credential, as it runs against the database. A personal
+so does the sign-in of a web UI, [`POST /api/v1/login`](api.md#sign-in-post-apiv1login), whose
+token expires after `auth.login.tokenLifetime` (12 hours); `lajstrom admin token create` needs
+no credential, as it runs against the database. A personal
 access token without scopes still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
 for it with a password, or gets a deploy token instead ([In CI](#in-ci)).
 
