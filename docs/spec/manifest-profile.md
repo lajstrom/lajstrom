@@ -819,7 +819,8 @@ package's dist-tags and deprecations are the upstream's.
 
 A snapshot is the control plane of the index
 ([index-schema.md](index-schema.md#snapshots-of-the-control-plane): repos, group members, users,
-OIDC identities, tokens, bindings, keys, webhooks, and audit rows when asked) written into the
+OIDC identities, tokens, bindings, keys, webhooks, the CI trust policies of the API, and audit rows
+when asked) written into the
 registry by Lajstrom itself, so that a database lost without a backup comes back from the registry:
 `lajstrom admin snapshot create` writes one, `lajstrom admin snapshot restore` writes it into an
 empty database, and `lajstrom reindex` rebuilds the derived tables after it
@@ -897,10 +898,11 @@ digest, after the read, so that a snapshot never holds its own row.
 | `keys` | `[{"id", "repo", "kind", "public", "privateEnc", "fingerprint", "createdAt", "retiredAt"}]`: `repo` a repo id, absent for a server key; `public` and `privateEnc` base64, `privateEnc` the ciphertext of the table (index-schema.md, `keys`) |
 | `webhooks` | `[{"id", "uid", "mask", "url", "events", "secretEnc", "active", "description", "createdBy", "createdAt", "updatedAt", "revision"}]`: `events` absent for every type; `secretEnc` base64, the ciphertext of the table (index-schema.md, Webhooks). Not their deliveries |
 | `policyRules` | `[{"id", "repoMask", "name", "version", "variant", "effect", "reason", "createdBy", "createdAt", "expiresAt"}]` (#101); absent in a snapshot of a database before 0030 |
+| `ciPolicies` | `[{"id", "name", "issuer", "claims", "grants", "createdBy", "createdAt", "updatedAt"}]`: the CI trust policies made through the API (index-schema.md, `ci_policies`); absent from a snapshot of before migration 0033 |
 | `audit` | `[{"id", "at", "principal", "principalName", "action", "repo", "subject", "digest", "ip", "details", "state", "error"}]`; absent when the snapshot was made without audit rows, `[]` when its window held none |
 
 Each object is a row of its table with its id; its keys are the columns, camelCase, a json column
-(`policy`, `upstream`, `group`, `scopes`, `events`, `details`) its JSON, a timestamp RFC 3339 UTC
+(`policy`, `upstream`, `group`, `scopes`, `events`, `claims`, `grants`, `details`) its JSON, a timestamp RFC 3339 UTC
 with the fraction the database keeps. A key that is absent or `null` is the column's NULL or empty
 value. Every array is ordered by `id`, `groupMembers` by `group` and `position`, `identityGroups`
 by `identity` and `name`. There is no plaintext secret in the document, since the tables hold none:
