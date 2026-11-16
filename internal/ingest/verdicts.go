@@ -280,3 +280,17 @@ func shortDuration(d time.Duration) string {
 func bytesSource(d ocispec.Descriptor, b []byte) format.BlobSource {
 	return format.BlobSource{Descriptor: d, Open: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }}
 }
+
+// ResolveManifest resolves ref, a tag or a digest, to the manifest of the OCI repository of the
+// package path path of repo: what a deny on an oci repo names (docs/spec/policy.md §7).
+func (p *Pipeline) ResolveManifest(ctx context.Context, repo index.Repo, path, ref string) (ocispec.Descriptor, error) {
+	rr, err := p.repository(ctx, repo, path)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+	desc, err := rr.Resolve(ctx, ref)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("ingest: %s of %s: %w", ref, ociName(repo, path), err)
+	}
+	return desc, nil
+}
