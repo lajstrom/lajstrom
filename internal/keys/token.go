@@ -320,9 +320,10 @@ func (t *Tokens) retireAt(drop bool) time.Time {
 	return t.now()
 }
 
-// event is the audit row of action on the token key of fingerprint, by the principal of ctx.
+// event is the audit row of action on the token key of fingerprint, by the principal of ctx,
+// with the origin of ctx (auth.OriginFrom: the command line's) in its details.
 func (t *Tokens) event(ctx context.Context, action, fingerprint, retired string, drop bool) *index.AuditEvent {
-	d := map[string]any{}
+	d := auth.OriginFrom(ctx).AddTo(map[string]any{})
 	if retired != "" {
 		d["retired"] = retired
 	}

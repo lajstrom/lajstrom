@@ -76,15 +76,23 @@ The database is the authority: whoever can run `lajstrom admin` with the server'
 can recover any account, with no password and no running server.
 
 ```sh
-lajstrom admin user set-password alice --config lajstrom.yaml       # a prompt, --password-stdin or --password-file
+lajstrom admin user set-password alice --config lajstrom.yaml \
+  --actor alice@example.com --reason "INC-4711: lost password"   # a prompt, --password-stdin or --password-file
 lajstrom admin user create --name rescue --admin --config lajstrom.yaml
 ```
 
 `set-password` works on a disabled user too; the old password fails at the next request on every
 replica. `create --admin` makes a new admin when every admin is lost or its password
 forgotten. Each writes an audit row (`user.password`, `user.create`) by
-`anonymous` with the source `cli` and the host name of the machine it ran on, so that a recovery
-shows in `GET /api/v1/audit` afterwards. In Kubernetes, run the command in a pod with the
+`anonymous` with the source `cli`, the host name of the machine it ran on and the
+operating-system user it ran as (`osUser`), so that a recovery shows in `GET /api/v1/audit`
+afterwards. `--actor` (or `LAJSTROM_ACTOR`) adds who ran it, as your organisation names people,
+and `--reason` (or `LAJSTROM_REASON`) why, a ticket, as `actor` and `changeReason`: what the
+person says, which nothing checks ([rbac.md](spec/rbac.md) §6). Every command of `lajstrom
+admin` that writes against the database takes both; a bastion's login profile can set the
+variables once. In a container the OS user names no one: the person who ran `kubectl exec` or
+created the Job is in the Kubernetes audit log, which the `host`, the pod's name, and the time
+lead to. In Kubernetes, run the command in a pod with the
 configuration and the database DSN of the Deployment: the image has no shell, and `kubectl exec
 -i deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin user set-password
 admin --password-stdin` runs the binary itself. The Helm chart does it without `kubectl exec`:
@@ -1470,8 +1478,9 @@ its name at the time (`principalName`, which stays when the user is renamed or d
 action, the repo, the subject (a package and version, the user or binding acted upon), the
 manifest digest, the client address and details: the change, the source of a change of the
 control plane (`api`, `cli`, `config`, `bootstrap` for the first admin, `npm` for the token of
-`npm login` and `npm logout`; the rows of `lajstrom admin key` have none) and the
-request id of a change made over HTTP; a write or a fetch that came through a group is its
+`npm login` and `npm logout`), the request id of a change made over HTTP, and for the command
+line the `host`, the `osUser` and, when given, the `actor` and the `changeReason` ([A lost
+password](#a-lost-password)); a write or a fetch that came through a group is its
 member's row, with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
 ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
 `server.trustedProxies`, the client that `X-Forwarded-For` names, not the proxy. The rows of the

@@ -78,18 +78,39 @@ type UserChange struct {
 }
 
 // Origin says where a change comes from, for its audit event; the principal is
-// PrincipalFrom(ctx).
+// PrincipalFrom(ctx). AddTo writes it into the event's details under the keys of
+// docs/spec/rbac.md §5, each that is set.
 type Origin struct {
 	// Source is cli, api or config; the audit details carry it as "source".
 	Source string
 	// IP is the client address without the port; empty outside HTTP.
 	IP string
-	// RequestID is the id of the HTTP request; the audit details carry it as "requestId" when
-	// it is set.
+	// RequestID is the id of the HTTP request; the audit details carry it as "requestId".
 	RequestID string
-	// Host is the host name of the machine a CLI change ran on; the audit details carry it as
-	// "host" when it is set.
+	// Host is the host name of the machine a CLI change ran on, or of the replica of a change
+	// of serve's start; the audit details carry it as "host".
 	Host string
+	// OSUser is the operating-system user a CLI change ran as, its name or uid:<n>; the audit
+	// details carry it as "osUser" (docs/spec/rbac.md §6).
+	OSUser string
+	// Actor is who ran a CLI change, as they said with --actor: a label that names no principal
+	// and grants nothing; the audit details carry it as "actor".
+	Actor string
+	// ChangeReason is why, as the person said (--reason); the audit details carry it as
+	// "changeReason", never "reason", which rows hold with other meanings.
+	ChangeReason string
+}
+
+// AddTo sets the keys of o in the audit details d, each that is set: source, requestId, host,
+// osUser, actor and changeReason. It returns d.
+func (o Origin) AddTo(d map[string]any) map[string]any {
+	for k, v := range map[string]string{"source": o.Source, "requestId": o.RequestID, "host": o.Host,
+		"osUser": o.OSUser, "actor": o.Actor, "changeReason": o.ChangeReason} {
+		if v != "" {
+			d[k] = v
+		}
+	}
+	return d
 }
 
 // Users manages the local users of the control plane (docs/spec/index-schema.md, users).
@@ -779,19 +800,10 @@ func (s *Users) writeAudit(ctx context.Context, ev index.AuditEvent) {
 
 // recordAudit completes ev, an event of a change with its time, action, subject and repo: the
 // principal is PrincipalFrom(ctx), the IP the origin's, the details details with the origin's
-// source and request id. It appends ev on w, in the transaction of the change, when aw is nil;
+// keys (Origin.AddTo). It appends ev on w, in the transaction of the change, when aw is nil;
 // the caller passes the event to writeAuditEvent after the commit.
 func recordAudit(ctx context.Context, w index.Writer, aw audit.Writer, ev index.AuditEvent, o Origin, details map[string]any) (index.AuditEvent, error) {
-	if o.Source != "" {
-		details["source"] = o.Source
-	}
-	if o.RequestID != "" {
-		details["requestId"] = o.RequestID
-	}
-	if o.Host != "" {
-		details["host"] = o.Host
-	}
-	raw, err := json.Marshal(details)
+	raw, err := json.Marshal(o.AddTo(details))
 	if err != nil {
 		return index.AuditEvent{}, fmt.Errorf("auth: audit details of %s: %w", ev.Action, err)
 	}

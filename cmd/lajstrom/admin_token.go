@@ -64,7 +64,7 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 				list = strings.Split(scopes, ",")
 			}
 			return a.withTokens(cmd.Context(), func(ctx context.Context, tokens *auth.Tokens) error {
-				o := auth.Origin(cliOrigin())
+				o := a.cliOrigin()
 				var (
 					t      *auth.Token
 					secret string
@@ -161,7 +161,7 @@ func newTokenRevokeCmd(a *app) *cobra.Command {
 				return fmt.Errorf("token id %q: want the number of the ID column of admin token list", args[0])
 			}
 			return a.withTokens(cmd.Context(), func(ctx context.Context, tokens *auth.Tokens) error {
-				return tokens.Revoke(ctx, id, auth.Origin(cliOrigin()))
+				return tokens.Revoke(ctx, id, a.cliOrigin())
 			})
 		},
 	}

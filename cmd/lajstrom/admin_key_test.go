@@ -309,10 +309,12 @@ func checkTokenKeys(t *testing.T, dsn string, end time.Time, first, second, thir
 			t.Errorf("the private key of %s is stored in the clear", fp)
 		}
 	}
+	// the origin of the command line (rbac.md §6), which admin key passes in the context
+	o := `"host":"` + hostName() + `","osUser":"` + osUser() + `"`
 	checkAudit(t, st,
-		"key.rotate  "+second+` {"retired":"`+first+`"}`,
-		"key.rotate  "+third+` {"dropped":true,"retired":"`+second+`"}`,
-		"key.drop  "+third+" ")
+		"key.rotate  "+second+` {`+o+`,"retired":"`+first+`","source":"cli"}`,
+		"key.rotate  "+third+` {"dropped":true,`+o+`,"retired":"`+second+`","source":"cli"}`,
+		"key.drop  "+third+` {`+o+`,"source":"cli"}`)
 }
 
 // checkAudit checks the audit rows of st, each "<action> <repo> <subject> <details>", in any

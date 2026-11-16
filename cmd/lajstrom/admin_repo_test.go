@@ -164,7 +164,7 @@ func addCLIVersion(t *testing.T, dsn, formatName, name string) {
 }
 
 // wantCLIAudit checks that the database at dsn has n audit events of action, each by the
-// anonymous principal from the CLI.
+// anonymous principal from the CLI, with the host and the operating-system user (rbac.md §6).
 func wantCLIAudit(t *testing.T, dsn, action string, n int) {
 	t.Helper()
 	ctx := context.Background()
@@ -181,7 +181,7 @@ func wantCLIAudit(t *testing.T, dsn, action string, n int) {
 	for _, ev := range evs {
 		var details map[string]any
 		if err := json.Unmarshal(ev.Details, &details); err != nil || details["source"] != api.SourceCLI ||
-			details["host"] != host || ev.Principal != "anonymous" || ev.IP != "" {
+			details["host"] != host || details["osUser"] != osUser() || ev.Principal != "anonymous" || ev.IP != "" {
 			t.Errorf("%s event = %+v, details %s", action, ev, ev.Details)
 		}
 	}

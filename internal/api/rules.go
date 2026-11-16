@@ -172,12 +172,7 @@ func (s *Rules) changed(ctx context.Context, w index.Writer, action, typ string,
 	if row.ExpiresAt != nil {
 		details["expiresAt"] = row.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	for k, v := range map[string]string{"source": o.Source, "requestId": o.RequestID, "host": o.Host} {
-		if v != "" {
-			details[k] = v
-		}
-	}
-	raw, err := json.Marshal(details)
+	raw, err := json.Marshal(o.AddTo(details))
 	if err != nil {
 		return index.AuditEvent{}, err
 	}

@@ -297,12 +297,7 @@ func (s *Service) checkMask(mask string) error {
 // the details of rbac.md §5 (the host of the URL, never the URL) and the origin.
 func (s *Service) record(ctx context.Context, w index.Writer, action string, h *index.Webhook, o Origin) error {
 	details := map[string]any{"mask": h.Mask, "urlHost": hostOf(h.URL), "events": h.Events, "active": h.Active}
-	for k, v := range map[string]string{"source": o.Source, "requestId": o.RequestID, "host": o.Host} {
-		if v != "" {
-			details[k] = v
-		}
-	}
-	raw, err := json.Marshal(details)
+	raw, err := json.Marshal(o.AddTo(details))
 	if err != nil {
 		return err
 	}

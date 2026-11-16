@@ -21,3 +21,19 @@ func PrincipalFrom(ctx context.Context) Principal {
 	}
 	return Anonymous
 }
+
+// originKey is the context key of the origin of a change.
+type originKey struct{}
+
+// WithOrigin returns a copy of ctx that carries o, the origin of the changes made under it, for
+// the audit rows whose writers take no Origin of their own: lajstrom admin key and lajstrom
+// reindex store the command line's (docs/spec/rbac.md §6).
+func WithOrigin(ctx context.Context, o Origin) context.Context {
+	return context.WithValue(ctx, originKey{}, o)
+}
+
+// OriginFrom returns the origin WithOrigin stored in ctx, the zero Origin when none was.
+func OriginFrom(ctx context.Context) Origin {
+	o, _ := ctx.Value(originKey{}).(Origin)
+	return o
+}
