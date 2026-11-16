@@ -87,6 +87,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"FetchClaims", testFetchClaims},
 		{"FetchClaimRace", testFetchClaimRace},
 		{"ConvertRepo", testConvertRepo},
+		{"Revisions", testRevisions},
 		{"Replicas", testReplicas},
 		{"DatabaseTime", testDatabaseTime},
 		{"Journal", testJournal},

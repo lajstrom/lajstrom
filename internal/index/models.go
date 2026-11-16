@@ -32,6 +32,10 @@ type Repo struct {
 	Group     json.RawMessage
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Revision is 1 on insert and moves by one with every update of the row (UpdateRepo,
+	// ConvertRepo), which fills it: the version that the API's ETag names (docs/api.md,
+	// Revisions). The store sets it; a value given to a write is not stored.
+	Revision int64
 }
 
 // The kinds of repos (docs/spec/proxy-and-group.md §1, ADR 0013).
@@ -60,6 +64,9 @@ type User struct {
 	// Owner is the owner of a service account, user:<uid> or group:<name> (docs/spec/rbac.md
 	// §1); "" for every other kind.
 	Owner string
+	// Revision is the row's revision, as Repo.Revision: UpdateUser moves it, a new password
+	// and a deletion too.
+	Revision int64
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.
@@ -328,6 +335,7 @@ type Webhook struct {
 	CreatedBy   string // the principal that created it; never changes
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Revision    int64 // the row's revision, as Repo.Revision: UpdateWebhook moves it, a new secret too
 }
 
 // The states of a webhook delivery.

@@ -58,6 +58,7 @@ type repoRow struct {
 	Group         json.RawMessage `json:"group,omitempty"`
 	CreatedAt     time.Time       `json:"createdAt"`
 	UpdatedAt     time.Time       `json:"updatedAt"`
+	Revision      int64           `json:"revision,omitempty"` // absent before migration 0032: 1
 }
 
 type groupMemberRow struct {
@@ -77,6 +78,7 @@ type userRow struct {
 	DeletedAt    *time.Time `json:"deletedAt,omitempty"`
 	DeletedName  string     `json:"deletedName,omitempty"`
 	Owner        string     `json:"owner,omitempty"`
+	Revision     int64      `json:"revision,omitempty"`
 }
 
 type identityRow struct {
@@ -141,6 +143,7 @@ type webhookRow struct {
 	CreatedBy   string    `json:"createdBy"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
+	Revision    int64     `json:"revision,omitempty"`
 }
 
 type policyRuleRow struct {
@@ -224,14 +227,15 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	for _, r := range cp.Repos {
 		doc.Repos = append(doc.Repos, repoRow{ID: r.ID, Format: r.Format, Name: r.Name, Registry: r.Registry, Prefix: r.Prefix,
 			Kind: r.Kind, AnonymousRead: r.AnonymousRead, Policy: r.Policy, Upstream: r.Upstream, Group: r.Group,
-			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Revision: r.Revision})
 	}
 	for _, g := range cp.GroupMembers {
 		doc.GroupMembers = append(doc.GroupMembers, groupMemberRow{Group: g.GroupID, Member: g.MemberID, Position: g.Position})
 	}
 	for _, u := range cp.Users {
 		doc.Users = append(doc.Users, userRow{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
-			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner})
+			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner,
+			Revision: u.Revision})
 	}
 	for _, i := range cp.Identities {
 		doc.Identities = append(doc.Identities, identityRow{ID: i.ID, User: i.UserID, Issuer: i.Issuer, Subject: i.Subject,
@@ -256,7 +260,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	for _, h := range cp.Webhooks {
 		doc.Webhooks = append(doc.Webhooks, webhookRow{ID: h.ID, UID: h.UID, Mask: h.Mask, URL: h.URL, Events: h.Events,
 			SecretEnc: h.SecretEnc, Active: h.Active, Description: h.Description, CreatedBy: h.CreatedBy, CreatedAt: h.CreatedAt,
-			UpdatedAt: h.UpdatedAt})
+			UpdatedAt: h.UpdatedAt, Revision: h.Revision})
 	}
 	for _, r := range cp.PolicyRules {
 		doc.PolicyRules = append(doc.PolicyRules, policyRuleRow{ID: r.ID, RepoMask: r.RepoMask, Name: r.Name, Version: r.Version,
@@ -288,14 +292,15 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, r := range doc.Repos {
 		cp.Repos = append(cp.Repos, index.Repo{ID: r.ID, Format: r.Format, Name: r.Name, Registry: r.Registry, Prefix: r.Prefix,
 			Kind: r.Kind, AnonymousRead: r.AnonymousRead, Policy: r.Policy, Upstream: r.Upstream, Group: r.Group,
-			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Revision: r.Revision})
 	}
 	for _, g := range doc.GroupMembers {
 		cp.GroupMembers = append(cp.GroupMembers, index.GroupMember{GroupID: g.Group, MemberID: g.Member, Position: g.Position})
 	}
 	for _, u := range doc.Users {
 		cp.Users = append(cp.Users, index.User{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
-			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner})
+			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner,
+			Revision: u.Revision})
 	}
 	for _, i := range doc.Identities {
 		cp.Identities = append(cp.Identities, index.Identity{ID: i.ID, UserID: i.User, Issuer: i.Issuer, Subject: i.Subject,
@@ -320,7 +325,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, h := range doc.Webhooks {
 		cp.Webhooks = append(cp.Webhooks, index.Webhook{ID: h.ID, UID: h.UID, Mask: h.Mask, URL: h.URL, Events: h.Events,
 			SecretEnc: h.SecretEnc, Active: h.Active, Description: h.Description, CreatedBy: h.CreatedBy, CreatedAt: h.CreatedAt,
-			UpdatedAt: h.UpdatedAt})
+			UpdatedAt: h.UpdatedAt, Revision: h.Revision})
 	}
 	for _, r := range doc.PolicyRules {
 		cp.PolicyRules = append(cp.PolicyRules, index.PolicyRule{ID: r.ID, RepoMask: r.RepoMask, Name: r.Name, Version: r.Version,

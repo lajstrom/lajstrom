@@ -14,11 +14,11 @@ import (
 // deliveries, both control plane. A delivery row is the outbox of one event for one webhook and
 // its line of the delivery log.
 
-const webhookCols = "id, uid, mask, url, events, secret_enc, active, description, created_by, created_at, updated_at"
+const webhookCols = "id, uid, mask, url, events, secret_enc, active, description, created_by, created_at, updated_at, revision"
 
 func webhookDests(h *index.Webhook) []any {
 	return []any{&h.ID, &h.UID, &h.Mask, &h.URL, jsonDest[[]string]{&h.Events}, blobDest{&h.SecretEnc}, &h.Active,
-		&h.Description, &h.CreatedBy, timeDest{&h.CreatedAt}, timeDest{&h.UpdatedAt}}
+		&h.Description, &h.CreatedBy, timeDest{&h.CreatedAt}, timeDest{&h.UpdatedAt}, &h.Revision}
 }
 
 // GetWebhook returns the webhook with id.
@@ -32,8 +32,8 @@ func (c *conn) ListWebhooks(ctx context.Context) ([]index.Webhook, error) {
 	return getAll(ctx, c, "webhooks", webhookDests, "SELECT "+webhookCols+" FROM webhooks ORDER BY id")
 }
 
-// CreateWebhook inserts h; UID is made when empty, CreatedAt is now when zero and UpdatedAt is
-// CreatedAt.
+// CreateWebhook inserts h, at revision 1; UID is made when empty, CreatedAt is now when zero and
+// UpdatedAt is CreatedAt.
 func (c *conn) CreateWebhook(ctx context.Context, h *index.Webhook) error {
 	created := stamp(&h.CreatedAt, now())
 	h.UpdatedAt = created
@@ -42,20 +42,22 @@ func (c *conn) CreateWebhook(ctx context.Context, h *index.Webhook) error {
 	}
 	return c.scanRow(ctx, "webhooks of "+h.Mask,
 		"INSERT INTO webhooks (uid, mask, url, events, secret_enc, active, description, created_by, created_at, updated_at)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, revision",
 		[]any{h.UID, h.Mask, h.URL, eventsArg(h.Events), blobArg(h.SecretEnc), h.Active, h.Description, h.CreatedBy,
 			c.d.EncodeTime(h.CreatedAt), c.d.EncodeTime(h.UpdatedAt)},
-		&h.ID)
+		&h.ID, &h.Revision)
 }
 
 // UpdateWebhook stores URL, Events, SecretEnc, Active and Description of h by h.ID, sets
-// UpdatedAt, and fills the columns that never change from the row.
+// UpdatedAt, moves the revision by one, and fills the columns that never change and Revision
+// from the row.
 func (c *conn) UpdateWebhook(ctx context.Context, h *index.Webhook) error {
 	what := fmt.Sprintf("webhooks id %d", h.ID)
 	h.UpdatedAt = now()
 	return c.withTx(ctx, func(c *conn) error {
 		if err := c.execOne(ctx, what,
-			"UPDATE webhooks SET url = ?, events = ?, secret_enc = ?, active = ?, description = ?, updated_at = ? WHERE id = ?",
+			"UPDATE webhooks SET url = ?, events = ?, secret_enc = ?, active = ?, description = ?, updated_at = ?,"+
+				" revision = revision + 1 WHERE id = ?",
 			h.URL, eventsArg(h.Events), blobArg(h.SecretEnc), h.Active, h.Description, c.d.EncodeTime(h.UpdatedAt),
 			h.ID); err != nil {
 			return err
@@ -64,7 +66,7 @@ func (c *conn) UpdateWebhook(ctx context.Context, h *index.Webhook) error {
 		if err != nil {
 			return err
 		}
-		h.UID, h.Mask, h.CreatedBy, h.CreatedAt = row.UID, row.Mask, row.CreatedBy, row.CreatedAt
+		h.UID, h.Mask, h.CreatedBy, h.CreatedAt, h.Revision = row.UID, row.Mask, row.CreatedBy, row.CreatedAt, row.Revision
 		return nil
 	})
 }
