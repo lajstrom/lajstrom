@@ -119,6 +119,17 @@ func (f *fakeHarbor) count(route string) int {
 	return f.calls[route]
 }
 
+// total returns the requests of every route.
+func (f *fakeHarbor) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		n += c
+	}
+	return n
+}
+
 // config is a registry of type harbor on the fake, below prefix.
 func (f *fakeHarbor) config(prefix string) config.Registry {
 	return config.Registry{Name: "harbor", Type: Type, URL: f.srv.URL, Prefix: prefix,
