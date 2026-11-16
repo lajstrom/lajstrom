@@ -828,7 +828,7 @@ digest, after the read, so that a snapshot never holds its own row.
 | `users` | `[{"id", "uid", "name", "passwordHash", "kind", "disabled", "createdAt", "deletedAt", "deletedName"}]`: the live and the deleted users; `passwordHash` the argon2id hash, absent without a password |
 | `identities` | `[{"id", "user", "issuer", "subject", "createdAt", "loginAt", "groupsExpireAt"}]`: `user` a user id |
 | `identityGroups` | `[{"identity", "name"}]`: an identity id and a group |
-| `tokens` | `[{"id", "kind", "user", "repo", "repoMask", "name", "hash", "scopes", "expiresAt", "lastUsedAt", "createdAt", "revokedAt"}]`: `user` and `repo` ids, `repoMask` the mask of a deploy token over a mask (absent for every other token), `hash` the hex sha256 of the secret |
+| `tokens` | `[{"id", "kind", "user", "repo", "repoMask", "name", "hash", "scopes", "expiresAt", "lastUsedAt", "createdAt", "revokedAt", "dpopJkt"}]`: `user` and `repo` ids, `repoMask` the mask of a deploy token over a mask (absent for every other token), `hash` the hex sha256 of the secret, `dpopJkt` the thumbprint of the DPoP key a web UI's token is bound to (absent for every other token; rbac.md §10) |
 | `bindings` | `[{"id", "principal", "role", "repoMask", "createdAt"}]` |
 | `keys` | `[{"id", "repo", "kind", "public", "privateEnc", "fingerprint", "createdAt", "retiredAt"}]`: `repo` a repo id, absent for a server key; `public` and `privateEnc` base64, `privateEnc` the ciphertext of the table (index-schema.md, `keys`) |
 | `webhooks` | `[{"id", "uid", "mask", "url", "events", "secretEnc", "active", "description", "createdBy", "createdAt", "updatedAt"}]`: `events` absent for every type; `secretEnc` base64, the ciphertext of the table (index-schema.md, Webhooks). Not their deliveries |

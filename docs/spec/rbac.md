@@ -512,7 +512,8 @@ replaced: `user.create` for a first login (`details.source` `oidc`), and `user.l
 (`details`: `issuer`, `subject`, `groups`). The browser's login mints a personal access token
 of the user without scopes, named `oidc <time>`, which expires after `auth.oidc.tokenLifetime`
 (24h by default, at most a year), with its `token.create` row (`createdBy` `oidc`), and answers
-it once, on a page with `Cache-Control: no-store`. A refusal at the IdP (`error=`), a state that
+it once, on a page with `Cache-Control: no-store`; a login that a web UI started hands the UI a
+code instead (§10). A refusal at the IdP (`error=`), a state that
 is unknown, used, expired or of another browser, a code the IdP refuses, an ID token that does
 not verify and a refused identity are `400` with a page that says to log in again and why in
 Lajstrom's words, never the IdP's message; each is logged at info with its reason. No code,
@@ -674,3 +675,52 @@ audited (§5), and each one issued is logged at debug level with its principal a
 cluster. The writes they allow are audit rows with the principal, which
 `lajstrom.uploaded-by` carries too, and a change of a binding of these kinds is a
 `binding.create` or `binding.delete` row as any.
+
+## 10. Sign-in of a web UI (#70)
+
+A web UI ([ADR 0022](../adr/0022-web-ui-sign-in-with-short-lived-tokens.md)) holds a personal
+access token in the browser, bound to a key of the browser, and sends it with a proof of that key;
+it never gets a cookie for `/api/v1`. `POST /api/v1/login` (http-routing.md §4) gives it one, for
+a password or for an OIDC login. The token is a personal access token of the user, without
+scopes, as one that the user makes, and everything of §1 and §3 holds for it: it is listed with
+the user's tokens, revoked with `DELETE …/tokens/<id>` (the UI's sign-out, with the token
+itself), ended by disabling or deleting the user, and creates no token. It expires after
+`auth.login.tokenLifetime` (12h by default, at most 24h); there is no refresh token.
+
+**Bound to a key (DPoP, RFC 9449; decided on #1170, 2026-11-16).** Every login takes a DPoP
+proof, a JWT that the UI signs with a key of its own, an ES256 (P-256) key that the browser keeps
+and no script reads out; the token is bound to that key, `tokens.dpop_jkt` (index-schema.md), its
+JWK SHA-256 thumbprint (RFC 7638), which the token's views answer as `dpopJkt`. The token
+authenticates only on `/api/`, as `Authorization: DPoP <token>` with a new proof of that key for
+the request's method and URI and the token's hash, each proof used once on any replica
+(http-routing.md §4). It is refused everywhere else, as a bearer, in Basic credentials, on the
+frontends, on `/v2` and on `/v2/token`: no client of a package format and nobody who copies it
+off the browser without the key can use it. The `token.create` row of a bound token has
+`dpopJkt` in its details. A token the person makes with `POST …/tokens` or the command line is
+bound to no key, and a bound token is never sent as a bearer.
+
+**A password.** The user name and the password of the body are checked as Basic credentials are
+(§1): argon2id every time, the throttles of failed logins per account and per address, a token
+in place of the password refused as a wrong password, every refusal `401` without its reason.
+The token is named `login <time> <4 hex>`, and its `token.create` row has `createdBy`
+`password` and the source `api`, as npm's login has.
+
+**An OIDC login.** The UI makes a PKCE verifier (RFC 7636), keeps it, and sends the person to
+`/-/oidc/login` with `return_to`, a page of the UI, `code_challenge`, the verifier's S256
+challenge, and `dpop_jkt`, the thumbprint of its DPoP key (RFC 9449 §10). `return_to` must be an
+absolute URL on the origin of `server.externalURL` or of `server.corsOrigins`, without a
+fragment: the callback redirects only to the UI's own pages. The login request keeps the three
+(index-schema.md, `oidc_logins`). The login runs as in §8, with its refusals and its
+`user.login` row; at its end the callback mints no token and shows no page: it makes a code of
+256 random bits, keeps its sha256 and the user on the login request, which becomes `approved`,
+and answers `302` to `<return_to>#code=<code>`. A fragment reaches no server and no `Referer`.
+`POST /api/v1/login` with `{"code", "codeVerifier"}` takes the login request of that code,
+`approved` and within the 10 minutes of the login, compares the S256 of the verifier with the
+challenge and the thumbprint of the proof's key with `dpop_jkt`, in constant time. On a match it
+marks the request `redeemed`, once, on any replica, and mints the token as §8 does for the
+browser, named `oidc <time> <4 hex>`, bound to the key, with its `token.create` row (`createdBy`
+`oidc`), expiring after the shorter of `auth.login.tokenLifetime` and `auth.oidc.tokenLifetime`;
+the groups of the login count for `auth.oidc.tokenLifetime`, as for every login. A wrong verifier
+or key marks the request `denied`, so a code is tried once: a code read from the history or from
+the page is of no use without the key that started the login. No code, verifier or challenge is
+logged, audited, or put in a URL but the one redirect.
