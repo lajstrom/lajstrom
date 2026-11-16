@@ -115,6 +115,7 @@ best part of it:
 | [Quick start: a pull-through cache of Docker Hub](docs/quickstart/oci-proxy.md) | `docker pull`, `crane pull` and containerd through an `oci` proxy repo of Docker Hub, ghcr.io, quay.io; Talos mirrors |
 | [Talos Linux from Lajstrom](docs/guides/talos.md) | installer and extension images, nodes pulling through `oci` proxy repos with a token, boot assets for ISO and iPXE in `raw` repos, upgrades, Image Factory; what is missing |
 | [Signed SBOMs and scan reports](docs/guides/sbom-and-scans.md) | `cosign attest` an SBOM or a scan report onto a version of any format, the trusted keys, each attachment listed with its history and whether a trusted key signed it; what is missing |
+| [Policy: deny lists, quarantine and verdicts](docs/policy.md) | a rule that keeps a version out of pip and apt, a signed deny verdict that cosign, Kyverno or the Sigstore policy controller verify, a quarantine of new upstream versions, the signed deny list |
 | [Quick start: OCI with oras](docs/quickstart/oras.md) | `oras push` and `oras pull` through `/v2`, a raw file through ingest, referrers, deletes |
 | [Quick start: docker](docs/quickstart/docker.md) | `docker push` and `docker pull` through an `oci` repo, multi-arch images made by buildx or crane, cosign, a reader |
 | [Management API](docs/api.md) | `/api/v1`: repos, users, bindings, tokens, deletes, the audit log |

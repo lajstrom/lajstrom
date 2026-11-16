@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"strings"
@@ -201,8 +202,91 @@ func TestLiftQuarantine(t *testing.T) {
 	e.pipe.LiftQuarantine(ctx, proxy, ms[0], policyKey{k}, alice)
 	vs, err := e.st.ListVerdicts(ctx, index.VerdictFilter{RepoID: e.repo.ID})
 	must(t, err)
-	if len(vs) != 1 || vs[0].Verdict != "allow" || vs[0].Source != policy.SourceQuarantine || vs[0].Scope != "raw/scratch" ||
-		vs[0].Reason != "quarantine of 72h over" {
-		t.Errorf("the verdicts: %+v", vs)
+	if len(vs) != 2 {
+		t.Fatalf("the verdicts of the bundle and of the legacy attestation: %+v", vs)
+	}
+	for _, v := range vs {
+		if v.Verdict != "allow" || v.Source != policy.SourceQuarantine || v.Scope != "raw/scratch" || v.Reason != "quarantine of 72h over" {
+			t.Errorf("the verdict: %+v", v)
+		}
+	}
+}
+
+// TestAttachVerdictLegacy: a verdict the server makes is a bundle referrer and a layer of cosign's
+// legacy attestation of the subject, one layer more for each; RemoveVerdicts deletes the bundles
+// and writes the legacy attestation again without the server's layers, keeping another's, then
+// deletes it when none is left.
+func TestAttachVerdictLegacy(t *testing.T) {
+	e := newEnv(t)
+	k := newVerdictKey(t)
+	stranger := newVerdictKey(t)
+	trust, err := attest.NewTrust([]attest.Entry{k.entry()})
+	must(t, err)
+	ctx := t.Context()
+	e.repo = index.Repo{Format: "oci", Name: "images", Registry: "local", Prefix: "oci/images", Kind: "hosted"}
+	must(t, e.st.CreateRepo(ctx, &e.repo))
+	opts := e.options(e.prov)
+	opts.Trust = trust
+	e.pipe = ingest.New(opts)
+	rr, err := e.prov.Repository(ctx, "oci/images/app")
+	must(t, err)
+	body := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":` +
+		`{"mediaType":"application/vnd.oci.empty.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"layers":[]}`)
+	must(t, rr.Push(ctx, ocispec.DescriptorEmptyJSON, bytes.NewReader(ocispec.DescriptorEmptyJSON.Data)))
+	subject := digest.FromBytes(body)
+	must(t, rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: subject, Size: int64(len(body))},
+		bytes.NewReader(body), "v1"))
+	legacy := func() []ocispec.Descriptor {
+		desc, err := rr.Resolve(ctx, "sha256-"+subject.Encoded()+".att")
+		if err != nil {
+			return nil
+		}
+		rc, err := rr.Fetch(ctx, desc)
+		must(t, err)
+		defer func() { _ = rc.Close() }()
+		var m ocispec.Manifest
+		must(t, json.NewDecoder(rc).Decode(&m))
+		return m.Layers
+	}
+
+	for _, reason := range []string{"malware", "malware again"} {
+		_, err := e.pipe.AttachVerdict(ctx, e.repo, "app", subject, attest.Verdict{Verdict: "deny", Reason: reason, Source: policy.SourceManual},
+			policyKey{k}, alice)
+		must(t, err)
+	}
+	if layers := legacy(); len(layers) != 2 || layers[0].MediaType != attest.LegacyLayerType {
+		t.Fatalf("the legacy attestation: %+v", layers)
+	}
+	vs, err := e.st.ListVerdicts(ctx, index.VerdictFilter{RepoID: e.repo.ID})
+	must(t, err)
+	if len(vs) != 4 {
+		t.Errorf("the verdicts of two bundles and two legacy layers: %d", len(vs))
+	}
+	// Another producer's layer in the legacy attestation stays.
+	ref, err := attest.BuildVerdict(ctx, "oci/images/app", ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: subject,
+		Size: int64(len(body))}, attest.Verdict{Verdict: "allow", Reason: "x", Source: "trivy"}, stranger.der, stranger.sign, now)
+	must(t, err)
+	foreign := attest.LegacyLayer(ref.Envelope)
+	must(t, rr.Push(ctx, foreign, bytes.NewReader(ref.Envelope)))
+	raw, config, configDesc, err := attest.LegacyManifest(append(legacy(), foreign))
+	must(t, err)
+	must(t, rr.Push(ctx, configDesc, bytes.NewReader(config)))
+	must(t, rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(raw),
+		Size: int64(len(raw))}, bytes.NewReader(raw), "sha256-"+subject.Encoded()+".att"))
+
+	n, err := e.pipe.RemoveVerdicts(ctx, e.repo, "app", subject, policy.SourceManual, alice)
+	must(t, err)
+	if n != 4 {
+		t.Errorf("RemoveVerdicts removed %d rows, want the two bundles' and the two legacy layers'", n)
+	}
+	if layers := legacy(); len(layers) != 1 || layers[0].Digest != foreign.Digest {
+		t.Errorf("the legacy attestation after the removal: %+v, want the other producer's layer alone", layers)
+	}
+	vs, err = e.st.ListVerdicts(ctx, index.VerdictFilter{RepoID: e.repo.ID})
+	must(t, err)
+	for _, v := range vs {
+		if v.Source == policy.SourceManual {
+			t.Errorf("a verdict of the server is left: %+v", v)
+		}
 	}
 }

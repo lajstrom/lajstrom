@@ -28,6 +28,7 @@ type Verdicter interface {
 	AttachVerdict(ctx context.Context, repo index.Repo, path string, subject digest.Digest, v attest.Verdict, key ingest.VerdictSigner,
 		principal auth.Principal) (digest.Digest, error)
 	ResolveManifest(ctx context.Context, repo index.Repo, path, ref string) (ocispec.Descriptor, error)
+	RemoveVerdicts(ctx context.Context, repo index.Repo, path string, subject digest.Digest, source string, principal auth.Principal) (int, error)
 }
 
 // PolicyKey is the server's policy key as the API uses it: it signs, and its public key is
@@ -220,16 +221,16 @@ func (h *handler) verdictsOf(ctx context.Context, repo *index.Repo, referrers []
 	return made, nil
 }
 
-// undenyVersion answers DELETE …/deny[?variant=]: the referrers of the verdicts of source
-// lajstrom:manual of the version's manifests are deleted through the Deleter; 204, 404 when there
-// is none. manage on the repo.
+// undenyVersion answers DELETE …/deny[?variant=]: the verdicts of source lajstrom:manual of the
+// version's manifests are removed through the Verdicter (their referrers deleted, cosign's legacy
+// attestation written again without them); 204, 404 when there is none. manage on the repo.
 func (h *handler) undenyVersion(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionManage, f, name); err != nil {
 		return 0, nil, err
 	}
-	if h.deleter == nil || h.verdicter == nil {
-		return 0, nil, &clientError{msg: "deleting verdicts is not enabled in this server", err: format.ErrUnsupported}
+	if h.verdicter == nil {
+		return 0, nil, &clientError{msg: "removing verdicts is not enabled in this server", err: format.ErrUnsupported}
 	}
 	ctx := r.Context()
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
@@ -240,26 +241,15 @@ func (h *handler) undenyVersion(_ http.ResponseWriter, r *http.Request) (int, an
 	if err != nil {
 		return 0, nil, err
 	}
-	deleted := 0
+	removed := 0
 	for _, t := range targets {
-		rows, err := h.repos.Index.ListVerdicts(ctx, index.VerdictFilter{RepoID: repo.ID, Subject: t.digest})
+		n, err := h.verdicter.RemoveVerdicts(ctx, *repo, t.path, t.digest, policy.SourceManual, auth.PrincipalFrom(ctx))
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, fmt.Errorf("api: remove the verdicts of %s in %s/%s: %w", t.digest, f, name, err)
 		}
-		seen := map[digest.Digest]bool{}
-		for _, row := range rows {
-			if row.Source != policy.SourceManual || row.RepoID != repo.ID || seen[row.Referrer] {
-				continue
-			}
-			seen[row.Referrer] = true
-			del := format.Deletion{Path: row.Path, Reference: row.Referrer.String(), ClientIP: clientIP(r)}
-			if _, err := h.deleter.Delete(ctx, *repo, del, auth.PrincipalFrom(ctx)); err != nil {
-				return 0, nil, fmt.Errorf("api: delete the verdict %s in %s/%s: %w", row.Referrer, f, name, err)
-			}
-			deleted++
-		}
+		removed += n
 	}
-	if deleted == 0 {
+	if removed == 0 {
 		return 0, nil, &clientError{msg: fmt.Sprintf("%s %s has no verdict of source %s", r.PathValue("name"), r.PathValue("version"),
 			policy.SourceManual), err: index.ErrNotFound}
 	}

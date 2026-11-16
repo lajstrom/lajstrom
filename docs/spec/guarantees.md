@@ -1206,20 +1206,28 @@ longer than `reconcile.graceAge` is outside them
 - **When violated.** Not observed.
 - **Status.** `holds`.
 
-## Decided, not built
+## Policy
 
 ### INV-38. A denied version is kept out of the protocol clients' indexes
 
 - **Statement.** A version that a policy rule or verdict denies is left out of every rendered
   index, its download is `403` with the reason, its upload is refused at ingest, and a proxy
   does not fetch it (ADR 0008); OCI pulls are refused only on a repo with `enforcePull`.
-- **Scope.** Every frontend, the proxy fetch, `/v2` as ADR 0008 says.
-- **Assumes.** As INV-27 for the invalidation of rendered indexes when a rule changes.
-- **Mechanism.** None yet: the seams of ADR 0008 (one read path per plugin, `index_cache`
-  invalidation, the proxy's step 3).
-- **Tests.** None.
-- **When violated.** —
-- **Status.** `not yet` ([#101](https://github.com/lajstrom/lajstrom/issues/101)).
+- **Scope.** Every frontend, the proxy fetch, `/v2` as ADR 0008 says ([policy.md](policy.md) §6).
+- **Assumes.** As INV-27 for the invalidation of rendered indexes when a rule or a verdict
+  changes; a document rendered under a decision that expires is rendered again after it
+  (`index_cache.expires_at`).
+- **Mechanism.** `policy.Decider`, asked in `format.CachedDocument` (through `policy.View`'s
+  Reader), in `format.ServeBlob` (`format.CheckVersion`), in `ingest.decide` before the tag
+  claim, at step 3 of the proxy core and in the facade under `enforcePull`; `policy.Invalidate`
+  in the transaction of every change of a rule or a verdict.
+- **Tests.** `TestDecideRules`, `TestDecideVerdicts`, `TestDecideQuarantine` and `TestViewReader`
+  (policy); `TestPolicyDeny` (pypi: the index, the `403`, the upload); `TestPolicyVerdict` (deb);
+  `TestPolicyPull` and `TestPolicyPush` (facade); `TestQuarantine` and `TestProxyRule` (proxy).
+- **When violated.** A client installs a version the operator denied.
+- **Status.** `holds`.
+
+## Decided, not built
 
 ### INV-39. A repo encrypted at rest is unreadable without Lajstrom's key
 
@@ -1435,7 +1443,7 @@ longer than `reconcile.graceAge` is outside them
 | INV-35 | referrers kept, none lost to a race | partly | unchecked (GC, the lock's transaction) |
 | INV-36 | drain on stop | holds | |
 | INV-37 | readiness | holds | |
-| INV-38 | denied versions kept out | not yet (#101) | |
+| INV-38 | denied versions kept out | holds | |
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested until v0.1.0 (the previous release's binary) |
@@ -1560,4 +1568,4 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No default budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads and proxy fetches stream (ADR 0014); what still spools, the `/v2` chunks of `uploads.spoolUnknownLength`, off by default, is bounded only where `server.spoolBudget` is set | the operator sets it below the room of `$TMPDIR`, as the Kubernetes manifests do | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
-| Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
+| Encryption at rest (INV-39) | not built | as the issue says | [#114](https://github.com/lajstrom/lajstrom/issues/114) |
