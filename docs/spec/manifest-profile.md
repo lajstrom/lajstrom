@@ -958,7 +958,8 @@ audit row. Reindex does not list it, and ingest never receives one.
 A repo whose `policy.encryption.mode` is `at-rest` ([api.md](../api.md#policy)) keeps the bytes
 of its layers encrypted in the registry, in the format of OCI encrypted layers as
 `containers/ocicrypt` defines it, so that `skopeo` and `ctr-enc` decrypt them with the private key
-of a recipient. The manifest of a version is the manifest of sections 1 to 5, its layers
+of a recipient. Such a repo has at least one recipient in `policy.encryption.recipients`, the
+recovery recipient: a policy with `at-rest` and none is refused (`400`). The manifest of a version is the manifest of sections 1 to 5, its layers
 encrypted and nothing else changed. The raw file of section 1, encrypted:
 
 ```json
@@ -992,7 +993,7 @@ encrypted and nothing else changed. The raw file of section 1, encrypted:
 | which layers | every layer of every manifest that Lajstrom stores in the repo while `at-rest` is on: the file layers, the metadata layer, the layers of a referrer. Never the config, which is the empty descriptor and stays the 2-byte blob `{}` in plain; never the manifest, its annotations, or its tag. A manifest stored before the repo turned `at-rest` on keeps its plain layers, and one stored while it was on keeps its encrypted ones after it is turned off: each layer says by its media type which it is |
 | `mediaType` | the media type of the layer's role (section 2) with the suffix `+encrypted`: `application/vnd.lajstrom.deb.package.v1+encrypted`, `application/vnd.lajstrom.pypi.wheel.v1+zip+encrypted`, `application/vnd.lajstrom.deb.metadata.v1+json+encrypted` |
 | `digest`, `size` | the ciphertext's: the blob the registry has. The digest is sha256. The size is the plaintext's too: the cipher does not change the length |
-| `org.opencontainers.image.enc.keys.jwe` | the private options, wrapped: the standard base64 of a JWE in JSON serialization (RFC 7516 §7.2) whose content cipher (`enc`) is `A256GCM` and whose plaintext is the private options. One recipient for the repo's active key, `alg` `RSA-OAEP-256`, `kid` the key's fingerprint (index-schema.md, `keys`), then one per key of `policy.encryption.recipients`, in their order, `RSA-OAEP-256` for an RSA key, `ECDH-ES+A256KW` for an EC key, `kid` its fingerprint (the uppercase hex sha256 of its SubjectPublicKeyInfo) |
+| `org.opencontainers.image.enc.keys.jwe` | the private options, wrapped: the standard base64 of a JWE in JSON serialization (RFC 7516 §7.2) whose content cipher (`enc`) is `A256GCM` and whose plaintext is the private options. One recipient for the repo's active key, `alg` `RSA-OAEP-256`, `kid` the key's fingerprint (index-schema.md, `keys`), then one per key of `policy.encryption.recipients` (at least one), in their order, `RSA-OAEP-256` for an RSA key, `ECDH-ES+A256KW` for an EC key, `kid` its fingerprint (the uppercase hex sha256 of its SubjectPublicKeyInfo) |
 | `org.opencontainers.image.enc.pubopts` | the public options: the standard base64 of `{"cipher":"AES_256_CTR_HMAC_SHA256","hmac":"<base64>","cipheroptions":{}}` |
 | other annotations | the layer's own, `org.opencontainers.image.title` among them, as in sections 1 and 2 |
 

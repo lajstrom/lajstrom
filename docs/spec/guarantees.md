@@ -1233,9 +1233,11 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** On a repo with `policy.encryption.mode: at-rest`, every blob Lajstrom writes is
   an ocicrypt ciphertext under a key the registry never sees, and is decrypted only on
-  Lajstrom's read path (ADR 0009).
+  Lajstrom's read path and by the holder of the private key of one of the repo's recipients, of
+  which it has at least one (ADR 0009).
 - **Scope.** Repos that turn it on.
-- **Assumes.** The master key, or the KMS, outlives the artifacts.
+- **Assumes.** The master key or the KMS key outlives the artifacts, or the private key of a
+  recipient does.
 - **Mechanism.** None yet: the two write paths and the one read helper that ADR 0009 keeps open.
 - **Tests.** None.
 - **When violated.** —

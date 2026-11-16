@@ -454,11 +454,14 @@ and a KMS key cannot be deleted at once.
 
 A repo can keep its files encrypted in the registry, so that the registry's operator and a leaked
 registry credential read none of their bytes ([ADR 0009](adr/0009-encryption-at-rest-in-the-registry.md)).
-It is off by default, and turned on per repo:
+It is off by default, and turned on per repo, with the public key of at least one recovery
+recipient (Recipients, below):
 
 ```sh
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/secrets" \
-  -d '{"policy": {"encryption": {"mode": "at-rest"}}}'
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out recovery.pem
+openssl pkey -in recovery.pem -pubout -out recovery.pub
+jq -n --rawfile k recovery.pub '{policy: {encryption: {mode: "at-rest", recipients: [$k]}}}' |
+  curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/secrets" -d @-
 ```
 
 From then on every file stored in the repo, by a frontend's upload, an `oras push` or a proxy's
@@ -490,22 +493,23 @@ data keys at most). A KMS that does not answer is `503` with `Retry-After: 5` on
 need it, and a refusal is `500`; writes need no KMS request.
 
 **The master key is required**, as for signing: without it `at-rest` is refused, and `serve`
-refuses to start once the index holds an encryption key. **Losing the keys loses the files**: the
-master key for a key Lajstrom made, the KMS key for one in a KMS. No reindex, no snapshot and no
-support request brings a file back without them. Keep the master key apart from the database
-backups (above), and schedule no deletion of a KMS key that a repo uses or used.
+refuses to start once the index holds an encryption key. **Losing Lajstrom's keys leaves only the
+recipients**: the master key for a key Lajstrom made, the KMS key for one in a KMS. No reindex, no
+snapshot and no support request brings a file back without them or a recipient's private key.
+Keep the master key apart from the database backups (above), and schedule no deletion of a KMS
+key that a repo uses or used.
 
-**Recipients: decrypting outside Lajstrom.** `policy.encryption.recipients` lists public keys
-for which every new data key is wrapped too. The holder of the private key reads the files from
-the registry with any client of OCI encrypted layers, without Lajstrom; it is also the recovery
-when Lajstrom's keys are lost:
+**Recipients: the recovery, and decrypting outside Lajstrom.** `policy.encryption.recipients`
+lists public keys for which every new data key is wrapped too, and an `at-rest` repo needs at
+least one: creating a repo with `at-rest` and no recipient, changing a repo to it, or removing the
+last recipient of one is `400` naming `policy.encryption.recipients`, and a repo of the
+configuration's `repos` with it is an error of the configuration. The holder of a recipient's
+private key reads the files from the registry with any client of OCI encrypted layers, without
+Lajstrom; it is the recovery when Lajstrom's keys are lost. Keep that private key offline, apart
+from the master key and the database backups:
 
 ```sh
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out recovery.pem
-openssl pkey -in recovery.pem -pubout -out recovery.pub
-jq -n --rawfile k recovery.pub '{policy: {encryption: {mode: "at-rest", recipients: [$k]}}}' |
-  curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/secrets" -d @-
-# later, straight from the registry, with the registry's credentials
+# straight from the registry, with the registry's credentials
 skopeo copy --decryption-key recovery.pem docker://registry.example/art/raw/secrets/<path>:<tag> dir:./out
 ```
 
@@ -526,6 +530,8 @@ fingerprint and the number of manifests it wrapped again; stopped half way, it c
 again. The retired key keeps decrypting meanwhile. Rotate to move a repo onto a KMS key (or off
 one) and when a policy limits a key's age. A rotation does not protect files from a key that
 leaked: the manifests keep the old wrapping, and only an upload of the files again would.
+Re-encrypting a repo's blobs under a new key, so that a leaked old key opens nothing, is a
+follow-up (#1244).
 
 **Reindex needs the keys** of an encrypted repo: it opens each layer's wrapping to rebuild the
 mapping of digests (`blob_map`) and decrypts each metadata layer. A run without them (no master

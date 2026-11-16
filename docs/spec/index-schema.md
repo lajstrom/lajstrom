@@ -668,7 +668,7 @@ layer without reading its manifest.
   frontend's file read; a plaintext digest by `(repo_id, path, plain_digest)`, the facade's. Two
   rows of one plaintext digest at a path are two uploads of the same bytes: any of them answers.
 - **Reindex** writes the rows of every manifest it reads, its own and its layers'. The wrapping
-  is the newest keys referrer's for the layer (manifest-profile.md §10.1), else the manifest's
+  is the newest keys referrer's for the layer (manifest-profile.md §11.1), else the manifest's
   annotation; reindex opens it with the repo's key, which it needs to learn the plaintext digest.
   A pruning run then removes the rows of the repo that no version, file or attachment names and
   that it did not write, but those of `kind` `blob` written less than a day before it, the
