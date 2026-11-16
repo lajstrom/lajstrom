@@ -69,7 +69,7 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0019](0019-oci-groups-one-member-per-repository-path.md) | Groups of oci repos: read-only, one member per repository path | accepted |
 | [0020](0020-repo-signing-keys-in-a-cloud-kms.md) | Repo signing keys in a cloud KMS: the key stays there, the database seals its name | proposed |
 | [0021](0021-service-accounts.md) | Service accounts: users of kind service, with an owner and long-lived tokens | proposed |
-| [0022](0022-web-ui-sign-in-with-short-lived-tokens.md) | Web UI sign-in: a short-lived DPoP-bound token from `POST /api/v1/login`, an OIDC code redeemed with PKCE | proposed; the DPoP binding decided 2026-11-16 |
+| [0022](0022-web-ui-sign-in-with-short-lived-tokens.md) | Web UI sign-in: a short-lived DPoP-bound token from `POST /api/v1/login`, an OIDC code redeemed with PKCE | proposed; the DPoP binding and an idle bound (#1277) decided 2026-11-16 |
 | [0023](0023-terraform-modules-the-repo-is-the-namespace.md) | Terraform modules: the module registry protocol, the repo is the namespace | proposed |
 | [0025](0025-node-and-workload-identity.md) | Node and workload identity: client certificates and Kubernetes service-account tokens at `/v2/token` | proposed |
 | [0026](0026-token-exchange-for-ci.md) | Token exchange for CI: a CI platform's OIDC token for a short-lived Lajstrom token | proposed |

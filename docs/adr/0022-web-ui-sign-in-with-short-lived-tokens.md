@@ -1,7 +1,7 @@
 # 0022. Web UI sign-in: a short-lived DPoP-bound token from `POST /api/v1/login`, an OIDC code redeemed with PKCE
 
-- Status: proposed; the binding to a key (DPoP) decided by the maintainer on 2026-11-16, its
-  details (8) proposed
+- Status: proposed; the binding to a key (DPoP) and an idle bound (below, Amendment) decided by the
+  maintainer on 2026-11-16, their details (8, and the amendment's) proposed
 - Date: 2026-11-15, amended 2026-11-16
 - Deciders: gecube
 
@@ -237,3 +237,36 @@ minutes, `dpop_proofs` shared by the replicas, no server nonce, the OIDC code bo
   release before finishes a UI's login as its own, on the token page, and takes a bound token
   for a bearer, so the UI's sign-in needs every replica on this release (8.1).
 - Not here: a CI's token exchange, and joining an existing user to an identity (#69).
+
+## Amendment: an idle bound (#1277, 2026-11-16)
+
+PCI DSS v4.0.1 8.2.8 asks that "if a user session has been idle for more than 15 minutes, the
+user is required to re-authenticate", and its testing procedure examines the system's settings.
+The token of a sign-in lives `auth.login.tokenLifetime`, 12 hours by default, and nothing on the
+server refused it sooner: a UI left open, or a tab closed without signing out, kept a working
+token. The issue weighed (A) an idle bound on the server, (B) a timer in the UI only, which an
+assessor cannot examine and which a second tab or a script with the token passes, and (C) a token
+of 15 minutes with a refresh, which 2B rejected. The maintainer decided A on the server, with B in
+the UI to warn the person before the server refuses.
+
+- **`auth.login.idleTimeout`**, a duration, `0` (off) by default, `15m` for PCI DSS; else at least
+  `5m` and less than `auth.login.tokenLifetime`. It bounds the tokens bound to a key (`dpop_jkt`),
+  those of `POST /api/v1/login`, and no other: a token the person makes, a deploy token, a service
+  account's token and a CI token serve clients that authenticate every request and hold no session.
+- **The last use is `tokens.last_used_at`**, which exists, to the minute. It was written at most
+  once a minute per token and replica; it is now written when the value read with the token, which
+  every request reads, is a minute old or more, and only forward, so at most once a minute per
+  token on all replicas together, fewer writes than before. A token is refused after between the
+  bound less a minute and the bound without use, never later. Every request the token
+  authenticates is a use: a UI makes no request with it on a timer.
+- **The refusal** is `401` with `WWW-Authenticate: DPoP error="invalid_token",
+  error_description="idle"`, after the proof of the token's key verified, so the UI tells it from a
+  revoked token and nobody without the key learns it. It revokes the token, with a `token.revoke`
+  row (`source` `idle`): an idle sign-in ends for good whatever the setting becomes later.
+- **`GET /api/v1/info`** answers `login.idleTimeout`, by which the UI warns (lajstrom-ui).
+
+Unchanged: no refresh (2A), the lifetime, sign-out (3A), and the fresh sign-in of a step-up
+(rbac.md §11), which reads `auth_time` and not the last use. Specified in
+[rbac.md](../spec/rbac.md) §5 and §10, [http-routing.md](../spec/http-routing.md) §4,
+[index-schema.md](../spec/index-schema.md) (`tokens.last_used_at`), and
+[configuration.md](../configuration.md); no migration.
