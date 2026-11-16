@@ -17,6 +17,7 @@ import (
 // The roles of docs/spec/rbac.md §3, beside RoleAdmin.
 const (
 	RoleReader     = "reader"
+	RoleAttacher   = "attacher"
 	RoleWriter     = "writer"
 	RoleMaintainer = "maintainer"
 )
@@ -32,17 +33,20 @@ type actionSet uint8
 const (
 	setRead actionSet = 1 << iota
 	setWrite
+	setAttach
 	setDelete
 	setManage
 )
 
-// actionBit is the bit of a; 0 for an action that is not one of the four.
+// actionBit is the bit of a; 0 for an action that is not one of the five.
 func actionBit(a Action) actionSet {
 	switch a {
 	case ActionRead:
 		return setRead
 	case ActionWrite:
 		return setWrite
+	case ActionAttach:
+		return setAttach
 	case ActionDelete:
 		return setDelete
 	case ActionManage:
@@ -52,15 +56,16 @@ func actionBit(a Action) actionSet {
 }
 
 // roleActions are the actions of each role on the repos its mask matches; admin has them on
-// every repo, and the system besides.
+// every repo, and the system besides. A role with write has attach (docs/spec/rbac.md §2).
 var roleActions = map[string]actionSet{
 	RoleReader:     setRead,
-	RoleWriter:     setRead | setWrite,
-	RoleMaintainer: setRead | setWrite | setDelete | setManage,
-	RoleAdmin:      setRead | setWrite | setDelete | setManage,
+	RoleAttacher:   setRead | setAttach,
+	RoleWriter:     setRead | setWrite | setAttach,
+	RoleMaintainer: setRead | setWrite | setAttach | setDelete | setManage,
+	RoleAdmin:      setRead | setWrite | setAttach | setDelete | setManage,
 }
 
-// IsRole reports whether role is one of the four roles of docs/spec/rbac.md §3.
+// IsRole reports whether role is one of the five roles of docs/spec/rbac.md §3.
 func IsRole(role string) bool {
 	_, ok := roleActions[role]
 	return ok

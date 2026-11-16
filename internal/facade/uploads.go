@@ -74,7 +74,7 @@ func (s uploadState) upload() provider.Upload {
 // whose time is up, which nothing else does before the reconcile loop of #30.
 func (h *handler) startUpload(w http.ResponseWriter, r *http.Request, t *target, _ string) error {
 	ctx := r.Context()
-	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
+	if _, err := h.authorizeAttach(ctx, t); err != nil { // write, or attach for a referrer's blobs
 		return err
 	}
 	if err := h.checkName(ctx, t); err != nil {
@@ -435,7 +435,7 @@ var errUploadUnknown = &apiError{status: http.StatusNotFound, code: codeBlobUplo
 func (h *handler) continueSession(r *http.Request, t *target, id string) (*index.Session, uploadState, provider.Repository, error) {
 	ctx := r.Context()
 	var st uploadState
-	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
+	if _, err := h.authorizeAttach(ctx, t); err != nil { // write, or attach for a referrer's blobs
 		return nil, st, nil, err
 	}
 	if !validUploadID(id) {

@@ -187,8 +187,8 @@ func (h *handler) allowedByToken(ctx context.Context, g *token.Grant, a auth.Act
 	if err := h.namedByToken(ctx, g, name); err != nil {
 		return err
 	}
-	if want := token.ScopeAction(a); !g.Allows(name, want) {
-		return &apiError{status: http.StatusForbidden, msg: fmt.Sprintf("the bearer token does not grant %s on %s", want, name)}
+	if !g.AllowsAction(name, a) {
+		return &apiError{status: http.StatusForbidden, msg: fmt.Sprintf("the bearer token does not grant %s on %s", token.ScopeAction(a), name)}
 	}
 	return nil
 }

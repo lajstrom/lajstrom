@@ -58,8 +58,8 @@ type Credential struct {
 	// Mask is the mask of a CredDeploy over a mask (docs/spec/rbac.md §1), <format>/<repo> with
 	// "*" for a whole segment; RepoID and Repo are then empty.
 	Mask string
-	// Scopes are the scopes of the token, read and/or write. An empty list on a CredPAT means
-	// the user's full rights.
+	// Scopes are the scopes of the token, read, write and attach, one or more. An empty list on
+	// a CredPAT means the user's full rights.
 	Scopes []string
 }
 
@@ -69,13 +69,13 @@ type Credential struct {
 //
 //   - No credential and a password limit nothing.
 //   - A personal access token without scopes limits nothing: it is its user. With scopes it
-//     allows read when it has read and write when it has write, and never delete or manage: an
-//     error wrapping ErrScope.
+//     allows read when it has read, write when it has write, attach when it has attach or
+//     write, and never delete or manage: an error wrapping ErrScope.
 //   - A deploy token on any repo but its own, or one its mask does not match, is an error
 //     wrapping index.ErrNotFound: it has no access there at all, and a denial must not tell
-//     whether the repo exists (404). On its own repo, or one of its mask, it allows read and
-//     write per its scopes, and never delete or manage (ErrScope: it is bound to the repo, so
-//     the denial is a 403).
+//     whether the repo exists (404). On its own repo, or one of its mask, it allows read, write
+//     and attach per its scopes, write holding attach, and never delete or manage (ErrScope: it
+//     is bound to the repo, so the denial is a 403).
 //
 // A deploy token of one repo matches it by <format>/<name>, and by id as well when repo.ID is
 // set: the names of a repo never change, and a repo deleted takes its deploy tokens with it. A
@@ -110,9 +110,17 @@ func (c Credential) reaches(repo index.Repo) bool {
 	return c.Repo == repo.Format+"/"+repo.Name && (repo.ID == 0 || repo.ID == c.RepoID)
 }
 
-// has reports whether the scopes grant a: read and write only, each by its own scope.
+// has reports whether the scopes grant a: read, write and attach only, each by its own scope,
+// and attach by write too (docs/spec/rbac.md §2).
 func (c Credential) has(a Action) bool {
-	return (a == ActionRead || a == ActionWrite) && slices.Contains(c.Scopes, string(a))
+	switch a {
+	case ActionRead, ActionWrite:
+		return slices.Contains(c.Scopes, string(a))
+	case ActionAttach:
+		return slices.Contains(c.Scopes, ScopeAttach) || slices.Contains(c.Scopes, ScopeWrite)
+	case ActionDelete, ActionManage:
+	}
+	return false
 }
 
 // scopeList is the scopes for a message: "read", "read and write", "no scope".

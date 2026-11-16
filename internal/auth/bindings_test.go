@@ -82,7 +82,7 @@ func TestBindingsRules(t *testing.T) {
 		{"group:a\tb", RoleReader, "*/*", "principal: auth: invalid principal: a group name is printable UTF-8"},
 		{"alice", RoleReader, "*/*", "principal: "},
 		{"user:bob", RoleReader, "raw/*", "principal: user bob does not exist"},
-		{"user:alice", "owner", "raw/*", `role: "owner" is not reader, writer, maintainer or admin`},
+		{"user:alice", "owner", "raw/*", `role: "owner" is not reader, attacher, writer, maintainer or admin`},
 		{"user:alice", RoleReader, "raw", "repoMask: mask \"raw\""},
 		{"user:alice", RoleReader, "raw/a/b", "repoMask: mask \"raw/a/b\""},
 		{"user:alice", RoleReader, "maven/*", `repoMask: "maven" is not a format of this server`},

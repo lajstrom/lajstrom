@@ -208,3 +208,48 @@ func TestRedactSecrets(t *testing.T) {
 		}
 	}
 }
+
+// TestCredentialAttach (#89): the scope attach allows attach and nothing else, write allows
+// attach too, read does not; a personal access token without scopes is its user; a deploy token
+// with attach is still bound to its repo.
+func TestCredentialAttach(t *testing.T) {
+	scratch := index.Repo{ID: 10, Format: "raw", Name: "scratch"}
+	other := index.Repo{ID: 11, Format: "raw", Name: "other"}
+	deploy := func(scopes ...string) Credential {
+		return Credential{Kind: CredDeploy, TokenID: 20, RepoID: 10, Repo: "raw/scratch", Scopes: scopes}
+	}
+	pat := func(scopes ...string) Credential {
+		return Credential{Kind: CredPAT, TokenID: 1, UserID: 1, Scopes: scopes}
+	}
+	for _, tt := range []struct {
+		name string
+		c    Credential
+		repo index.Repo
+		want [3]string // read, write, attach
+	}{
+		{"deploy attach", deploy("attach"), scratch, [3]string{"403", "403", "ok"}},
+		{"deploy read attach", deploy("read", "attach"), scratch, [3]string{"ok", "403", "ok"}},
+		{"deploy write", deploy("write"), scratch, [3]string{"403", "ok", "ok"}},
+		{"deploy read", deploy("read"), scratch, [3]string{"ok", "403", "403"}},
+		{"deploy attach on another repo", deploy("read", "attach"), other, [3]string{"404", "404", "404"}},
+		{"pat attach", pat("read", "attach"), other, [3]string{"ok", "403", "ok"}},
+		{"pat write", pat("write"), other, [3]string{"403", "ok", "ok"}},
+		{"pat without scopes", pat(), other, [3]string{"ok", "ok", "ok"}},
+	} {
+		for i, a := range []Action{ActionRead, ActionWrite, ActionAttach} {
+			err := tt.c.Limit(a, tt.repo)
+			got := "ok"
+			switch {
+			case errors.Is(err, ErrScope):
+				got = "403"
+			case errors.Is(err, index.ErrNotFound):
+				got = "404"
+			case err != nil:
+				got = err.Error()
+			}
+			if got != tt.want[i] {
+				t.Errorf("%s: %s: %s (%v), want %s", tt.name, a, got, err, tt.want[i])
+			}
+		}
+	}
+}

@@ -55,7 +55,10 @@ curl -s -u "$USER:$TOKEN" "$LAJSTROM/api/v1/repos/pypi/internal/packages/request
 ```
 
 Then sign and push the SBOM as an in-toto attestation. The credentials are a Lajstrom user or a
-deploy token with `write` on the repo, in the job's docker configuration:
+deploy token with `attach` on the repo (or `write`, which holds it), in the job's docker
+configuration. A deploy token with the scopes `read` and `attach` is the scanner's: it reads the
+versions and attaches to them, and cannot publish one
+([auth.md](../auth.md#what-a-token-may-do)):
 
 ```sh
 syft scan dir:. -o cyclonedx-json > sbom.json      # or trivy --format cyclonedx
@@ -176,8 +179,6 @@ the repo; deleting a version deletes its attachments first. Nothing prunes old s
 ## Not there yet
 
 - **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
-- **An `attach` permission** that lets a scanner push attachments without `write` on versions
-  (option C).
 - **Finding the versions without a fresh scan** (`?without=` on the versions list, option D).
 - **Keeping the SBOM a kept report names**, and pruning old reports (option E, with #72).
 - **A reference scan job** under `deploy/jobs/scan/` (option F).
