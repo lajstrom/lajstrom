@@ -35,7 +35,7 @@ func testConvertRepo(t *testing.T, s index.Store) {
 	got, err = s.GetRepoByID(ctx, proxy.ID)
 	must(t, err)
 	want := proxy
-	want.Kind, want.Upstream, want.UpdatedAt = index.KindHosted, nil, got.UpdatedAt
+	want.Kind, want.Upstream, want.UpdatedAt, want.Revision = index.KindHosted, nil, got.UpdatedAt, 2
 	same(t, "the converted repo", want, *got)
 	if !got.UpdatedAt.After(proxy.UpdatedAt) {
 		t.Errorf("UpdatedAt %s, want after %s", got.UpdatedAt, proxy.UpdatedAt)

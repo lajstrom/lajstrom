@@ -11,11 +11,11 @@ import (
 
 // Control plane: repos, users, tokens, bindings, keys, sessions, audit.
 
-const repoCols = `id, format, name, registry, prefix, kind, anonymous_read, policy, upstream, "group", created_at, updated_at`
+const repoCols = `id, format, name, registry, prefix, kind, anonymous_read, policy, upstream, "group", created_at, updated_at, revision`
 
 func repoDests(r *index.Repo) []any {
 	return []any{&r.ID, &r.Format, &r.Name, &r.Registry, &r.Prefix, &r.Kind, &r.AnonymousRead,
-		rawDest{&r.Policy}, rawDest{&r.Upstream}, rawDest{&r.Group}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}}
+		rawDest{&r.Policy}, rawDest{&r.Upstream}, rawDest{&r.Group}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}, &r.Revision}
 }
 
 // GetRepo returns the repo with the given format and name.
@@ -39,36 +39,38 @@ func (c *conn) ListRepos(ctx context.Context, format string) ([]index.Repo, erro
 		"SELECT "+repoCols+" FROM repos WHERE format = ? ORDER BY name", format)
 }
 
-// CreateRepo inserts r and increments auth_version. UpdatedAt defaults to CreatedAt.
+// CreateRepo inserts r, at revision 1, and increments auth_version. UpdatedAt defaults to
+// CreatedAt.
 func (c *conn) CreateRepo(ctx context.Context, r *index.Repo) error {
 	created := stamp(&r.CreatedAt, now())
 	updated := stamp(&r.UpdatedAt, created)
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, "repos "+r.Format+"/"+r.Name,
 			`INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, upstream, "group", created_at, updated_at)`+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, revision",
 			[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream),
 				rawArg(r.Group), c.d.EncodeTime(created), c.d.EncodeTime(updated)},
-			&r.ID)
+			&r.ID, &r.Revision)
 	})
 }
 
-// UpdateRepo stores r by r.ID, sets UpdatedAt, fills Format, Name, Kind and CreatedAt from the
-// row (they do not change), and increments auth_version.
+// UpdateRepo stores r by r.ID, sets UpdatedAt, moves the revision by one, fills Format, Name,
+// Kind and CreatedAt from the row (they do not change) and Revision, and increments
+// auth_version.
 func (c *conn) UpdateRepo(ctx context.Context, r *index.Repo) error {
 	r.UpdatedAt = now()
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, fmt.Sprintf("repos id %d", r.ID),
-			`UPDATE repos SET registry = ?, prefix = ?, anonymous_read = ?, policy = ?, upstream = ?, "group" = ?, updated_at = ?`+
-				" WHERE id = ? RETURNING format, name, kind, created_at",
+			`UPDATE repos SET registry = ?, prefix = ?, anonymous_read = ?, policy = ?, upstream = ?, "group" = ?, updated_at = ?,`+
+				" revision = revision + 1 WHERE id = ? RETURNING format, name, kind, created_at, revision",
 			[]any{r.Registry, r.Prefix, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream), rawArg(r.Group),
 				c.d.EncodeTime(r.UpdatedAt), r.ID},
-			&r.Format, &r.Name, &r.Kind, timeDest{&r.CreatedAt})
+			&r.Format, &r.Name, &r.Kind, timeDest{&r.CreatedAt}, &r.Revision)
 	})
 }
 
 // ConvertRepo makes the proxy repo id a hosted one: kind hosted, upstream NULL, updated_at now,
-// and increments auth_version, in one transaction that first refuses a repo of another kind and
+// the revision moved by one, and increments auth_version, in one transaction that first refuses a repo of another kind and
 // one with a fetch claim that beat at or after staleBefore (ErrConflict). The UPDATE names the
 // kind again, so that a concurrent conversion changes the row once.
 func (c *conn) ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error {
@@ -90,7 +92,7 @@ func (c *conn) ConvertRepo(ctx context.Context, id int64, staleBefore time.Time)
 		if live > 0 {
 			return fmt.Errorf("%w: %s/%s: %d fetch(es) from its upstream running", index.ErrConflict, r.Format, r.Name, live)
 		}
-		n, err := c.exec(ctx, what, "UPDATE repos SET kind = ?, upstream = NULL, updated_at = ? WHERE id = ? AND kind = ?",
+		n, err := c.exec(ctx, what, "UPDATE repos SET kind = ?, upstream = NULL, updated_at = ?, revision = revision + 1 WHERE id = ? AND kind = ?",
 			index.KindHosted, c.d.EncodeTime(now()), id, index.KindProxy)
 		if err == nil && n == 0 {
 			err = fmt.Errorf("%w: %s/%s was converted meanwhile", index.ErrConflict, r.Format, r.Name)
@@ -182,11 +184,11 @@ func prefixed(p, cols string) string {
 	return strings.Join(parts, ", ")
 }
 
-const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner"
+const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision"
 
 func userDests(u *index.User) []any {
 	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
-		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}}
+		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision}
 }
 
 // GetUser returns the live user with the given name.
@@ -214,7 +216,7 @@ func (c *conn) ListUsers(ctx context.Context) ([]index.User, error) {
 	return getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")
 }
 
-// CreateUser inserts u, with a new uid when UID is empty.
+// CreateUser inserts u, at revision 1, with a new uid when UID is empty.
 func (c *conn) CreateUser(ctx context.Context, u *index.User) error {
 	stamp(&u.CreatedAt, now())
 	if u.UID == "" {
@@ -222,20 +224,21 @@ func (c *conn) CreateUser(ctx context.Context, u *index.User) error {
 	}
 	return c.scanRow(ctx, "users "+u.Name,
 		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, revision",
 		[]any{u.UID, u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.EncodeTime(u.CreatedAt),
 			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), textArg(u.Owner)},
-		&u.ID)
+		&u.ID, &u.Revision)
 }
 
-// UpdateUser stores u by u.ID and fills UID and CreatedAt from the row.
+// UpdateUser stores u by u.ID, moves the revision by one, and fills UID, CreatedAt and Revision
+// from the row.
 func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 	return c.scanRow(ctx, fmt.Sprintf("users id %d", u.ID),
-		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?, owner = ?"+
-			" WHERE id = ? RETURNING uid, created_at",
+		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?, owner = ?,"+
+			" revision = revision + 1 WHERE id = ? RETURNING uid, created_at, revision",
 		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName),
 			textArg(u.Owner), u.ID},
-		textDest{&u.UID}, timeDest{&u.CreatedAt})
+		textDest{&u.UID}, timeDest{&u.CreatedAt}, &u.Revision)
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.
