@@ -1964,7 +1964,7 @@ curl -s "$LAJSTROM/api/v1/info"
   "anonymousRead": true,
   "formats": [{"name": "apt", "artifactType": "application/vnd.lajstrom.deb.v1"}, {"name": "maven", "artifactType": "application/vnd.lajstrom.maven.v1"}],
   "authModes": ["password", "token"],
-  "login": {"tokenLifetime": 43200},
+  "login": {"tokenLifetime": 43200, "idleTimeout": 900},
   "caller": {"principal": "anonymous", "kind": "anonymous", "name": "anonymous", "admin": false}
 }
 ```
@@ -1976,7 +1976,7 @@ curl -s "$LAJSTROM/api/v1/info"
 | `anonymousRead` | `auth.anonymousRead`, the server-wide switch: when `false`, no repo is readable without credentials, whatever its own `anonymousRead` |
 | `formats` | the format plugins the server serves, by name, each with the artifact type of its manifests. `oci` repos need no plugin and are not listed |
 | `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login); `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
-| `login` | `{"tokenLifetime": 43200}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives that many seconds (`auth.login.tokenLifetime`); with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login` |
+| `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not). Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
@@ -2000,7 +2000,10 @@ of `server.corsOrigins`, object storage behind a CDN for one
   personal access token they already have, sent as a bearer. Signing out then only forgets it.
 - **Every sign-in is a token.** Each one appears in the person's token list and as a
   `token.create` row of the audit log, and its sign-out as `token.revoke`. A tab that is closed
-  without signing out leaves its token live until it expires.
+  without signing out leaves its token live until it expires, or, with `auth.login.idleTimeout`,
+  until it has gone unused for that long: the UI reads the bound from `GET /api/v1/info`
+  (`login.idleTimeout`), warns the person before it, and makes no request with the token on a
+  timer while the person is away.
 - **Where the token is kept** is the UI's choice. Any script of the origin can read it there.
   Every answer of Lajstrom forbids scripts on that origin
   ([operations.md](operations.md#what-lajstrom-answers-browsers)), so a file a writer uploaded
@@ -2062,7 +2065,13 @@ curl -s -X POST -H 'Content-Type: application/json' -H "DPoP: $PROOF" \
 answers it, its secret shown once, with `dpopJkt`, the thumbprint of the proof's key, and
 `tokenType: "DPoP"`. It has no scopes, and expires after `auth.login.tokenLifetime`
 ([configuration.md](configuration.md#auth)), 12 hours by default and at most 24; there is no
-refresh, and the UI signs in again. Signing out is `DELETE /api/v1/users/alice/tokens/41` with
+refresh, and the UI signs in again. With `auth.login.idleTimeout`, `15m` for PCI DSS 8.2.8, it
+also ends once unused for that long: every request it authenticates is a use, recorded to the
+minute, and a request after the bound is `401` with
+`WWW-Authenticate: DPoP error="invalid_token", error_description="idle", algs="ES256"`, and the
+server revokes the token, a `token.revoke` row by `anonymous` with `source` and `reason` `idle`
+([rbac.md](spec/rbac.md) §10). A UI makes no request with the token on a timer while the person
+is away, or it keeps the sign-in alive. Signing out is `DELETE /api/v1/users/alice/tokens/41` with
 the token itself. The token is in alice's token list, and its creation is a `token.create` row by
 alice, `createdBy` `password`, with `dpopJkt`.
 
@@ -2119,7 +2128,8 @@ base64url SHA-256 of the token; and a new `jti`: a proof is used once, on any re
 algorithm is ES256, and the server sends no `DPoP-Nonce`. A refused proof is `401` with
 `WWW-Authenticate: DPoP error="invalid_dpop_proof", error_description="…", algs="ES256"` and
 the reason in the message; a token that is unknown, revoked, expired, or bound to another key is
-`401` with `DPoP error="invalid_token"`. The token is refused as `Authorization: Bearer`, in
+`401` with `DPoP error="invalid_token"`, and an idle one (`auth.login.idleTimeout`) with
+`DPoP error="invalid_token", error_description="idle"`, after which it is revoked. The token is refused as `Authorization: Bearer`, in
 Basic credentials, and everywhere but `/api/`: docker, pip, npm and `/v2/token` cannot use it.
 
 ## Who am I: `GET /api/v1/whoami`

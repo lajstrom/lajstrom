@@ -49,6 +49,10 @@ const (
 	ActionTokenRevoke = "token.revoke"
 )
 
+// SourceIdle is the source, and the reason, of the token.revoke row of a sign-in that the server
+// revoked as idle (RevokeIdle, docs/spec/rbac.md §10).
+const SourceIdle = "idle"
+
 // Token is a personal access token or a deploy token as the tokens API and lajstrom admin
 // token answer it (docs/api.md). It never carries the secret or its hash, only the first
 // HashPrefixLen characters of the hash, to tell tokens apart.
@@ -473,7 +477,9 @@ func (s *Tokens) Revoke(ctx context.Context, id int64, o Origin) error {
 			return err
 		}
 		now := s.now()
-		if err := w.RevokeToken(ctx, id, now); err != nil {
+		if err := w.RevokeToken(ctx, id, now); errors.Is(err, index.ErrConflict) {
+			return nil // revoked meanwhile, with its row
+		} else if err != nil {
 			return err
 		}
 		e, err := s.record(ctx, w, ActionTokenRevoke, own, o, map[string]any{"id": row.ID, "kind": row.Kind, "name": row.Name})
@@ -482,6 +488,41 @@ func (s *Tokens) Revoke(ctx context.Context, id int64, o Origin) error {
 	})
 	if err != nil {
 		return tokenError(fmt.Sprintf("revoke token %d", id), err)
+	}
+	if ev != nil {
+		s.writeAudit(ctx, *ev)
+	}
+	return nil
+}
+
+// RevokeIdle revokes the token of a web UI's sign-in that the authenticator refused as idle, e
+// (docs/spec/rbac.md §10, #1277), with one token.revoke audit event by anonymous: the server
+// revokes it, not a person. Its details add reason idle, lastUsedAt and idleTimeout (seconds) to
+// those of Revoke, and o's source is idle. A token revoked already, by a request on another
+// replica too, stays as it is, without an event.
+func (s *Tokens) RevokeIdle(ctx context.Context, e *IdleError, o Origin) error {
+	ctx = WithPrincipal(ctx, Anonymous)
+	o.Source = SourceIdle
+	var ev *index.AuditEvent
+	err := s.Index.Tx(ctx, func(w index.Writer) error {
+		row, own, err := find(ctx, w, e.TokenID)
+		if err != nil || row.RevokedAt != nil {
+			return err
+		}
+		if err := w.RevokeToken(ctx, row.ID, s.now()); errors.Is(err, index.ErrConflict) {
+			return nil // revoked meanwhile, with its row
+		} else if err != nil {
+			return err
+		}
+		e2, err := s.record(ctx, w, ActionTokenRevoke, own, o, map[string]any{
+			"id": row.ID, "kind": row.Kind, "name": row.Name, "reason": SourceIdle,
+			"lastUsedAt": e.LastUse.UTC().Format(time.RFC3339), "idleTimeout": int64(e.Timeout / time.Second),
+		})
+		ev = &e2
+		return err
+	})
+	if err != nil {
+		return tokenError(fmt.Sprintf("revoke idle token %d", e.TokenID), err)
 	}
 	if ev != nil {
 		s.writeAudit(ctx, *ev)

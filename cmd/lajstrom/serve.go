@@ -205,7 +205,9 @@ func newServeCmd(a *app) *cobra.Command {
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)})
-			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
+			// auth.login.idleTimeout (docs/spec/rbac.md §10, #1277): the authenticator refuses an idle
+			// sign-in, the server revokes it with its audit row, /api/v1/info answers the bound.
+			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout})
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
@@ -224,7 +226,8 @@ func newServeCmd(a *app) *cobra.Command {
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, Handoffs: handoffsOf(edge), DPoP: proofs,
+				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, LoginIdle: c.Auth.Login.IdleTimeout,
+				Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
 				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize,
 				Rules: newRules(c, st, a.log), Verdicter: pipe, PolicyKey: apiPolicyKey(pkey), Locate: locateIn(lookupIn(plugins)),
@@ -248,6 +251,7 @@ func newServeCmd(a *app) *cobra.Command {
 				OIDC:             edge.login,
 				Authenticator:    authn,
 				DPoP:             proofs,
+				IdleRevoker:      &auth.Tokens{Index: st, Log: a.log},
 				MetricsListen:    c.Server.MetricsListen,
 				Pprof:            c.Server.Pprof,
 				StallTimeout:     c.Server.StallTimeout,

@@ -27,6 +27,27 @@ var ErrBadCredentials = errors.New("auth: bad credentials")
 // the caller answers 401 with the DPoP challenge (RFC 9449 §7.2).
 var ErrBound = fmt.Errorf("%w: a token bound to a DPoP key, without its proof", ErrBadCredentials)
 
+// ErrIdle means the token of a web UI's sign-in went unused for longer than
+// auth.login.idleTimeout (docs/spec/rbac.md §10, #1277). It wraps ErrBadCredentials; an
+// *IdleError carries it, and on /api/ the caller answers 401 with the DPoP challenge and
+// error_description="idle", and revokes the token (Tokens.RevokeIdle).
+var ErrIdle = fmt.Errorf("%w: a sign-in idle for longer than auth.login.idleTimeout", ErrBadCredentials)
+
+// IdleError is the refusal of an idle sign-in: the token, its last use and the bound it passed.
+// It wraps ErrIdle.
+type IdleError struct {
+	// TokenID is the id of the token refused.
+	TokenID int64
+	// LastUse is its last use: tokens.last_used_at, or created_at when it was never used.
+	LastUse time.Time
+	// Timeout is auth.login.idleTimeout.
+	Timeout time.Duration
+}
+
+func (e *IdleError) Error() string { return ErrIdle.Error() }
+
+func (e *IdleError) Unwrap() error { return ErrIdle }
+
 // Defaults of the verification cache.
 const (
 	// DefaultCacheTTL is how long a verified password is remembered.
@@ -56,6 +77,9 @@ type Options struct {
 	// CacheSize bounds the remembered verifications, the oldest evicted first; zero means
 	// DefaultCacheSize.
 	CacheSize int
+	// IdleTimeout is auth.login.idleTimeout: a token bound to a DPoP key whose last use is longer
+	// ago is refused with an *IdleError (docs/spec/rbac.md §10, #1277). Zero is off.
+	IdleTimeout time.Duration
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -78,6 +102,7 @@ type Authenticator struct {
 	now   func() time.Time
 	ttl   time.Duration
 	size  int
+	idle  time.Duration
 
 	// verify is VerifyPassword; the tests count the calls.
 	verify func(hash, password string) (bool, error)
@@ -116,7 +141,7 @@ func NewAuthenticator(o Options) *Authenticator {
 		panic("auth: NewAuthenticator: nil Options.Index")
 	}
 	a := &Authenticator{
-		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize,
+		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize, idle: o.IdleTimeout,
 		verify:  VerifyPassword,
 		entries: map[cacheKey]*list.Element{},
 		order:   list.New(),

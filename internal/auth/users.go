@@ -727,10 +727,13 @@ func revokeAll(ctx context.Context, w index.Writer, u *index.User, now time.Time
 	revoked := 0
 	for _, t := range tokens {
 		if t.RevokedAt == nil {
-			if err := w.RevokeToken(ctx, t.ID, now); err != nil {
+			switch err := w.RevokeToken(ctx, t.ID, now); {
+			case errors.Is(err, index.ErrConflict): // revoked meanwhile
+			case err != nil:
 				return 0, err
+			default:
+				revoked++
 			}
-			revoked++
 		}
 	}
 	return revoked, nil

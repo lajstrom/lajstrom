@@ -127,7 +127,9 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 // AuthenticateDPoP returns the principal of Authorization: DPoP <secret> on /api/ (RFC 9449
 // §7.1), whose proof the caller verified: a personal access token, as AuthenticateBearer checks
 // it, bound to the DPoP key whose thumbprint is jkt, the proof's (docs/spec/rbac.md §10). A token
-// bound to another key or to none, and a deploy token, are refused as ErrBadCredentials.
+// bound to another key or to none, and a deploy token, are refused as ErrBadCredentials. With
+// Options.IdleTimeout, a token that passed all that but whose last use is longer ago is refused
+// with an *IdleError, which only the holder of the key learns; its use is not recorded.
 func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string) (Principal, Credential, error) {
 	t, u, err := a.bearerPAT(ctx, secret)
 	switch {
@@ -137,6 +139,10 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to no DPoP key, sent with a proof")
 	case subtle.ConstantTimeCompare([]byte(t.DPoPJKT), []byte(jkt)) != 1:
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to another DPoP key")
+	}
+	if last, idle := a.idleSince(t); idle {
+		_ = a.refuseToken(ctx, u, t, "a sign-in idle for longer than auth.login.idleTimeout")
+		return Principal{}, Credential{}, &IdleError{TokenID: t.ID, LastUse: last, Timeout: a.idle}
 	}
 	a.touch(ctx, t)
 	cred := patCredential(t)
@@ -257,6 +263,18 @@ func (a *Authenticator) refuseToken(ctx context.Context, u *index.User, t *index
 	}
 	a.log.DebugContext(ctx, "authentication refused", append(attrs, "reason", reason)...)
 	return ErrBadCredentials
+}
+
+// idleSince returns the last use of the token t, its last_used_at or else its created_at, and
+// whether that is more than Options.IdleTimeout before now; never with IdleTimeout zero
+// (docs/spec/rbac.md §10). The last use read is less than a minute behind (touch), so a token is
+// refused after between the bound less a minute and the bound without use, never later.
+func (a *Authenticator) idleSince(t *index.Token) (time.Time, bool) {
+	last := t.CreatedAt
+	if t.LastUsedAt != nil && t.LastUsedAt.After(last) {
+		last = *t.LastUsedAt
+	}
+	return last, a.idle > 0 && a.now().Sub(last) > a.idle
 }
 
 // touch records the use of the token t now (TouchToken) when its last use, as read with it on

@@ -1452,7 +1452,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
-| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout` |
+| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |

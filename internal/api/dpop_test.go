@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/dpop"
 	"github.com/lajstrom/lajstrom/internal/auth/dpop/dpoptest"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -146,5 +149,104 @@ func want401(t *testing.T, name string, rr *httptest.ResponseRecorder, challenge
 	t.Helper()
 	if got := rr.Header().Get("WWW-Authenticate"); rr.Code != http.StatusUnauthorized || !strings.Contains(got, challenge) {
 		t.Errorf("%s: %d with WWW-Authenticate %q; want 401 with %s", name, rr.Code, got, challenge)
+	}
+}
+
+// TestDPoPIdleThroughServer checks the idle bound of a sign-in behind the server's middleware
+// (auth.login.idleTimeout, docs/spec/rbac.md §10, #1277), on two replicas over one index: a
+// request within the bound passes and records the use, on which the bound counts; one more than
+// the bound after it is 401 with error_description="idle" and the message saying so, and revokes
+// the token with one token.revoke row by anonymous with source idle; the token is then refused on
+// the other replica as revoked, without the description, and the sign-out of a UI whose timer ran
+// out revokes nothing more. A server without a revoker refuses an idle sign-in all the same and
+// spends its proof, which a replay finds used.
+func TestDPoPIdleThroughServer(t *testing.T) {
+	f := loginFixture(t, Options{})
+	var mu sync.Mutex
+	now := testNow
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); defer mu.Unlock(); now = now.Add(d) }
+	replica := func(revoker server.IdleRevoker) http.Handler {
+		authn := auth.NewAuthenticator(auth.Options{Index: f.st, Now: clock, IdleTimeout: 15 * time.Minute})
+		v := &dpop.Verifier{ExternalURL: loginURL, Replays: f.st, Now: clock}
+		srv, err := server.New(server.Options{Listen: "127.0.0.1:0", ExternalURL: loginURL, Log: f.repos.Log, Authenticator: authn, DPoP: v,
+			IdleRevoker: revoker,
+			API:         recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Passwords: authn, DPoP: v, LoginIdle: 15 * time.Minute}))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return srv.Handler()
+	}
+	tokens := &auth.Tokens{Index: f.st, Now: clock}
+	one, two, unrevoking := replica(tokens), replica(tokens), replica(nil)
+	key := dpoptest.NewKey(t)
+	ctx := auth.WithCredential(context.Background(), auth.Credential{Kind: auth.CredPassword})
+	signIn := func(name string) (*auth.Token, string) {
+		tok, secret, err := tokens.CreateBoundPAT(ctx, "alice", name, key.JKT, auth.Expiry{In: 12 * time.Hour}, auth.Origin{Source: "api"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok, secret
+	}
+	tok, secret := signIn("login")
+	_, kept := signIn("kept")
+	withToken := func(secret, method, path string) map[string][]string {
+		return map[string][]string{"Authorization": {"DPoP " + secret},
+			"DPoP": {key.Proof(t, dpoptest.Claims{HTM: method, HTU: loginURL + path, Token: secret, IAT: clock()})}}
+	}
+	with := func(method, path string) map[string][]string { return withToken(secret, method, path) }
+
+	advance(10 * time.Minute)
+	wantStatus(t, send(one, http.MethodGet, "/api/v1/whoami", "", with(http.MethodGet, "/api/v1/whoami")), http.StatusOK)
+	advance(15 * time.Minute) // 15 minutes after the last use: at the bound
+	wantStatus(t, send(two, http.MethodGet, "/api/v1/whoami", "", with(http.MethodGet, "/api/v1/whoami")), http.StatusOK)
+	advance(15*time.Minute + time.Second)
+	idle := with(http.MethodGet, "/api/v1/whoami")
+	rr := send(one, http.MethodGet, "/api/v1/whoami", "", idle)
+	want401(t, "an idle sign-in", rr, `DPoP error="invalid_token", error_description="idle", algs="ES256"`)
+	if !strings.Contains(rr.Body.String(), `"code":"UNAUTHENTICATED","message":"the sign-in was idle`) {
+		t.Errorf("body %s, want UNAUTHENTICATED saying that the sign-in was idle", rr.Body)
+	}
+	want401(t, "the token after its idle refusal", send(two, http.MethodGet, "/api/v1/whoami", "", with(http.MethodGet, "/api/v1/whoami")),
+		`DPoP error="invalid_token", algs="ES256"`)
+	target := fmt.Sprintf("/api/v1/users/alice/tokens/%d", tok.ID)
+	want401(t, "the sign-out of an idle sign-in", send(two, http.MethodDelete, target, "", with(http.MethodDelete, target)),
+		`DPoP error="invalid_token", algs="ES256"`)
+
+	wantIdleRevoked(t, f.st, secret)
+
+	// Without a revoker: refused, not revoked, its proof spent.
+	idle = withToken(kept, http.MethodGet, "/api/v1/whoami")
+	want401(t, "an idle sign-in without a revoker", send(unrevoking, http.MethodGet, "/api/v1/whoami", "", idle),
+		`DPoP error="invalid_token", error_description="idle", algs="ES256"`)
+	want401(t, "its proof again", send(unrevoking, http.MethodGet, "/api/v1/whoami", "", idle),
+		`DPoP error="invalid_dpop_proof", error_description="the proof was used already"`)
+	if row, err := f.st.GetTokenByHash(ctx, auth.HashSecret(kept)); err != nil || row.RevokedAt != nil {
+		t.Errorf("the idle token without a revoker: %+v, %v; want it live", row, err)
+	}
+	if logs := f.logs.String(); strings.Contains(logs, secret) || strings.Contains(logs, kept) {
+		t.Error("the log holds a secret")
+	}
+}
+
+// wantIdleRevoked fails the test unless the token of secret is revoked, with one token.revoke row
+// of the index by anonymous, source and reason idle, and idleTimeout 900.
+func wantIdleRevoked(t *testing.T, st index.Store, secret string) {
+	t.Helper()
+	ctx := context.Background()
+	if row, err := st.GetTokenByHash(ctx, auth.HashSecret(secret)); err != nil || row.RevokedAt == nil {
+		t.Fatalf("the idle token: %+v, %v; want it revoked", row, err)
+	}
+	evs, err := st.ListAudit(ctx, index.AuditFilter{Action: auth.ActionTokenRevoke})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Principal != auth.Anonymous.String() {
+		t.Fatalf("token.revoke rows %+v, want one by anonymous", evs)
+	}
+	for _, want := range []string{`"reason":"idle"`, `"source":"idle"`, `"idleTimeout":900`} {
+		if !strings.Contains(string(evs[0].Details), want) {
+			t.Errorf("token.revoke details %s, want %s", evs[0].Details, want)
+		}
 	}
 }

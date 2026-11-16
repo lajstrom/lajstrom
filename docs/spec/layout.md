@@ -1139,6 +1139,8 @@ type Writer interface {
     // ErrNotFound (#1283)
     TouchUser(ctx context.Context, id int64, seenAt time.Time) error
     CreateToken(ctx context.Context, t *Token) error
+    // RevokeToken sets RevokedAt while it is null; a token revoked already keeps its time and
+    // wraps ErrConflict, so that of callers that revoke it at once one does (#1277)
     RevokeToken(ctx context.Context, id int64, at time.Time) error
     // TouchToken sets LastUsedAt to lastUsed when it is null or earlier, else changes nothing:
     // it only moves forward (#1277); no token ErrNotFound
