@@ -21,6 +21,7 @@ type Config struct {
 	Keys        Keys        `yaml:"keys"`
 	Attachments Attachments `yaml:"attachments"`
 	Webhooks    Webhooks    `yaml:"webhooks"`
+	Policy      Policy      `yaml:"policy"`
 	Repos       []Repo      `yaml:"repos"`
 }
 

@@ -93,7 +93,7 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 	p.log.InfoContext(ctx, "ingest: referrer stored", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", r.Desc.Digest.String(),
 		"subject", r.Subject.String(), "kind", kind, "artifactType", artifactType, "principal", principal.String())
 	p.auditReferrer(ctx, &ev)
-	p.indexAttachments(ctx, repo, r)
+	p.indexAttachments(ctx, repo, r, principal)
 	return r.Desc.Digest, nil
 }
 

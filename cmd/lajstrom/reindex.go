@@ -83,7 +83,11 @@ func newReindexCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			trust, err := attachmentTrust(c.Attachments, a.log)
+			ptrust, err := policyTrust(ctx, st)
+			if err != nil {
+				return err
+			}
+			trust, err := attachmentTrust(c.Attachments, a.log, ptrust...)
 			if err != nil {
 				return err
 			}

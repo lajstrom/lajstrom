@@ -118,7 +118,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, fmt.Errorf("ingest: repository %s: %w", name, err)
 	}
 	_, entry := profile.JournalSeq(del.Reference)
-	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, tagSchema: caps.TagSchema(),
+	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, tagSchema: caps.TagSchema(), principal: principal,
 		journal: entry && profile.HasJournal(repo.Format)}
 	find := d.find
 	if !caps.DeleteManifest {
@@ -151,12 +151,13 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 
 // deletion is one Delete on its way: what it found, then what it deleted.
 type deletion struct {
-	p    *Pipeline
-	repo index.Repo
-	del  format.Deletion
-	name string              // the OCI repository, without the instance prefix
-	prov provider.Provider   // the backend
-	rr   provider.Repository // its data path
+	p         *Pipeline
+	repo      index.Repo
+	del       format.Deletion
+	principal auth.Principal      // who deletes
+	name      string              // the OCI repository, without the instance prefix
+	prov      provider.Provider   // the backend
+	rr        provider.Repository // its data path
 	// tagSchema: the provider keeps the sha256-<hex> index of a subject (Capabilities.TagSchema:
 	// no referrers API, or referrers.alwaysTag), which a referrer's delete rewrites.
 	tagSchema bool
@@ -1110,20 +1111,8 @@ func (d *deletion) event(ctx context.Context, principal auth.Principal) index.Au
 func (d *deletion) record(ctx context.Context) error {
 	d.setOutcome()
 	err := d.p.index.Tx(ctx, func(w index.Writer) error {
-		switch {
-		case d.version != nil:
-			if err := d.deleteRows(ctx, w); err != nil {
-				return err
-			}
-		case d.journal && d.pkg != nil:
-			if err := d.deleteEntry(ctx, w); err != nil {
-				return err
-			}
-		case !d.journal && d.repo.Format != ociFormat:
-			// A referrer's attachments, when it was one of a version (#89).
-			if _, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest); err != nil {
-				return err
-			}
+		if err := d.recordRows(ctx, w); err != nil {
+			return err
 		}
 		if err := d.p.complete(ctx, w, &d.ev); err != nil {
 			return err
@@ -1147,6 +1136,25 @@ func (d *deletion) record(ctx context.Context) error {
 			d.p.log.ErrorContext(ctx, "ingest: audit event of a delete not written", "repo", d.ev.Repo, "subject", d.ev.Subject,
 				"digest", d.ev.Digest.String(), "error", err.Error())
 		}
+	}
+	return nil
+}
+
+// recordRows deletes on w the rows of what the delete took: a version's, a journal entry's, a
+// referrer's attachments, when it was one of a version (#89), and its verdicts (#101).
+func (d *deletion) recordRows(ctx context.Context, w index.Writer) error {
+	switch {
+	case d.version != nil:
+		return d.deleteRows(ctx, w)
+	case d.journal && d.pkg != nil:
+		return d.deleteEntry(ctx, w)
+	case !d.journal && d.repo.Format != ociFormat:
+		return d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, func() error {
+			_, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest)
+			return err
+		})
+	case !d.journal:
+		return d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, nil)
 	}
 	return nil
 }
