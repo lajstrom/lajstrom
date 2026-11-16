@@ -921,8 +921,10 @@ from elsewhere, object storage behind a CDN for one, exactly as a browser sends 
 
 - a request whose `Origin` is a listed origin gets, on its answer, whatever its status, the
   `401`, `403` and `429` of the middleware included: `Access-Control-Allow-Origin` with that
-  origin, and `Access-Control-Expose-Headers: Retry-After, WWW-Authenticate, X-Request-Id`
-  (the challenge of a DPoP refusal, RFC 9449 §7.1, is in `WWW-Authenticate`);
+  origin, and `Access-Control-Expose-Headers: Date, Retry-After, WWW-Authenticate,
+  X-Request-Id` (the challenge of a DPoP refusal, RFC 9449 §7.1, is in `WWW-Authenticate`;
+  `Date` is the server's clock, by which a UI on a laptop whose clock is off sets the `iat` of
+  its proofs, as no nonce does it, rbac.md §10);
 - its preflight, an `OPTIONS` with `Access-Control-Request-Method`, is `204` before
   authentication, whatever the path and the method it asks for, with
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH,
