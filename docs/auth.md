@@ -17,6 +17,8 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 | local user | `user:<uid>` | HTTP Basic with the user's password; HTTP Basic or a bearer with a personal access token of the user ([Tokens](#tokens)) |
 | deploy token | `token:<id>` | HTTP Basic `deploy:<token>` ([Tokens](#tokens)) |
 | anonymous | `anonymous` | a request without credentials |
+| client certificate | `cert:spiffe://…`, `cert:<bundle>/<name>` | a certificate of a configured CA, on `GET /v2/token` ([Node and workload identity](#node-and-workload-identity)) |
+| Kubernetes service account | `k8s:<cluster>/<namespace>/<service account>` | its token as the password of `/v2/token` ([Node and workload identity](#node-and-workload-identity)) |
 
 A personal access token acts as its user: its principal is the user's, narrowed by the token's
 scopes. A user may come from an OIDC login, and its groups from the login's claims
@@ -1216,6 +1218,241 @@ audit log with the issuer, the subject and the groups, a first login `user.creat
 Not yet: token exchange for CI (a GitHub Actions or GitLab OIDC token for a short-lived token,
 proposed on #69; meanwhile a pipeline uses a [deploy token](#in-ci)), and joining an existing
 local user to an identity.
+
+## Node and workload identity
+
+A node or a pod can pull from Lajstrom with no secret of Lajstrom's stored on it
+([rbac.md](spec/rbac.md) §9, [ADR 0025](adr/0025-node-and-workload-identity.md), #1019):
+
+- a **node** presents a client certificate that your CA signed, as containerd and Talos can;
+- a **pod** pulls with its own service account: the kubelet hands its credential provider a
+  short-lived token of the pod's service account (KEP-4412), which Lajstrom verifies against the
+  cluster's issuer.
+
+Both are credentials of `/v2/token` only, which is all containerd needs: it asks there for the
+bearer of every pull. No other route reads them. Each gives a principal of its own, which
+bindings name like a user, with `reader`, `writer` or `maintainer` (never `admin`):
+
+| Credential | Principal |
+| --- | --- |
+| a certificate of a SPIFFE bundle | `cert:spiffe://<trust domain>/<path>`, its SPIFFE ID |
+| a certificate of a `cn` or `dns` bundle | `cert:<bundle>/<CN or first DNS name>` |
+| a Kubernetes service-account token | `k8s:<cluster>/<namespace>/<service account>` |
+
+A fleet is bound by a **pattern**, a principal whose last segment is `*`: it matches every
+principal of its kind below it, at any depth.
+
+```sh
+lajstrom admin binding create --principal 'cert:spiffe://cluster-a/node/*' --role reader --mask 'oci/*'
+lajstrom admin binding create --principal 'k8s:prod/ci/*' --role reader --mask 'oci/k8s'
+lajstrom admin binding create --principal 'k8s:prod/ci/builder' --role writer --mask 'oci/builds'
+```
+
+`cert:spiffe://cluster-a/*` would also match the workloads of the trust domain, not only its
+nodes: bind the narrowest prefix that names what you mean. These principals have no row, no
+token and no owner; they are not users, deploy tokens or the service accounts of #1020, and the
+access log, the audit log and `lajstrom.uploaded-by` name each node and each service account by
+itself.
+
+### Client certificates
+
+Give Lajstrom the CAs whose certificates count, one bundle each:
+
+```yaml
+auth:
+  clientCertificates:
+    bundles:
+      - name: cluster-a                 # a SPIRE or cert-manager CA that writes SPIFFE IDs
+        caFile: /etc/lajstrom/cluster-a-ca.pem
+        trustDomain: cluster-a          # identity: spiffe, the default
+      - name: corp                      # a plain CA: the principal is cert:corp/<CN>
+        caFile: /etc/lajstrom/corp-ca.pem
+        identity: cn
+```
+
+A `spiffe` bundle takes the leaf's one URI SAN, which must be a SPIFFE ID of its trust domain; a
+`cn` bundle the subject's CN, a `dns` bundle the first DNS name. The bundles are tried in order;
+the first whose CAs verify the certificate, for client authentication, decides. The files are
+read at start: a new CA takes a restart. The keys are in
+[configuration.md](configuration.md#auth).
+
+**Where the certificate comes from:**
+
+- **Lajstrom terminates TLS** (`server.tls`): with a bundle, the listener asks every client for a
+  certificate, naming the bundles' CAs. A client without one connects as before. A Go client,
+  containerd among them, sends its certificate only when its chain names one of those CAs as its
+  issuer, and goes on anonymous otherwise; a certificate that is sent and that no bundle signed
+  fails the handshake.
+- **Behind an edge**: the edge asks for the certificate and forwards it in a header, and Lajstrom
+  reads that header only from the peers of `server.trustedProxies`. Set
+  `auth.clientCertificates.forwardedHeader` to its name; [reverse-proxy.md](reverse-proxy.md#client-certificates)
+  has nginx and Envoy. Lajstrom verifies the certificate again against its bundles, so the edge
+  need not verify it, only forward it, and it must drop a header that a client sent.
+
+**On the node.** containerd, in `/etc/containerd/certs.d/<host>/hosts.toml` (the `ca` only for a
+private CA of Lajstrom's own certificate):
+
+```toml
+server = "https://lajstrom.example.com"
+
+[host."https://lajstrom.example.com/v2/oci/k8s"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+  ca = "/etc/containerd/certs.d/lajstrom.example.com/ca.crt"
+  client = [["/etc/containerd/certs.d/lajstrom.example.com/node.crt", "/etc/containerd/certs.d/lajstrom.example.com/node.key"]]
+```
+
+Talos, beside the mirrors of [the Talos guide](guides/talos.md) §3, since 1.12 (PEM):
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: lajstrom.example.com
+clientIdentity:
+  cert: |-
+    -----BEGIN CERTIFICATE-----
+    …
+  key: |-
+    -----BEGIN EC PRIVATE KEY-----
+    …
+```
+
+or in `machine.registries` (base64 of the PEM):
+
+```yaml
+machine:
+  registries:
+    config:
+      lajstrom.example.com:
+        tls:
+          clientIdentity:
+            crt: LS0tLS1CRUdJTi…
+            key: LS0tLS1CRUdJTi…
+```
+
+The node needs no `auth` for the host: containerd asks `/v2/token` with a `GET` and no
+credential, over the same TLS configuration, and gets the bearer of its certificate's principal.
+To check a certificate by hand:
+
+```sh
+curl -s --cert node.crt --key node.key 'https://lajstrom.example.com/v2/token?scope=repository:oci/k8s/pause:pull' | jq -r .token | cut -d. -f2 | base64 -d
+{"access":[{"type":"repository","name":"oci/k8s/pause","actions":["pull"]}],"sub":"cert:spiffe://cluster-a/node/w1",…}
+```
+
+With `log.level: debug`, Lajstrom logs `client certificate` with the principal and the bundle,
+or `client certificate refused` with the reason.
+
+**Revocation.** There is none: Lajstrom reads no CRL and asks no OCSP responder, and a
+certificate counts until its `notAfter`. Keep lifetimes short where something renews them (SPIRE,
+cert-manager's CSI driver: a day or less). To cut a node off sooner, remove its binding (from its
+next `/v2/token` on, 20 minutes at most for a bearer it holds), or rotate the bundle's CA. On
+Talos the certificate lives in the machine configuration and lasts until you patch it
+(`talosctl patch machineconfig`, applied without a reboot): bind such nodes one by one, not by a
+pattern, where you may need to cut one off before its certificate ends. The gain over a deploy
+token is that the key never crosses the wire, not a shorter life.
+
+### Kubernetes service-account tokens
+
+The kubelet (Kubernetes 1.34 and later; 1.33 with the feature gate
+`KubeletServiceAccountTokenForCredentialProviders`) can hand an image credential provider a token
+of the pod's service account, for an audience its configuration names. `lajstrom
+credential-provider` is that provider: it answers the token as the password of the image's
+registry, and Lajstrom's `/v2/token` takes it for a cluster it knows. The images the node pulls
+for itself (kubelet, etcd, the Talos installer) are not pulled for a pod: they need a client
+certificate or a [deploy token](#a-deploy-token-over-a-mask).
+
+Give Lajstrom the cluster:
+
+```yaml
+server:
+  externalURL: https://lajstrom.example.com
+auth:
+  kubernetes:
+    clusters:
+      - name: prod
+        issuer: https://kubernetes.default.svc.cluster.local   # kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+        caFile: /etc/lajstrom/prod-ca.pem    # the cluster's CA, for an issuer on the API server
+        # audience: https://lajstrom.example.com   the default, server.externalURL
+```
+
+Lajstrom reads the issuer's discovery document and its JWKS, without credentials, at the first
+token; the keys are cached as the OIDC login's. An EKS, GKE or AKS issuer is public. The API
+server of your own cluster serves them to the service accounts only, so let anyone read them,
+and make the issuer reachable from Lajstrom:
+
+```sh
+kubectl create clusterrolebinding service-account-issuer-discovery \
+  --clusterrole=system:service-account-issuer-discovery --group=system:unauthenticated
+```
+
+An API server whose `AuthenticationConfiguration` limits anonymous requests to some paths, as
+Talos's does (`/livez`, `/readyz`, `/healthz`), needs `/.well-known/openid-configuration` and
+`/openid/v1/jwks` among them too ([the Talos guide](guides/talos.md) §3.2).
+
+The kubelet asks the API server for a token of Lajstrom's audience, which a node may do only when
+RBAC allows it (`ServiceAccountNodeAudienceRestriction`, which Kubernetes 1.37 enforced in the
+Talos spike):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lajstrom-image-pull-audience}
+rules:
+  - verbs: ["request-serviceaccounts-token-audience"]
+    apiGroups: [""]
+    resources: ["https://lajstrom.example.com"]   # the audience; resourceNames would narrow it to service accounts
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lajstrom-image-pull-audience}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lajstrom-image-pull-audience}
+subjects: [{kind: Group, name: "system:nodes", apiGroup: rbac.authorization.k8s.io}]
+```
+
+Without it, the kubelet logs `is not authorized to request tokens for audience` and pulls with
+no credential of the pod's.
+
+On each node, put the `lajstrom` binary, under the provider's name, in the kubelet's provider
+directory and configure it (`--image-credential-provider-config`,
+`--image-credential-provider-bin-dir`; on Talos, a `KubeCredentialProviderConfig` document and the
+directory `/usr/local/lib/kubelet/credentialproviders`, the guide's §3.2):
+
+```yaml
+apiVersion: kubelet.config.k8s.io/v1
+kind: CredentialProviderConfig
+providers:
+  - name: lajstrom                 # the file in the provider directory
+    args: [credential-provider]
+    apiVersion: credentialprovider.kubelet.k8s.io/v1
+    matchImages: ["lajstrom.example.com"]
+    defaultCacheDuration: 1m
+    tokenAttributes:
+      serviceAccountTokenAudience: https://lajstrom.example.com   # the cluster's audience
+      requireServiceAccount: true
+      cacheType: Token
+```
+
+A pod names the image on Lajstrom's host, not through a mirror: the kubelet asks the provider of
+the registry the image names. A token is the pod's for one image pull; the provider tells the
+kubelet to reuse it until a minute before it expires. Lajstrom checks its signature by the issuer's keys, its `iss`, its
+audience, its `exp` (the legacy tokens of Secrets, which have none, are refused) and that its
+`sub` names the service account of its `kubernetes.io` claim. A token that does not verify is
+`401` and counts as no failed login; an issuer whose keys never loaded is `503`. Lajstrom does
+not ask the cluster whether the pod still exists: the token counts until it expires.
+
+To check by hand, with a token of the audience:
+
+```sh
+TOKEN=$(kubectl -n ci create token builder --audience https://lajstrom.example.com)
+curl -s -u "k8s:$TOKEN" 'https://lajstrom.example.com/v2/token?scope=repository:oci/k8s/pause:pull' | jq -r .token | cut -d. -f2 | base64 -d
+{"access":[{"type":"repository","name":"oci/k8s/pause","actions":["pull"]}],"sub":"k8s:prod/ci/builder",…}
+```
+
+Both were measured on a Talos cluster, with Lajstrom terminating TLS and behind nginx
+([the Talos guide](guides/talos.md) §3.1 and §3.2).
+
+**Not yet:** certificates and service-account tokens on any route but `/v2/token`; CRL and OCSP;
+SPIFFE federation.
 
 ## What comes next
 

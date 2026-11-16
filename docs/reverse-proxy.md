@@ -149,6 +149,48 @@ client addresses. The configurations of [deploy/compose.md](deploy/compose.md#2-
 and [deploy/kubernetes.md](deploy/kubernetes.md#2-the-configuration) carry the key commented
 out, for the address of their edge.
 
+### Client certificates
+
+When nodes pull with a client certificate ([auth.md](auth.md#client-certificates), #1019) and
+TLS ends at the edge, the edge asks for the certificate and forwards it in a header. Lajstrom
+reads the header of `auth.clientCertificates.forwardedHeader` only from the peers of
+`server.trustedProxies`, and verifies the certificate again against its own bundles: the edge
+need not verify it. It must set the header from the certificate it received and drop the one a
+client sent, or any client could name any node.
+
+nginx, with Lajstrom's bundles as the CAs it names to clients:
+
+```nginx
+ssl_client_certificate /etc/nginx/lajstrom-client-cas.pem;   # the CAs of auth.clientCertificates.bundles
+ssl_verify_client      optional;                             # a client without a certificate goes on
+location / {
+    proxy_set_header X-SSL-Client-Cert $ssl_client_escaped_cert;   # set, so a client's own is dropped
+    proxy_pass http://lajstrom;
+}
+```
+
+```yaml
+server:
+  trustedProxies: ["10.42.0.0/16"]
+auth:
+  clientCertificates:
+    forwardedHeader: X-SSL-Client-Cert
+    bundles: [{name: cluster-a, caFile: /etc/lajstrom/cluster-a-ca.pem, trustDomain: cluster-a}]
+```
+
+ingress-nginx passes the same with the annotations `auth-tls-secret`, `auth-tls-verify-client:
+optional` and `auth-tls-pass-certificate-to-upstream: "true"`, in the header `ssl-client-cert`.
+Envoy, and Istio's gateways, write `X-Forwarded-Client-Cert` with
+`forward_client_cert_details: SANITIZE_SET` and `set_current_client_cert_details: {cert: true,
+chain: true}`; name that header in `forwardedHeader`, and Lajstrom reads the `Cert` and the
+`Chain` of its last element. Traefik's `passTLSClientCert` with `pem: true` writes
+`X-Forwarded-Tls-Client-Cert`, which Lajstrom reads too.
+
+Measured with nginx 1.30.6 and the lines above, in front of a Talos cluster whose node
+presented its certificate: every image of the boot came through as the certificate's principal,
+and a header a client sent was replaced ([the Talos guide](guides/talos.md) §3.1). Envoy was not
+run.
+
 ### Restarts
 
 On `SIGTERM` a replica answers `/-/readyz` with `503` at once and closes each connection after
