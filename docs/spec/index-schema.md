@@ -509,6 +509,16 @@ table of record of scans (#89, decision 1).
 - **History.** Every result is a row of its own and none is merged: a scan run again with a new
   database is one more referrer and one more row. "The latest result per tool" is a query
   (http-routing.md §4, the newest first), never an overwrite.
+- **References.** A row whose `input` is the `digest` or the `layer` of a row of another
+  referrer of the same version (a scan report and the SBOM it was computed from) keeps that
+  referrer: its `DELETE` on `/v2` is `409` while the row is there (http-routing.md §2), so a job
+  that prunes attachments (#72, keeping the first and the last N per predicate type) keeps an
+  SBOM while a report it keeps names it; the delete of the version takes both. The rule reads
+  these rows: a report whose rows are not written yet (best effort, above) keeps nothing until
+  they are (#89).
+- **Versions without an attachment.** `ListVersionPage` with attachment kinds keeps the
+  variants that have no row of any of them (`NOT EXISTS` on `version_id` and `kind`, over the
+  unique index), for `?without=` (http-routing.md §4).
 
 ## Snapshots of the control plane
 
