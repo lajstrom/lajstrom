@@ -244,7 +244,7 @@ func ownerOf(ctx context.Context, r index.Reader, owner string) (string, error) 
 			return "", invalidf("owner: %s is a service account, which owns nothing: name a person or a group", u.Name)
 		}
 		return UserPrincipal(u).String(), nil
-	case KindToken, KindAnonymous, KindCert, KindKubernetes:
+	case KindToken, KindAnonymous, KindCert, KindKubernetes, KindCI:
 	}
 	return "", invalidf("owner: %q is neither user:<name> nor group:<name>", owner)
 }

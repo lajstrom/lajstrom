@@ -158,8 +158,12 @@ func (h *handler) listDeployTokens(_ http.ResponseWriter, r *http.Request) (int,
 }
 
 // createDeployToken creates a deploy token of a repo from the TokenRequest of the body, whose
-// scopes are required: 201 with the token, its secret and its Location.
+// scopes are required: 201 with the token, its secret and its Location. A CI token is 403 before
+// anything else (auth.MayCreateDeploy, docs/spec/rbac.md §11).
 func (h *handler) createDeployToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := auth.MayCreateDeploy(r.Context()); err != nil {
+		return 0, nil, serviceError(err)
+	}
 	repo, err := h.allowDeployTokens(r)
 	if err != nil {
 		return 0, nil, err

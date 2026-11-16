@@ -204,7 +204,7 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // token's shape is refused as a wrong password is. Everything else is authenticatePassword's:
 // the same refusals, the same throttles, the same argon2id work, every attempt verified.
 func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
-	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) {
+	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) || strings.HasPrefix(password, CIPrefix) {
 		return Principal{}, Credential{}, a.refuse(ctx, nil, "a token in place of a password")
 	}
 	u, account, addr, err := a.loginUser(ctx, username, password)

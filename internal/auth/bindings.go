@@ -266,6 +266,9 @@ func bindable(principal string) (Principal, error) {
 	case KindToken, KindAnonymous:
 		return Principal{}, invalidf("principal: %s cannot be bound: a binding is for user:<name>, group:<name>, cert:<name> "+
 			"or k8s:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes", principal)
+	case KindCI:
+		return Principal{}, invalidf("principal: %s cannot be bound: a ci: principal gets what its trust policies grant "+
+			"(auth.ci.policies, docs/spec/rbac.md §11)", principal)
 	}
 	return p, nil
 }

@@ -2568,7 +2568,7 @@ components:
       required: [principal, role, repoMask]
       additionalProperties: false
       properties:
-        principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern, never with the admin role (§9)."}
+        principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern, never with the admin role (§9). A ci: principal has no bindings (§11)."}
         role: {type: string, enum: [reader, attacher, writer, maintainer, admin]}
         repoMask: {type: string}
     AuditEntry:

@@ -273,7 +273,8 @@ func TestTokensAPIRefused(t *testing.T) {
 // scopes are 403 without any Authorizer, as is a deploy token changing its own repo (X-14),
 // and a deploy token on another repo is 404 (S-04). A personal access token, with scopes or
 // without, the admin's too, creates no personal access token (403 before the body is read,
-// #249), while it still lists and revokes them and creates deploy tokens.
+// #249), while it still lists and revokes them and creates deploy tokens. A CI token creates
+// neither, whatever its grants (docs/spec/rbac.md §11).
 func TestTokensAPIAuthorization(t *testing.T) {
 	deployCred := func(repo string, id int64) auth.Credential {
 		return auth.Credential{Kind: auth.CredDeploy, TokenID: 20, RepoID: id, Repo: repo, Scopes: []string{"read", "write"}}
@@ -284,6 +285,8 @@ func TestTokensAPIAuthorization(t *testing.T) {
 	carolPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 3, UserID: 3}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "20"}
 	carol := auth.Principal{Kind: auth.KindUser, Name: "carol"}
+	ciJob := auth.Principal{Kind: auth.KindCI, Name: "github/acme/app"}
+	ciCred := auth.Credential{Kind: auth.CredCI, Grants: []auth.Grant{{Role: auth.RoleMaintainer, Mask: "*/*"}}}
 	g := map[string]bool{"user:admin manage */*": true, "user:admin read */*": true, "user:carol manage raw/scratch": true,
 		"user:carol read raw/scratch": true, "user:alice read raw/open": true}
 	tests := []struct {
@@ -322,6 +325,12 @@ func TestTokensAPIAuthorization(t *testing.T) {
 		{"deploy token reads its repo", false, deploy, deployCred("raw/scratch", 0), "GET", "/api/v1/repos/raw/scratch", "", 200},
 		{"deploy token reads another repo", false, deploy, deployCred("raw/scratch", 0), "GET", "/api/v1/repos/raw/other", "", 404},
 		{"scoped pat patches a repo", false, alice, scoped, "PATCH", "/api/v1/repos/raw/scratch", `{"anonymousRead": true}`, 403},
+		{"a CI token creates no deploy token", false, ciJob, ciCred, "POST", "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "x", "scopes": ["read"]}`, 403},
+		{"a CI token with a bad body", false, ciJob, ciCred, "POST", "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": 1}`, 403},
+		{"a CI token creates no personal access token", false, ciJob, ciCred, "POST", "/api/v1/users/alice/tokens", `{"name": "x"}`, 403},
+		{"a CI token lists a repo's deploy tokens", false, ciJob, ciCred, "GET", "/api/v1/repos/raw/scratch/deploy-tokens", "", 200},
+		{"a CI token reads outside its grants", false, ciJob, auth.Credential{Kind: auth.CredCI, Grants: []auth.Grant{{Role: auth.RoleWriter, Mask: "raw/other"}}},
+			"GET", "/api/v1/repos/raw/scratch", "", 404},
 		{"another user's tokens without an Authorizer", false, bob, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users/alice/tokens", "", 200},
 	}
 	for _, tt := range tests {
