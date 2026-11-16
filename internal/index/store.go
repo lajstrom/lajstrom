@@ -281,6 +281,17 @@ type Reader interface {
 	// GetPolicySeen returns when the repo first saw the version without a publish time;
 	// ErrNotFound when it has no row.
 	GetPolicySeen(ctx context.Context, repoID int64, name, version, variant string) (*PolicySeen, error)
+
+	// The mapping of an encrypted repo (#114; docs/spec/index-schema.md).
+
+	// GetBlobMap returns the row of the stored digest d at the package path path of the repo.
+	GetBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest) (*BlobMap, error)
+	// FindBlobMap returns the rows of the plaintext digest d at the package path, of kind, or of
+	// both kinds when kind is "", the newest first (IndexedAt, then ID).
+	FindBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest, kind string) ([]BlobMap, error)
+	// ListBlobMap returns the rows of the repo at the package path, or at every path when path is
+	// "", ordered by Path, then Stored.
+	ListBlobMap(ctx context.Context, repoID int64, path string) ([]BlobMap, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use
@@ -658,4 +669,14 @@ type Writer interface {
 	// PutPolicySeen inserts s unless the row of its key exists, and fills s.SeenAt with the
 	// row's; SeenAt is now when zero. It does not move the generation.
 	PutPolicySeen(ctx context.Context, s *PolicySeen) error
+
+	// PutBlobMap inserts the rows, or replaces those of the same repo, path and stored digest,
+	// in one transaction, and fills their ID; IndexedAt is now when zero.
+	PutBlobMap(ctx context.Context, rows []BlobMap) error
+	// DeleteBlobMap removes the row of the stored digest d at the package path; none is no error.
+	DeleteBlobMap(ctx context.Context, repoID int64, path string, d digest.Digest) error
+	// SweepBlobMap removes the rows of the repo at the package path whose IndexedAt is before
+	// seenBefore, but those of kind BlobMapBlob indexed after keepBlobsAfter (a blob uploaded and
+	// not yet named by a manifest), and returns how many it removed.
+	SweepBlobMap(ctx context.Context, repoID int64, path string, seenBefore, keepBlobsAfter time.Time) (int, error)
 }

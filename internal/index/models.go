@@ -668,6 +668,41 @@ const (
 	AttachmentUnsupported = "unsupported"
 )
 
+// The kinds of a row of blob_map.
+const (
+	// BlobMapBlob is the row of an encrypted layer: a blob of the registry.
+	BlobMapBlob = "blob"
+	// BlobMapManifest is the row of a stored manifest whose layers are encrypted.
+	BlobMapManifest = "manifest"
+)
+
+// BlobMap is a row of blob_map (derived, #114; docs/spec/index-schema.md, The mapping of an
+// encrypted repo): the digest a client knows of a blob or a manifest of an encrypted repo, the one
+// the registry has, and what a read needs to decrypt the blob.
+type BlobMap struct {
+	ID     int64
+	RepoID int64
+	// Path is the package path, as Package.NameOCI, of the OCI repository that holds it.
+	Path string
+	// Kind is BlobMapBlob or BlobMapManifest.
+	Kind string
+	// Plain is the plaintext's digest, or the digest of the manifest as the client had it.
+	Plain digest.Digest
+	// Stored is the ciphertext's digest, or the stored manifest's.
+	Stored digest.Digest
+	// Size is the blob's, the same in both forms; the stored manifest's.
+	Size int64
+	// KeyFingerprint is the enc key that Wrapped opens with; "" for a manifest.
+	KeyFingerprint string
+	// Wrapped is the private options wrapped for that key, the value of the annotation
+	// org.opencontainers.image.enc.keys.jwe or of a keys referrer's member; "" for a manifest.
+	Wrapped string
+	// PubOpts is the value of org.opencontainers.image.enc.pubopts; "" for a manifest.
+	PubOpts string
+	// IndexedAt is when a writer last wrote or saw the row.
+	IndexedAt time.Time
+}
+
 // Attachment is a row of attachments (derived, #89): one layer of a referrer of a version's
 // manifest, a signature, an SBOM, a scan report or another attestation, with its label
 // (docs/spec/index-schema.md, Attachments).

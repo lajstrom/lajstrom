@@ -605,7 +605,7 @@ func (c *conn) PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.
 
 // derivedTables are the tables ResetDerived empties; the foreign keys of packages cascade to
 // versions, files and attachments, and those of attachments to their verdicts.
-var derivedTables = []string{"verdicts", "packages", "index_cache", "oci_repos"}
+var derivedTables = []string{"verdicts", "packages", "index_cache", "oci_repos", "blob_map"}
 
 // ResetDerived removes the derived rows of a repo, or of every repo when repoID is 0, after it
 // incremented their generations as InvalidateIndexCache does; of a repo, the documents of the
