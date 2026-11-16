@@ -87,11 +87,12 @@ type envOptions struct {
 	policy   string
 	authz    auth.Authorizer
 	audit    audit.Writer
-	registry provider.Provider             // the registry "local"; nil means the fake (env.prov)
-	store    func(index.Store) index.Store // wraps the store the routes read; ingest writes to the store itself
-	ingested func(index.Store) index.Store // wraps the store ingest writes to
-	plugin   format.Plugin                 // the plugin ingest builds with; nil means Plugin{}
-	visible  time.Duration                 // ingest's visibility timeout; zero means its default
+	registry provider.Provider                   // the registry "local"; nil means the fake (env.prov)
+	store    func(index.Store) index.Store       // wraps the store the routes read; ingest writes to the store itself
+	ingested func(index.Store) index.Store       // wraps the store ingest writes to
+	plugin   format.Plugin                       // the plugin ingest builds with; nil means Plugin{}
+	visible  time.Duration                       // ingest's visibility timeout; zero means its default
+	enc      func(index.Store) format.Encryption // the keys of encrypted repos over the store; nil means none
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -106,18 +107,23 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.ingested != nil {
 		ingestIndex = o.ingested(st)
 	}
+	var enc format.Encryption
+	if o.enc != nil {
+		enc = o.enc(st)
+	}
 	var plugin format.Plugin = Plugin{}
 	if o.plugin != nil {
 		plugin = o.plugin
 	}
 	pipe := ingest.New(ingest.Options{Providers: providers, Index: ingestIndex, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
-		Plugins: func(name string) (format.Plugin, bool) { return plugin, name == Name }, VisibilityTimeout: o.visible})
+		Plugins: func(name string) (format.Plugin, bool) { return plugin, name == Name }, VisibilityTimeout: o.visible,
+		Encryption: enc})
 	var routeIndex index.Store = st
 	if o.store != nil {
 		routeIndex = o.store(st)
 	}
 	deps := format.Deps{Index: routeIndex, Ingest: pipe, Providers: providers, Auth: o.authz, Audit: o.audit,
-		Log: slog.New(slog.NewTextHandler(e.logs, nil))}
+		Log: slog.New(slog.NewTextHandler(e.logs, nil)), Encryption: enc}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
 	e.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

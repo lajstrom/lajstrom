@@ -76,8 +76,14 @@ func (h *handlers) pool(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	key, err := format.Decryption(r.Context(), h.deps, repo, index.ManifestPath(m.Package, m.Version), m.File)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
 		Subject:        format.VersionSubject(repo, m.Package, m.Version),
+		Decrypt:        key,
 		ContentType:    poolContentType(m.File.Name),
 		LastModified:   m.Version.CreatedAt,
 		ManifestDigest: m.Version.Digest,
