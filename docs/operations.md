@@ -1475,6 +1475,14 @@ nobody builds any more keeps its newest build; `--keep-builds 0 --max-age 90d --
 deletes every build older than 90 days, the newest ones included. Server-side cleanup of builds
 on each deploy is not built: deletion stays a job of the operator's (#72).
 
+**Attachments.** A version's delete takes its attachments with it (signatures, SBOMs, scan
+reports). `lajstrom admin retention` prunes no attachment of a version it keeps: a job that
+prunes old scan reports, keeping the first and the last N per predicate type (#89), deletes them
+through `DELETE /v2/<ociRepository>/manifests/<digest>` with `delete` on the repo. An SBOM that a
+report of the same version names as its input is `409` there, naming the reports, so such a job
+keeps every SBOM a report it keeps names and deletes it after the last report that names it
+([http-routing.md](spec/http-routing.md) §2, [guides/sbom-and-scans.md](guides/sbom-and-scans.md)).
+
 **Dry run first.** Without `--apply` the job prints the versions it would delete and why, the
 rule, the age and the rank, and changes nothing; `--output json` prints the same as one JSON
 document. With `--apply` it sends them in batches of one job, with the digests it read and

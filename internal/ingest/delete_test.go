@@ -442,3 +442,51 @@ func TestDeleteManifests(t *testing.T) {
 		t.Errorf("Deleted %+v: the foreign tag's manifest is the version", got)
 	}
 }
+
+// TestDeleteReferenced (#89): a referrer that another attachment of its version names as its
+// input, by the referrer's digest or by its layer's, is refused with index.ErrConflict naming
+// that referrer (ReferencedBy), and nothing is deleted; once that one is deleted, it goes. The
+// delete of the version takes both.
+func TestDeleteReferenced(t *testing.T) {
+	ctx := t.Context()
+	e, _, subject := referrerEnv(t, true)
+	a := attach(t, e, subject, true)
+	scan, sbom := a.refs[1], a.refs[2]
+	v := e.rows(t).Versions[0]
+	layer := digest.FromString("the sbom's layer")
+	row := func(d digest.Digest, kind string, layer, input digest.Digest) {
+		t.Helper()
+		must(t, e.st.ReplaceAttachments(ctx, v.ID, d, []index.Attachment{{Layer: layer, MediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+			ArtifactType: "application/vnd.dev.sigstore.bundle.v0.3+json", Kind: kind, Input: input, Verification: index.AttachmentUnsigned,
+			Trust: "t", IndexedAt: now}}))
+	}
+	row(sbom, index.AttachmentSBOM, layer, "")
+	for _, input := range []digest.Digest{sbom, layer} {
+		row(scan, index.AttachmentScan, digest.FromString("the scan's layer"), input)
+		_, err := e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: sbom.String()}, alice)
+		var referenced interface{ ReferencedBy() []digest.Digest }
+		if !errors.Is(err, index.ErrConflict) || !errors.As(err, &referenced) || len(referenced.ReferencedBy()) != 1 || referenced.ReferencedBy()[0] != scan {
+			t.Fatalf("the delete of the SBOM a scan names by %s: %v, want ErrConflict naming %s", input, err, scan)
+		}
+		if e.tagged(t, "raw/scratch/notes", sbom.String()) != sbom {
+			t.Fatalf("the SBOM is gone after the refusal")
+		}
+	}
+	for _, d := range []digest.Digest{scan, sbom} {
+		if _, err := e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: d.String()}, alice); err != nil {
+			t.Fatalf("delete %s: %v", d, err)
+		}
+	}
+	gone(t, e, scan.String(), sbom.String())
+
+	e, _, subject = referrerEnv(t, true)
+	a = attach(t, e, subject, true)
+	v = e.rows(t).Versions[0]
+	row(a.refs[2], index.AttachmentSBOM, layer, "")
+	row(a.refs[1], index.AttachmentScan, digest.FromString("the scan's layer"), a.refs[2])
+	got, err := e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: a.tag, ClientIP: "192.0.2.7"}, alice)
+	if err != nil || got.Version == nil || got.Referrers != 4 {
+		t.Fatalf("the delete of the version: %+v, %v; want it with its four referrers", got, err)
+	}
+	wantVersionGone(t, e, a)
+}
