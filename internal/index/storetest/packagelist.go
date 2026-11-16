@@ -1,7 +1,11 @@
 package storetest
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,4 +115,164 @@ func testPackageFacts(t *testing.T, s index.Store) {
 	none, err := s.ListPackageFacts(ctx, nil, latest)
 	must(t, err)
 	same(t, "ListPackageFacts of none", []index.PackageFacts{}, none)
+}
+
+// testPackageQuery: ListPackagePage keeps the packages of the filters and orders them by each
+// sort in both directions, a tie by name in the same direction; with every limit the pages,
+// each after the key of the one before, are the whole list once. The text folds ASCII letters
+// only and takes LIKE's wildcards as they are; the attrs of several keys hold on one row.
+func testPackageQuery(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "apt", "a")
+	other := newRepo(t, s, "apt", "b")
+	pkgs := map[string]*index.Package{}
+	for _, name := range []string{"alpha", "Beta-Lib", "gamma", "delta", "l%b", "Épée", "empty"} {
+		p := index.Package{RepoID: repo.ID, Name: name, NameOCI: strings.ToLower(name), CreatedAt: at(1)}
+		must(t, s.UpsertPackage(ctx, &p))
+		pkgs[name] = &p
+	}
+	otherPkg := newPackage(t, s, other.ID, "alpha-other")
+	deb := func(suite, arch string) map[string]string {
+		return map[string]string{"lajstrom.deb.suite": suite, "lajstrom.deb.arch": arch}
+	}
+	putRows(t, s, []row{
+		{pkg: pkgs["alpha"], version: "1.0", at: at(10), attrs: deb("jammy", "amd64"), summary: "The Alpha tool", sizes: []int64{10}},
+		{pkg: pkgs["alpha"], version: "1.1", at: at(50), attrs: deb("noble", "arm64"), sizes: []int64{5, 5}},
+		{pkg: pkgs["Beta-Lib"], version: "1.0", at: at(20), attrs: deb("jammy", "arm64"), summary: "beta: 100% pure", sizes: []int64{30}},
+		{pkg: pkgs["gamma"], version: "1.0", at: at(30), attrs: deb("noble", "amd64"), sizes: []int64{1}},
+		{pkg: pkgs["gamma"], version: "2.0", at: at(30), attrs: deb("noble", "amd64"), sizes: []int64{1}},
+		{pkg: pkgs["delta"], version: "1.0", at: at(30), attrs: deb("Jammy", "amd64"), sizes: []int64{30}},
+		{pkg: pkgs["l%b"], version: "1.0", at: at(5)},
+		{pkg: pkgs["Épée"], version: "1.0", at: at(6), summary: "ÉPÉE cutlery", sizes: []int64{7}},
+		{pkg: &otherPkg, version: "1.0", at: at(99), attrs: deb("jammy", "amd64"), summary: "alpha", sizes: []int64{1}},
+	})
+	// The value of each sort, per package.
+	updated := map[string]time.Time{"alpha": at(50), "Beta-Lib": at(20), "gamma": at(30), "delta": at(30), "l%b": at(5),
+		"Épée": at(6), "empty": at(1)}
+	versions := map[string]int64{"alpha": 2, "Beta-Lib": 1, "gamma": 2, "delta": 1, "l%b": 1, "Épée": 1}
+	sizes := map[string]int64{"alpha": 20, "Beta-Lib": 30, "gamma": 2, "delta": 30, "Épée": 7}
+	keyOf := func(sort index.PackageSort, name string) index.PackageKey {
+		switch sort {
+		case index.SortUpdated:
+			return index.PackageKey{Updated: updated[name], Name: name}
+		case index.SortVersions:
+			return index.PackageKey{N: versions[name], Name: name}
+		case index.SortSize:
+			return index.PackageKey{N: sizes[name], Name: name}
+		case index.SortName:
+		}
+		return index.PackageKey{Name: name}
+	}
+	compare := func(sort index.PackageSort, a, b string) int {
+		ka, kb := keyOf(sort, a), keyOf(sort, b)
+		return cmp.Or(ka.Updated.Compare(kb.Updated), cmp.Compare(ka.N, kb.N), strings.Compare(a, b))
+	}
+	all := []string{"alpha", "Beta-Lib", "gamma", "delta", "l%b", "Épée", "empty"}
+	for _, tt := range []struct {
+		name string
+		q    index.PackageQuery
+		want []string // in any order
+	}{
+		{"every package", index.PackageQuery{}, all},
+		{"a prefix", index.PackageQuery{Prefix: "Be"}, []string{"Beta-Lib"}},
+		{"a name in another case", index.PackageQuery{Text: "LIB"}, []string{"Beta-Lib"}},
+		{"a name or a summary", index.PackageQuery{Text: "alpha"}, []string{"alpha"}},
+		{"a % as it is", index.PackageQuery{Text: "100%"}, []string{"Beta-Lib"}},
+		{"a _ as it is", index.PackageQuery{Text: "100_"}, []string{}},
+		{"no wildcard in a name", index.PackageQuery{Text: "l%b"}, []string{"l%b"}},
+		{"É is not é", index.PackageQuery{Text: "épée"}, []string{}},
+		{"É as it is", index.PackageQuery{Text: "Épée"}, []string{"Épée"}},
+		{"ÉPÉE folds its ASCII", index.PackageQuery{Text: "ÉpÉe cut"}, []string{"Épée"}},
+		{"an attr", index.PackageQuery{Attrs: map[string][]string{"lajstrom.deb.suite": {"jammy"}}}, []string{"alpha", "Beta-Lib"}},
+		{"two keys on one row", index.PackageQuery{Attrs: map[string][]string{"lajstrom.deb.suite": {"jammy"}, "lajstrom.deb.arch": {"arm64"}}},
+			[]string{"Beta-Lib"}},
+		{"alternatives", index.PackageQuery{Attrs: map[string][]string{"lajstrom.deb.suite": {"jammy", "noble"}, "lajstrom.deb.arch": {"amd64"}}},
+			[]string{"alpha", "gamma"}},
+		{"a key that matches nothing", index.PackageQuery{Attrs: map[string][]string{`lajstrom.deb.suite"`: {"jammy"}}}, []string{}},
+		{"every filter", index.PackageQuery{Prefix: "a", Text: "TOOL", Attrs: map[string][]string{"lajstrom.deb.arch": {"arm64"}}},
+			[]string{"alpha"}},
+	} {
+		for _, sort := range []index.PackageSort{"", index.SortName, index.SortUpdated, index.SortVersions, index.SortSize} {
+			for _, desc := range []bool{false, true} {
+				want := slices.Clone(tt.want)
+				slices.SortFunc(want, func(a, b string) int { return compare(sort, a, b) })
+				if desc {
+					slices.Reverse(want)
+				}
+				for limit := 1; limit <= len(want)+1; limit++ {
+					q := tt.q
+					q.Sort, q.Desc, q.Limit = sort, desc, limit
+					what := fmt.Sprintf("%s, by %q, desc %v, pages of %d", tt.name, sort, desc, limit)
+					same(t, what, want, packagePages(t, s, repo.ID, q, func(p index.PackagePlace) index.PackageKey {
+						return keyOf(cmp.Or(sort, index.SortName), p.Package.Name)
+					}))
+				}
+			}
+		}
+	}
+	none, err := s.ListPackagePage(ctx, repo.ID, index.PackageQuery{})
+	must(t, err)
+	same(t, "a limit of 0", []index.PackagePlace{}, none)
+	if _, err := s.ListPackagePage(ctx, repo.ID, index.PackageQuery{Sort: "stars", Limit: 1}); err == nil {
+		t.Error("ListPackagePage by an unknown sort succeeded")
+	}
+}
+
+// packagePages returns the names of the pages of q, each after the key of the last package of
+// the one before, checking each key against want.
+func packagePages(t *testing.T, s index.Store, repoID int64, q index.PackageQuery, want func(index.PackagePlace) index.PackageKey) []string {
+	t.Helper()
+	got := []string{}
+	for range 100 {
+		page, err := s.ListPackagePage(t.Context(), repoID, q)
+		must(t, err)
+		for _, p := range page {
+			if k := want(p); p.Key != k {
+				t.Errorf("by %q: the key of %s is %+v, want %+v", q.Sort, p.Package.Name, p.Key, k)
+			}
+			got = append(got, p.Package.Name)
+		}
+		if len(page) < q.Limit {
+			break
+		}
+		q.After = &page[len(page)-1].Key
+	}
+	return got
+}
+
+// testAttrValues: ListAttrValues counts the packages of a repo with each value of a key, in byte
+// order; a key that no row has, or that matches nothing, has none.
+func testAttrValues(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "apt", "a")
+	other := newRepo(t, s, "apt", "b")
+	names := map[string]*index.Package{}
+	for _, name := range []string{"a", "b", "c"} {
+		p := newPackage(t, s, repo.ID, name)
+		names[name] = &p
+	}
+	o := newPackage(t, s, other.ID, "o")
+	suite := func(v string) map[string]string { return map[string]string{"lajstrom.deb.suite": v} }
+	putRows(t, s, []row{
+		{pkg: names["a"], version: "1", at: at(1), attrs: suite("jammy")},
+		{pkg: names["a"], version: "2", at: at(2), attrs: suite("jammy")},
+		{pkg: names["a"], version: "3", at: at(3), attrs: suite("noble")},
+		{pkg: names["b"], version: "1", at: at(1), attrs: suite("jammy")},
+		{pkg: names["c"], version: "1", at: at(1), attrs: suite("Jammy")},
+		{pkg: names["c"], version: "2", at: at(2)},
+		{pkg: &o, version: "1", at: at(1), attrs: suite("bookworm")},
+	})
+	for _, tt := range []struct {
+		key  string
+		want []index.AttrValue
+	}{
+		{"lajstrom.deb.suite", []index.AttrValue{{Value: "Jammy", Packages: 1}, {Value: "jammy", Packages: 2}, {Value: "noble", Packages: 1}}},
+		{"lajstrom.deb.arch", []index.AttrValue{}},
+		{`lajstrom.deb.suite"`, []index.AttrValue{}},
+		{"", []index.AttrValue{}},
+	} {
+		got, err := s.ListAttrValues(ctx, repo.ID, tt.key)
+		must(t, err)
+		same(t, fmt.Sprintf("ListAttrValues(%q)", tt.key), tt.want, got)
+	}
 }

@@ -176,6 +176,14 @@ type Reader interface {
 	// picks each package's latest version; nil picks the first by VersionKey
 	// (docs/spec/index-schema.md, The package list, one package and search).
 	ListPackageFacts(ctx context.Context, packageIDs []int64, latest LatestFunc) ([]PackageFacts, error)
+	// ListPackagePage returns a page of the packages of a repo that q keeps, in its order after
+	// its key, each with its key (docs/spec/index-schema.md, The package list, one package and
+	// search).
+	ListPackagePage(ctx context.Context, repoID int64, q PackageQuery) ([]PackagePlace, error)
+	// ListAttrValues returns the values of key in the Attrs of the versions rows of a repo,
+	// each with the number of packages that have it, in byte order; none for a key that
+	// PackageQuery.Attrs would match nothing with.
+	ListAttrValues(ctx context.Context, repoID int64, key string) ([]AttrValue, error)
 
 	// GetVersion returns the version of a package by version and variant ("" when none).
 	GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)

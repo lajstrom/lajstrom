@@ -74,6 +74,8 @@ var dialect = sqlstore.Dialect{
 	NextID:        "SELECT nextval(pg_get_serial_sequence('%s', 'id'))",
 	ReadSnapshot:  "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE",
 	Clock:         "SELECT clock_timestamp()",
+	FoldASCII:     "lower(%s)", // ASCII only in the collation "C" of every text column
+	AttrText:      "%s ->> CAST(? AS text)",
 }
 
 // yugabyte is the dialect on YugabyteDB (docs/deploy/databases.md#yugabytedb), which Open tells
@@ -87,18 +89,20 @@ var yugabyte = func() sqlstore.Dialect {
 }()
 
 // cockroach is the dialect on CockroachDB (docs/deploy/databases.md#cockroachdb), which Open
-// tells from Postgres by the crdb_version the server reports. It differs in four things: its
+// tells from Postgres by the crdb_version the server reports. It differs in five things: its
 // migrations are CockroachDB's own (index.DialectCockroach); every transaction asks for read
 // committed, which CockroachDB's transactions are not unless they ask (Open checks that the
 // cluster lets them, checkReadCommitted); a store method's own transaction that CockroachDB
 // aborts, as it does one of two that deadlock on the lock of a unique key (40001), runs again,
-// up to sqlstore.TxAttempts times in all; and an ambiguous result (40003), a commit that may or
-// may not have happened, is index.ErrUnavailable, never run again, as IsAborted leaves it.
+// up to sqlstore.TxAttempts times in all; an ambiguous result (40003), a commit that may or
+// may not have happened, is index.ErrUnavailable, never run again, as IsAborted leaves it; and
+// its lower folds every letter, so the search folds with translate.
 var cockroach = func() sqlstore.Dialect {
 	d := dialect
 	d.Name = index.DialectCockroach
 	d.Attempts = sqlstore.TxAttempts
 	d.Isolation = sql.LevelReadCommitted
+	d.FoldASCII = "translate(%s, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
 	d.IsUnavailable = func(err error) bool { return isUnavailable(err) || sqlState(err) == ambiguousResult }
 	return d
 }()
