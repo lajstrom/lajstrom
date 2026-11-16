@@ -368,6 +368,17 @@ func TestLoadErrors(t *testing.T) {
 				"registries[1].capabilities.consistencyBound: a strongly consistent registry has no lag"},
 		},
 		{
+			name: "at-rest without a recipient",
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\"}\n" +
+				"repos:\n  - {format: raw, name: secrets, registry: local, policy: {encryption: {mode: at-rest}}}\n" +
+				"  - {format: raw, name: empty, registry: local, policy: {encryption: {mode: at-rest, recipients: []}}}\n" +
+				"  - {format: raw, name: kept, registry: local, policy: {encryption: {mode: at-rest, recipients: [\"-----BEGIN PUBLIC KEY-----\"]}}}\n" +
+				"  - {format: raw, name: plain, registry: local, policy: {encryption: {mode: none}}}\n",
+			want: []string{"repos[0].policy.encryption.recipients: at-rest needs at least one recipient, the recovery recipient",
+				"repos[1].policy.encryption.recipients: at-rest needs at least one recipient"},
+			wantNot: []string{"repos[2]", "repos[3]"},
+		},
+		{
 			name: "token realm hosts",
 			file: minimal + `registries:
   - name: local

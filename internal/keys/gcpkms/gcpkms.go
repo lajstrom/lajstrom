@@ -1,5 +1,5 @@
-// Package gcpkms is the GCP Cloud KMS of internal/keys (ADR 0020): cryptoKeyVersions.get,
-// getPublicKey and asymmetricSign of the Cloud KMS REST API over net/http, with the access token
+// Package gcpkms is the GCP Cloud KMS of internal/keys (ADR 0020, ADR 0009): cryptoKeyVersions.get,
+// getPublicKey, asymmetricSign and asymmetricDecrypt of the Cloud KMS REST API over net/http, with the access token
 // of the workload's service account from the metadata server (internal/gcpauth), as an oci
 // upstream with auth.gcp gets it. It holds no key material: KMS keys never leave the KMS.
 package gcpkms
@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"crypto"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -78,8 +79,8 @@ type Options struct {
 	Log *slog.Logger
 }
 
-// Client is GCP Cloud KMS for internal/keys: it implements keys.KMS. It is safe for concurrent
-// use.
+// Client is GCP Cloud KMS for internal/keys: it implements keys.KMS and keys.DecryptKMS. It is
+// safe for concurrent use.
 type Client struct {
 	o       Options
 	http    *http.Client
@@ -91,7 +92,10 @@ type Client struct {
 	err   error
 }
 
-var _ keys.KMS = (*Client)(nil)
+var (
+	_ keys.KMS        = (*Client)(nil)
+	_ keys.DecryptKMS = (*Client)(nil)
+)
 
 // New returns the Client of o. It does not talk to GCP.
 func New(o Options) *Client {
@@ -158,6 +162,15 @@ func (c *Client) Key(ctx context.Context, name string) (*keys.KMSKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: the createTime of %s: %w", name, err)
 	}
+	key, err := c.publicKey(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &keys.KMSKey{Name: name, Public: key, Created: created}, nil
+}
+
+// publicKey returns the public key of the key version name, its CRC32C checked.
+func (c *Client) publicKey(ctx context.Context, name string) (crypto.PublicKey, error) {
 	var pub struct {
 		Pem       string
 		PemCrc32c string
@@ -176,7 +189,7 @@ func (c *Client) Key(ctx context.Context, name string) (*keys.KMSKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: the public key of %s: %w", name, err)
 	}
-	return &keys.KMSKey{Name: name, Public: key, Created: created}, nil
+	return key, nil
 }
 
 // Sign signs digest, a SHA-256 hash, with the key version of name, whose algorithm is the
@@ -203,6 +216,69 @@ func (c *Client) Sign(ctx context.Context, name string, _ crypto.PublicKey, dige
 		return nil, fmt.Errorf("%w: the signature: %w", keys.ErrKMSUnavailable, err)
 	}
 	return out.Signature, nil
+}
+
+// decryptAlgorithms are the algorithms of Cloud KMS key versions that decrypt the data keys of
+// encrypted repos: RSA OAEP with SHA-256.
+var decryptAlgorithms = map[string]bool{
+	"RSA_DECRYPT_OAEP_2048_SHA256": true, "RSA_DECRYPT_OAEP_3072_SHA256": true, "RSA_DECRYPT_OAEP_4096_SHA256": true,
+}
+
+// DecryptKey describes the key version of name for decryption: a version that is not ENABLED, or
+// whose algorithm is not RSA_DECRYPT_OAEP_{2048,3072,4096}_SHA256, is keys.ErrKMSKeyUnsupported.
+func (c *Client) DecryptKey(ctx context.Context, name string) (*keys.KMSKey, error) {
+	var v struct {
+		State      string
+		Algorithm  string
+		CreateTime string
+	}
+	if err := c.call(ctx, http.MethodGet, name, "", nil, &v); err != nil {
+		return nil, err
+	}
+	switch {
+	case !decryptAlgorithms[v.Algorithm]:
+		return nil, fmt.Errorf("%w: %s is a version of %s, not RSA_DECRYPT_OAEP_{2048,3072,4096}_SHA256",
+			keys.ErrKMSKeyUnsupported, name, cmp.Or(v.Algorithm, "no algorithm"))
+	case v.State != "ENABLED":
+		return nil, fmt.Errorf("%w: %s is %s, not ENABLED", keys.ErrKMSKeyUnsupported, name, v.State)
+	}
+	created, err := time.Parse(time.RFC3339Nano, v.CreateTime)
+	if err != nil {
+		return nil, fmt.Errorf("gcpkms: the createTime of %s: %w", name, err)
+	}
+	key, err := c.publicKey(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := key.(*rsa.PublicKey); !ok {
+		return nil, fmt.Errorf("%w: the public key of %s is a %T", keys.ErrKMSKeyUnsupported, name, key)
+	}
+	return &keys.KMSKey{Name: name, Public: key, Created: created}, nil
+}
+
+// Decrypt decrypts ciphertext with the key version name (asymmetricDecrypt), the CRC32C of both
+// sides checked.
+func (c *Client) Decrypt(ctx context.Context, name string, ciphertext []byte) ([]byte, error) {
+	in := map[string]any{"ciphertext": ciphertext,
+		"ciphertextCrc32c": strconv.FormatUint(uint64(crc32.Checksum(ciphertext, castagnoli)), 10)}
+	var out struct {
+		Plaintext                []byte
+		PlaintextCrc32c          string
+		VerifiedCiphertextCrc32c bool
+	}
+	if err := c.call(ctx, http.MethodPost, name, ":asymmetricDecrypt", in, &out); err != nil {
+		return nil, err
+	}
+	switch {
+	case !out.VerifiedCiphertextCrc32c:
+		return nil, fmt.Errorf("%w: Cloud KMS did not verify the ciphertext's CRC32C", keys.ErrKMSUnavailable)
+	case len(out.Plaintext) == 0:
+		return nil, errors.New("gcpkms: asymmetricDecrypt answered no plaintext")
+	}
+	if err := checkCRC(out.Plaintext, out.PlaintextCrc32c); err != nil {
+		return nil, fmt.Errorf("%w: the plaintext: %w", keys.ErrKMSUnavailable, err)
+	}
+	return out.Plaintext, nil
 }
 
 // checkCRC checks that b has the CRC32C sum, a decimal integer as Cloud KMS writes an int64.

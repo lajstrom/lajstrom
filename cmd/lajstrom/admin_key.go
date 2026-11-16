@@ -253,6 +253,40 @@ func kmsClients(lookupEnv func(string) (string, bool), log *slog.Logger) map[str
 	}
 }
 
+// newEncryption returns the keys of encrypted repos over st (ADR 0009), with the KMS clients of
+// decryptClients; nil without a master key, when no repo can be encrypted (api.Repos.Encryption
+// refuses at-rest). signingOff has already refused a start without the master key whose index
+// holds encryption keys.
+func newEncryption(c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (*keys.Encryption, error) {
+	m, err := loadMaster(c.Keys, lookupEnv, nil)
+	if errors.Is(err, keys.ErrNoMasterKey) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return keys.NewEncryption(keys.EncryptionOptions{Index: st, Master: m, KMS: decryptClients(lookupEnv, log), Log: log})
+}
+
+// decryptClients returns the KMS clients that hold the decryption keys of encrypted repos, by
+// scheme, configured as kmsClients configures them.
+func decryptClients(lookupEnv func(string) (string, bool), log *slog.Logger) map[string]keys.DecryptKMS {
+	out := map[string]keys.DecryptKMS{}
+	for scheme, c := range kmsClients(lookupEnv, log) {
+		if d, ok := c.(keys.DecryptKMS); ok {
+			out[scheme] = d
+		}
+	}
+	return out
+}
+
+// masterConfigured reports whether the configuration names a master key that loads, for
+// api.Repos.Encryption.
+func masterConfigured(c *config.Config, lookupEnv func(string) (string, bool)) bool {
+	_, err := loadMaster(c.Keys, lookupEnv, nil)
+	return err == nil
+}
+
 // newTokens returns the bearer-token keys of the configuration over st.
 func newTokens(c *config.Config, st index.Store, m *keys.Master, log *slog.Logger) (*keys.Tokens, error) {
 	return keys.NewTokens(keys.TokenOptions{Index: st, Master: m, Algorithm: c.Keys.TokenAlgorithm, Log: log})
@@ -331,7 +365,7 @@ func signingOff(ctx context.Context, st index.Store, cause error, log *slog.Logg
 			return err
 		}
 		for _, k := range ks {
-			if k.Kind == keys.KindGPG {
+			if k.Kind == keys.KindGPG || k.Kind == keys.KindEnc {
 				held++
 			}
 		}
@@ -340,7 +374,7 @@ func signingOff(ctx context.Context, st index.Store, cause error, log *slog.Logg
 		}
 	}
 	if held > 0 {
-		return fmt.Errorf("%w, and the index holds %d signing keys that only the master key decrypts", cause, held)
+		return fmt.Errorf("%w, and the index holds %d signing or encryption keys that only the master key decrypts", cause, held)
 	}
 	for _, r := range unsigned {
 		log.WarnContext(ctx, r.Format+" repo is unsigned: no master key", "repo", r.Format+"/"+r.Name, "reason", cause.Error())

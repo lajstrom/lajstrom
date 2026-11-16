@@ -68,11 +68,7 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	op := strings.TrimPrefix(r.Header.Get("X-Amz-Target"), "TrentService.")
 	f.ops = append(f.ops, op)
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDTEST/") || !strings.Contains(auth, "/eu-central-1/kms/aws4_request") ||
-		r.Header.Get("X-Amz-Date") == "" || r.Header.Get("Content-Type") != "application/x-amz-json-1.1" {
-		f.t.Errorf("%s: not SigV4 of kms in eu-central-1: %q", op, auth)
-	}
+	f.checkSigV4(r, op)
 	if f.failed(w) {
 		return
 	}
@@ -81,9 +77,15 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Message          []byte
 		MessageType      string
 		SigningAlgorithm string
+		CiphertextBlob   []byte
+		EncryptionAlgo   string `json:"EncryptionAlgorithm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		f.t.Errorf("%s: %v", op, err)
+	}
+	if op == "Decrypt" {
+		f.decrypt(w, in.KeyID, in.EncryptionAlgo, in.CiphertextBlob)
+		return
 	}
 	var out any
 	switch op {
@@ -104,6 +106,29 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = map[string]any{"KeyId": testARN, "Signature": f.sign(in.Message, in.SigningAlgorithm), "SigningAlgorithm": in.SigningAlgorithm}
 	}
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// checkSigV4 checks that the request op is SigV4 of kms in eu-central-1.
+func (f *fakeKMS) checkSigV4(r *http.Request, op string) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDTEST/") || !strings.Contains(auth, "/eu-central-1/kms/aws4_request") ||
+		r.Header.Get("X-Amz-Date") == "" || r.Header.Get("Content-Type") != "application/x-amz-json-1.1" {
+		f.t.Errorf("%s: not SigV4 of kms in eu-central-1: %q", op, auth)
+	}
+}
+
+// decrypt answers Decrypt: the plaintext of ciphertext, or a refusal.
+func (f *fakeKMS) decrypt(w http.ResponseWriter, keyID, algorithm string, ciphertext []byte) {
+	if keyID != testARN || algorithm != algorithmOAEP {
+		f.t.Errorf("Decrypt by %s with %s", keyID, algorithm)
+	}
+	plain, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, f.priv.(*rsa.PrivateKey), ciphertext, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"__type":"InvalidCiphertextException","message":"bad"}`)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"KeyId": testARN, "Plaintext": plain, "EncryptionAlgorithm": algorithm})
 }
 
 // sign signs digest with the key, in algorithm.
@@ -272,5 +297,51 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDecryptKeyAndDecrypt describes an RSA key for decryption by its alias, resolved to its ARN,
+// and decrypts what its public key encrypted with RSAES_OAEP_SHA_256, by the ARN.
+func TestDecryptKeyAndDecrypt(t *testing.T) {
+	r, err := rsa.GenerateKey(rand.Reader, 2048)
+	must(t, err)
+	f, c := newFakeKMS(t, r, "RSA_3072")
+	f.set(func(f *fakeKMS) {
+		f.meta["KeyUsage"], f.meta["EncryptionAlgorithms"] = "ENCRYPT_DECRYPT", []string{"RSAES_OAEP_SHA_1", algorithmOAEP}
+		delete(f.meta, "SigningAlgorithms")
+	})
+	k, err := c.DecryptKey(t.Context(), testAlias)
+	must(t, err)
+	if k.Name != testARN {
+		t.Errorf("DecryptKey = %s, want %s", k.Name, testARN)
+	}
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, k.Public.(*rsa.PublicKey), []byte("a data key"), nil)
+	must(t, err)
+	plain, err := c.Decrypt(t.Context(), k.Name, ct)
+	must(t, err)
+	if string(plain) != "a data key" {
+		t.Errorf("Decrypt = %q", plain)
+	}
+	if strings.Join(f.ops, ",") != "DescribeKey,GetPublicKey,Decrypt" {
+		t.Errorf("requests %v", f.ops)
+	}
+	for name, change := range map[string]func(map[string]any){
+		"sign":     func(m map[string]any) { m["KeyUsage"] = "SIGN_VERIFY" },
+		"spec":     func(m map[string]any) { m["KeySpec"] = "ECC_NIST_P256" },
+		"disabled": func(m map[string]any) { m["KeyState"] = "Disabled" },
+		"sha1":     func(m map[string]any) { m["EncryptionAlgorithms"] = []string{"RSAES_OAEP_SHA_1"} },
+	} {
+		f.set(func(f *fakeKMS) {
+			f.meta["KeyUsage"], f.meta["KeySpec"], f.meta["KeyState"] = "ENCRYPT_DECRYPT", "RSA_3072", "Enabled"
+			f.meta["EncryptionAlgorithms"] = []string{algorithmOAEP}
+			change(f.meta)
+		})
+		if _, err := c.DecryptKey(t.Context(), testARN); !errors.Is(err, keys.ErrKMSKeyUnsupported) {
+			t.Errorf("%s: %v, want ErrKMSKeyUnsupported", name, err)
+		}
+	}
+	f.set(func(f *fakeKMS) { f.fail = []int{500, 500, 500} })
+	if _, err := c.Decrypt(t.Context(), testARN, ct); !errors.Is(err, keys.ErrKMSUnavailable) {
+		t.Errorf("a KMS that fails: %v, want ErrKMSUnavailable", err)
 	}
 }

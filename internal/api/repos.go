@@ -201,6 +201,9 @@ type Repos struct {
 	// Now is the clock of createdAt and of the audit events; nil means time.Now. The index sets
 	// updatedAt of an update itself.
 	Now func() time.Time
+	// Encryption says that the server has the master key: without it a policy whose
+	// encryption.mode is at-rest is refused, since no repo key could be made (ADR 0009).
+	Encryption bool
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
 }
@@ -347,6 +350,11 @@ func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req
 	changed, err := applyUpdate(row, req)
 	if err != nil {
 		return nil, err
+	}
+	if _, ok := changed["policy"]; ok {
+		if err := s.checkAtRest(row.Policy); err != nil {
+			return nil, err
+		}
 	}
 	renamed := false
 	if req.Upstream != nil {
@@ -621,11 +629,23 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, *proxy.GroupSettings, err
 	if err != nil {
 		return index.Repo{}, nil, err
 	}
+	if err := s.checkAtRest(policy); err != nil {
+		return index.Repo{}, nil, err
+	}
 	now := s.now()
 	return index.Repo{
 		Format: req.Format, Name: req.Name, Registry: req.Registry, Prefix: req.Format + "/" + req.Name,
 		Kind: kind, AnonymousRead: req.AnonymousRead, Policy: policy, Upstream: upstream, CreatedAt: now, UpdatedAt: now,
 	}, nil, nil
+}
+
+// checkAtRest refuses a policy with encryption at rest on a server without the master key.
+func (s *Repos) checkAtRest(policy json.RawMessage) error {
+	if !s.Encryption && atRest(policy) {
+		return invalid("policy.encryption.mode: at-rest needs the master key (keys.masterKeyEnv or keys.masterKeyFile), " +
+			"which this server does not have")
+	}
+	return nil
 }
 
 // checkFormat checks that a format plugin of that name is compiled in, or that it is oci.

@@ -257,4 +257,7 @@ type Deps struct {
 	// middleware of NewRouter puts it in the request's context (policy.NewContext), where
 	// CachedDocument and ServeBlob find it.
 	Policy *policy.Decider
+	// Encryption opens the layers of encrypted repos (ADR 0009); nil when the server has no
+	// master key, and then no repo is encrypted.
+	Encryption Encryption
 }
