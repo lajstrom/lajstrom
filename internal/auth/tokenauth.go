@@ -139,7 +139,11 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "a token bound to another DPoP key")
 	}
 	a.touch(ctx, t.ID)
-	return UserPrincipal(u), patCredential(t), nil
+	cred := patCredential(t)
+	if t.AuthTime != nil {
+		cred.SignIn = &SignIn{At: *t.AuthTime, AMR: slices.Clone(t.AMR)}
+	}
+	return UserPrincipal(u), cred, nil
 }
 
 // bearerPAT returns the personal access token whose secret is secret, of the token's shape, and

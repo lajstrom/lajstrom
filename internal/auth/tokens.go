@@ -134,7 +134,7 @@ type Tokens struct {
 // not be enabled. The credential of ctx must be one that may create it (MayCreatePAT): a
 // service account has no password, so its tokens are created by an admin or on the command line.
 func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
-	return s.createPAT(ctx, user, name, scopes, "", exp, o)
+	return s.createPAT(ctx, user, name, scopes, binding{}, exp, o)
 }
 
 // CreateBoundPAT creates a personal access token of the user called user as CreatePAT does,
@@ -146,11 +146,20 @@ func (s *Tokens) CreateBoundPAT(ctx context.Context, user, name, jkt string, exp
 	if !dpop.ValidThumbprint(jkt) {
 		return nil, "", invalidf("dpopJkt: must be a JWK SHA-256 thumbprint, 43 characters of base64url")
 	}
-	return s.createPAT(ctx, user, name, nil, jkt, exp, o)
+	return s.createPAT(ctx, user, name, nil, binding{jkt: jkt}, exp, o)
 }
 
-// createPAT is CreatePAT, the token bound to the DPoP key of the thumbprint jkt unless it is "".
-func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []string, jkt string, exp Expiry, o Origin) (*Token, string, error) {
+// binding is what a web UI's token keeps beside the token (docs/spec/rbac.md §10): the thumbprint
+// of the DPoP key it is bound to, "" for none, and the sign-in at the IdP of an OIDC login, nil
+// for none.
+type binding struct {
+	jkt    string
+	signIn *SignIn
+}
+
+// createPAT is CreatePAT, the token bound to the DPoP key of b unless its thumbprint is "", with
+// the sign-in of b.
+func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []string, b binding, exp Expiry, o Origin) (*Token, string, error) {
 	if err := MayCreatePAT(ctx); err != nil {
 		return nil, "", err
 	}
@@ -166,7 +175,12 @@ func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []stri
 		if err != nil {
 			return nil, tokenOwner{}, err
 		}
-		return &index.Token{UserID: &u.ID, DPoPJKT: jkt}, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
+		row := &index.Token{UserID: &u.ID, DPoPJKT: b.jkt}
+		if b.signIn != nil {
+			at := b.signIn.At.UTC()
+			row.AuthTime, row.AMR = &at, slices.Clone(b.signIn.AMR)
+		}
+		return row, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
 	})
 }
 
@@ -344,6 +358,9 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		}
 		if row.DPoPJKT != "" {
 			details["dpopJkt"] = row.DPoPJKT
+		}
+		if row.AuthTime != nil {
+			details["authTime"], details["amr"] = row.AuthTime.Format(time.RFC3339), row.AMR
 		}
 		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, details)
 		return err
