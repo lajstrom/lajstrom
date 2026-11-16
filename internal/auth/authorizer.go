@@ -9,8 +9,12 @@ type Action string
 const (
 	// ActionRead is GET and HEAD on a frontend, pull on /v2, listing a repo.
 	ActionRead Action = "read"
-	// ActionWrite is PUT and POST on a frontend, push on /v2: creating versions.
+	// ActionWrite is PUT and POST on a frontend, push on /v2: creating versions. It implies
+	// ActionAttach.
 	ActionWrite Action = "write"
+	// ActionAttach is attaching to a version: the PUT of a referrer on /v2 (a signature, an SBOM,
+	// a scan report, a verdict) and the blob uploads it needs, and no other manifest (#89).
+	ActionAttach Action = "attach"
 	// ActionDelete is deleting versions and manifests.
 	ActionDelete Action = "delete"
 	// ActionManage is changing the repo (policy, anonymous read, deploy tokens) and reindexing it.

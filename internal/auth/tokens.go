@@ -27,8 +27,9 @@ const (
 
 // Scopes of tokens: the actions a token may get (docs/spec/rbac.md §1).
 const (
-	ScopeRead  = string(ActionRead)
-	ScopeWrite = string(ActionWrite)
+	ScopeRead   = string(ActionRead)
+	ScopeWrite  = string(ActionWrite)
+	ScopeAttach = string(ActionAttach) // write holds it too (#89)
 )
 
 // Bounds of tokens (docs/spec/rbac.md §1). They are constants, not configuration.
@@ -116,7 +117,8 @@ type Tokens struct {
 // CreatePAT creates a personal access token of the user called user, and returns it with its
 // secret, PATPrefix and 43 characters, with one token.create audit event. name is 1 to
 // MaxTokenNameLen bytes of printable UTF-8, unique among the user's live tokens (neither
-// revoked nor expired). scopes are empty, for the user's full rights, or read and/or write.
+// revoked nor expired). scopes are empty, for the user's full rights, or read, write and attach,
+// one or more.
 // The expiry is mandatory: DefaultPATLifetime when exp gives none, at most MaxPATLifetime
 // ahead. The user need not be enabled. The credential of ctx must be one that may create it
 // (MayCreatePAT).
@@ -188,9 +190,9 @@ func createdBy(c Credential) string {
 // CreateDeploy creates a deploy token of the repo <format>/<name> and returns it with its
 // secret, DeployPrefix and 43 characters, with one token.create audit event whose repo is the
 // repo. name is as for CreatePAT, unique among the repo's live tokens. scopes are read, write
-// or both, required: delete and manage are never a deploy token's. A group's deploy token reads
-// only: a write through a group is its hosted member's, which the token does not reach
-// (docs/spec/rbac.md §7). The expiry is optional, and not bounded.
+// and attach, one or more, required: delete and manage are never a deploy token's. A group's
+// deploy token reads only: a write or an attachment through a group is its hosted member's, which
+// the token does not reach (docs/spec/rbac.md §7). The expiry is optional, and not bounded.
 func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
 	scopes, err := checkScopes(scopes, TokenDeploy)
 	if err != nil {
@@ -208,9 +210,9 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 		if err != nil {
 			return nil, tokenOwner{}, err
 		}
-		if r.Kind == index.KindGroup && slices.Contains(scopes, ScopeWrite) {
-			return nil, tokenOwner{}, invalidf("scopes: %s is a group, and its deploy token reads only: a write through it is "+
-				"its hosted member's, which the token would not reach", repo)
+		if r.Kind == index.KindGroup && (slices.Contains(scopes, ScopeWrite) || slices.Contains(scopes, ScopeAttach)) {
+			return nil, tokenOwner{}, invalidf("scopes: %s is a group, and its deploy token reads only: a write or an attachment "+
+				"through it is its hosted member's, which the token would not reach", repo)
 		}
 		return &index.Token{RepoID: &r.ID}, tokenOwner{repo: repo}, nil
 	})
@@ -454,32 +456,36 @@ func checkTokenName(name string) error {
 	return nil
 }
 
-// checkScopes checks the scopes of a token of kind and returns them without repeats, read
-// before write. A personal access token may have none; a deploy token needs one.
+// checkScopes checks the scopes of a token of kind and returns them without repeats, in the
+// order read, write, attach. A personal access token may have none; a deploy token needs one.
 func checkScopes(scopes []string, kind string) ([]string, error) {
-	var read, write bool
+	var read, write, attach bool
 	for _, sc := range scopes {
 		switch sc {
 		case ScopeRead:
 			read = true
 		case ScopeWrite:
 			write = true
+		case ScopeAttach:
+			attach = true
 		default:
 			if kind == TokenDeploy {
-				return nil, invalidf("scopes: %q is not a scope of a deploy token: it gets read, write or both, never delete or manage", sc)
+				return nil, invalidf("scopes: %q is not a scope of a deploy token: it gets read, write and attach, one or more, never delete or manage", sc)
 			}
-			return nil, invalidf("scopes: %q is not a scope: a personal access token narrows its user to read, write or both", sc)
+			return nil, invalidf("scopes: %q is not a scope: a personal access token narrows its user to read, write and attach, one or more", sc)
 		}
 	}
 	out := []string{}
-	if read {
-		out = append(out, ScopeRead)
-	}
-	if write {
-		out = append(out, ScopeWrite)
+	for _, sc := range []struct {
+		on    bool
+		scope string
+	}{{read, ScopeRead}, {write, ScopeWrite}, {attach, ScopeAttach}} {
+		if sc.on {
+			out = append(out, sc.scope)
+		}
 	}
 	if kind == TokenDeploy && len(out) == 0 {
-		return nil, invalidf("scopes: a deploy token needs read, write or both")
+		return nil, invalidf("scopes: a deploy token needs read, write or attach")
 	}
 	return out, nil
 }

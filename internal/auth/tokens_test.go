@@ -176,6 +176,7 @@ func TestTokensBounds(t *testing.T) {
 	f.pat(t, "alice", strings.Repeat("é", 32), nil, Expiry{})
 	f.deploy(t, "raw/scratch", "forever", []string{"read"}, Expiry{})
 	f.deploy(t, "raw/scratch", "long", []string{"write", "read"}, Expiry{In: 400 * 24 * time.Hour})
+	f.deploy(t, "raw/scratch", "scanner", []string{"attach", "read", "attach"}, Expiry{})
 	group := index.Repo{Format: "raw", Name: "all", Prefix: "raw/all", Kind: index.KindGroup}
 	if err := f.st.CreateRepo(ctx, &group); err != nil {
 		t.Fatal(err)
@@ -199,11 +200,13 @@ func TestTokensBounds(t *testing.T) {
 		{"both", false, "alice", "x", nil, Expiry{At: year, In: time.Hour}, ErrInvalid, "expiresAt and expiresIn: give one of them, not both"},
 		{"negative", false, "alice", "x", nil, Expiry{In: -time.Hour}, ErrInvalid, "expiresIn: must be positive"},
 		{"pat scope delete", false, "alice", "x", []string{"read", "delete"}, Expiry{}, ErrInvalid, `scopes: "delete" is not a scope: a personal access token narrows`},
-		{"deploy without scopes", true, "raw/scratch", "x", nil, Expiry{}, ErrInvalid, "scopes: a deploy token needs read, write or both"},
+		{"deploy without scopes", true, "raw/scratch", "x", nil, Expiry{}, ErrInvalid, "scopes: a deploy token needs read, write or attach"},
 		{"deploy scope delete", true, "raw/scratch", "x", []string{"read", "delete"}, Expiry{}, ErrInvalid,
-			`scopes: "delete" is not a scope of a deploy token: it gets read, write or both, never delete or manage`},
+			`scopes: "delete" is not a scope of a deploy token: it gets read, write and attach, one or more, never delete or manage`},
 		{"deploy scope manage", true, "raw/scratch", "x", []string{"manage"}, Expiry{}, ErrInvalid, `scopes: "manage" is not a scope of a deploy token`},
 		{"deploy write on a group", true, "raw/all", "x", []string{"read", "write"}, Expiry{}, ErrInvalid,
+			"scopes: raw/all is a group, and its deploy token reads only"},
+		{"deploy attach on a group", true, "raw/all", "x", []string{"read", "attach"}, Expiry{}, ErrInvalid,
 			"scopes: raw/all is a group, and its deploy token reads only"},
 		{"empty name", false, "alice", "", nil, Expiry{}, ErrInvalid, "name: must not be empty"},
 		{"long name", false, "alice", strings.Repeat("x", 65), nil, Expiry{}, ErrInvalid, "name: must be at most 64 bytes"},
@@ -235,10 +238,11 @@ func TestTokensBounds(t *testing.T) {
 	wantTokens(t, f, "raw/scratch", []string{
 		`deploy "forever" [read] expires never live`,
 		`deploy "long" [read write] expires 2027-12-12T12:00:00Z live`,
+		`deploy "scanner" [read attach] expires never live`,
 	})
 	wantTokens(t, f, "raw/all", []string{`deploy "reader" [read] expires never live`})
-	if n := len(tokenAudit(t, f.st)); n != 7 {
-		t.Errorf("%d audit events, want the 7 creations: a refusal writes nothing", n)
+	if n := len(tokenAudit(t, f.st)); n != 8 {
+		t.Errorf("%d audit events, want the 8 creations: a refusal writes nothing", n)
 	}
 	f.noSecrets(t)
 }
@@ -590,7 +594,7 @@ func TestTokensMaskDeploy(t *testing.T) {
 		{"a format not served", "maven/*", "x", []string{"read"}, ErrInvalid, `repoMask: "maven" is not a format of this server, nor *`},
 		{"not a repo name", "oci/Talos", "x", []string{"read"}, ErrInvalid, `repoMask: "Talos" is not a repo name`},
 		{"part of a segment", "oci/ta*", "x", []string{"read"}, ErrInvalid, `repoMask: "ta*" is not a repo name`},
-		{"no scopes", "oci/*", "x", nil, ErrInvalid, "scopes: a deploy token needs read, write or both"},
+		{"no scopes", "oci/*", "x", nil, ErrInvalid, "scopes: a deploy token needs read, write or attach"},
 		{"delete", "oci/*", "x", []string{"read", "delete"}, ErrInvalid, `scopes: "delete" is not a scope of a deploy token`},
 		{"manage", "*/*", "x", []string{"manage"}, ErrInvalid, `scopes: "manage" is not a scope of a deploy token`},
 		{"empty name", "oci/*", "", []string{"read"}, ErrInvalid, "name: must not be empty"},

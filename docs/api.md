@@ -977,7 +977,7 @@ A binding gives a user a role on the repos of a mask ([auth.md](auth.md#bindings
 | `id` | set by the server; the `{id}` of `DELETE` |
 | `principal` | `user:<uid>` of a live user: a creation may name the user `user:<name>` or `user:<uid>`, and the uid is stored, so that a rename does not move the binding |
 | `name` | the user's name now, for people; answered, never sent |
-| `role` | `reader`, `writer`, `maintainer` or `admin` ([rbac.md](spec/rbac.md) §2) |
+| `role` | `reader`, `attacher`, `writer`, `maintainer` or `admin` ([rbac.md](spec/rbac.md) §2) |
 | `repoMask` | `<format>/<repo>`, each segment a name or `*`; the format one that is served; an `admin` binding is on `*/*` only |
 | `createdAt` | set by the server |
 
@@ -1074,7 +1074,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `kind` | `pat` or `deploy`, from the collection |
 | `user`, `repo`, `repoMask` | the owner, one of the three, the others left out: the user of a personal access token, `<format>/<name>` of the repo of a deploy token, or the mask of a deploy token over a mask (`oci/*`, [below](#deploy-tokens-over-a-mask)) |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the owner's live tokens (neither revoked nor expired) |
-| `scopes` | `read`, `write` or both. A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
+| `scopes` | `read`, `write` and `attach`, one or more; `write` holds `attach` (#89). A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
 | `expiresAt` | a personal access token always has one, at most 365 days ahead, 90 days when the creation gives none; a deploy token may have none, `null`, and never expires |
 | `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |

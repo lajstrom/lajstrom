@@ -189,10 +189,18 @@ func (g *Grant) Repository(name string) (Access, bool) {
 	return Access{}, false
 }
 
-// Allows reports whether the token grants action (pull, push, delete) on the repository name.
+// Allows reports whether the token grants action (pull, push, attach, delete) on the repository
+// name, as the access claim lists it.
 func (g *Grant) Allows(name, action string) bool {
 	a, ok := g.Repository(name)
 	return ok && slices.Contains(a.Actions, action)
+}
+
+// AllowsAction reports whether the token grants the RBAC action a on the repository name: its
+// scope action (ScopeAction), and for attach push as well, as write implies attach
+// (docs/spec/rbac.md §2).
+func (g *Grant) AllowsAction(name string, a auth.Action) bool {
+	return g.Allows(name, ScopeAction(a)) || a == auth.ActionAttach && g.Allows(name, ActionPush)
 }
 
 // Catalog reports whether the token grants registry:catalog:*.

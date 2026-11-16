@@ -79,6 +79,7 @@ func (failing) Allowed(context.Context, auth.Principal, auth.Action, string, str
 func TestReduce(t *testing.T) {
 	z := grants{
 		"user:bob":     {"raw/assets": {auth.ActionRead}},
+		"user:scan":    {"raw/assets": {auth.ActionRead, auth.ActionAttach}},
 		alice.String(): {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
 	}
 	scopes := ParseScopes([]string{"repository:raw/assets/hello:pull,push", "repository:pypi/internal/x:pull", "registry:catalog:*"})
@@ -90,6 +91,8 @@ func TestReduce(t *testing.T) {
 	}{
 		{"bob, a reader", z, auth.Principal{Kind: auth.KindUser, Name: "bob"}, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},
 		{"alice, a writer", z, alice, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
+		{"scan, an attacher: push as attach (#89)", z, auth.Principal{Kind: auth.KindUser, Name: "scan"},
+			"[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull attach]}]"},
 		{"anonymous", z, auth.Anonymous, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello []}]"},
 		{"no Authorizer", nil, auth.Anonymous, "[{registry catalog [*]} {repository pypi/internal/x [pull]} {repository raw/assets/hello [pull push]}]"},
 	} {
@@ -183,7 +186,7 @@ func TestReduceCredential(t *testing.T) {
 }
 
 func TestScopeAction(t *testing.T) {
-	for a, want := range map[auth.Action]string{auth.ActionRead: "pull", auth.ActionWrite: "push", auth.ActionDelete: "delete", auth.ActionManage: ""} {
+	for a, want := range map[auth.Action]string{auth.ActionRead: "pull", auth.ActionWrite: "push", auth.ActionAttach: "attach", auth.ActionDelete: "delete", auth.ActionManage: ""} {
 		if got := ScopeAction(a); got != want {
 			t.Errorf("ScopeAction(%s) = %q, want %q", a, got, want)
 		}
