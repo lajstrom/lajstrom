@@ -215,10 +215,10 @@ func (c *Core) render(ctx context.Context, p *proxied, name, key, kind string, u
 		case row != nil && row.State == index.ProxyMetaAbsent:
 			return fmt.Errorf("%w: proxy: %s: upstream %s does not have %q", index.ErrNotFound, p.id(), p.settings.Upstream, name)
 		case row != nil:
-			if cached, err := w.GetIndexCache(ctx, p.repo.ID, key, kind); err == nil {
+			if cached, err := w.GetIndexCache(ctx, p.repo.ID, key, kind); err == nil && !cached.Expired(c.o.Now()) {
 				out = cached
 				return nil
-			} else if !errors.Is(err, index.ErrNotFound) {
+			} else if err != nil && !errors.Is(err, index.ErrNotFound) {
 				return err
 			}
 			if out, err = c.renderOne(ctx, p, w, name, key, kind, row.Content); err != nil {
@@ -242,15 +242,24 @@ func (c *Core) render(ctx context.Context, p *proxied, name, key, kind string, u
 	return out, err
 }
 
-// renderOne renders the document with the plugin, as the index_cache row it is cached as.
-func (c *Core) renderOne(ctx context.Context, p *proxied, r index.Reader, name, key, kind string, kept []byte) (*index.Cache, error) {
-	doc, err := p.hooks.RenderProxy(ctx, p.repo, name, kind, kept, r, c.base(p.repo))
+// renderOne renders the document with the plugin, as the index_cache row it is cached as,
+// through the policy's view of the repo (docs/spec/policy.md §6.1): kept without the versions it
+// refuses (trim), the held versions read through its Reader, and the row's ExpiresAt its Until.
+func (c *Core) renderOne(ctx context.Context, p *proxied, w index.Writer, name, key, kind string, kept []byte) (*index.Cache, error) {
+	view, err := c.o.Policy.View(ctx, w, p.repo)
+	if err != nil {
+		return nil, err
+	}
+	if kept, err = c.trim(ctx, w, p, view, name, key, kind, kept); err != nil {
+		return nil, fmt.Errorf("proxy: %s: trim %s of %q: %w", p.id(), kind, name, err)
+	}
+	doc, err := p.hooks.RenderProxy(ctx, p.repo, name, kind, kept, view.Reader(w), c.base(p.repo))
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %s: render %s of %q: %w", p.id(), kind, name, err)
 	}
 	sum := sha256.Sum256(doc.Content)
 	return &index.Cache{RepoID: p.repo.ID, Scope: key, Kind: kind, Content: doc.Content, SHA256: hex.EncodeToString(sum[:]),
-		RenderedAt: c.o.Now()}, nil
+		RenderedAt: c.o.Now(), ExpiresAt: view.Until()}, nil
 }
 
 // holds reports whether the repo holds a version of name.
