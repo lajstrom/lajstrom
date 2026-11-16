@@ -23,7 +23,7 @@ const ActionUserLogin = "user.login"
 const SourceOIDC = "oidc"
 
 // ErrLoginRefused means an OIDC login was refused for who it is: a user name claim that is
-// missing or not a name, a name a live user has already, a disabled user. The message says
+// missing or not a name, a name a live user has already, a disabled or inactive user. The message says
 // which, for the person, and names no secret.
 var ErrLoginRefused = errors.New("auth: login refused")
 
@@ -45,10 +45,41 @@ type OIDCLogin struct {
 // from now, which moves auth_version. The audit rows are user.create for a new user and
 // user.login, both by the user, with the source oidc, the issuer, the subject and the groups.
 //
+// The login is the user's last activity, recorded in its transaction (docs/spec/rbac.md §1,
+// Inactive users). The login of a user inactive beyond InactiveAfter disables it
+// (DisableInactive) and is refused, without a user.login row, unless the user is the last
+// enabled one with an admin binding, which logs in as any.
+//
 // An identity whose user was deleted is let go, and the login makes a new user. A missing or
-// malformed name, a name a live user has, and a disabled user are errors wrapping
-// ErrLoginRefused; any other error is a failure of the index.
+// malformed name, a name a live user has, a disabled user and an inactive one are errors
+// wrapping ErrLoginRefused; any other error is a failure of the index.
 func (s *Users) LoginOIDC(ctx context.Context, l OIDCLogin, o Origin) (*index.User, error) {
+	u, err := s.loginOIDC(ctx, l, o, false)
+	var in *inactiveError
+	if !errors.As(err, &in) {
+		return u, err
+	}
+	refused, err := s.DisableInactive(ctx, in.user.ID, o)
+	if err != nil {
+		s.log().WarnContext(ctx, "an inactive user's OIDC login is refused, and the user is not disabled",
+			"user", UserPrincipal(in.user).String(), "error", err.Error())
+	}
+	if refused {
+		return nil, &authError{msg: fmt.Sprintf("the user %s has had no activity for more than %s, and is disabled: an admin "+
+			"can enable it", in.user.Name, shortDuration(s.InactiveAfter)), err: ErrLoginRefused}
+	}
+	return s.loginOIDC(ctx, l, o, true)
+}
+
+// inactiveError is the rollback of the login of an inactive user, which LoginOIDC disables in a
+// transaction of its own.
+type inactiveError struct{ user *index.User }
+
+func (e *inactiveError) Error() string { return "auth: the user " + e.user.Name + " is inactive" }
+
+// loginOIDC is LoginOIDC's transaction; a user inactive beyond InactiveAfter is an
+// *inactiveError, unless inactive is true: the last enabled admin, which DisableInactive kept.
+func (s *Users) loginOIDC(ctx context.Context, l OIDCLogin, o Origin, inactive bool) (*index.User, error) {
 	o.Source = SourceOIDC
 	now := s.now()
 	var (
@@ -61,6 +92,13 @@ func (s *Users) LoginOIDC(ctx context.Context, l OIDCLogin, o Origin) (*index.Us
 		if err != nil {
 			return err
 		}
+		if !inactive && Inactive(u, s.InactiveAfter, now) {
+			return &inactiveError{user: u}
+		}
+		if err := w.TouchUser(ctx, u.ID, now); err != nil {
+			return err
+		}
+		u.LastSeenAt = &now
 		uctx := WithPrincipal(ctx, UserPrincipal(u))
 		if created {
 			ev, err := s.record(uctx, w, ActionUserCreate, u, o,
@@ -79,8 +117,11 @@ func (s *Users) LoginOIDC(ctx context.Context, l OIDCLogin, o Origin) (*index.Us
 		return err
 	})
 	if err != nil {
-		var ae *authError
-		if errors.As(err, &ae) {
+		var (
+			ae *authError
+			ie *inactiveError
+		)
+		if errors.As(err, &ae) || errors.As(err, &ie) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("auth: oidc login of %s at %s: %w", l.Subject, l.Issuer, err)

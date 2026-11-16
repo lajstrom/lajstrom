@@ -966,6 +966,9 @@ func (a Auth) validate(p *problems, s Server) {
 	if a.DeployTokens.MaxTTL < 0 {
 		p.add("auth.deployTokens.maxTTL", "must not be negative; 0 bounds nothing")
 	}
+	if d := a.DisableInactiveUsersAfter; d != 0 && d < MinInactiveUsersAfter {
+		p.add("auth.disableInactiveUsersAfter", "must be 0, which disables nobody, or at least 24h; 2160h is 90 days")
+	}
 	if a.ServiceAccounts.MaxTokenTTL < 0 {
 		p.add("auth.serviceAccounts.maxTokenTTL", "must not be negative; 0 bounds nothing")
 	}

@@ -94,7 +94,7 @@ func oidcLogin(c *config.Config, st index.Store, log *slog.Logger) (http.Handler
 	log.Info("OIDC login on", "issuer", o.Issuer, "clientID", o.ClientID, "redirectURI", base+"/-/oidc/callback",
 		"tokenLifetime", o.TokenLifetime.String(), "webUIOrigins", origins)
 	tokens := &auth.Tokens{Index: st, Log: log}
-	login := oidc.NewHandler(oidc.LoginOptions{Provider: p, Index: st, Users: &auth.Users{Index: st, Log: log},
+	login := oidc.NewHandler(oidc.LoginOptions{Provider: p, Index: st, Users: usersOf(c, st, log),
 		Tokens: tokens, ExternalURL: base, InsecureCookie: c.Server.InsecureHTTP, TokenLifetime: o.TokenLifetime,
 		ReturnOrigins: origins, Log: log})
 	handoffs := &oidc.Handoffs{Index: st, Tokens: tokens, TokenLifetime: min(c.Auth.Login.TokenLifetime, o.TokenLifetime), Log: log}

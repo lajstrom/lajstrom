@@ -58,6 +58,9 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
+	if err := a.admit(ctx, u); err != nil {
+		return Principal{}, Credential{}, err
+	}
 	a.touch(ctx, t)
 	return UserPrincipal(u), patCredential(t), nil
 }
@@ -120,6 +123,9 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	if t.DPoPJKT != "" {
 		return Principal{}, Credential{}, a.refuseBound(ctx, u, t)
 	}
+	if err := a.admit(ctx, u); err != nil {
+		return Principal{}, Credential{}, err
+	}
 	a.touch(ctx, t)
 	return UserPrincipal(u), patCredential(t), nil
 }
@@ -143,6 +149,9 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 	if last, idle := a.idleSince(t); idle {
 		_ = a.refuseToken(ctx, u, t, "a sign-in idle for longer than auth.login.idleTimeout")
 		return Principal{}, Credential{}, &IdleError{TokenID: t.ID, LastUse: last, Timeout: a.idle}
+	}
+	if err := a.admit(ctx, u); err != nil {
+		return Principal{}, Credential{}, err
 	}
 	a.touch(ctx, t)
 	cred := patCredential(t)

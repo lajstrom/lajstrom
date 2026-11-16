@@ -207,7 +207,10 @@ func newServeCmd(a *app) *cobra.Command {
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)})
 			// auth.login.idleTimeout (docs/spec/rbac.md §10, #1277): the authenticator refuses an idle
 			// sign-in, the server revokes it with its audit row, /api/v1/info answers the bound.
-			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout})
+			// auth.disableInactiveUsersAfter (rbac.md §1, #1283): users disables the inactive.
+			users := usersOf(c, st, a.log)
+			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users})
+			warnInactiveUsers(ctx, users, a.log)
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))

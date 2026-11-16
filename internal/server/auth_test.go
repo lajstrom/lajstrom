@@ -81,6 +81,8 @@ func (u usersReader) GetRepoByID(_ context.Context, id int64) (*index.Repo, erro
 
 func (u usersReader) TouchToken(context.Context, int64, time.Time) error { return nil }
 
+func (u usersReader) TouchUser(context.Context, int64, time.Time) error { return nil }
+
 func (u usersReader) GetUser(_ context.Context, name string) (*index.User, error) {
 	switch {
 	case u.err != nil:
