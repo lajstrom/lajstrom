@@ -287,7 +287,8 @@ A request for a file of a proxy repo, directly or through a group, runs these st
 5. The name's document (§4.2) lists the version and the file: their URL and the upstream's
    checksums. A version it does not list, or a name it does not have, is `404`. A format whose
    upstream lists no files may have a document per file: maven's is the upstream's `.sha1` of
-   the file (http-routing.md, maven, **Proxy**).
+   the file, and a maven signature without one is listed all the same, without a checksum
+   (http-routing.md, maven, **Proxy**).
 6. **The claim.** On one replica, concurrent misses of one artifact share one fetch. Across
    replicas, the fetch takes a `fetch_claims` row keyed by repo, package path and tag (the
    plugin's `EscapeName` and the profile's `Tag`). A fresh claim of another replica: the request
@@ -315,13 +316,16 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    `proxy.reject` and a warning name both values. A body that the plugin's inspector refuses
    before its end is read to it, so that bytes other than the upstream's are refused for their
    checksum. An entry without a checksum is refused the same way, before the file is asked,
-   unless the format's ADR says that its upstream publishes none.
+   unless the format takes that file unchecked, as its ADR says (maven: a signature whose
+   upstream publishes no `.sha1`, ADR 0013, Amendment): such a file is stored as the upstream
+   served it, bounded as in step 7.
 9. **The ingest.** The plugin builds the upload from the streamed file as it would a client's
    (`Plugin.Build`, from what its inspector read), with `StreamUpload.Origin` set (§10), and
    `Publisher.UploadStream` runs with the principal of the request: Build, Validate, the tag
    claims, the close of the session, the push of the manifest, the index rows, the audit row
    `proxy.fetch` instead of `push`, as for any upload. The manifest carries
-   `lajstrom.origin.url` and `lajstrom.origin.checksum` and no `lajstrom.uploaded-by`
+   `lajstrom.origin.url`, `lajstrom.origin.checksum` but on a file fetched unchecked, and no
+   `lajstrom.uploaded-by`
    (manifest-profile.md §3.1). An artifact that Validate refuses is `proxy.reject` and `502`:
    the upstream served it, the client did nothing wrong. A tag that holds other bytes keeps
    them (ADR 0005): the repo serves what it holds, and the change upstream is logged at warn.
