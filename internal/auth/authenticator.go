@@ -67,8 +67,8 @@ type Options struct {
 	// Index is where the users and the tokens are read, and the use of a token is recorded
 	// (TouchToken); required.
 	Index index.Store
-	// Log receives the refusals, at debug level, with the user name or the token id and the
-	// reason; nil means slog.Default().
+	// Log receives the refusals, at info, with the account's uid or the token id and the
+	// reason (LogRefusal); nil means slog.Default().
 	Log *slog.Logger
 	// Now is the clock of the cache, of token expiry and of token use; nil means time.Now.
 	Now func() time.Time
@@ -202,8 +202,9 @@ var dummyHash = sync.OnceValue(func() string {
 //   - Anything else: the user's password (authenticatePassword); the principal is
 //     user:<username>, the credential a CredPassword.
 //
-// Every refusal is an error wrapping ErrBadCredentials, its reason logged at debug level with
-// the user name or the token id, never anything about the secret. Any other error is a failure
+// Every refusal is an error wrapping ErrBadCredentials, its reason logged at info with the
+// account's uid or the token id (LogRefusal), never the user name as typed nor anything about
+// the secret. Any other error is a failure
 // to decide (the index is down, or the stored hash is malformed), which the caller answers 500.
 func (a *Authenticator) Authenticate(ctx context.Context, username, secret string) (Principal, Credential, error) {
 	switch {
@@ -250,7 +251,7 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // the same refusals, the same throttles, the same argon2id work, every attempt verified.
 func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
 	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) || strings.HasPrefix(password, CIPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, nil, "a token in place of a password")
+		return Principal{}, Credential{}, a.refuse(ctx, CredPassword, nil, "a token in place of a password")
 	}
 	u, account, addr, err := a.loginUser(ctx, username, password)
 	if err != nil {
@@ -275,10 +276,10 @@ func (a *Authenticator) loginUser(ctx context.Context, username, secret string) 
 	if CheckName(username) != nil {
 		// No user has such a name: nothing about a user is told by refusing it at once. It is
 		// not logged, in case it is a password typed into the wrong field.
-		return nil, "", "", a.refuse(ctx, nil, "malformed user name")
+		return nil, "", "", a.refuse(ctx, CredPassword, nil, "malformed user name")
 	}
 	if secret == "" || len(secret) > MaxPasswordLen {
-		return nil, "", "", a.refuse(ctx, nil, "malformed password")
+		return nil, "", "", a.refuse(ctx, CredPassword, nil, "malformed password")
 	}
 	addr := throttleAddress(ctx)
 	if err := a.throttledLogin(addr, "", nil); err != nil {
@@ -327,7 +328,7 @@ func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret
 	if reason := unusable(u); reason != "" {
 		a.dummyVerify(secret)
 		a.failed(account, addr)
-		return Principal{}, a.refuse(ctx, u, reason)
+		return Principal{}, a.refuse(ctx, CredPassword, u, reason)
 	}
 	ok, err := a.verify(u.PasswordHash, secret)
 	switch {
@@ -335,7 +336,7 @@ func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret
 		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", UserPrincipal(u), err)
 	case !ok:
 		a.failed(account, addr)
-		return Principal{}, a.refuse(ctx, u, "wrong password")
+		return Principal{}, a.refuse(ctx, CredPassword, u, "wrong password")
 	}
 	return UserPrincipal(u), nil
 }
@@ -415,15 +416,16 @@ func accountKey(u *index.User, username string) string {
 	return UserPrincipal(u).String()
 }
 
-// refuse logs a refusal at debug level, with the principal user:<uid> of the user u unless it
-// is nil, and returns ErrBadCredentials. A user name as it was typed is never logged: it may be
-// a password typed into the wrong field, or a token pasted there (threat model L-3).
-func (a *Authenticator) refuse(ctx context.Context, u *index.User, reason string) error {
-	if u == nil {
-		a.log.DebugContext(ctx, "authentication refused", "reason", reason)
-	} else {
-		a.log.DebugContext(ctx, "authentication refused", "user", UserPrincipal(u).String(), "reason", reason)
+// refuse logs the refusal of a credential of kind cred at info (LogRefusal), with the account
+// user:<uid> of the user u, or unknown when it is nil, and returns ErrBadCredentials. A user name
+// as it was typed is never logged: it may be a password typed into the wrong field, or a token
+// pasted there (threat model L-3).
+func (a *Authenticator) refuse(ctx context.Context, cred CredentialKind, u *index.User, reason string) error {
+	account := AccountUnknown
+	if u != nil {
+		account = UserPrincipal(u).String()
 	}
+	LogRefusal(ctx, a.log, string(cred), account, 0, reason)
 	return ErrBadCredentials
 }
 

@@ -251,19 +251,20 @@ func NewVerifier(o Options) *Verifier {
 // the kid of the header first, and the token must then be signed with that key's algorithm and
 // nothing else (never none, never HMAC); exp is required, iat must not be in the future, iss
 // and aud must be service, with Leeway on the times; sub must be a principal. Every refusal is
-// an error wrapping ErrInvalidToken, its reason logged at debug level; any other error is a
-// failure to load the keys, which the caller answers 500.
+// an error wrapping ErrInvalidToken, its reason logged at info, or at debug for a token that
+// only expired (refuse); any other error is a failure to load the keys, which the caller
+// answers 500.
 func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, error) {
 	kid, err := kidOf(raw)
 	if err != nil {
-		return nil, v.refuse(ctx, "", err.Error())
+		return nil, v.refuse(ctx, auth.RefusedBearer, "", err.Error(), false)
 	}
 	k, err := v.key(ctx, kid)
 	if err != nil {
 		return nil, err
 	}
 	if k == nil {
-		return nil, v.refuse(ctx, kid, "no key has this kid")
+		return nil, v.refuse(ctx, auth.RefusedBearer, kid, "no key has this kid", false)
 	}
 	var c Claims
 	_, err = jwt.ParseWithClaims(raw, &c, func(*jwt.Token) (any, error) { return k.Public, nil },
@@ -272,15 +273,15 @@ func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, err
 		jwt.WithLeeway(Leeway), jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
 		jwt.WithTimeFunc(v.now))
 	if err != nil {
-		return nil, v.refuse(ctx, kid, err.Error())
+		return nil, v.refuse(ctx, auth.RefusedBearer, kid, err.Error(), errors.Is(err, jwt.ErrTokenExpired))
 	}
 	p, err := auth.ParsePrincipal(c.Subject)
 	if err != nil {
-		return nil, v.refuse(ctx, kid, "the subject is not a principal")
+		return nil, v.refuse(ctx, auth.RefusedBearer, kid, "the subject is not a principal", false)
 	}
 	if p.Kind == auth.KindUser && !index.IsUID(p.Name) {
 		// A token of before #182 names its user by name: the client gets another.
-		return nil, v.refuse(ctx, kid, "the subject names a user by name, not by uid")
+		return nil, v.refuse(ctx, auth.RefusedBearer, kid, "the subject names a user by name, not by uid", false)
 	}
 	return &Grant{Principal: p, Access: c.Access, CI: c.CI}, nil
 }
@@ -290,10 +291,18 @@ func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, err
 // model L-3).
 const loggedKid = 16
 
-// refuse logs the reason of a refusal, with the first loggedKid bytes of the kid of the token's
-// header and its length, and returns ErrInvalidToken.
-func (v *Verifier) refuse(ctx context.Context, kid, reason string) error {
-	v.log.DebugContext(ctx, "bearer token refused", "kid", kid[:min(len(kid), loggedKid)], "kidLength", len(kid), "reason", reason)
+// refuse logs the reason of a refusal of a token of kind cred (auth.RefusedBearer, or
+// auth.CredCI), with the first loggedKid bytes of the kid of the token's header and its length,
+// and returns ErrInvalidToken: at info (auth.LogRefusal) for a token that does not verify, at
+// debug for one that only expired, which every client of /v2 sees every 20 minutes as a matter
+// of course (docs/spec/rbac.md §1).
+func (v *Verifier) refuse(ctx context.Context, cred, kid, reason string, expired bool) error {
+	attrs := []any{"kid", kid[:min(len(kid), loggedKid)], "kidLength", len(kid)}
+	if expired {
+		v.log.DebugContext(ctx, "bearer token refused", append(attrs, "credential", cred, "reason", reason)...)
+	} else {
+		auth.LogRefusal(ctx, v.log, cred, auth.AccountUnknown, 0, reason, attrs...)
+	}
 	return ErrInvalidToken
 }
 

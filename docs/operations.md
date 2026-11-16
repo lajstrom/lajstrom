@@ -179,6 +179,19 @@ line at info with the throttle, the account's uid when it is an account's, and t
 address, and a count in `lajstrom_auth_throttled_total`: an account that keeps showing up is
 being guessed, or has a stale password in a job somewhere.
 
+Every refused credential is an `authentication refused` line at info beside its access line
+([rbac.md](spec/rbac.md) §1): the kind of credential (`password`, `pat`, `deploy`, `ci`,
+`certificate`, `kubernetes`, `bootstrap`, `bearer`), the account (`user:<uid>`, `token:<id>`, or
+`unknown`; never the name as it was typed, which may be a password), the token's id when one was
+found, the reason, the client address and the request id:
+
+```json
+{"level":"INFO","msg":"authentication refused","credential":"password","account":"user:0190f3c2-…","reason":"wrong password","address":"203.0.113.7","requestId":"9c00…"}
+```
+
+A bearer token of `/v2` that only expired stays at debug: every client gets a new one each 20
+minutes. These lines are the record of each failed attempt (PCI DSS 10.2.1.4).
+
 ## Keys and apt signing
 
 Every apt repo is signed with a key of its own: `InRelease` is the `Release` clearsigned,

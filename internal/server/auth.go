@@ -155,8 +155,7 @@ func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Creden
 	case strings.EqualFold(scheme, "Basic"):
 		user, secret, decoded := r.BasicAuth()
 		if !decoded {
-			s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
-				"requestId", RequestID(r.Context()))
+			auth.LogRefusal(r.Context(), s.log, string(auth.CredPassword), auth.AccountUnknown, 0, "credentials that do not decode")
 			return auth.Principal{}, auth.Credential{}, true, auth.ErrBadCredentials
 		}
 		p, cred, err = s.authenticateSecret(r, user, secret)
@@ -215,8 +214,7 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 // refused as credentials are.
 func (s *Server) authenticateDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, secret string) {
 	if !strings.HasPrefix(r.URL.Path, "/api/") || s.opts.DPoP == nil {
-		s.log.DebugContext(r.Context(), "authentication refused", "reason", "a DPoP token outside /api/",
-			"requestId", RequestID(r.Context()))
+		auth.LogRefusal(r.Context(), s.log, string(auth.CredPAT), auth.AccountUnknown, 0, "a DPoP token outside /api/")
 		s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 		return
 	}
@@ -250,13 +248,15 @@ func (s *Server) authenticateDPoP(w http.ResponseWriter, r *http.Request, next h
 // text of dpop.Why or of this package, never the client's; the answer is the envelope of /api/,
 // UNAUTHENTICATED with why as its message, or msgBadCredentials.
 func (s *Server) refuseDPoP(w http.ResponseWriter, r *http.Request, code, why string) {
-	s.refuseDPoPWith(w, r, code, why, cmp.Or(why, msgBadCredentials))
+	if why != "" { // a refused token is the authenticator's line, an idle one too (refuseIdle)
+		auth.LogRefusal(r.Context(), s.log, string(auth.CredPAT), auth.AccountUnknown, 0, why)
+	}
+	s.refuseDPoPWith(w, code, why, cmp.Or(why, msgBadCredentials))
 }
 
-// refuseDPoPWith is refuseDPoP with msg as the message of the envelope.
-func (s *Server) refuseDPoPWith(w http.ResponseWriter, r *http.Request, code, why, msg string) {
-	s.log.DebugContext(r.Context(), "authentication refused", "reason", cmp.Or(why, "a DPoP token refused"),
-		"requestId", RequestID(r.Context()))
+// refuseDPoPWith is refuseDPoP with msg as the message of the envelope, and without a line of its
+// own: refuseIdle's token is refused by the authenticator, which writes the line.
+func (s *Server) refuseDPoPWith(w http.ResponseWriter, code, why, msg string) {
 	challenge := `DPoP error="` + code + `"`
 	if why != "" {
 		challenge += `, error_description="` + why + `"`
@@ -288,7 +288,7 @@ func (s *Server) refuseIdle(w http.ResponseWriter, r *http.Request, proof *dpop.
 			s.log.ErrorContext(ctx, "an idle sign-in is not revoked", "token", idle.TokenID, "error", err.Error(), "requestId", RequestID(ctx))
 		}
 	}
-	s.refuseDPoPWith(w, r, "invalid_token", idleDescription, msgIdle)
+	s.refuseDPoPWith(w, "invalid_token", idleDescription, msgIdle)
 }
 
 // IdleRevoker revokes the token of a sign-in refused as idle, with its audit row
@@ -342,7 +342,7 @@ func (s *Server) authenticateSecret(r *http.Request, user, secret string) (auth.
 // Options.CI it is refused, and counts as no failed login, as a token secret does not.
 func (s *Server) ciToken(r *http.Request, secret string) (auth.Principal, auth.Credential, error) {
 	if s.opts.CI == nil {
-		s.log.DebugContext(r.Context(), "authentication refused", "reason", "a CI token without auth.ci", "requestId", RequestID(r.Context()))
+		auth.LogRefusal(r.Context(), s.log, string(auth.CredCI), auth.AccountUnknown, 0, "a CI token without auth.ci")
 		return auth.Principal{}, auth.Credential{}, auth.ErrBadCredentials
 	}
 	return s.opts.CI.Authenticate(r.Context(), secret)

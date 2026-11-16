@@ -78,11 +78,12 @@ func (k *Kubernetes) cluster(secret string) *KubernetesCluster {
 // Authenticate verifies secret, a token of a cluster (Recognizes), and returns the principal
 // k8s:<cluster>/<namespace>/<service account> of its claim kubernetes.io and a CredKubernetes.
 // A token that does not verify, or whose sub and kubernetes.io disagree, is ErrBadCredentials,
-// its reason logged at debug with the cluster, never the token; an issuer that does not answer
-// is an error wrapping ErrIssuerUnavailable.
+// logged at info (LogRefusal) with the cluster and its reason at debug, never the token; an
+// issuer that does not answer is an error wrapping ErrIssuerUnavailable.
 func (k *Kubernetes) Authenticate(ctx context.Context, secret string) (Principal, Credential, error) {
 	c := k.cluster(secret)
 	if c == nil {
+		LogRefusal(ctx, k.log(), string(CredKubernetes), AccountUnknown, 0, "a token of no cluster")
 		return Principal{}, Credential{}, ErrBadCredentials
 	}
 	claims, err := c.Verifier.Verify(ctx, secret)
@@ -98,6 +99,7 @@ func (k *Kubernetes) Authenticate(ctx context.Context, secret string) (Principal
 		}
 	}
 	k.log().DebugContext(ctx, "kubernetes token refused", "cluster", c.Name, "reason", err.Error())
+	LogRefusal(ctx, k.log(), string(CredKubernetes), AccountUnknown, 0, "a token that does not verify", "cluster", c.Name)
 	return Principal{}, Credential{}, ErrBadCredentials
 }
 

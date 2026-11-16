@@ -136,7 +136,7 @@ func TestAuthenticateRecordsActivity(t *testing.T) {
 // request; the last enabled admin is taken, with a warning, and recorded.
 func TestAuthenticateInactive(t *testing.T) {
 	f := newInactiveFixture(t)
-	ctx := WithRequest(t.Context(), "192.0.2.7", "req-1")
+	ctx := WithRequest(t.Context(), Request{ID: "req-1", Address: "192.0.2.7"})
 	f.now = usersNow.Add(ninetyDays + time.Hour)
 	if _, _, err := f.a.Authenticate(ctx, "alice", "a wrong password"); !errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("a wrong password = %v", err)

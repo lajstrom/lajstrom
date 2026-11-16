@@ -348,7 +348,8 @@ func TestRefusalsLogNoSecret(t *testing.T) {
 			t.Errorf("the log holds %s:\n%s", name, text)
 		}
 	}
-	if want := `"user":"user:` + alice.UID + `","reason":"wrong password"`; !strings.Contains(logs.String(), want) {
+	if want := `"level":"INFO","msg":"authentication refused","credential":"password","account":"user:` + alice.UID +
+		`","reason":"wrong password","address":"192.0.2.1","requestId":"`; !strings.Contains(logs.String(), want) {
 		t.Errorf("the log does not have %s:\n%s", want, logs)
 	}
 	if want := "kid=0123456789abcdef kidLength=4096"; !strings.Contains(e.logs.String(), want) {

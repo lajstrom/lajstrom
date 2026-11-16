@@ -287,6 +287,15 @@ func TestVerifyTimes(t *testing.T) {
 	if !strings.Contains(logged.String(), "token is expired") || !strings.Contains(logged.String(), "token is not valid yet") {
 		t.Errorf("the reasons are not logged:\n%s", logged)
 	}
+	// rbac.md §1: a token that only expired is at debug, every client sees one each 20 minutes;
+	// one that is not valid yet does not verify, at info, with the kind of credential
+	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+		expired := strings.Contains(line, "token is expired")
+		if expired != strings.Contains(line, "level=DEBUG") ||
+			!expired && !strings.Contains(line, `level=INFO msg="authentication refused" credential=bearer account=unknown`) {
+			t.Errorf("the line %s: want debug only for an expired token, else the line at info", line)
+		}
+	}
 }
 
 // sign returns a token of claims signed with method and key, with the header kid.

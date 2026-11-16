@@ -447,7 +447,7 @@ func TestTokensNeverLogged(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"path":"/api/v1/whoami","status":200`, `"principal":"` + alice + `"`, fmt.Sprintf(`"principal":"token:%d"`, dep.ID),
-		fmt.Sprintf(`"msg":"authentication refused","token":%d,"reason":"revoked"`, pat.ID),
+		fmt.Sprintf(`"msg":"authentication refused","credential":"pat","account":"unknown","token":%d,"reason":"revoked"`, pat.ID),
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the log does not have %s:\n%s", want, text)

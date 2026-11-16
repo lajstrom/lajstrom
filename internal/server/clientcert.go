@@ -15,8 +15,8 @@ import (
 // none. The certificate comes from the TLS connection when its peer is not a trusted proxy, and
 // from Options.ClientCertHeader when it is: the certificate of a trusted proxy is never its
 // client's, and the header of any other peer is never read. A certificate that does not verify,
-// or has no name, is auth.ErrBadCredentials, its reason and bundle logged at debug, never the
-// certificate.
+// or has no name, is auth.ErrBadCredentials, logged at info (auth.LogRefusal) and its reason at
+// debug, never the certificate.
 func (s *Server) certificate(r *http.Request) (p auth.Principal, cred auth.Credential, ok bool, err error) {
 	ctx := r.Context()
 	trusted := s.peerTrusted(r.RemoteAddr)
@@ -42,6 +42,8 @@ func (s *Server) certificate(r *http.Request) (p auth.Principal, cred auth.Crede
 	if errors.Is(err, clientcert.ErrRefused) {
 		s.log.DebugContext(ctx, "client certificate refused", "from", from, "bundle", bundle, "reason", err.Error(),
 			"requestId", RequestID(ctx))
+		auth.LogRefusal(ctx, s.log, string(auth.CredCertificate), auth.AccountUnknown, 0, "a certificate that does not verify",
+			"bundle", bundle, "from", from)
 		return auth.Principal{}, auth.Credential{}, true, auth.ErrBadCredentials
 	}
 	if err != nil {
