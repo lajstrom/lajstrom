@@ -1545,7 +1545,11 @@ paths:
     post:
       tags: [ci]
       operationId: createCIPolicy
-      summary: Make a CI trust policy of the API (admin); one that writes takes the steps of docs/spec/rbac.md §11.
+      summary: >-
+        Make a CI trust policy of the API (admin). One that grants writer or maintainer needs a
+        web UI's sign-in with a second factor within 10 minutes, grants within
+        auth.ci.apiWriteRepos and an expiry at most 180 days ahead, and waits pending until a
+        second admin approves it unless auth.ci.apiWriteApproval is none (docs/spec/rbac.md §11).
       requestBody:
         required: true
         content:
@@ -1555,6 +1559,7 @@ paths:
         "201":
           description: The policy.
           headers:
+            ETag: {$ref: "#/components/headers/ETag"}
             Location: {$ref: "#/components/headers/Location"}
           content:
             application/json:
@@ -1566,21 +1571,23 @@ paths:
         "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/ci/policies/{name}:
     parameters:
-      - name: name
-        in: path
-        required: true
-        description: The policy's name.
-        schema: {type: string}
+      - $ref: "#/components/parameters/ciPolicy"
     get:
       tags: [ci]
       operationId: getCIPolicy
-      summary: One CI trust policy, of the configuration or of the API (admin).
+      summary: One CI trust policy, of the configuration or of the API, this one with its ETag (admin).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The policy.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/CIPolicy"}
+        "304": {$ref: "#/components/responses/NotModified"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1588,7 +1595,12 @@ paths:
     put:
       tags: [ci]
       operationId: replaceCIPolicy
-      summary: Replace the issuer, claims and grants of a CI trust policy of the API (admin); 409 for one of the configuration.
+      summary: >-
+        Replace the issuer, claims, grants and expiry of a CI trust policy of the API (admin); a
+        change that leaves it granting write takes the steps of a create; 409 for one of the
+        configuration.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
@@ -1597,6 +1609,8 @@ paths:
       responses:
         "200":
           description: The policy.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/CIPolicy"}
@@ -1605,17 +1619,85 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
         "501": {$ref: "#/components/responses/Unavailable"}
     delete:
       tags: [ci]
       operationId: deleteCIPolicy
-      summary: Delete a CI trust policy of the API (admin); 409 for one of the configuration.
+      summary: Delete a CI trust policy of the API (admin), one that writes too; 409 for one of the configuration.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/ci/policies/{name}/renew:
+    parameters:
+      - $ref: "#/components/parameters/ciPolicy"
+    post:
+      tags: [ci]
+      operationId: renewCIPolicy
+      summary: >-
+        Renew a CI trust policy of the API that grants write (admin), with a web UI's sign-in with
+        a second factor within 10 minutes: its expiry, by default 180 days ahead. With
+        auth.ci.apiWriteApproval second-admin the renewal waits for another admin's approval, the
+        policy keeping its expiry meanwhile; an expired one waits pending. 409 for one that reads
+        only, one that waits pending, and one of the configuration.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CIPolicyRenewal"}
+      responses:
+        "200":
+          description: The policy.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicy"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/ci/policies/{name}/approve:
+    parameters:
+      - $ref: "#/components/parameters/ciPolicy"
+    post:
+      tags: [ci]
+      operationId: approveCIPolicy
+      summary: >-
+        Approve what waits on a CI trust policy of the API, the policy pending or its renewal
+        (admin), with a web UI's sign-in with a second factor within 10 minutes, by an admin other
+        than the one who made the change; If-Match, the ETag of the revision read, is required (400
+        without it or with *). 409 when nothing waits, when the expiry passed, and for one of the
+        configuration.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: The policy.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CIPolicy"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "412": {$ref: "#/components/responses/Changed"}
         "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/audit:
     get:
@@ -1901,6 +1983,12 @@ components:
       name: format
       in: path
       required: true
+      schema: {type: string}
+    ciPolicy:
+      name: name
+      in: path
+      required: true
+      description: The name of a CI trust policy.
       schema: {type: string}
     repo:
       name: repo
@@ -2638,7 +2726,10 @@ components:
       description: A password of 8 to 1024 bytes of UTF-8; the server counts bytes, and the lengths here count characters.
     CIPolicy:
       type: object
-      description: A CI trust policy (docs/spec/rbac.md §11). In a body, source, createdBy, createdAt and updatedAt are ignored, and the name of a PUT, when present, is the path's.
+      description: >-
+        A CI trust policy (docs/spec/rbac.md §11). In a body, source, state, renewal, createdBy,
+        createdAt, updatedBy, updatedAt, approvedBy and approvedAt are ignored, and the name of a
+        PUT, when present, is the path's.
       required: [name, issuer, claims, grants]
       properties:
         name: {type: string, description: "Lowercase letters and digits with single hyphens, at most 63 bytes."}
@@ -2652,10 +2743,36 @@ components:
         grants:
           type: array
           items: {$ref: "#/components/schemas/CIGrant"}
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            When a policy of the API that grants write stops counting. In a body, at most 180 days
+            ahead, by default 180 days ahead; refused for a policy that grants reader only.
         source: {type: string, enum: [config, api], description: "Its owner: config is read-only through the API."}
+        state:
+          type: string
+          enum: [active, pending, expired]
+          description: >-
+            active counts; pending waits for a second admin's approval and grants nothing; expired
+            grants nothing (its expiry passed). A policy of the configuration is active.
+        renewal:
+          type: object
+          description: A renewal that waits for an admin's approval.
+          required: [expiresAt]
+          properties:
+            expiresAt: {type: string, format: date-time}
         createdBy: {type: string, description: The principal that made a policy of the API.}
         createdAt: {type: string, format: date-time}
+        updatedBy: {type: string, description: "The principal of its latest create, change or renewal, who may not approve what waits."}
         updatedAt: {type: string, format: date-time}
+        approvedBy: {type: string, description: The principal of its latest approval.}
+        approvedAt: {type: string, format: date-time}
+    CIPolicyRenewal:
+      type: object
+      additionalProperties: false
+      properties:
+        expiresAt: {type: string, format: date-time, description: "At most 180 days ahead; by default 180 days ahead."}
     CIGrant:
       type: object
       required: [role, mask]
@@ -3454,7 +3571,11 @@ components:
         events:
           type: array
           description: The types it gets; empty, every type.
-          items: {type: string, enum: [version.published, version.deleted, repo.created, repo.deleted]}
+          items:
+            type: string
+            enum: [version.published, version.deleted, repo.created, repo.deleted, policy.rule.created, policy.rule.deleted,
+              policy.verdict.created, policy.verdict.deleted, ci.policy.created, ci.policy.updated, ci.policy.renewed,
+              ci.policy.approved, ci.policy.expired, ci.policy.deleted]
         active: {type: boolean}
         description: {type: string}
         createdBy: {type: string, description: The principal that created it.}
@@ -3485,7 +3606,11 @@ components:
         url: {type: string, maxLength: 2048}
         events:
           type: array
-          items: {type: string, enum: [version.published, version.deleted, repo.created, repo.deleted]}
+          items:
+            type: string
+            enum: [version.published, version.deleted, repo.created, repo.deleted, policy.rule.created, policy.rule.deleted,
+              policy.verdict.created, policy.verdict.deleted, ci.policy.created, ci.policy.updated, ci.policy.renewed,
+              ci.policy.approved, ci.policy.expired, ci.policy.deleted]
         active: {type: boolean}
         description: {type: string, maxLength: 256}
     WebhookSecret:
