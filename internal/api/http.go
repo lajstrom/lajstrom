@@ -68,6 +68,12 @@ type Options struct {
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
+	// Passwords checks the password of POST /api/v1/login: the server's authenticator; nil
+	// answers a password sign-in 501.
+	Passwords Passwords
+	// LoginLifetime is auth.login.tokenLifetime, the lifetime of the token of POST
+	// /api/v1/login; zero means DefaultLoginLifetime.
+	LoginLifetime time.Duration
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -130,6 +136,7 @@ const maxBody = 64 << 10
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
 //	POST   /api/v1/bootstrap                           the first admin, for the bootstrap token; 404 once an admin exists
+//	POST   /api/v1/login                               sign in a web UI with a password: a short-lived personal access token
 //	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
 //
 // Every other method and path under /api/ is a JSON NOT_FOUND. Answers are JSON;
@@ -140,7 +147,10 @@ func New(o Options) http.Handler {
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
 		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
-		webhooks: o.Webhooks}
+		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime}
+	if h.loginLifetime <= 0 {
+		h.loginLifetime = DefaultLoginLifetime
+	}
 	if h.info.Formats == nil {
 		h.info.Formats = []FormatInfo{}
 	}
@@ -232,6 +242,7 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
 		{"POST /api/v1/bootstrap", h.bootstrap},
+		{"POST /api/v1/login", h.login},
 	}
 }
 
@@ -252,7 +263,10 @@ type handler struct {
 	info ServerInfo
 	// webhooks is Options.Webhooks.
 	webhooks *webhook.Service
-	log      *slog.Logger
+	// passwords and loginLifetime are Options.Passwords and Options.LoginLifetime, never zero.
+	passwords     Passwords
+	loginLifetime time.Duration
+	log           *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON

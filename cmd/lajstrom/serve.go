@@ -213,7 +213,8 @@ func newServeCmd(a *app) *cobra.Command {
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL,
-				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable})
+				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
+				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime})
 			srv, err := server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,

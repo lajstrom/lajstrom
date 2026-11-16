@@ -510,6 +510,8 @@ type Auth struct {
 	Kubernetes Kubernetes `yaml:"kubernetes"`
 	// ServiceAccounts is the policy of the service accounts (docs/spec/rbac.md §1, #1020).
 	ServiceAccounts ServiceAccounts `yaml:"serviceAccounts"`
+	// Login is the sign-in of a web UI, POST /api/v1/login (docs/spec/rbac.md §10, #70).
+	Login Login `yaml:"login"`
 }
 
 // Kubernetes configures Kubernetes service-account tokens as a credential of /v2/token
@@ -609,6 +611,20 @@ const (
 	OwnerFlag = "flag"
 	// OwnerDisable disables the enabled service accounts of an owner when the owner is disabled.
 	OwnerDisable = "disable"
+)
+
+// Login configures POST /api/v1/login (docs/spec/rbac.md §10).
+type Login struct {
+	// TokenLifetime is the lifetime of the personal access token a sign-in answers;
+	// DefaultLoginTokenLifetime when the file leaves it out, at most MaxLoginTokenLifetime.
+	TokenLifetime time.Duration `yaml:"tokenLifetime"`
+}
+
+// Bounds of auth.login.tokenLifetime: a web UI's token is short-lived, and one for longer is a
+// personal access token the person makes.
+const (
+	DefaultLoginTokenLifetime = 12 * time.Hour
+	MaxLoginTokenLifetime     = 24 * time.Hour
 )
 
 // OIDC configures the OIDC login (docs/spec/rbac.md §8): one IdP, whose relying party Lajstrom
@@ -813,7 +829,8 @@ func Default() *Config {
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth: Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
-			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag}},
+			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},
+			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime}},
 		Keys:        Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 		Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: DefaultSignedCertificateTimestamps}},
 		Webhooks: Webhooks{Timeout: DefaultWebhookTimeout, MaxAttempts: DefaultWebhookMaxAttempts, Retention: DefaultWebhookRetention,

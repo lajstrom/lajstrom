@@ -1204,6 +1204,50 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
+  /api/v1/login:
+    post:
+      tags: [tokens]
+      operationId: login
+      summary: Sign in a web UI; the answer is a short-lived personal access token, once.
+      description: >-
+        For a local user's name and password, checked as Basic credentials are, with the same
+        throttles of failed logins. The answer is a personal access token of the user without
+        scopes, named login <time> <4 hex>, that expires after auth.login.tokenLifetime (12
+        hours by default); there is no refresh. The UI sends it as a bearer and revokes it at
+        sign-out with DELETE /api/v1/users/{user}/tokens/{id}. The request takes no credential:
+        its Authorization header is ignored. No answer sets a cookie (docs/spec/rbac.md §10).
+      security:
+        - {}
+      requestBody:
+        description: The credential of the sign-in.
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/LoginRequest"}
+      responses:
+        "201":
+          description: The token and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedToken"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401":
+          description: The user name or the password is wrong, or the user may not sign in; the reason is not told.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "429":
+          description: Too many failed logins of the account or from the client address; try again after Retry-After.
+          headers:
+            Retry-After:
+              description: Seconds to wait.
+              schema: {type: integer}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/openapi.yaml:
     get:
       tags: [meta]
@@ -1779,6 +1823,14 @@ components:
         token: {type: string}
         name: {type: string}
         password: {$ref: "#/components/schemas/Password"}
+    LoginRequest:
+      description: "The body of a sign-in: a local user's name and password."
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username: {type: string}
+        password: {type: string}
     UserPatch:
       type: object
       additionalProperties: false
