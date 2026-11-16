@@ -211,6 +211,7 @@ func (h *handlers) tarball(w http.ResponseWriter, r *http.Request, repo index.Re
 		return
 	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
+		Subject:     format.VersionSubject(repo, m.Package, m.Version),
 		ContentType: "application/octet-stream", LastModified: m.Version.CreatedAt, ManifestDigest: m.Version.Digest,
 		Redirect: format.BlobRedirect(repo), Fail: func(w http.ResponseWriter, err error) { h.fail(w, r, err) },
 	})

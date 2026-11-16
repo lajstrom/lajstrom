@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 )
 
 // CachedDocument returns the index document kind of scope of repo: from index_cache when it is
@@ -27,26 +28,36 @@ import (
 // is rendered with RenderGroupIndex over the group's members (ListGroupMembers, in the same
 // transaction), and the documents are kept under the group, with the group's generation, which
 // an invalidation of a member's documents increments (docs/spec/proxy-and-group.md §8.6).
+//
+// The policy of ctx (policy.FromContext) is read once per render (policy.View): RenderIndex
+// reads the index through its Reader, which leaves out the versions it refuses, and every
+// document is stored with View.Until as its ExpiresAt; a row whose ExpiresAt has passed is
+// rendered again (docs/spec/policy.md §6.1).
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error) {
 	var found *index.Cache
 	err := st.Tx(ctx, func(tx index.Writer) error {
+		now := time.Now().UTC()
 		c, err := tx.GetIndexCache(ctx, repo.ID, string(scope), kind)
-		if err == nil {
+		if err == nil && !c.Expired(now) {
 			found = c
 			return nil
 		}
-		if !errors.Is(err, index.ErrNotFound) {
+		if err != nil && !errors.Is(err, index.ErrNotFound) {
 			return err
 		}
 		gen, err := tx.IndexCacheGeneration(ctx, repo.ID)
 		if err != nil {
 			return err
 		}
-		docs, err := render(ctx, tx, p, repo, scope)
+		view, err := policy.FromContext(ctx).View(ctx, tx, repo)
 		if err != nil {
 			return err
 		}
-		now := time.Now().UTC()
+		docs, err := render(ctx, view.Reader(tx), p, repo, scope)
+		if err != nil {
+			return err
+		}
+		expires := view.Until()
 		for _, d := range docs {
 			sum := sha256.Sum256(d.Content)
 			c := &index.Cache{
@@ -56,6 +67,7 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 				Content:    d.Content,
 				SHA256:     hex.EncodeToString(sum[:]),
 				RenderedAt: now,
+				ExpiresAt:  expires,
 			}
 			if _, err := tx.PutIndexCache(ctx, c, gen); err != nil {
 				return err

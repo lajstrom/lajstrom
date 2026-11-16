@@ -308,3 +308,7 @@ func (Plugin) LatestVersion(versions []string, state []index.JournalState) strin
 	}
 	return highest(func(string) bool { return true })
 }
+
+// CompareVersions compares two versions in PEP 440's order (format.VersionComparer, the order of
+// a policy rule's ranges); a version that is not PEP 440's is an error.
+func (Plugin) CompareVersions(a, b string) (int, error) { return compareVersions(a, b) }

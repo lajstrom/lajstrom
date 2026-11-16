@@ -20,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -70,6 +71,9 @@ type Options struct {
 	// OCIProxy serves the reads of oci proxy repos (proxy-and-group.md §11): *proxy.Core. Nil
 	// serves an oci proxy repo as a hosted one, from what the backend holds.
 	OCIProxy OCIProxy
+	// Policy decides the manifest reads of a repo with policy.enforcePull and the pushes to an
+	// oci repo (docs/spec/policy.md §6.3, §6.5); nil refuses nothing.
+	Policy *policy.Decider
 }
 
 // Ingester stores a manifest that a client pushed to a managed repo, and a referrer pushed to

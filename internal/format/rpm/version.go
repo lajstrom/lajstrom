@@ -168,3 +168,8 @@ func (Plugin) LatestVersion(versions []string, _ []index.JournalState) string {
 	}
 	return best
 }
+
+// CompareVersions compares two versions [epoch:]version[-release] in rpm's order
+// (format.VersionComparer, the order of a policy rule's ranges). Every string is a version in
+// it, so it never fails.
+func (Plugin) CompareVersions(a, b string) (int, error) { return compareVersions(a, b), nil }

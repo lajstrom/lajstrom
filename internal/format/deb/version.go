@@ -188,3 +188,7 @@ func (Plugin) LatestVersion(versions []string, _ []index.JournalState) string {
 	}
 	return best
 }
+
+// CompareVersions compares two versions in dpkg's order (format.VersionComparer, the order of a
+// policy rule's ranges); a version that dpkg refuses is an error.
+func (Plugin) CompareVersions(a, b string) (int, error) { return compareVersions(a, b) }

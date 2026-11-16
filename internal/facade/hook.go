@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -256,6 +257,8 @@ func (h *handler) readBack(ctx context.Context, t *target, rr provider.Repositor
 //	ingest.ErrConflict          409 TAG_INVALID with the conflict's message (a package path
 //	                            that another spelling holds or is being published to, #244)
 //	format.ErrUnsupported       501 UNSUPPORTED
+//	*policy.DeniedError         403 DENIED: the policy refuses the coordinates or the digest,
+//	                            the reason in the message and in detail (docs/spec/policy.md)
 //	provider.ErrLimit           403 DENIED: the registry refused the manifest or a blob for a
 //	                            limit or a quota of its own, which the message names (#357)
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
@@ -274,8 +277,11 @@ func ingestError(t *target, m ocispec.Manifest, err error) error {
 		conflict   *index.TagConflictError
 		tooLarge   *http.MaxBytesError
 		notVisible *ingest.NotVisibleError
+		denied     *policy.DeniedError
 	)
 	switch {
+	case errors.As(err, &denied):
+		return deniedError(denied)
 	case errors.As(err, &tooLarge):
 		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: err.Error(), err: err}
 	case errors.Is(err, ingest.ErrInvalid):
