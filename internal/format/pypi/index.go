@@ -120,13 +120,18 @@ func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]pr
 		var md struct {
 			RequiresPython string `json:"requires_python"`
 			CoreMetadata   string `json:"core_metadata"`
+			SHA256         string `json:"sha256"`
 		}
 		if v.Metadata != nil {
 			_ = json.Unmarshal(v.Metadata, &md) // Validate checked it; a row that does not parse has no extras
 		}
 		for _, f := range fs {
+			sha := f.Digest.Encoded()
+			if format.Encrypted(f) && md.SHA256 != "" { // the file's own, not its ciphertext's (manifest-profile.md §11)
+				sha = md.SHA256
+			}
 			pf := projectFile{
-				Filename: f.Name, URL: fileURL(pkg.Name, v.Version, f.Name), Hashes: map[string]string{"sha256": f.Digest.Encoded()},
+				Filename: f.Name, URL: fileURL(pkg.Name, v.Version, f.Name), Hashes: map[string]string{"sha256": sha},
 				RequiresPython: md.RequiresPython, CoreMetadata: false, DistInfo: false, Size: &f.Size,
 				UploadTime: v.CreatedAt.UTC().Format(uploadTimeLayout), Yanked: false,
 			}
