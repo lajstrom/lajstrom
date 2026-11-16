@@ -244,3 +244,44 @@ role on a mask; the answer is a `ljs_ci_` token of 15 minutes for the principal
   on one replica fails on another, as a bearer does.
 - A pull request's job never writes through a CI token, a preview build of a pull request
   included; it uses a deploy token in a secret that forks do not see, or a policy that reads.
+
+## Amendment (maintainer, 2026-11-16)
+
+The maintainer decided on the defaults (comment on #937): trust policies live in the
+configuration **and** the API; rights come from the policy's `grants` and a `ci:` binding stays
+refused; a refused exchange writes an audit row, rate-limited per source; the rest as proposed
+(RFC 8693 at `POST /-/oidc/token`, a token of 15 minutes, numeric project ids, a ref or an
+environment to write, pull and merge requests never write). This replaces option 2A by 2B under
+the limits below, and the refusals' "no row".
+
+- **Policies of the API.** An admin creates, replaces and deletes them under
+  `/api/v1/ci/policies` and with `lajstrom admin ci-policy`, a resource of `system`; each change
+  is a `ci.policy.create`, `ci.policy.update` or `ci.policy.delete` row with the policy's issuer,
+  claims and grants (and the previous ones for a change). They are rows of a table of the control
+  plane, `ci_policies` (migration 0033), and go into a snapshot. The rules are the
+  configuration's, checked by the same code, with `400` naming the field. The policies of the
+  configuration are shown through the API as `source: config` and stay read-only there (`409`),
+  one owner per object as ADR 0015 has it.
+- **Without a restart.** Every change moves `auth_version` in its transaction, as a binding does,
+  and a replica reads the policies of the index again when the counter moved, before each
+  exchange and each request with a CI token. Chosen over a cache with a lifetime: no window in
+  which a deleted policy still grants, and the read of the counter is the one RBAC makes already.
+- **Policies of the API read.** A policy of the API grants `reader` only (`403` for one that
+  writes), and one that writes in the index (from a snapshot) is left out of the evaluation, with a
+  warning. A stolen admin credential then adds a policy that reads at most: it can leak internal
+  artifacts, never publish one. The policies that write stay in the configuration, reviewed in
+  git.
+- **Refusals.** A `400 invalid_grant` is a `token.exchange` row with `outcome: refused`, its
+  reason, the issuer, and for a token that verified its principal and the claims that say who and
+  where (ids, project, ref, environment, event); never the token, never a claim of a token that
+  did not verify. Rate-limited per replica by `<issuer>/<project id>` for a token that verified and
+  by the client address otherwise: one row a minute per key, with `suppressed`, the refusals of
+  the key left without a row since the one before; at most 10 000 keys. A project that misses its
+  policy writes a row a minute, not one per retry of its job, and a flood from one address one row
+  a minute; the info log keeps every refusal.
+
+Consequences of the amendment: a policy can be added at night by whoever holds an admin's
+credential, visible in the audit log only; the policies of a server are its configuration's and
+its index's, so `lajstrom admin ci-policy list` (or the API) shows them both, and a restore from a
+snapshot brings the API's back. A replica of the release before the migration does not read the
+table: its CI tokens get the configuration's grants only until it is replaced.

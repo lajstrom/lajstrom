@@ -861,6 +861,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | every token | `GET /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]` |
 | registries | `GET /api/v1/registries` |
 | policy (#101, [policy.md](policy.md)) | `GET /api/v1/policy/rules[?repo=]`, `POST /api/v1/policy/rules`, `DELETE /api/v1/policy/rules/<id>`, `GET /api/v1/policy/verdicts?digest=&repo=`, `POST` and `DELETE /api/v1/repos/<format>/<repo>/packages/<name>/versions/<version>/deny[?variant=]`, `GET /api/v1/policy/denylist`, `GET /api/v1/policy/key` |
+| CI trust policies (rbac.md §11, #937) | `GET /api/v1/ci/policies`, `POST /api/v1/ci/policies`, `GET/PUT/DELETE /api/v1/ci/policies/<name>`; the admin role. A policy is `{name, issuer, claims, grants}`, answered with `source` (`config` or `api`) and, for the API's, `createdBy`, `createdAt` and `updatedAt`. `POST` answers `201` with its `Location`; `PUT` replaces `issuer`, `claims` and `grants`, its body's `name`, when present, the path's; `DELETE` `204`. A rule of rbac.md §11 broken is `400` naming the field; a policy that writes `403`; a `PUT` or `DELETE` of a policy of the configuration, and a `POST` with a name that is taken, `409`; an unknown name `404` |
 | webhooks (#77, [webhooks.md](webhooks.md)) | a repo's: `GET/POST /api/v1/repos/<format>/<repo>/webhooks`, `GET/PATCH/DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`; every mask: the same under `/api/v1/webhooks` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
@@ -1470,7 +1471,8 @@ token) and `subject_token_type`, `urn:ietf:params:oauth:token-type:jwt` or
 - `400 invalid_grant`: a subject token that is not a JWT of a configured issuer, that does not
   verify, whose project breaks rbac.md §11, or that no policy matches. The description says which,
   and for the last the token's issuer, project, ref, environment and event (`pipeline_source` on
-  GitLab), never a policy;
+  GitLab), never a policy. Each is a `token.exchange` row of `outcome` `refused`, rate-limited
+  (rbac.md §11);
 - `503` `{"error": "temporarily_unavailable"}` with `Retry-After: 30` while the issuer's
   discovery document or keys never loaded;
 - `429` with `Retry-After` beyond the rate limit of `/v2/token` (rbac.md §1), against which every

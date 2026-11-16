@@ -115,7 +115,7 @@ deleting it, nor deleting its `admin` binding.
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
 are after the MVP. Three system-level resources, which only the `admin` role reaches: `system`
 (users, bindings, registries, creating a repo, every user's tokens, every token at once
-(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask), `audit`, and
+(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask, the CI trust policies of §11), `audit`, and
 `policy` (the policy rules of any mask other than one repo, and the list of every rule;
 [policy.md](policy.md), #101).
 
@@ -385,7 +385,9 @@ one read that is audited, so that a refusal can be traced to its rule or verdict
 deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself. A CI token's
-exchange is: `token.exchange`, one row per token minted (§11).
+exchange is: `token.exchange`, a row per token minted and, rate-limited, per refusal; and so is
+every change of a CI trust policy through the API, `ci.policy.create`, `ci.policy.update` and
+`ci.policy.delete` (§11).
 
 ## 6. Bootstrap
 
@@ -772,8 +774,10 @@ its tokens; https, http only with `server.insecureHTTP`), the `audience` (by def
 private CA signed. A name follows the rule of §9's names; no two issuers have the same name or
 the same issuer.
 
-**Trust policies.** `auth.ci.policies` lists the policies, each with a `name` (the rule of §9's
-names, unique), an `issuer` (the name of an issuer of `auth.ci.issuers`), `claims` and `grants`.
+**Trust policies.** A policy comes from the configuration, `auth.ci.policies`, or from the API,
+`/api/v1/ci/policies` (http-routing.md §4) and `lajstrom admin ci-policy`; each has one owner
+(ADR 0015) and is described below. A policy has a `name` (the rule of §9's names, unique among
+both), an `issuer` (the name of an issuer of `auth.ci.issuers`), `claims` and `grants`.
 `claims` maps a claim to a value or a list of values: a token matches the policy when, for every
 claim of the map, the token has the claim and its value matches one of the values. `grants` is a
 list of one or more `{role, mask}`: a role `reader`, `writer` or `maintainer` (`admin` is
@@ -792,8 +796,8 @@ A claim of the token is compared as a string: a string as it is, a number or a b
 JSON text (`123`, `true`); any other value matches nothing. An id is decimal digits. A value of a
 pattern may hold `*`, which matches any run of characters but `/`, and `**`, which matches any
 run; no other character is special, and a value without `*` matches itself only. A value of
-any other claim matches itself only, and holds no `*`. The configuration is refused at start, naming the policy and the key,
-when a policy:
+any other claim matches itself only, and holds no `*`. The configuration is refused at start, and
+a policy of the API with `400` naming the field, when a policy:
 
 - names a claim that is not in the table for its issuer's platform, or a value that is empty,
   made only of `*`, not decimal for an id, or holds `*` in a claim that is not a pattern;
@@ -803,6 +807,19 @@ when a policy:
 - grants `writer` or `maintainer` and its `event_name` (GitHub) or `pipeline_source` (GitLab)
   names only events of a pull request (below);
 - grants `admin`, or a mask that breaks the grammar above, or nothing.
+
+**Policies of the API.** The CI trust policies are a resource of `system` (§2): the routes and the
+command line take the admin role, checked before the body is read. A policy made through them is
+a row of `ci_policies` (index-schema.md), owned by the API; one of the configuration is shown
+through the API with `source` `config`, and is changed only in the configuration: a `PUT` or a
+`DELETE` of it is `409`, and so is a `POST` with the name of either. The same rules as the
+configuration's apply, and its issuer must be an issuer of the configuration. A policy of the API
+grants `reader` only: one that grants `writer` or `maintainer` is `403`, and one that is in the
+index (restored from a snapshot) is left out of the policies the replica evaluates, logged at
+warn, as is a row that breaks a rule or has the name of a policy of the configuration. Every create, change and delete moves `auth_version` in its transaction, and
+writes its row (Audit, below). Each replica reads the policies of the index again when
+`auth_version` moved, which it reads before each exchange and each request with a CI token: a
+change counts from the next request on, on every replica, without a restart.
 
 **A pull request never writes.** A policy that grants `writer` or `maintainer` never matches a
 token of a pull request, whatever its conditions: on GitHub one whose `event_name` is
@@ -836,25 +853,42 @@ every route and on `/v2/token` (`GET`, and the `POST` form); `Authorization: Bea
 `aud` `lajstrom:ci`, `exp` required, 60 s of leeway, `sub` a `ci:` principal. A token that does
 not verify is `401` with the challenge, and counts as no failed login.
 
-**What it may do.** The grants of the policies the token names, as the configuration of the
-replica that serves the request has them: step 2 of §3. A policy removed from the configuration
-grants nothing from that replica's restart on, and a token none of whose policies the replica has
-is `401`. It never reaches `system` nor `audit`, and creates no personal access token and no
+**What it may do.** The grants of the policies the token names, as the replica that serves the
+request has them: step 2 of §3. A policy removed from the configuration grants nothing from that
+replica's restart on, one deleted through the API from the next request on, and a token none of
+whose policies the replica has is `401`. It never reaches `system` nor `audit`, and creates no personal access token and no
 deploy token (§3). The bearer `/v2/token` issues on it names the `ci:` principal as its `sub` and
 is issued as any (§4): its access is reduced by the grants when it is issued, and it is trusted
 for its 20 minutes. It carries the CI token's id as the claim `ci`.
 
-**Revocation.** A CI token is not revoked alone. It ends at its `exp`; a policy removed ends it at
-the restart of each replica; `lajstrom admin key rotate --token --drop` ends it with every
-bearer (§4).
+**Revocation.** A CI token is not revoked alone. It ends at its `exp`; a policy of the API deleted
+ends it at its next request, one of the configuration removed at the restart of each replica;
+`lajstrom admin key rotate --token --drop` ends it with every bearer (§4).
 
 **Audit.** A token minted is a `token.exchange` row (§5), in a transaction of its own, by the
-`ci:` principal: `subject` the principal, no `repo`, and `details` with `source` `ci`, `issuer`
-(the name), `policies`, `token` (the `jti`), `expiresAt`, and `claims`, the claims of the token
+`ci:` principal: `subject` the principal, no `repo`, and `details` with `source` `ci`, `outcome` `minted`,
+`issuer` (the name), `policies`, `token` (the `jti`), `expiresAt`, and `claims`, the claims of the token
 that the table names for its platform, with `run_id`, `run_attempt` and `sha` on GitHub and
 `pipeline_id`, `job_id` and `sha` on GitLab, each a string of at most 256 bytes; never the subject
 token, the CI token, nor `user_email`. The rows that ingest and the facade write for a request of
 a CI token (its pushes, deletes and a proxy's fetches) are rows of its principal whose
 `details.ciToken` is the CI token's id, also through a bearer that names one (`ci`), and
-`lajstrom.uploaded-by` names the principal. A refused exchange writes no row: it is logged at info
-with its reason, the issuer, and the project when the token verified, never the token.
+`lajstrom.uploaded-by` names the principal.
+
+A refusal of the subject token (`400 invalid_grant`) is a `token.exchange` row too, with
+`outcome` `refused` and the `reason`: by the `ci:` principal when the token verified and its
+project keeps the grammar, by `anonymous` otherwise; `details` with `issuer` when the token's
+`iss` names one, and, for a token that verified only, `claims` limited to the ids, the project,
+`ref`, `ref_type`, `environment` and the event (`event_name`, `pipeline_source`). The rows of
+refusals are rate-limited on each replica by a key, `<issuer>/<project id>` (`repository_id`,
+`project_id`) for a token that verified and the client address otherwise: one row a minute per
+key, whose `details.suppressed` counts the refusals of its key left without a row since the row
+before. At most 10 000 keys are kept, and a refusal of a key beyond them writes no row. Each
+refusal is logged at info as well, with its reason, the issuer and the project when the token
+verified, never the token.
+
+A create, change or delete of a policy through the API is `ci.policy.create`, `ci.policy.update`
+or `ci.policy.delete`, in its transaction, by the admin, `subject` the policy's name, no `repo`,
+and `details` with the policy, `issuer`, `claims` and `grants` (those it had, for a delete), the
+`previous` ones for a change, and the origin's keys (`source` `api` or `cli`, `requestId`,
+`host`).
