@@ -143,12 +143,12 @@ func (c *conn) DeleteEmptyPackages(ctx context.Context, repoID int64) (int, erro
 		repoID)
 }
 
-const versionCols = "id, package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded, oci_repo"
+const versionCols = "id, package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded, oci_repo, summary"
 
 func versionDests(v *index.Version) []any {
 	return []any{&v.ID, &v.PackageID, &v.Version, &v.Variant, &v.Tag, (*string)(&v.Digest), &v.ArtifactType,
 		jsonDest[map[string]string]{&v.Attrs}, rawDest{&v.Metadata}, timeDest{&v.CreatedAt}, timeDest{&v.IndexedAt}, &v.Degraded,
-		textDest{&v.OCIRepo}}
+		textDest{&v.OCIRepo}, textDest{&v.Summary}}
 }
 
 func versionMatchDests(m *index.VersionMatch) []any {
@@ -262,10 +262,11 @@ func (c *conn) UpsertVersion(ctx context.Context, v *index.Version) error {
 			return c.packageCreated(ctx, v.PackageID, err)
 		}
 		inserted, err := c.insertID(ctx, fmt.Sprintf("versions %q of package %d", v.Tag, v.PackageID),
-			"INSERT INTO versions (package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded, oci_repo)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+			"INSERT INTO versions (package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded, oci_repo, summary)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
 			[]any{v.PackageID, v.Version, v.Variant, v.Tag, string(v.Digest), v.ArtifactType, attrsArg(v.Attrs),
-				rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt), v.Degraded, textArg(v.OCIRepo)},
+				rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt), v.Degraded, textArg(v.OCIRepo),
+				summaryArg(v)},
 			&v.ID)
 		if inserted || err != nil {
 			return c.packageCreated(ctx, v.PackageID, err)
@@ -293,10 +294,10 @@ func (c *conn) refreshVersion(ctx context.Context, v *index.Version) (bool, erro
 	}
 	v.ID = existing.ID
 	return true, c.execOne(ctx, fmt.Sprintf("versions id %d", v.ID),
-		"UPDATE versions SET artifact_type = ?, attrs = ?, metadata = ?, created_at = ?, indexed_at = ?, degraded = ?, oci_repo = ?"+
-			" WHERE id = ?",
+		"UPDATE versions SET artifact_type = ?, attrs = ?, metadata = ?, created_at = ?, indexed_at = ?, degraded = ?, oci_repo = ?,"+
+			" summary = ? WHERE id = ?",
 		v.ArtifactType, attrsArg(v.Attrs), rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt),
-		v.Degraded, textArg(v.OCIRepo), v.ID)
+		v.Degraded, textArg(v.OCIRepo), summaryArg(v), v.ID)
 }
 
 // lockPackage locks the package row that where selects, by its id or by the id of a version of

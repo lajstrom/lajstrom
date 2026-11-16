@@ -386,6 +386,11 @@ type Version struct {
 	CreatedAt    time.Time         // org.opencontainers.image.created
 	IndexedAt    time.Time         // when ingest or reindex last wrote or saw the row
 	Degraded     bool              // written from the annotations alone: the metadata layer was unreadable
+	// Summary is one line of Metadata, profile.Summary (docs/spec/manifest-profile.md §2, The
+	// summary): "" when the manifest has none, and in a row written before migration 0029. The
+	// store writes it empty, not NULL, in a row that keeps its Metadata, so that a row written
+	// before 0029 is told apart (ListVersionsWithoutSummary).
+	Summary string
 	// OCIRepo is the package path of the OCI repository that holds the manifest when it is not
 	// the package's NameOCI: a version that reindex found at another form of the package's OCI
 	// name (ADR 0017, a split, #642). "" otherwise, and in every row ingest writes. ManifestPath

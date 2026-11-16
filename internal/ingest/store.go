@@ -709,7 +709,8 @@ func (pub *publish) releaseClaims(ctx context.Context, w index.Writer) error {
 }
 
 // version is the versions row of pub. CreatedAt is org.opencontainers.image.created, or now
-// when the annotation is zero.
+// when the annotation is zero; Summary is read from the metadata the row keeps, so a row
+// without it has none.
 func (pub *publish) version(packageID int64, now time.Time) index.Version {
 	a := pub.parsed.Annotations
 	created := a.Created
@@ -718,7 +719,7 @@ func (pub *publish) version(packageID int64, now time.Time) index.Version {
 	}
 	return index.Version{PackageID: packageID, Version: a.Version, Variant: a.Variant, Tag: pub.tag, Digest: pub.digest,
 		ArtifactType: pub.manifest.ArtifactType, Attrs: a.Attrs, Metadata: pub.metadata, CreatedAt: created, IndexedAt: now,
-		Degraded: pub.degraded}
+		Degraded: pub.degraded, Summary: profile.Summary(pub.manifest.ArtifactType, pub.metadata)}
 }
 
 // files are the files rows of pub, one per file layer in manifest order.

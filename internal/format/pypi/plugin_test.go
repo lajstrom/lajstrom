@@ -230,7 +230,8 @@ func TestValidateRefuses(t *testing.T) {
 
 // TestIngestSpellings uploads two versions through the real pipeline, the first as Requests
 // and the second as requests: one package, as decided on #31, where the original spelling
-// would have been a 409 on the second; the package row has the normalized name.
+// would have been a 409 on the second; the package row has the normalized name. Each version
+// row has the summary of its wheel (#954).
 func TestIngestSpellings(t *testing.T) {
 	ctx := t.Context()
 	st, err := sqlite.Open(ctx, "file:pypi-"+t.Name()+"?mode=memory&cache=shared")
@@ -242,7 +243,8 @@ func TestIngestSpellings(t *testing.T) {
 	pipe := ingest.New(ingest.Options{Providers: provider.Map{"local": &providertest.Fake{RegistryName: "local"}}, Index: st,
 		Log: slog.New(slog.DiscardHandler), Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
 	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
-	for _, o := range []testutil.WheelOptions{{Name: "Requests", Version: "2.31.0"}, {Name: "requests", Version: "2.32.3"}} {
+	wheels := []testutil.WheelOptions{{Name: "Requests", Version: "2.31.0", Summary: "HTTP"}, {Name: "requests", Version: "2.32.3", Summary: "Python HTTP for Humans."}}
+	for _, o := range wheels {
 		whl, wi := testutil.Wheel(o)
 		if _, err := pipe.Upload(ctx, r, upload(wi.Filename, whl), alice); err != nil {
 			t.Fatalf("upload %s: %v", wi.Filename, err)
@@ -256,6 +258,11 @@ func TestIngestSpellings(t *testing.T) {
 	versions, err := st.ListVersions(ctx, pkgs[0].ID)
 	must(t, err)
 	if len(versions) != 2 {
-		t.Errorf("%d versions, want 2", len(versions))
+		t.Fatalf("%d versions, want 2", len(versions))
+	}
+	for i, v := range versions {
+		if v.Summary != wheels[i].Summary {
+			t.Errorf("version %s: summary %q, want %q", v.Version, v.Summary, wheels[i].Summary)
+		}
 	}
 }
