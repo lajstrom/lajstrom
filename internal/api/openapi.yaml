@@ -1947,8 +1947,8 @@ components:
       description: >-
         The policy of a repo: the keys the server reads, with their defaults when absent
         (maxFileSize by format: npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB;
-        blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256, maven.versionPolicy
-        release). Any other key is 400.
+        blobRedirect auto, encryption.mode none, maven.sessionTimeout 30m, maven.maxSessionFiles 256,
+        maven.versionPolicy release). Any other key is 400.
       additionalProperties: false
       properties:
         maxFileSize:
@@ -1957,6 +1957,27 @@ components:
           minimum: 1
           description: The largest file an upload, or a /v2 blob, may carry, in bytes; on every repo, oci included.
         blobRedirect: {type: string, enum: [auto, never]}
+        encryption:
+          type: object
+          description: >-
+            Whether the repo keeps its files encrypted in the registry (ADR 0009). at-rest needs at least one
+            recipient, the recovery recipient, and is refused on an oci repo and on a server without the master
+            key; a change applies to the files stored after it.
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, enum: [none, at-rest]}
+            key:
+              type: string
+              description: The key URI of an RSA decryption key in a KMS that the repo's next key is, or empty for one Lajstrom makes.
+              examples: ["awskms:///alias/lajstrom-secrets"]
+            recipients:
+              type: array
+              maxItems: 8
+              description: >-
+                PEM public keys (RSA of 2048 bits or more, EC P-256, P-384, P-521) every new data key is wrapped for
+                too; at least one with at-rest.
+              items: {type: string}
         maven:
           type: object
           description: A maven repo only.
@@ -1989,6 +2010,13 @@ components:
       properties:
         maxFileSize: {type: [integer, "null"], format: int64, minimum: 1}
         blobRedirect: {type: [string, "null"], enum: [auto, never, null]}
+        encryption:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            mode: {type: [string, "null"], enum: [none, at-rest, null]}
+            key: {type: [string, "null"]}
+            recipients: {type: [array, "null"], maxItems: 8, items: {type: string}}
         maven:
           type: [object, "null"]
           additionalProperties: false

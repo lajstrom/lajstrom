@@ -134,7 +134,9 @@ func (a *app) withRepos(ctx context.Context, caps capabilities, fn func(context.
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, newRepos(a.cfg, st, a.log, caps))
+	repos := newRepos(a.cfg, st, a.log, caps)
+	repos.Encryption = masterConfigured(a.cfg, a.lookupEnv)
+	return fn(ctx, repos)
 }
 
 // capabilities is the lookup of api.Repos.Capabilities: the capabilities of a configured

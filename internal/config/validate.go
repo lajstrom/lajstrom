@@ -51,6 +51,11 @@ func CheckIdentitySource(name string) error {
 const ReservedRepoName = "ends in blobs, .uploads or .sync, or is index.json, oci-layout, manifests, referrers or " +
 	"tags, names that Zot's storage or Harbor's routes keep for themselves (ADR 0017)"
 
+// AtRestNeedsRecipient says why policy.encryption at-rest without a recipient is refused; the
+// management API says the same (decided on #114).
+const AtRestNeedsRecipient = "at-rest needs at least one recipient, the recovery recipient: " +
+	"a public key that decrypts the repo's files if the master key or the KMS key is lost"
+
 // Validate checks c and returns nil or one error per problem, joined with errors.Join. Each
 // error starts with the key it is about, e.g. "repos[0].registry: …". Errors never contain
 // a password.
@@ -695,6 +700,21 @@ func (r Repo) validate(p *problems, key string) {
 		p.add(key+".policy", "a group has none; its members' policies apply")
 	case r.Kind != KindGroup && r.Registry == "":
 		p.add(key+".registry", "must not be empty")
+	}
+	r.validateEncryption(p, key)
+}
+
+// validateEncryption refuses policy.encryption at-rest without a recipient, as the API does
+// (docs/api.md, the policy keys), so that such a repo stops the configuration's load rather than
+// its bootstrap. The other keys of the policy are the API's to check, when the bootstrap creates
+// the repo.
+func (r Repo) validateEncryption(p *problems, key string) {
+	enc, _ := r.Policy["encryption"].(map[string]any)
+	if mode, _ := enc["mode"].(string); mode != "at-rest" {
+		return
+	}
+	if list, _ := enc["recipients"].([]any); len(list) == 0 {
+		p.add(key+".policy.encryption.recipients", "%s", AtRestNeedsRecipient)
 	}
 }
 

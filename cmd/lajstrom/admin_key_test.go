@@ -180,7 +180,7 @@ func TestServeMasterKey(t *testing.T) {
 	runEnv(t, cfg, map[string]string{"LAJSTROM_MASTER_KEY": "xyz"}, []step{{args: []string{"serve"}, wantErr: "64 hexadecimal characters (32 bytes)"}})
 	runEnv(t, cfg, env, []step{{args: []string{"admin", "key", "export", "--repo", "apt/ubuntu"}}})
 	runEnv(t, cfg, nil, []step{{args: []string{"serve"},
-		wantErr: "keys.masterKeyEnv names LAJSTROM_MASTER_KEY, which is not set, and the index holds 1 signing keys that only the master key decrypts"}})
+		wantErr: "keys.masterKeyEnv names LAJSTROM_MASTER_KEY, which is not set, and the index holds 1 signing or encryption keys that only the master key decrypts"}})
 }
 
 // TestNewSigner checks the Signer of serve: the keys service with the master key; nil with a

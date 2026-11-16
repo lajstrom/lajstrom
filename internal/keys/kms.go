@@ -39,6 +39,21 @@ type KMS interface {
 	Sign(ctx context.Context, name string, pub crypto.PublicKey, digest []byte) ([]byte, error)
 }
 
+// DecryptKMS is a key management service that holds the RSA decryption keys of encrypted repos
+// and decrypts with them, so that the private key never leaves it (ADR 0009, Amendment):
+// internal/keys/awskms and internal/keys/gcpkms. Errors wrap ErrKMSUnavailable when asking again
+// later may succeed, and ErrKMSKeyUnsupported for a key that cannot decrypt as Encryption needs.
+type DecryptKMS interface {
+	// DecryptKey describes the key of name, a config.KMSKey's Name: its canonical name, which
+	// Decrypt gets from then on, and its public key, an *rsa.PublicKey of 2048 bits or more; an
+	// error wrapping ErrKMSKeyUnsupported names the spec of a key that is not an enabled RSA key
+	// for decryption with OAEP and SHA-256.
+	DecryptKey(ctx context.Context, name string) (*KMSKey, error)
+	// Decrypt returns the plaintext of ciphertext, RSAES-OAEP with SHA-256 and MGF1 with SHA-256
+	// without a label, decrypted by the key of the canonical name.
+	Decrypt(ctx context.Context, name string, ciphertext []byte) ([]byte, error)
+}
+
 // KMSKey describes a key of a KMS.
 type KMSKey struct {
 	// Name is the canonical name of the key in the KMS: an AWS key ARN, a GCP key version.
