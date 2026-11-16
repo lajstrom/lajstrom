@@ -543,6 +543,19 @@ signed it; it never refuses a push for its label.
 | `attachments.keyless.identities[].subjectRegex` | regular expression | empty | none | A Go regular expression the subject alternative name must match instead, `^https://github\.com/acme/.*@refs/tags/v.*$`. Anchor it: unanchored, it matches anywhere in the name. |
 | `attachments.keyless.identities[].predicateTypes` | list | empty | none | The predicate types the identity is trusted for, as for a key; empty: every type. |
 
+### policy
+
+The policy of [policy.md](policy.md) (#101): the server's policy key, which signs the verdicts
+the server makes and the deny list, and where the deny list is written.
+
+| Key | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `policy.signingKey` | string | `local` | none | The policy key, an ECDSA P-256 key made at the first start and kept in the index: `local`, its private key sealed with the master key (`keys.masterKeyEnv`, `keys.masterKeyFile`); or a key URI of a KMS (`awskms:///arn:…`, `gcpkms://…`, [ADR 0020](adr/0020-repo-signing-keys-in-a-cloud-kms.md)) of an ECDSA P-256 key, whose URI the index keeps sealed. Without a master key there is no policy key: rules and the verdicts of trusted producers hold, and a deny through the API is `501`. The key is made once; a change of this key does not replace it. |
+| `policy.denylist.registry` | string | the first of `registries` | none | The registry the signed deny list is written to, as `lajstrom/policy/denylist` below its prefix, by every replica that has the policy key, whenever the rules or verdicts change. |
+
+The public key is `GET /api/v1/policy/key`; `lajstrom reindex` trusts it from the index for the
+server's own verdicts, without the master key.
+
 ### repos
 
 Optional. Repos to create at startup when the control plane does not have them, the config

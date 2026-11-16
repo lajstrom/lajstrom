@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/policy"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
@@ -239,8 +241,139 @@ func (p *Pipeline) AttachVerdict(ctx context.Context, repo index.Repo, path stri
 		return "", err
 	}
 	r := Referrer{Path: path, Manifest: ref.Manifest, Desc: ref.Desc, Subject: subject}
-	return p.Attach(ctx, repo, r, []format.BlobSource{bytesSource(ocispec.DescriptorEmptyJSON, ocispec.DescriptorEmptyJSON.Data),
+	d, err := p.Attach(ctx, repo, r, []format.BlobSource{bytesSource(ocispec.DescriptorEmptyJSON, ocispec.DescriptorEmptyJSON.Data),
 		bytesSource(ref.BundleDesc, ref.Bundle)}, principal)
+	if err != nil {
+		return "", err
+	}
+	if err := p.attachLegacy(ctx, repo, path, subject, ref.Envelope, principal); err != nil {
+		p.log.WarnContext(ctx, "ingest: the verdict is not in cosign's legacy attestation; the bundle has it", "repo",
+			repo.Format+"/"+repo.Name, "subject", subject.String(), "error", err.Error())
+	}
+	return d, nil
+}
+
+// legacyTag is the tag of cosign's legacy attestation of subject.
+func legacyTag(subject digest.Digest) string {
+	return subject.Algorithm().String() + "-" + subject.Encoded() + ".att"
+}
+
+// legacyAttestation returns the manifest of cosign's legacy attestation of subject at path, nil
+// when there is none.
+func (p *Pipeline) legacyAttestation(ctx context.Context, rr provider.Repository, subject digest.Digest) (*ocispec.Descriptor, *ocispec.Manifest, error) {
+	desc, err := rr.Resolve(ctx, legacyTag(subject))
+	if errors.Is(err, provider.ErrNotFound) {
+		return nil, nil, nil
+	} else if err != nil {
+		return nil, nil, err
+	}
+	m, _, err := fetchManifest(ctx, rr, desc)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &desc, &m, nil
+}
+
+// attachLegacy adds the envelope of a verdict as one layer more to cosign's legacy attestation
+// of subject, the manifest under sha256-<hex>.att, which it writes when there is none
+// (docs/spec/manifest-profile.md §6.4): the form the Sigstore policy controller reads with a
+// key. The tag moves to the new manifest, as cosign moves it.
+func (p *Pipeline) attachLegacy(ctx context.Context, repo index.Repo, path string, subject digest.Digest, envelope []byte,
+	principal auth.Principal) error {
+	rr, err := p.repository(ctx, repo, path)
+	if err != nil {
+		return err
+	}
+	prev, m, err := p.legacyAttestation(ctx, rr, subject)
+	if err != nil {
+		return err
+	}
+	layer := attest.LegacyLayer(envelope)
+	var layers []ocispec.Descriptor
+	if m != nil {
+		layers = m.Layers
+	}
+	if slices.ContainsFunc(layers, func(l ocispec.Descriptor) bool { return l.Digest == layer.Digest }) {
+		return nil
+	}
+	return p.writeLegacy(ctx, repo, path, subject, prev, append(layers, layer), []format.BlobSource{bytesSource(layer, envelope)}, principal)
+}
+
+// writeLegacy writes cosign's legacy attestation of subject with layers, whose blobs the backend
+// has or blobs holds, and drops the verdicts rows of prev, the manifest the tag named, on an oci
+// repo (a managed repo's go with the legacy tag's attachments).
+func (p *Pipeline) writeLegacy(ctx context.Context, repo index.Repo, path string, subject digest.Digest, prev *ocispec.Descriptor,
+	layers []ocispec.Descriptor, blobs []format.BlobSource, principal auth.Principal) error {
+	raw, config, configDesc, err := attest.LegacyManifest(layers)
+	if err != nil {
+		return err
+	}
+	r := Referrer{Path: path, Tag: legacyTag(subject), Manifest: raw, Subject: subject,
+		Desc: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(raw), Size: int64(len(raw))}}
+	if _, err := p.Attach(ctx, repo, r, append([]format.BlobSource{bytesSource(configDesc, config)}, blobs...), principal); err != nil {
+		return err
+	}
+	if prev != nil && repo.Format == ociFormat {
+		return p.index.Tx(ctx, func(w index.Writer) error {
+			return p.deleteVerdicts(ctx, w, repo, prev.Digest, principal, nil)
+		})
+	}
+	return nil
+}
+
+// verdictsOfSource returns how many rows of rows are repo's verdicts of source, their layers, and
+// their referrers but legacy, the legacy attestation (nil for none).
+func verdictsOfSource(rows []index.Verdict, repo index.Repo, source string, legacy *ocispec.Descriptor) (int, map[digest.Digest]bool, []digest.Digest) {
+	drop := map[digest.Digest]bool{}
+	var referrers []digest.Digest
+	n := 0
+	for _, row := range rows {
+		if row.Source != source || row.RepoID != repo.ID {
+			continue
+		}
+		n++
+		drop[row.Layer] = true
+		if (legacy == nil || row.Referrer != legacy.Digest) && !slices.Contains(referrers, row.Referrer) {
+			referrers = append(referrers, row.Referrer)
+		}
+	}
+	return n, drop, referrers
+}
+
+// RemoveVerdicts removes the verdicts of source of the manifest subject at path of repo
+// (docs/spec/policy.md §7): their referrers are deleted (Delete), but cosign's legacy
+// attestation, which may hold others' too, which is written again without their layers, or
+// deleted when none is left. It returns how many verdicts rows it removed.
+func (p *Pipeline) RemoveVerdicts(ctx context.Context, repo index.Repo, path string, subject digest.Digest, source string,
+	principal auth.Principal) (int, error) {
+	rows, err := p.index.ListVerdicts(ctx, index.VerdictFilter{RepoID: repo.ID, Subject: subject})
+	if err != nil {
+		return 0, err
+	}
+	rr, err := p.repository(ctx, repo, path)
+	if err != nil {
+		return 0, err
+	}
+	legacy, m, err := p.legacyAttestation(ctx, rr, subject)
+	if err != nil {
+		return 0, err
+	}
+	removed, drop, referrers := verdictsOfSource(rows, repo, source, legacy)
+	for _, d := range referrers {
+		if _, err := p.Delete(ctx, repo, format.Deletion{Path: path, Reference: d.String()}, principal); err != nil &&
+			!errors.Is(err, index.ErrNotFound) {
+			return removed, err
+		}
+	}
+	if legacy == nil || !slices.ContainsFunc(m.Layers, func(l ocispec.Descriptor) bool { return drop[l.Digest] }) {
+		return removed, nil
+	}
+	kept := slices.DeleteFunc(slices.Clone(m.Layers), func(l ocispec.Descriptor) bool { return drop[l.Digest] })
+	if len(kept) == 0 {
+		_, err := p.Delete(ctx, repo, format.Deletion{Path: path, Reference: legacy.Digest.String()}, principal)
+		return removed, err
+	}
+	return removed, p.writeLegacy(ctx, repo, path, subject, legacy, kept, nil, principal)
 }
 
 // LiftQuarantine attaches the allow verdict of a version fetched into a proxy repo with a

@@ -65,6 +65,21 @@ func (v *fakeVerdicter) AttachVerdict(ctx context.Context, repo index.Repo, path
 	return ref, err
 }
 
+func (v *fakeVerdicter) RemoveVerdicts(ctx context.Context, repo index.Repo, _ string, subject digest.Digest, source string,
+	_ auth.Principal) (int, error) {
+	rows, err := v.st.ListVerdicts(ctx, index.VerdictFilter{RepoID: repo.ID, Subject: subject})
+	n := 0
+	for _, row := range rows {
+		if row.Source == source {
+			if _, err := v.st.DeleteOCIVerdicts(ctx, repo.ID, row.Referrer); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, err
+}
+
 func (v *fakeVerdicter) ResolveManifest(context.Context, index.Repo, string, string) (ocispec.Descriptor, error) {
 	return ocispec.Descriptor{Digest: digest.FromString("image")}, nil
 }
@@ -201,6 +216,8 @@ func TestPolicyDeny(t *testing.T) {
 		t.Errorf("a stranger sees the verdicts of raw/open: %+v", list)
 	}
 	wantStatus(t, f.do("GET", "/api/v1/policy/verdicts", "", admin), 400)
+	wantStatus(t, f.do("DELETE", "/api/v1/repos/raw/open/packages/tool/versions/0123456789abcdef/deny", "", carol), 204)
+	wantStatus(t, f.do("DELETE", "/api/v1/repos/raw/open/packages/tool/versions/0123456789abcdef/deny", "", carol), 404)
 	rr = f.do("GET", "/api/v1/policy/key", "", auth.Anonymous)
 	if rr.Code != 200 || rr.Header().Get("Content-Type") != "application/x-pem-file" || !strings.Contains(rr.Body.String(), "BEGIN PUBLIC KEY") {
 		t.Errorf("the key: %d %q %s", rr.Code, rr.Header().Get("Content-Type"), rr.Body)
