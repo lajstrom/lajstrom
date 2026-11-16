@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/attest"
@@ -15,6 +16,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/policy"
+	"github.com/lajstrom/lajstrom/internal/policy/denylist"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -113,4 +116,37 @@ func apiPolicyKey(key *keys.PolicyKey) api.PolicyKey {
 		return nil
 	}
 	return key
+}
+
+// locateIn returns the download paths of the versions of the formats of lookup whose plugin is a
+// format.Locator, for the deny list.
+func locateIn(lookup func(string) (format.Plugin, bool)) denylist.Locate {
+	return func(repo index.Repo, name, version string) (string, bool) {
+		p, ok := lookup(repo.Format)
+		if !ok {
+			return "", false
+		}
+		if l, ok := p.(format.Locator); ok {
+			return l.DownloadPrefix(repo, name, version)
+		}
+		return "", false
+	}
+}
+
+// startDenylist runs the writer of the deny list of serve on wg until ctx is done (docs/spec/
+// policy.md §8): into policy.denylist.registry, the first of registries when it is empty, signed
+// with key; nothing without a key or a registry.
+func startDenylist(ctx context.Context, c *config.Config, st index.Store, providers provider.Set, key *keys.PolicyKey,
+	locate denylist.Locate, wg *sync.WaitGroup, log *slog.Logger) {
+	name := c.Policy.Denylist.Registry
+	if name == "" && len(c.Registries) > 0 {
+		name = c.Registries[0].Name
+	}
+	prov, ok := providers.Provider(name)
+	if key == nil || !ok {
+		return
+	}
+	log.InfoContext(ctx, "the deny list is written into the registry", "registry", name, "repository", denylist.Repository)
+	w := &denylist.Writer{Index: st, Provider: prov, Key: key, Locate: locate, Log: log}
+	wg.Go(func() { w.Run(ctx) })
 }

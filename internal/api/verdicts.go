@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/policy"
+	"github.com/lajstrom/lajstrom/internal/policy/denylist"
 )
 
 // Verdicter attaches the verdicts the server makes and resolves the manifests they judge: the
@@ -303,4 +304,16 @@ func (h *handler) policyKeyPEM(w http.ResponseWriter, _ *http.Request) (int, any
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(h.policyKey.PEM())
 	return 0, nil, nil
+}
+
+// denylist answers GET /api/v1/policy/denylist: the deny list of docs/spec/policy.md §8, read from
+// the index now, with the entries of the repos the caller may read.
+func (h *handler) denylist(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	doc, err := denylist.Build(r.Context(), h.repos.Index, func(repo index.Repo) bool {
+		return h.allow(r, auth.ActionRead, repo.Format, repo.Name) == nil
+	}, h.locate)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, doc, nil
 }

@@ -77,6 +77,15 @@ type VersionComparer interface {
 	CompareVersions(a, b string) (int, error)
 }
 
+// Locator is a Plugin whose versions are downloaded below a path of their own (docs/spec/policy.md
+// §8): DownloadPrefix returns the path below the external URL that serves the files of the
+// version of name in repo and nothing else (pypi /pypi/<repo>/files/<name>/<version>/, maven the
+// version's directory, npm the tarball's path), false when it has none.
+type Locator interface {
+	Plugin
+	DownloadPrefix(repo index.Repo, name, version string) (string, bool)
+}
+
 // Admitter is a Plugin that checks a version against its repo's policy on a write
 // (docs/spec/manifest-profile.md §5): ingest calls Admit with the entry Validate returned, after
 // Validate, on every publish (an upload, the commit of a publication session, a manifest pushed
