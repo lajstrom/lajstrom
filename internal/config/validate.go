@@ -975,6 +975,7 @@ func (a Auth) validate(p *problems, s Server) {
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
 	a.Kubernetes.validate(p, s)
+	a.CI.validate(p, s)
 }
 
 // validate checks auth.kubernetes (docs/spec/rbac.md §9): each cluster's unique name, its issuer
