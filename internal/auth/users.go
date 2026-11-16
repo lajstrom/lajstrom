@@ -108,6 +108,10 @@ type Users struct {
 	// (docs/spec/rbac.md §1). False flags them only, ownerDisabled. Enabling the owner again
 	// enables none of them.
 	DisableWithOwner bool
+	// InactiveAfter is auth.disableInactiveUsersAfter (docs/spec/rbac.md §1, Inactive users): an
+	// OIDC login of a user inactive beyond it disables the user and is refused, and
+	// DisableInactive and InactiveUsers count by it. Zero disables nobody.
+	InactiveAfter time.Duration
 }
 
 // Create checks name and password and creates the local user, with a new uid, and one
@@ -438,6 +442,11 @@ func (s *Users) Change(ctx context.Context, name string, ch UserChange, o Origin
 				return err
 			}
 		}
+		if changes[0].action == ActionUserEnable {
+			if err := s.restartClock(ctx, w, row); err != nil {
+				return err
+			}
+		}
 		evs, err = s.recordChanges(ctx, w, row, changes, disabling, o)
 		return err
 	})
@@ -581,6 +590,11 @@ func (s *Users) updated(ctx context.Context, w index.Writer, name, action string
 			}
 		}
 	}
+	if action == ActionUserEnable {
+		if err := s.restartClock(ctx, w, row); err != nil {
+			return nil, err
+		}
+	}
 	details := map[string]any{}
 	if action == ActionUserRename {
 		details["from"] = name
@@ -591,6 +605,18 @@ func (s *Users) updated(ctx context.Context, w index.Writer, name, action string
 	}
 	owned, err := s.disableOwned(ctx, w, row, o)
 	return append([]index.AuditEvent{ev}, owned...), err
+}
+
+// restartClock sets the last activity of row, a user just enabled on w, to now, so that the
+// person an admin enabled is not disabled again by its next request as inactive
+// (docs/spec/rbac.md §1, Inactive users).
+func (s *Users) restartClock(ctx context.Context, w index.Writer, row *index.User) error {
+	now := s.now()
+	if err := w.TouchUser(ctx, row.ID, now); err != nil {
+		return err
+	}
+	row.LastSeenAt = &now
+	return nil
 }
 
 // disableOwned disables the enabled service accounts whose owner is the user u, on w, and

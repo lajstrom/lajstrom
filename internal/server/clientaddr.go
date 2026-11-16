@@ -41,6 +41,7 @@ func (s *Server) clientAddress(next http.Handler) http.Handler {
 				"remoteAddr", r.RemoteAddr, "requestId", RequestID(r.Context()))
 		}
 		ctx := context.WithValue(r.Context(), clientKey{}, c)
+		ctx = auth.WithRequest(ctx, c.addr, RequestID(ctx)) // for the row of an inactive user disabled by its credential
 		if s.byAddress {
 			ctx = auth.WithClientAddress(ctx, c.addr)
 		}

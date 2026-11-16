@@ -499,6 +499,10 @@ type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
 	// readable without credentials, whatever its own anonymousRead (RBAC, issue #45).
 	AnonymousRead bool `yaml:"anonymousRead"`
+	// DisableInactiveUsersAfter disables a user who has not authenticated for this long, at its
+	// next authentication (docs/spec/rbac.md §1, Inactive users; #1283). Zero, the default,
+	// disables nobody; otherwise at least MinInactiveUsersAfter.
+	DisableInactiveUsersAfter time.Duration `yaml:"disableInactiveUsersAfter"`
 	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
 	Bootstrap Bootstrap `yaml:"bootstrap"`
 	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
@@ -616,6 +620,10 @@ type ServiceAccounts struct {
 	// service accounts with it. Enabling the owner again enables none of them.
 	OnOwnerDisabled string `yaml:"onOwnerDisabled"`
 }
+
+// MinInactiveUsersAfter is the least auth.disableInactiveUsersAfter that is not zero: a day, so
+// that a unit mistyped (90m for 90 days) does not disable everyone who stops for lunch.
+const MinInactiveUsersAfter = 24 * time.Hour
 
 // DefaultServiceTokenTTL is the default of auth.serviceAccounts.maxTokenTTL: 365 days.
 const DefaultServiceTokenTTL = 365 * 24 * time.Hour
