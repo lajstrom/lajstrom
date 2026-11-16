@@ -29,6 +29,8 @@ tags:
     description: The audit log.
   - name: webhooks
     description: Where the events of the repos of a mask are sent, and the delivery log.
+  - name: policy
+    description: Policy rules and verdicts, what a repo serves (docs/spec/policy.md).
   - name: meta
     description: Who is asking, the server, and this document.
 security:
@@ -950,6 +952,148 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/policy/rules:
+    get:
+      tags: [policy]
+      operationId: listPolicyRules
+      summary: >-
+        The policy rules by id: every rule for the admin role; with repo, the rules whose mask
+        matches it, for whoever may read the repo.
+      parameters:
+        - name: repo
+          in: query
+          description: A repo, <format>/<repo>.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The rules.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RuleList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    post:
+      tags: [policy]
+      operationId: createPolicyRule
+      summary: >-
+        Create a rule: manage on the repo of a mask that names one, the admin role for any other
+        mask. The documents of the repos its mask matches are rendered again; an audit row
+        policy.rule.create and an event policy.rule.created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RuleRequest"}
+      responses:
+        "201":
+          description: The rule.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Rule"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/policy/rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: integer}
+    delete:
+      tags: [policy]
+      operationId: deletePolicyRule
+      summary: Delete a rule, with the permission its creation needed; an audit row policy.rule.delete.
+      responses:
+        "204": {description: "Deleted."}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/policy/verdicts:
+    get:
+      tags: [policy]
+      operationId: listVerdicts
+      summary: The verdicts of a manifest digest, of a repo, or both, in the repos the caller may read, newest first.
+      parameters:
+        - name: digest
+          in: query
+          schema: {type: string}
+        - name: repo
+          in: query
+          description: A repo, <format>/<repo>.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The verdicts.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VerdictList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/policy/key:
+    get:
+      tags: [policy]
+      operationId: getPolicyKey
+      summary: The public key of the server's policy key, PEM, to anyone.
+      security: []
+      responses:
+        "200":
+          description: A PEM PUBLIC KEY block.
+          content:
+            application/x-pem-file:
+              schema: {type: string}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/deny:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+      - name: variant
+        in: query
+        schema: {type: string}
+    post:
+      tags: [policy]
+      operationId: denyVersion
+      summary: >-
+        Sign a deny verdict with the policy key for the manifest of each variant of the version,
+        or of the one variant names, and attach each as a referrer (manage). On an oci repo name
+        is the path and version a tag or a digest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/DenyRequest"}
+      responses:
+        "201":
+          description: The verdicts attached.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VerdictList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    delete:
+      tags: [policy]
+      operationId: undenyVersion
+      summary: Delete the verdicts of source lajstrom:manual of the version's manifests, their referrers (manage).
+      responses:
+        "204": {description: "Deleted."}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/webhooks:
     get:
       tags: [webhooks]
@@ -2462,6 +2606,74 @@ components:
       required: [reason]
       properties:
         reason: {type: string, description: Empty when the yank gave none.}
+    Rule:
+      description: A policy rule (docs/spec/policy.md §1).
+      type: object
+      required: [id, repoMask, name, version, variant, effect, reason, createdBy, createdAt, expiresAt, expired]
+      properties:
+        id: {type: integer}
+        repoMask: {type: string, description: "A repo mask, <format>/<repo>, each * or a name."}
+        name: {type: string, description: "A pattern of the package name; * any run of characters."}
+        version: {type: string, description: "A version constraint: *, or clauses ==, !=, <, <=, >, >= joined with commas."}
+        variant: {type: string, description: "A pattern of the variant; * every variant."}
+        effect: {type: string, enum: [deny, allow]}
+        reason: {type: string}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: [string, "null"], format: date-time}
+        expired: {type: boolean}
+    RuleList:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items: {$ref: "#/components/schemas/Rule"}
+    RuleRequest:
+      description: The body of a rule's creation.
+      type: object
+      required: [repoMask, name, reason]
+      properties:
+        repoMask: {type: string}
+        name: {type: string, maxLength: 256}
+        version: {type: string, description: "* when absent."}
+        variant: {type: string, maxLength: 256, description: "* when absent; empty for the empty variant only."}
+        effect: {type: string, enum: [deny, allow], description: "deny when absent."}
+        reason: {type: string, minLength: 1, maxLength: 512}
+        expiresAt: {type: [string, "null"], format: date-time}
+    Verdict:
+      description: A verdict the index holds (docs/spec/policy.md §2).
+      type: object
+      required: [repo, package, subject, attestation, verdict, reason, source, scope, validUntil, signedBy, createdAt, inForce]
+      properties:
+        repo: {type: string}
+        package: {type: string}
+        version: {type: string}
+        variant: {type: string}
+        subject: {type: string, description: "The judged manifest's digest."}
+        attestation: {type: string, description: "The referrer's digest."}
+        verdict: {type: string, enum: [allow, deny, quarantine]}
+        reason: {type: string}
+        source: {type: string}
+        scope: {type: string}
+        validUntil: {type: [string, "null"], format: date-time}
+        signedBy: {type: string}
+        createdAt: {type: [string, "null"], format: date-time}
+        inForce: {type: boolean}
+    VerdictList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Verdict"}
+    DenyRequest:
+      description: The body of a deny.
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 512}
+        validUntil: {type: [string, "null"], format: date-time}
     YankRequest:
       description: The optional body of a yank.
       type: object
