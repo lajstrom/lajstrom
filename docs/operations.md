@@ -258,6 +258,55 @@ server that has one; guard its credentials, and give it a reason. Turning `auth.
 `none` makes every change at once again; the requests made before stay, to be decided or to
 expire.
 
+### Reviewing access
+
+PCI DSS 7.2.4 asks for a review of every user account and its privileges at least every six
+months, with management's acknowledgement that access remains appropriate; 7.2.5.1 asks for one
+of the system accounts at the frequency of your risk analysis. The access report is what it reads,
+and its record is an `access.review` row ([auth.md](auth.md#the-access-report-and-its-review)).
+Step by step, for the people (`--scope people`) and, at its own frequency, for the systems
+(`--scope systems`):
+
+1. **Take the report** and keep it with the review's ticket. On the command line, against the
+   database (it works under the admin mode and while the IdP is down):
+
+   ```sh
+   lajstrom admin access-report --scope people > access-people-2026-h2.json # sha256:<hex> on standard error
+   sha256sum access-people-2026-h2.json                                      # the same digest
+   lajstrom admin access-report --scope people --format csv > access-people-2026-h2.csv # for a spreadsheet
+   ```
+
+   or, as an admin, `GET /api/v1/access-report?scope=people` (a web UI's sign-in with a second
+   factor under the admin mode), saved as it is, and `sha256sum` of the file. The sha256 names
+   the bytes you review: a second run gives another document as soon as a token is used, so
+   review and record the copy you kept. The CSV of a second run is of another read: the sha256 a
+   review names is the JSON's.
+2. **Read it.** Each entry has its flags: `admin` and `allRepos`, who can do the most; `unused`,
+   no use in 90 days (`--unused-days`); `inactive`, a user that its next authentication disables;
+   `noExpiry` and `beyondMaxTTL`, tokens to replace; `ownerDisabled`, a service account whose
+   person left; `adminWithoutEffect`, an `admin` binding that the admin mode leaves idle. A user's
+   `bindings` include its groups' (`via`): a person's access through a group is decided at the
+   IdP, so review the group's members there too. `anonymous` lists what anyone reads.
+3. **Fix what you find**, with a reason (`--reason` or `changeReason`, the review's ticket):
+   `lajstrom admin user disable|delete`, `lajstrom admin binding delete`, `lajstrom admin token
+   revoke`, a CI trust policy deleted, a repo's `anonymousRead` turned off. Each change is its own
+   audit row.
+4. **Record the review**, as the admin who did it, with the sha256 of the copy you kept, its
+   `generatedAt` and scope, and a note: what you found and did, who in management acknowledged,
+   the ticket. The command line records none: a review is a person's.
+
+   ```sh
+   jq -n --arg sha "$(sha256sum access-people-2026-h2.json | cut -d' ' -f1)" \
+     --arg at "$(jq -r .generatedAt access-people-2026-h2.json)" \
+     --arg note "$(printf 'Disabled bob, revoked 2 unused tokens (CHG-2210).\nAcknowledged by the CISO on 2026-11-20.')" \
+     '{sha256: $sha, generatedAt: $at, scope: "people", note: $note}' |
+     curl -fsS -u admin "$LAJSTROM/api/v1/access-reviews" -H 'Content-Type: application/json' --data-binary @-
+   ```
+
+5. **The evidence** for an assessor: the rows, `GET /api/v1/audit?action=access.review` (who, when,
+   which sha256, the note), and the documents you kept with the tickets, whose sha256 the rows
+   name; the changes of step 3 are rows of their own, with the ticket as `changeReason`.
+
 ### Failed logins and the edge
 
 Lajstrom throttles what only it can see ([auth.md](auth.md#failed-logins)): failed password
@@ -1612,6 +1661,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 | `audit.prune` | `lajstrom admin audit prune`, by `anonymous` with `source: cli`: a prune of the oldest rows, `pending` with what it counted, then `ok` or `failed` with what it deleted ([Pruning the audit log](#pruning-the-audit-log)) |
+| `access.review` | `POST /api/v1/access-reviews`, by the admin who reviewed an access report: subject `sha256:<hex>` of the report, its `generatedAt`, `scope` and the `note` in the details ([Reviewing access](#reviewing-access)); reading the report writes none |
 
 A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the

@@ -1352,7 +1352,7 @@ type Writer interface {
 // TokenFilter, RepoStats, IdentityGroup (a row of identity_groups with its identity's UserID and
 // GroupsExpireAt and its user's UID), AuditFilter (Feed and After: the feed, #1278), AuditSpan
 // (Rows, FirstID, LastID, FirstAt, LastAt) and Access (ReadAt, Users, IdentityGroups, Bindings,
-// Tokens, CIPolicies, AnonymousRepos: the access report's read, #1279). Ids are int64, timestamps
+// Tokens, TokenRepos, CIPolicies, AnonymousRepos: the access report's read, #1279). Ids are int64, timestamps
 // UTC, nullable columns are pointers, but nullable text, which is "" (Version.OCIRepo:
 // versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
