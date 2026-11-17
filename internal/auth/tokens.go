@@ -247,8 +247,15 @@ func (s *Tokens) MayCreatePAT(ctx context.Context) error {
 // token that needs no expiry, covers every repo of its mask and outlives its revocation (decided
 // on #911, 2026-11-14).
 func (s *Tokens) MayCreateMaskDeploy(ctx context.Context) error {
-	const rule = "a deploy token over a mask is created with the admin's password or a web UI's fresh sign-in through OIDC, " +
-		"not with a token"
+	return s.passwordOrSignIn(ctx, "a deploy token over a mask is created with the admin's password or a web UI's fresh sign-in "+
+		"through OIDC, not with a token")
+}
+
+// passwordOrSignIn is the rule of MayCreateMaskDeploy, which the approval of a request for a
+// second admin takes too (Approvals.MayApprove, docs/spec/rbac.md §13): a password, none, as from
+// the command line, or the token of a web UI's sign-in through OIDC whose sign-in is fresh
+// (inPlaceOfPassword); any other credential is refused with rule, ErrScope.
+func (s *Tokens) passwordOrSignIn(ctx context.Context, rule string) error {
 	switch cred := CredentialFrom(ctx); cred.Kind {
 	case CredPAT:
 		return s.inPlaceOfPassword(cred, rule)
@@ -402,14 +409,8 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		if expiresAt, err = expiry(l, exp, now); err != nil {
 			return err
 		}
-		live, err := w.ListTokens(ctx, row.UserID, row.RepoID)
-		if err != nil {
+		if err := nameTaken(ctx, w, kind, row, name, owner, now); err != nil {
 			return err
-		}
-		if slices.ContainsFunc(live, func(t index.Token) bool {
-			return t.Kind == kind && t.RepoMask == row.RepoMask && t.Name == name && alive(&t, now)
-		}) {
-			return &authError{msg: fmt.Sprintf("name: %q is taken by a live token of %s", name, owner), err: index.ErrConflict}
 		}
 		row.Kind, row.Name, row.Hash, row.Scopes, row.ExpiresAt, row.CreatedAt = kind, name, HashSecret(secret), scopes, expiresAt, now
 		if err = w.CreateToken(ctx, row); err != nil {
@@ -424,6 +425,23 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 	s.writeAudit(ctx, ev)
 	t := s.resource(row, own, now)
 	return &t, secret, nil
+}
+
+// nameTaken returns an error wrapping index.ErrConflict, naming owner, when a live token of kind
+// and of the owner of row, its user, its repo or its mask, has name at now (Tokens.create): a
+// token over a mask is listed with every token (ListTokens without a filter) and compared by its
+// mask.
+func nameTaken(ctx context.Context, w index.Writer, kind string, row *index.Token, name, owner string, now time.Time) error {
+	live, err := w.ListTokens(ctx, row.UserID, row.RepoID)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(live, func(t index.Token) bool {
+		return t.Kind == kind && t.RepoMask == row.RepoMask && t.Name == name && alive(&t, now)
+	}) {
+		return &authError{msg: fmt.Sprintf("name: %q is taken by a live token of %s", name, owner), err: index.ErrConflict}
+	}
+	return nil
 }
 
 // createDetails returns the details of the token.create event of row, created by the credential
