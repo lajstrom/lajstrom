@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // algorithms are the JWS algorithms an ID token may be signed with: asymmetric only, never
@@ -105,7 +107,7 @@ func (c *Client) identity(ctx context.Context, claims jwt.MapClaims, nonce strin
 	} else {
 		id.Groups = []string{}
 	}
-	id.AuthTime, id.AMR = signIn(claims)
+	id.AuthTime, id.AMR, id.ACR = signIn(claims)
 	return id, nil
 }
 
@@ -115,10 +117,10 @@ const (
 	maxAMRValue = 64
 )
 
-// signIn returns the auth_time of claims, a NumericDate after the epoch, and the strings of its
-// amr, each at most maxAMRValue bytes, at most maxAMR of them; nil for one that is missing or of
-// another type.
-func signIn(claims jwt.MapClaims) (*time.Time, []string) {
+// signIn returns the auth_time of claims, a NumericDate after the epoch, the strings of its amr,
+// each at most maxAMRValue bytes, at most maxAMR of them, and its acr, a string of at most
+// auth.MaxACR bytes; nil or "" for one that is missing, of another type, or, for acr, longer.
+func signIn(claims jwt.MapClaims) (*time.Time, []string, string) {
 	var at *time.Time
 	if v, ok := claims["auth_time"].(float64); ok && v > 0 {
 		t := time.Unix(int64(v), 0).UTC()
@@ -131,7 +133,11 @@ func signIn(claims jwt.MapClaims) (*time.Time, []string) {
 			amr = append(amr, s)
 		}
 	}
-	return at, amr
+	acr, _ := claims["acr"].(string)
+	if len(acr) > auth.MaxACR {
+		acr = ""
+	}
+	return at, amr, acr
 }
 
 // groups returns the group names of the claim v, a list of strings or one string, in order and

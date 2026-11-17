@@ -149,7 +149,7 @@ const errHandoff = "code: unknown, used, expired, or of another verifier or key:
 // login's dpop_jkt (RFC 9449 §10): the login request of the code, approved and not expired, is
 // marked redeemed once, on any replica, and the token of the login is minted for its user,
 // bound to that key (auth.Tokens.BoundLoginToken), with its token.create event, createdBy oidc,
-// and the auth_time and amr of the login's ID token.
+// and the auth_time, amr and acr of the login's ID token.
 // A verifier that is malformed, a code that is unknown, used or expired, a verifier of another
 // challenge and a key of another thumbprint are errors wrapping auth.ErrInvalid; a wrong
 // verifier or key marks the request denied, so that a code is tried once. A user disabled or
@@ -194,13 +194,18 @@ func (h *Handoffs) Redeem(ctx context.Context, code, verifier, jkt string, o aut
 	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), o)
 }
 
-// signInOf is the sign-in at the IdP that the login row kept from its ID token: nil without
-// auth_time.
+// signInOf is the sign-in at the IdP that the login row kept from its ID token, each of
+// auth_time, amr and acr it had: amr and acr without auth_time too, a sign-in that shows its
+// factors and is never fresh (docs/spec/rbac.md §10). nil when it kept none of them.
 func signInOf(row *index.OIDCLogin) *auth.SignIn {
-	if row.AuthTime == nil {
+	if row.AuthTime == nil && len(row.AMR) == 0 && row.ACR == "" {
 		return nil
 	}
-	return &auth.SignIn{At: *row.AuthTime, AMR: row.AMR}
+	in := &auth.SignIn{AMR: row.AMR, ACR: row.ACR}
+	if row.AuthTime != nil {
+		in.At = *row.AuthTime
+	}
+	return in
 }
 
 // approved returns the login request of code, a code login approved for a user and not
