@@ -10,8 +10,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
+
+// writeAuthConfig writes the configuration of writeConfig, whose index database is a SQLite
+// file in dir, with the section auth, and returns its path.
+func writeAuthConfig(t *testing.T, dir, auth string) string {
+	t.Helper()
+	cfg := filepath.Join(dir, "lajstrom.yaml")
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" +
+		filepath.Join(dir, "lajstrom.db") + "\"\n" + auth
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
 
 // TestCheckLocalPasswords: serve refuses auth.localPasswords false without auth.oidc.issuer,
 // since no person could log in, and says at info that passwords are off when they are.
@@ -42,13 +57,7 @@ func TestCheckLocalPasswords(t *testing.T) {
 // fail naming the setting, before they read a password; a service account is made as before
 // (docs/spec/rbac.md §1, Local passwords).
 func TestAdminUserPasswordsOff(t *testing.T) {
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "lajstrom.yaml")
-	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
-		"auth:\n  localPasswords: false\n"
-	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	cfg := writeAuthConfig(t, t.TempDir(), "auth:\n  localPasswords: false\n")
 	if _, _, err := run(t, nil, "migrate", "--config", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -72,5 +81,44 @@ func TestAdminUserPasswordsOff(t *testing.T) {
 	}
 	if _, _, err := run(t, nil, "serve", "--config", cfg); !errors.Is(err, errPasswordsOffWithoutOIDC) {
 		t.Errorf("serve without auth.oidc.issuer = %v, want %v", err, errPasswordsOffWithoutOIDC)
+	}
+}
+
+// TestAdminUserUnlock: with auth.lockout.duration set, admin user list marks a locked user's
+// DISABLED (locked until <time>), and admin user unlock ends the lock, with a user.unlock row
+// from the cli; a user that does not exist fails (docs/spec/rbac.md §1, Local passwords).
+func TestAdminUserUnlock(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeAuthConfig(t, dir, "auth:\n  lockout:\n    duration: 30m\n")
+	st := openIndex(t, dir) // migrated
+	if _, _, err := runIn(t, nil, strings.NewReader("alice-password"), "admin", "user", "create", "--name", "alice", "--password-stdin",
+		"--config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := st.GetUser(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	if _, err := st.FailPassword(t.Context(), alice.ID, time.Now(), until, 1); err != nil {
+		t.Fatal(err)
+	}
+	locked := "false (locked until " + until.Format(time.RFC3339) + ")"
+	if out, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err != nil || !strings.Contains(out, locked) {
+		t.Errorf("admin user list = %q, %v; want %q", out, err, locked)
+	}
+	if _, _, err := run(t, nil, "admin", "user", "unlock", "alice", "--config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err != nil || strings.Contains(out, "locked until") {
+		t.Errorf("admin user list after the unlock = %q, %v", out, err)
+	}
+	evs, err := st.ListAudit(t.Context(), index.AuditFilter{Action: auth.ActionUserUnlock})
+	if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"source":"cli"`) ||
+		!strings.Contains(string(evs[0].Details), `"lockedUntil":"`+until.Format(time.RFC3339)+`"`) {
+		t.Errorf("the user.unlock rows: %+v, %v", evs, err)
+	}
+	if _, _, err := run(t, nil, "admin", "user", "unlock", "nobody", "--config", cfg); err == nil || err.Error() != "user nobody does not exist" {
+		t.Errorf("an unlock of nobody = %v", err)
 	}
 }

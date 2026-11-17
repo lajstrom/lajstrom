@@ -1259,6 +1259,7 @@ and its name, is in [auth.md](auth.md#the-uid-and-the-name), and what a service 
 | `createdAt` | set by the server |
 | `lastSeenAt` | the user's last activity: its last successful authentication (a password, a personal access token, an OIDC login; a service account's token), less than a minute behind, or its enabling when later; `null` before any record. It moves no revision: the `ETag` stands for what a `PATCH` changes ([Inactive users](auth.md#inactive-users)) |
 | `inactive` | `true` while `auth.disableInactiveUsersAfter` is set and the user, enabled, has had no activity for longer: its next authentication disables it, unless it is the last enabled admin. Left out when `false` |
+| `lockedUntil` | while `auth.lockout.duration` is set, the end of the lock of the user's password after 10 wrong passwords in a row ([The lockout](auth.md#the-lockout)); left out while it is not locked. Like `lastSeenAt`, it moves no revision |
 | `owner` | a service account's owner: `user:<uid>` of a person, or `group:<name>`; left out for every other kind |
 | `ownerName` | the name of a user owner; left out for a group |
 | `ownerDisabled` | `true` while a user owner is disabled; the service account keeps working unless `auth.serviceAccounts.onOwnerDisabled` is `disable` ([Change](#change-patch-apiv1usersuser)). Left out when `false` |
@@ -1297,6 +1298,9 @@ owner that is no live user, a service account, or neither a user nor a group is 
 a password and `admin` (bind it with [Bindings](#bindings)). `kind` is `local` when left out; an
 `oidc` user is made by its first login only.
 
+While `auth.localPasswords` is `false`, a local user is `400`, naming the setting: no password is
+set ([auth.md](auth.md#turning-local-passwords-off)). A service account is made as before.
+
 ```sh
 curl -s -u admin -X POST "$LAJSTROM/api/v1/users" \
   -H 'Content-Type: application/json' -d '{"name": "ci-release", "kind": "service", "owner": "group:platform"}'
@@ -1323,8 +1327,18 @@ enabled service accounts it owns in the same transaction, a `user.disable` event
 
 ### Password: `POST /api/v1/users/<user>/password`
 
-The body is `{"password": "…"}`; `204`. The old password fails from the next request on. A
-service account has no password: `400`.
+The body is `{"password": "…"}`; `204`. The old password fails from the next request on. The new
+password ends a lock of the lockout too, with a `user.unlock` row when one was in force
+([The lockout](auth.md#the-lockout)). A service account has no password: `400`; and while
+`auth.localPasswords` is `false`, no user has one: `400`, naming the setting.
+
+### Unlock: `POST /api/v1/users/<user>/unlock`
+
+No body; `204`. The lock of the user's password after wrong passwords ends, and its count of them
+is `0` ([The lockout](auth.md#the-lockout)), whatever `auth.lockout.duration` is. A `user.unlock`
+audit row, with `lockedUntil`, the end of the lock it ended, is written when a lock was in force,
+and none when not: an unlock of a user that is not locked changes nothing that shows. A user that
+does not exist is `404`. It moves no revision.
 
 ### Delete: `DELETE /api/v1/users/<user>`
 
@@ -1344,7 +1358,7 @@ token with scopes and a deploy token never manage users.
 ### `lajstrom admin user`
 
 The same, straight against the database of the configuration: `create`, `list`, `rename`,
-`disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)), and
+`disable`, `enable`, `set-password`, `unlock`, `delete` ([auth.md](auth.md#local-users-and-passwords)), and
 for service accounts `create --service --owner`, `list --kind service` and `set-owner`
 ([auth.md](auth.md#service-accounts)).
 `rename`, `disable`, `enable` and `delete` take `--if-match`, as `admin repo delete` does.
@@ -1359,7 +1373,7 @@ role on `*/*`, and `Location: /api/v1/users/<name>`; the token is used. The audi
 
 | Answer | When |
 | --- | --- |
-| `404 NOT_FOUND` | an enabled user has an admin binding, whatever the body: the message is the one of a path that is no endpoint |
+| `404 NOT_FOUND` | an enabled user has an admin binding, or `auth.localPasswords` is `false`, whatever the body: the message is the one of a path that is no endpoint |
 | `403 FORBIDDEN` | the token is not the valid one; or it is, and it was used or expired, which the message says |
 | `429 UNAVAILABLE` | 10 wrong tokens from the client address within a minute; `Retry-After` says when to try again, the right token too. Only with `server.trustedProxies` or `server.tls`, which give the server a client address: without either, wrong tokens are not counted and never refuse the right one ([auth.md](auth.md#bootstrap-the-first-admin)) |
 | `400 INVALID` | the name or the password breaks its rule; the token stays valid |
@@ -1979,7 +1993,7 @@ curl -s "$LAJSTROM/api/v1/info"
 | `externalURL` | `server.externalURL` ([configuration.md](configuration.md#server)); `""` on the dev stack when it leaves it empty |
 | `anonymousRead` | `auth.anonymousRead`, the server-wide switch: when `false`, no repo is readable without credentials, whatever its own `anonymousRead` |
 | `formats` | the format plugins the server serves, by name, each with the artifact type of its manifests. `oci` repos need no plugin and are not listed |
-| `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login); `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
+| `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login), left out while `auth.localPasswords` is `false`; `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
 | `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not). Without credentials it is `anonymous`, with the name `anonymous` |
 
@@ -2085,9 +2099,12 @@ alice, `createdBy` `password`, with `dpopJkt`.
 refused or was used, is `400` saying why, before the password is checked.
 
 The password is checked as HTTP Basic checks it, with the same
-[throttles of failed logins](auth.md#failed-logins): `401` whatever the reason, an unknown user,
-a disabled one, one without a password (an OIDC user), a wrong password or a token in its place;
-`429` with `Retry-After` for a throttled account or client address. A body that is neither
+[throttles of failed logins](auth.md#failed-logins) and the same [lockout](auth.md#the-lockout):
+`401` whatever the reason, an unknown user, a disabled one, one without a password (an OIDC user),
+a wrong password, a locked one or a token in its place, its message the same whatever the reason
+and, while `auth.lockout.duration` is set, saying that 10 wrong passwords in a row lock a password
+and for how long; `429` with `Retry-After` for a throttled account or client address. While
+`auth.localPasswords` is `false`, every password is `401`, saying that passwords are off. A body that is neither
 `{"username", "password"}` nor `{"code", "codeVerifier"}` is `400`.
 
 **With OIDC** ([auth.md](auth.md#a-web-ui)), while `auth.oidc` is on, the UI signs a person in

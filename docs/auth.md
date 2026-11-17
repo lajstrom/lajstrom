@@ -115,7 +115,9 @@ tells nothing about the password; after the window it works, and the count start
 - **A throttle, not a lockout.** Nothing needs unlocking: it lifts by itself when the window
   closes. Someone who keeps sending wrong passwords for an account keeps its passwords
   answered `429` for as long as they do, a minute at a time; they get no more than 10 guesses a
-  minute per replica, and never lock the user out of the tokens.
+  minute per replica, and never lock the user out of the tokens. The lockout, which locks a
+  password for longer and across the replicas, is a setting of its own ([The
+  lockout](#the-lockout)), and the throttles stay beside it.
 - **Tokens are not throttled.** A personal access token or a deploy token is 256 random bits,
   checked by a lookup without argon2id, and cannot be guessed; it works while its user's
   password is under throttle, which is one more reason for CI to use one ([In CI](#in-ci)).
@@ -150,14 +152,14 @@ per-account throttle needs no address and is always on.
 **Per replica.** The counts live in the memory of each replica, at most 10 000 keys per
 throttle, and a restart clears them. Behind a balancer, N replicas are N budgets: up to 10 × N
 guesses a minute for an account. The bound across replicas is the edge's
-([operations.md](operations.md#failed-logins-and-the-edge)). The budgets are constants of
-`internal/auth`, not settings.
+([operations.md](operations.md#failed-logins-and-the-edge)), or the lockout's, which counts in
+the index. The budgets are constants of `internal/auth`, not settings.
 
 **What is recorded.** Every refused credential, a password, a token or a certificate, is an
 `authentication refused` line at info with the account's uid, never the name as it was typed;
 a throttle that trips, of an account or of an address, is a `login.block` row of the audit log,
-at most 60 a minute per replica ([operations.md](operations.md#failed-logins-and-the-edge),
-[rbac.md](spec/rbac.md) §1, §5).
+at most 60 a minute per replica, and so is a lock of the lockout
+([operations.md](operations.md#failed-logins-and-the-edge), [rbac.md](spec/rbac.md) §1, §5).
 
 **When a throttle is full**, a new key takes the place of a window that has closed, or, when
 every window is still open, of the open window opened first that has not reached its budget.
@@ -176,6 +178,70 @@ The body of the `429` follows the route, like the `401`: under `/v2/`
 as `throttled` with the `throttle` (`account`, `address` or `token`), the `account` for the first
 (`user:<uid>`, or `unknown` for a name that no user has; never the name typed, in case it was a
 password) and the client `address`, and counted in `lajstrom_auth_throttled_total`.
+
+### The lockout
+
+With `auth.lockout.duration` set, the wrong passwords of an account are counted in the index,
+across the replicas, and the 10th in a row locks the account's password for that duration
+([rbac.md](spec/rbac.md) §1, Local passwords; [ADR 0028](adr/0028-local-passwords-off-or-locked-out.md)).
+It is `0` by default, which counts nothing and locks nothing, or from `5m` to `24h`; `30m` is PCI
+DSS 8.3.4's ([configuration.md](configuration.md#auth)).
+
+- **What counts.** A wrong password of a live, enabled user that has one, on any route that
+  takes a password: Basic credentials, `/v2/token`, `npm login`, `POST /api/v1/login`. Ten is a
+  constant, the most PCI DSS allows. A password that verifies sets the count back to `0`. Names
+  that no user has, disabled users and users without a password are not counted: their
+  passwords never verify, and the throttles above bound them.
+- **A locked password** is refused whatever it is, as a wrong one is: `401`, after one
+  verification against the fixed hash that a name no user has costs, so that neither the answer
+  nor its time tells a locked account from a wrong password or from a name no user has. The
+  lock is read with the user, before [the cache](#the-verification-cache), so a remembered
+  password does not get past it. A refusal while locked counts against the throttles, and
+  neither lengthens the lock nor counts toward the next one.
+- **The message.** While the lockout is set, every `401` that refuses a user name and a
+  password says what locks one, the same for every account and every reason, on every route
+  that takes one: `the user name or the password was refused: 10 wrong passwords in a row lock
+  a password for 30m`. A person whose password stops working learns why; nobody learns more than
+  the configuration says.
+- **Only the password.** The user's personal access tokens, its OIDC logins and the bearer
+  tokens of `/v2` keep working: whoever knows a user name can stop that user's password, and
+  nothing else. CI that uses a token is not stopped. The last enabled admin is locked like
+  anyone; the command line unlocks it.
+- **The end of a lock.** It ends after the duration, or earlier by `POST
+  /api/v1/users/<name>/unlock` ([api.md](api.md#unlock-post-apiv1usersuserunlock)), by `lajstrom
+  admin user unlock <name>`, or by an admin's new password for the user, each with a
+  `user.unlock` audit row when a lock was in force. Check who asks before you unlock: that is PCI
+  DSS 8.3.4's "until the user's identity is confirmed".
+- **What is recorded.** A lock is a `login.block` row with the `limit` `lockout`, `failures` 10
+  and `until`, once per lock whatever the replicas, and a `password locked` line at info. The
+  users API and `lajstrom admin user list` show a locked user's `lockedUntil`.
+- **Replicas and upgrades.** The count holds across the replicas. A replica with the setting
+  `0`, or of a release before migration 0036, neither counts nor reads a lock, so set it once
+  every replica runs a release that knows it; a change takes a restart. A restore of a snapshot
+  unlocks every user.
+
+### Turning local passwords off
+
+With `auth.localPasswords: false`, no password is a credential, an admin's included: people log
+in through the IdP ([OIDC login and groups](#oidc-login-and-groups)), whose lockout, password
+rules and MFA apply, and get their personal access tokens from `lajstrom login`
+([rbac.md](spec/rbac.md) §1, Local passwords). `serve` refuses the setting while
+`auth.oidc.issuer` is empty.
+
+- Every password is `401` before the user is read, on every route that takes one, with the
+  message `passwords are off on this server: use a personal access token, or log in through the
+  IdP with lajstrom login`, the same for every name. No argon2id runs and no throttle counts.
+- Personal access tokens, deploy tokens, CI tokens, client certificates and Kubernetes tokens
+  work as before.
+- No password is set: a `password` in `POST /api/v1/users` and `POST …/password` are `400`, and
+  `lajstrom admin user create` (but with `--service`) and `set-password` fail, naming the
+  setting. The stored passwords are kept, refused; `true` makes them credentials again.
+- The bootstrap token is not made valid ([Bootstrap](#bootstrap-the-first-admin)).
+- The break-glass path is the command line against the database: `lajstrom admin token create
+  --user <admin>` makes an admin a token while the IdP is down.
+- `GET /api/v1/info` leaves `password` out of `authModes`, so that a UI shows no password form.
+
+The lockout does nothing while local passwords are off.
 
 ## HTTP Basic on every route
 
@@ -1124,6 +1190,13 @@ never be mistaken for a live credential (decided on #440). There are two ways:
   commands next to the database, with the server's configuration. It is also the recovery when
   every admin is lost ([A lost password](operations.md#a-lost-password)).
 
+With `auth.localPasswords: false` ([Turning local passwords off](#turning-local-passwords-off))
+neither makes an admin who could log in, so neither is taken: `serve` makes no bootstrap token
+valid, `POST /api/v1/bootstrap` is `404`, and `admin user create` sets no password. The first
+admin is a person: log in through the IdP once, so that the user exists, then, against the
+database, `lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'`.
+`serve` says so at start while no admin exists ([rbac.md](spec/rbac.md) §6).
+
 ### The bootstrap token
 
 You make the token, 32 to 256 bytes without whitespace, and give it to `serve` as a file:
@@ -1233,6 +1306,7 @@ lajstrom admin user list                    # NAME, UID, KIND, DISABLED, CREATED
 lajstrom admin user disable alice           # refused from the next request on
 lajstrom admin user enable alice
 lajstrom admin user set-password alice      # the same two sources, or --password-file <file>
+lajstrom admin user unlock alice            # ends the lock of auth.lockout.duration
 ```
 
 `set-password --password-file` reads the password from a file, the way `--password-stdin` reads
@@ -1242,8 +1316,9 @@ Helm chart, whose image has no shell to put a Secret on standard input
 
 A name that exists is refused (`user alice already exists`, exit status 1). Every change is an
 audit event ([rbac.md](spec/rbac.md) §5) with the user as its subject: `user.create` (its
-details say whether the user is an admin), `user.password`, `user.disable`, `user.enable`, by
-`anonymous` with the source `cli` and the host name of the machine the command ran on (`host`).
+details say whether the user is an admin), `user.password`, `user.disable`, `user.enable`,
+`user.unlock` (with the end of the lock it ended, `lockedUntil`), by `anonymous` with the source
+`cli` and the host name of the machine the command ran on (`host`).
 `disable` of a disabled user and `enable` of an enabled one change nothing and write no event.
 Everything after the bootstrap can go through `/api/v1` ([api.md](api.md#users)).
 
