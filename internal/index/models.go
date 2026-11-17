@@ -1030,3 +1030,24 @@ type AuditSpan struct {
 	FirstAt time.Time
 	LastAt  time.Time
 }
+
+// Access is what Reader.ReadAccess reads for the access report (docs/spec/rbac.md §14,
+// docs/spec/index-schema.md, The access report; #1279): the rows of the control plane that say
+// who has what, all of one moment, ReadAt, the database's time of the read. Users are the live
+// users, a disabled one too, by name, without their password hashes and history, which the
+// report never shows; IdentityGroups the groups of their identities that have not lapsed at
+// ReadAt, by uid and name; Bindings every binding, by id; Tokens the tokens neither revoked nor
+// expired at ReadAt, the deploy tokens over a mask among them, by id; TokenRepos the repos of
+// the deploy tokens of one repo among them, by id, which name those tokens; CIPolicies every CI
+// trust policy made through the API, an expired one too, by id; and AnonymousRepos the repos
+// with anonymous_read, by format and name.
+type Access struct {
+	ReadAt         time.Time
+	Users          []User
+	IdentityGroups []IdentityGroup
+	Bindings       []Binding
+	Tokens         []Token
+	TokenRepos     []Repo
+	CIPolicies     []CIPolicy
+	AnonymousRepos []Repo
+}

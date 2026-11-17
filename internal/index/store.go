@@ -95,6 +95,11 @@ type Reader interface {
 	// ListBindings returns the bindings of principal (canonical form, docs/spec/rbac.md §1),
 	// or every binding when principal is "".
 	ListBindings(ctx context.Context, principal string) ([]Binding, error)
+	// ReadAccess returns the rows of the access report (docs/spec/rbac.md §14, #1279) in one
+	// read-only transaction that reads one snapshot, as ExportControlPlane reads, at the
+	// database's time, ReadAt (docs/spec/index-schema.md, The access report). It writes nothing.
+	// Inside Tx it reads on the transaction of Tx.
+	ReadAccess(ctx context.Context) (*Access, error)
 	// The requests that wait for a second admin (docs/spec/rbac.md §13, docs/spec/index-schema.md,
 	// Approvals).
 
