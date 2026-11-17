@@ -148,6 +148,10 @@ type Authenticator struct {
 	passwordsOff bool
 	lockout      time.Duration
 	lockoutMsg   string
+	// writers holds a slot for each count of a wrong password written behind its answer
+	// (failPassword), and counting has those writes, so that the tests can wait for them.
+	writers  chan struct{}
+	counting sync.WaitGroup
 
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
@@ -191,6 +195,7 @@ func NewAuthenticator(o Options) *Authenticator {
 	if !a.passwordsOff {
 		a.lockout, a.lockoutMsg = o.Lockout, lockoutMessage(o.Lockout)
 	}
+	a.writers = make(chan struct{}, lockoutWriters)
 	if a.ttl <= 0 {
 		a.ttl = DefaultCacheTTL
 	}
