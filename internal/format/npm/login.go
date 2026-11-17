@@ -106,8 +106,9 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request, doc string) {
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": couchUser + name, "token": secret})
 }
 
-// loginFailed answers a refused login: 401 for bad credentials, 429 with Retry-After for a
-// throttled account or address, 500 for a failure to decide.
+// loginFailed answers a refused login: 401 for bad credentials, 403 for a right password whose
+// user must change it (auth.ErrMustChange), 429 with Retry-After for a throttled account or
+// address, 500 for a failure to decide.
 func (h *handlers) loginFailed(w http.ResponseWriter, r *http.Request, err error) {
 	var throttled *auth.ThrottledError
 	switch {
@@ -116,6 +117,8 @@ func (h *handlers) loginFailed(w http.ResponseWriter, r *http.Request, err error
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed logins; try again later"})
 	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
 		h.fail(w, r, fmt.Errorf("%w: %s", format.ErrUnauthenticated, h.plugin.Accounts.RefusalMessage(err, "the user name or the password is wrong")))
+	case errors.Is(err, auth.ErrMustChange): // a right password whose user must change it first: no token
+		h.fail(w, r, fmt.Errorf("%w: %s", format.ErrForbidden, auth.MsgMustChange))
 	default:
 		h.fail(w, r, fmt.Errorf("npm: login: %w", err))
 	}

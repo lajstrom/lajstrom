@@ -158,6 +158,28 @@ func TestLoginPasswordsOff(t *testing.T) {
 	}
 }
 
+// TestLoginMustChange: npm login with the right password of a user that must change it is 403,
+// saying how, and makes no token; a wrong one is 401 (docs/spec/rbac.md §1, Change at first use).
+func TestLoginMustChange(t *testing.T) {
+	p := newPipeline(t)
+	h := p.loginRoutes(t, readers{})
+	alice, err := p.st.GetUser(t.Context(), "alice")
+	must(t, err)
+	alice.MustChange = true
+	must(t, p.st.UpdateUser(t.Context(), alice))
+	rr := as(h, auth.Anonymous, http.MethodPut, "/npm/internal/-/user/org.couchdb.user:alice", loginBody("alice", "alice's password"))
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), auth.MsgMustChange) {
+		t.Errorf("npm login: %d %s, want 403 saying the password must be changed", rr.Code, rr.Body)
+	}
+	rr = as(h, auth.Anonymous, http.MethodPut, "/npm/internal/-/user/org.couchdb.user:alice", loginBody("alice", "a wrong password"))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("npm login with a wrong password: %d %s, want 401", rr.Code, rr.Body)
+	}
+	if audit, _ := p.st.ListAudit(t.Context(), index.AuditFilter{Action: "token.create"}); len(audit) != 0 {
+		t.Errorf("%d tokens made", len(audit))
+	}
+}
+
 // TestLoginLockoutMessage: while auth.lockout.duration is set, a refused npm login says what
 // locks a password and for how long, whatever the reason (docs/spec/rbac.md §1).
 func TestLoginLockoutMessage(t *testing.T) {

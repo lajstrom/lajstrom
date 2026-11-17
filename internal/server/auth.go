@@ -175,8 +175,10 @@ func (s *Server) credential(r *http.Request) (p auth.Principal, cred auth.Creden
 }
 
 // settle ends the authentication of r with the outcome of its credential: refused credentials
-// are 401 with the challenge, a failed-login throttle 429, a failure to decide 500, or 503 when
-// the database does not answer; otherwise the request goes on as p, with cred.
+// are 401 with the challenge, a right password whose user must change it 403 without one
+// (auth.ErrMustChange, docs/spec/rbac.md §1, Change at first use), a failed-login throttle 429, a
+// failure to decide 500, or 503 when the database does not answer; otherwise the request goes on
+// as p, with cred.
 func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handler, p auth.Principal, cred auth.Credential, err error) {
 	var throttled *auth.ThrottledError
 	switch {
@@ -185,6 +187,9 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 		return
 	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message of a refused password, when it has one
 		s.writeRefusal(w, r, http.StatusUnauthorized, s.refusedMessage(err))
+		return
+	case errors.Is(err, auth.ErrMustChange): // a right password whose user must change it first: 403, no challenge
+		s.writeRefusal(w, r, http.StatusForbidden, auth.MsgMustChange)
 		return
 	case errors.As(err, &throttled): // a failed-login throttle: account or address
 		s.throttled(w, r, throttled, msgThrottled)

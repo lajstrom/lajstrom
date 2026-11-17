@@ -282,28 +282,44 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // the cache of verified secrets. It is the check of npm login, whose body carries the password
 // and which makes a personal access token, which a token may never do (#365): a secret of a
 // token's shape is refused as a wrong password is. Everything else is authenticatePassword's:
-// the same refusals, the same throttles, the same argon2id work, every attempt verified, and
-// while passwords are off every password refused first.
+// the same refusals, the same throttles, the same argon2id work, every attempt verified, while
+// passwords are off every password refused first, and a right password whose user must change it
+// ErrMustChange, which mints no token.
 func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
-	if err := a.passwordsRefused(ctx); err != nil {
+	u, err := a.checkedPassword(ctx, username, password)
+	if err != nil {
 		return Principal{}, Credential{}, err
 	}
+	if u.MustChange {
+		return Principal{}, Credential{}, a.mustChange(ctx, u)
+	}
+	return UserPrincipal(u), Credential{Kind: CredPassword}, nil
+}
+
+// checkedPassword returns the user called username when password, which is verified, is its
+// password: AuthenticatePassword but that a password whose user must change it is no refusal, as
+// in the user's own change (ChangeOwnPassword). It refuses every password while passwords are off
+// and a secret of a token's shape, then runs loginUser, then, under the locks of the address and
+// the account (lockLogin), checkPassword and admitVerified.
+func (a *Authenticator) checkedPassword(ctx context.Context, username, password string) (*index.User, error) {
+	if err := a.passwordsRefused(ctx); err != nil {
+		return nil, err
+	}
 	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) || strings.HasPrefix(password, CIPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, CredPassword, nil, "a token in place of a password")
+		return nil, a.refuse(ctx, CredPassword, nil, "a token in place of a password")
 	}
 	u, account, addr, err := a.loginUser(ctx, username, password)
 	if err != nil {
-		return Principal{}, Credential{}, err
+		return nil, err
 	}
 	defer a.lockLogin(addr, account)()
 	if _, err := a.checkPassword(ctx, u, password, account, addr); err != nil {
-		return Principal{}, Credential{}, err
+		return nil, err
 	}
-	p, err := a.admitPassword(ctx, u, account, addr, true)
-	if err != nil {
-		return Principal{}, Credential{}, err
+	if err := a.admitVerified(ctx, u, account, addr, true); err != nil {
+		return nil, err
 	}
-	return p, Credential{Kind: CredPassword}, nil
+	return u, nil
 }
 
 // loginUser runs the checks of a password login that come before its verification: a
