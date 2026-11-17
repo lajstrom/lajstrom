@@ -183,8 +183,8 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 	case errors.Is(err, auth.ErrBound) && strings.HasPrefix(r.URL.Path, "/api/"):
 		s.refuseDPoP(w, r, "invalid_token", msgBound)
 		return
-	case errors.Is(err, auth.ErrBadCredentials):
-		s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message of a refused password, when it has one
+		s.writeRefusal(w, r, http.StatusUnauthorized, refusedMessage(err))
 		return
 	case errors.As(err, &throttled): // a failed-login throttle: account or address
 		s.throttled(w, r, throttled, msgThrottled)
@@ -202,6 +202,17 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 	}
 	HoldPrincipal(r.Context(), p)
 	next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
+}
+
+// refusedMessage is the message of the 401 of err, refused credentials: the authenticator's of a
+// refused password when it has one, which auth.Authenticator.RefusalMessage gives npm login and
+// POST /api/v1/login, else msgBadCredentials. It names the messages by the kind of err rather than
+// asking the authenticator, so that the analysis of what reaches an answer sees fixed text.
+func refusedMessage(err error) string {
+	if errors.Is(err, auth.ErrPasswordsOff) {
+		return auth.MsgPasswordsOff
+	}
+	return msgBadCredentials
 }
 
 // authenticateDPoP authenticates Authorization: DPoP <secret> (RFC 9449 §7.1), the token of a

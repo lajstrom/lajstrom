@@ -62,7 +62,7 @@ func TestLoadDefaults(t *testing.T) {
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
-				Auth: Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
+				Auth: Auth{LocalPasswords: true, Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour},
 					ServiceAccounts: ServiceAccounts{MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"},
 					Login:           Login{TokenLifetime: 12 * time.Hour},

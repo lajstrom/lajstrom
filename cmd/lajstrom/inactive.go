@@ -14,7 +14,7 @@ import (
 // auth.disableInactiveUsersAfter, whose authentication disables them (docs/spec/rbac.md §1).
 func usersOf(c *config.Config, st index.Store, log *slog.Logger) *auth.Users {
 	return &auth.Users{Index: st, Log: log, DisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-		InactiveAfter: c.Auth.DisableInactiveUsersAfter}
+		InactiveAfter: c.Auth.DisableInactiveUsersAfter, PasswordsOff: !c.Auth.LocalPasswords}
 }
 
 // warnInactiveUsers logs at warn, at serve's start, how many users are inactive beyond
