@@ -1748,6 +1748,107 @@ and, for a token, the request's `createdBy`. A rejection is `approval.reject`, a
 `approval.expire` by `anonymous` with `source: expiry`. Each has `signIn` when it was made with a
 web UI's sign-in. Requests are kept, decided or not, and are not in a snapshot.
 
+## The access report and its review
+
+PCI DSS 7.2.4 asks that user accounts and their privileges are reviewed every six months, and that
+management acknowledges that access remains appropriate; 7.2.5.1 asks the same for system
+accounts ([rbac.md](spec/rbac.md) §14, [ADR 0032](adr/0032-access-report-and-its-review.md)).
+Lajstrom answers what such a review reads, in one document, and records that it took place.
+
+### The report
+
+`GET /api/v1/access-report` (the admin role) and `lajstrom admin access-report` (against the
+database) answer **who has what at one moment**, read in one read-only transaction:
+
+- `users`: every live user, a disabled one too, as the users API answers it, with its `principal`,
+  its current `groups` and when each lapses ([Groups and group bindings](#groups-and-group-bindings)),
+  its `bindings`, its own and its groups' (those have `via`, the group), and its live personal
+  access tokens; a service account with its owner and `ownerDisabled`;
+- `groups`: every group that has a binding, with its bindings and its `members`, the users whose
+  current groups name it;
+- `workloads`: every `cert:` and `k8s:` principal or pattern that has a binding
+  ([Node and workload identity](#node-and-workload-identity)); Lajstrom keeps no last use of them;
+- `deployTokens`: every live deploy token, of a repo and over a mask, with `principal`
+  `token:<id>`;
+- `ciPolicies`: every CI trust policy, of the configuration and of the API, an expired one too;
+- `anonymous`: the repos that anonymous reads, while `auth.anonymousRead` is on;
+- `settings`, what the flags read of the configuration, and `generatedAt`, the database's time of
+  the read.
+
+A token is answered as the tokens API answers it, with its `hashPrefix`: the report holds no
+password, no secret and no hash, and no webhook (whose URL may hold a credential). Requests that
+wait for a second admin grant nothing and are not in it. Reading it is not audited, as no read is;
+the access log has it.
+
+**The flags** are on each entry and each token, in this order: `admin` (an `admin` binding, its
+own or a current group's), `allRepos` (a binding on `*/*`, a deploy token over `*/*`, a CI grant
+on `*/*`), `adminWithoutEffect` (the `admin` binding of a service account or a local user under
+`auth.admin.requireMFA`, which counts for nothing), `noExpiry` (a token or a CI trust policy
+without an expiry), `unused` (no use for more than `unusedDays`), `beyondMaxTTL`, `ownerDisabled`
+and `inactive` ([Inactive users](#inactive-users)). A reader tolerates a flag it does not know. A
+user's last use is its `lastSeenAt`, a token's its `lastUsedAt`, either its creation when it has
+none; `unusedDays` is 90 by default (PCI DSS 8.2.6), from 1 to 3650.
+
+**The scope**: `all`, the default; `people`, the users of kind `local` and `oidc` and the groups,
+for 7.2.4; `systems`, the service accounts, the workloads, the deploy tokens and the CI trust
+policies, for 7.2.5.1, which your risk analysis may review at another frequency. A section out of
+the scope is left out of the document; `anonymous` is in every scope. No other filter: a review
+names one document.
+
+**One document, one sha256.** The document is compact JSON in a canonical form: the keys of every
+object in byte order, its lists in fixed orders (`users` by name, `groups`, `workloads` and
+`members` by principal, tokens by id, `ciPolicies` by name, `bindings` by role, mask and `via`),
+its times in UTC to the second, and a line feed at the end. The same rows at the same time are
+the same bytes, from the API and from the command line, so that a review names the document by
+the sha256 of its bytes. It is not paged; it grows with the rows, a few hundred bytes a binding or
+a token. It changes with every use of a token (`lastUsedAt`): keep the copy you reviewed.
+
+```console
+$ lajstrom admin access-report --scope people > access-2026-h2.json
+sha256:5f3c…e9a1
+```
+
+The command line reads the database as every `lajstrom admin` command does, so it works under
+the admin mode, where no terminal reaches the admin role through the API, and while the IdP is
+down. It writes the document on standard output and `sha256:<hex>` on standard error. `--format
+csv` writes a table for a spreadsheet instead, one line per binding, token and CI grant, with the
+columns `principal`, `kind`, `name`, `item`, `role`, `mask`, `scopes`, `expiresAt`, `lastUsedAt`,
+`via` and `flags` (the entry's and the item's, joined by `;`), and on standard error the sha256 of
+the JSON document of the same read, which is the one a review names; a cell that a spreadsheet
+would take for a formula (it starts with `=`, `+`, `-`, `@`) gets a `'` before it. It writes
+nothing, and its host's clock must agree with the database's within 60 seconds, as for every
+command against the database ([operations.md](operations.md#clocks)).
+
+### The review
+
+`POST /api/v1/access-reviews` records that a person reviewed a report, as an audit row
+`access.review` by that person:
+
+```console
+$ curl -s -u admin:<password> -X POST https://art.example.com/api/v1/access-reviews -d '{
+    "sha256": "5f3c…e9a1", "generatedAt": "2026-11-18T10:00:00Z", "scope": "people",
+    "note": "Removed bob (left in October) and two unused tokens, CHG-2210.\nAcknowledged by the CISO, 2026-11-20."}'
+{"id":5120,"at":"2026-11-20T09:14:02.118374Z","principal":"user:01a0…","principalName":"admin",
+ "action":"access.review","subject":"sha256:5f3c…e9a1","ip":"10.0.4.7",
+ "details":{"generatedAt":"2026-11-18T10:00:00Z","note":"Removed bob …","requestId":"…","scope":"people",
+ "sha256":"5f3c…e9a1","source":"api"},"state":"ok"}
+```
+
+- **Who**: the admin role, with any credential that reaches it; under `auth.admin.requireMFA`, a
+  web UI's sign-in with a second factor, whose `signIn` the row keeps. No second admin and no
+  `changeReason`: a review changes no access, and the note says what was done.
+- **The body**: `sha256`, the 64 lowercase hexadecimal digits of the document's sha256, without
+  `sha256:`; its `generatedAt` and `scope` (`all` when absent); a `note` of 1 to 4096 bytes of
+  UTF-8 without control characters but line feeds: what was found and done, who in management
+  acknowledged, the ticket. A field out of its bounds is `400` naming it, and nothing is written;
+  so is a `generatedAt` more than 60 seconds after the server's time.
+- **What it checks**: the form, not the report. Lajstrom keeps no report, and could not make the
+  same one again, since every use of a token changes it: the evidence is the row and the document
+  you keep with the ticket, whose sha256 the row names.
+- **The answer** is `201` with the row as `GET /api/v1/audit` answers it. Past reviews are
+  `GET /api/v1/audit?action=access.review`, newest first. The command line records none: its rows
+  name nobody, and a review is a person's.
+
 ## Node and workload identity
 
 A node or a pod can pull from Lajstrom with no secret of Lajstrom's stored on it

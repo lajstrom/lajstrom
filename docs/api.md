@@ -1709,6 +1709,79 @@ another's can show with a lower id after it: a collector resumes from the newest
 minutes before and drops the ids it already has ([operations.md](operations.md#audit)). No route
 changes or deletes a row; a prune is the command line's ([rbac.md](spec/rbac.md) §5).
 
+## Access report
+
+Who has what at one moment, for the periodic review of PCI DSS 7.2.4 and 7.2.5.1, and the record of
+that review (#1279, [rbac.md](spec/rbac.md) §14, [auth.md](auth.md#the-access-report-and-its-review)).
+
+### Report: `GET /api/v1/access-report`
+
+One JSON document, read in one read-only transaction, not paged. Its sections are the resources
+this page describes, each with `principal` and `flags`:
+
+| Key | What |
+| --- | --- |
+| `generatedAt` | the database's time of the read, to the second |
+| `scope`, `unusedDays` | the query's |
+| `settings` | `adminMFA`, `anonymousRead`, and `disableInactiveUsersAfter`, `deployTokensMaxTTL`, `serviceAccountsMaxTokenTTL` in seconds (`0`: off) |
+| `users` | every live user as [Users](#users) answers it, with `principal` (`user:<uid>`), `groups` (`{name, expiresAt}`, its current groups), `bindings` (its own and its groups', [Bindings](#bindings), with `via`, `group:<name>`, for a group's), `tokens` (its live personal access tokens, [Tokens](#tokens), each with `flags`) and `flags` |
+| `groups` | every group that has a binding: `principal`, `bindings`, `members` (`{principal, name, expiresAt}`), `flags` |
+| `workloads` | every `cert:` and `k8s:` principal or pattern that has a binding: `principal`, `pattern: true` for a pattern, `bindings`, `flags` |
+| `deployTokens` | every live deploy token, of a repo and over a mask, as [Tokens](#tokens) answers it, with `principal` (`token:<id>`) and `flags` |
+| `ciPolicies` | every CI trust policy, of the configuration and of the API, an expired one too, as [CI trust policies](#ci-trust-policies) answers it, with `flags` |
+| `anonymous` | `{"repos": ["<format>/<name>", …]}`, while `auth.anonymousRead` is on; absent otherwise |
+
+| Parameter | Selects |
+| --- | --- |
+| `scope` | `all` (the default), `people` (`users` of kind `local` and `oidc`, `groups`) or `systems` (`users` of kind `service`, `workloads`, `deployTokens`, `ciPolicies`); a section out of the scope is absent |
+| `unusedDays` | after how many days without a use a user or a token is `unused`: 1 to 3650, `90` by default |
+
+Another value of either, or one given twice, is `400` naming it. The flags, in this order:
+`admin`, `allRepos`, `adminWithoutEffect`, `noExpiry`, `unused`, `beyondMaxTTL`, `ownerDisabled`,
+`inactive` ([auth.md](auth.md#the-report)); a client tolerates one it does not know.
+
+```json
+{"generatedAt":"2026-11-18T10:00:00Z","groups":[],"scope":"people","settings":{"adminMFA":false,"anonymousRead":false,"deployTokensMaxTTL":2592000,"disableInactiveUsersAfter":7776000,"serviceAccountsMaxTokenTTL":0},"unusedDays":90,"users":[{"bindings":[{"createdAt":"2026-11-09T16:48:44Z","id":1,"name":"admin","principal":"user:01a1c136-5180-7b5e-95ce-428e99e68887","repoMask":"*/*","role":"admin"}],"createdAt":"2026-11-09T16:48:44Z","disabled":false,"flags":["admin","allRepos"],"groups":[],"kind":"local","lastSeenAt":"2026-11-18T09:58:12Z","name":"admin","principal":"user:01a1c136-5180-7b5e-95ce-428e99e68887","tokens":[],"uid":"01a1c136-5180-7b5e-95ce-428e99e68887"}]}
+```
+
+The document is in a **canonical form**: compact, the keys of every object in byte order, its
+lists in fixed orders (`users` by name, `groups`, `workloads` and `members` by principal,
+`deployTokens` and `tokens` by id, `ciPolicies` by name, `bindings` by role, mask and `via`), its
+times in UTC to the second, and a line feed at the end; the server writes it as it is. So the
+same rows at the same time are the same bytes from here and from `lajstrom admin access-report`,
+and a review names the document by the sha256 of the bytes the client got:
+
+```sh
+curl -fsS -u admin "$LAJSTROM/api/v1/access-report?scope=people" -o access.json
+sha256sum access.json
+```
+
+It holds no secret and no hash, but a token's `hashPrefix`. A read: it writes no audit row.
+
+### Review: `POST /api/v1/access-reviews`
+
+Records that a person reviewed a report: `{"sha256", "generatedAt", "scope", "note"}`, the 64
+lowercase hexadecimal digits of the sha256 of the document's bytes (without `sha256:`), its
+`generatedAt` and `scope` (`all` when absent), and a note of 1 to 4096 bytes of UTF-8 without
+control characters but line feeds. `201` with the audit row it wrote, `access.review` by the
+caller, subject `sha256:<hex>`, as [Audit](#audit) answers it; a field out of its bounds, or a
+`generatedAt` more than 60 seconds after the server's time, is `400` naming it, and nothing is
+written. The server keeps no report and does not compare the sha256 with one. It takes no
+`changeReason` and waits for no second admin: a review changes no access. There is no `GET`:
+past reviews are `GET /api/v1/audit?action=access.review`, newest first.
+
+### Who may
+
+The admin role, checked before anything else; under `auth.admin.requireMFA`, a web UI's sign-in
+with a second factor. Anyone else is `403`, anonymous `401`.
+
+### `lajstrom admin access-report`
+
+The report straight from the database of the configuration, with the same code and the same
+bytes: `--scope`, `--unused-days`, and `--format json` (the default) or `csv`, a table for a
+spreadsheet. Standard output has the document, standard error `sha256:<hex>` of it (with `csv`,
+of the JSON document of the same read). It records no review ([auth.md](auth.md#the-report)).
+
 ## Tokens
 
 Personal access tokens belong to a user, deploy tokens to a repo or to a mask of repos; what
