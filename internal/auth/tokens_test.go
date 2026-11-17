@@ -628,7 +628,8 @@ func TestTokensMaskDeployCredential(t *testing.T) {
 		{Kind: CredOIDC},
 	} {
 		_, _, err := f.tokens.CreateMaskDeploy(WithCredential(admin, c), "raw/*", "minted", []string{"read"}, Expiry{}, cli)
-		if !errors.Is(err, ErrScope) || err.Error() != "a deploy token over a mask is created with the admin's password, not with a token" {
+		if !errors.Is(err, ErrScope) || err.Error() != "a deploy token over a mask is created with the admin's password or a web UI's "+
+			"fresh sign-in through OIDC, not with a token" {
 			t.Errorf("with %+v: %v, want ErrScope naming the rule", c, err)
 		}
 	}

@@ -628,7 +628,7 @@ func TestMaskTokensAPIAuthorization(t *testing.T) {
 			wantChallenge(t, rr)
 		})
 	}
-	const rule = "a deploy token over a mask is created with the admin's password, not with a token"
+	const rule = "a deploy token over a mask is created with the admin's password or a web UI's fresh sign-in through OIDC, not with a token"
 	for _, c := range []auth.Credential{adminPAT, {Kind: auth.CredPAT, TokenID: 1, UserID: 1, Scopes: []string{"read", "write"}},
 		{Kind: auth.CredDeploy, TokenID: 20, Mask: "*/*", Scopes: []string{"read", "write"}}} {
 		wantError(t, f.doAs(http.MethodPost, "/api/v1/deploy-tokens", body("z"), root, c), http.StatusForbidden, codeForbidden, rule)
