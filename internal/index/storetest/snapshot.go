@@ -45,6 +45,9 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	must(t, s.SetGroupMembers(ctx, group.ID, []int64{hosted.ID, proxy.ID}))
 
 	alice := newUser(t, s, "alice")
+	// a password that must change, and a history, which a snapshot carries
+	alice.MustChange, alice.PasswordHistory = true, []string{passwordHash("alice before"), passwordHash("alice first")}
+	must(t, s.UpdateUser(ctx, &alice))
 	must(t, s.TouchUser(ctx, alice.ID, at(65)))
 	if _, err := s.FailPassword(ctx, alice.ID, at(66), at(4000), 1); err != nil { // a lock, which a snapshot leaves out
 		t.Fatal(err)
@@ -139,6 +142,11 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	cp := export(t, src)
 	if alice, err := src.GetUser(ctx, "alice"); err != nil || alice.LockedUntil == nil {
 		t.Errorf("alice of the source: %+v, %v; want her locked", alice, err)
+	}
+	for _, u := range cp.Users {
+		if u.Name == "alice" && (!u.MustChange || len(u.PasswordHistory) != 2) {
+			t.Errorf("alice in the snapshot: MustChange %v, PasswordHistory %q; want true and two hashes", u.MustChange, u.PasswordHistory)
+		}
 	}
 	if cp.Schema < 26 || cp.ReadAt.IsZero() || !cp.WithAudit {
 		t.Errorf("Schema %d, ReadAt %v, WithAudit %v: want the newest migration, the database's time and the audit rows",
