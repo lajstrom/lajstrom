@@ -260,7 +260,8 @@ func newServeCmd(a *app) *cobra.Command {
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
 				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize,
 				Rules: newRules(c, st, a.log), Verdicter: pipe, PolicyKey: apiPolicyKey(pkey), Locate: locateIn(lookupIn(plugins)),
-				CIPolicies: ciPolicies, RequireReason: c.Auth.RequireReason, SecondAdmin: c.Auth.Approval == config.ApprovalSecondAdmin})
+				CIPolicies: ciPolicies, RequireReason: c.Auth.RequireReason, SecondAdmin: c.Auth.Approval == config.ApprovalSecondAdmin,
+				Access: accessConfigOf(c)})
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
 			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
 			// the expiry of the requests for a second admin, on each replica, whatever auth.approval says: the requests made

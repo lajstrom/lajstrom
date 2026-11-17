@@ -143,6 +143,11 @@ type Options struct {
 	// (docs/spec/rbac.md §13); nil means one over the index, the audit writer, the clock and the
 	// logger of Repos, with the services of the bindings and of the tokens.
 	Approvals *auth.Approvals
+	// Access is what GET /api/v1/access-report reads of the configuration (docs/spec/rbac.md
+	// §14): serve makes it of the keys lajstrom admin access-report makes it of, so that the two
+	// answer the same bytes. The zero value is every setting off and no CI trust policy of the
+	// configuration.
+	Access AccessConfig
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -228,6 +233,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/approvals/{id}/approve              approve one, another admin's, with a password or a fresh sign-in
 //	POST   /api/v1/approvals/{id}/reject               reject one, or withdraw one's own
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
+//	GET    /api/v1/access-report[?scope=&unusedDays=]  who has what, one document in its canonical form (admin)
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
 //	GET    /api/v1/registries                          the registries, their capabilities, repos and health (admin)
@@ -247,7 +253,7 @@ func New(o Options) http.Handler {
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
 		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason, secondAdmin: o.SecondAdmin,
-		approvals: o.Approvals}
+		approvals: o.Approvals, access: o.Access}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -372,6 +378,7 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/approvals/{id}/approve", h.approveApproval},
 		{"POST /api/v1/approvals/{id}/reject", h.rejectApproval},
 		{"GET /api/v1/audit", h.listAudit},
+		{"GET /api/v1/access-report", h.accessReport},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
 		{"GET /api/v1/search", h.search},
@@ -425,7 +432,9 @@ type handler struct {
 	requireReason bool
 	secondAdmin   bool
 	approvals     *auth.Approvals
-	log           *slog.Logger
+	// access is Options.Access.
+	access AccessConfig
+	log    *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
