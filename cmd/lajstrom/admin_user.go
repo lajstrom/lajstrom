@@ -81,6 +81,9 @@ func newUserCreateCmd(a *app) *cobra.Command {
 					}
 					return writeJSONLine(cmd.OutOrStdout(), u)
 				}
+				if err := users.CheckPasswordSet(); err != nil {
+					return err // before the prompt
+				}
 				if err := auth.CheckName(name); err != nil {
 					return err
 				}
@@ -254,6 +257,9 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				if err := users.CheckPasswordSet(); err != nil {
+					return err // before the prompt
+				}
 				u, err := users.Get(ctx, args[0])
 				if err != nil {
 					return err
@@ -280,7 +286,8 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 // withUsers opens the index database of the configuration, runs fn with the users service over
 // it, which disables the service accounts of an owner it disables when
 // auth.serviceAccounts.onOwnerDisabled is disable and marks the users inactive beyond
-// auth.disableInactiveUsersAfter, and closes the database.
+// auth.disableInactiveUsersAfter, and sets no password while auth.localPasswords is false, and
+// closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
@@ -288,7 +295,7 @@ func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.User
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
 	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter})
+		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter, PasswordsOff: !a.cfg.Auth.LocalPasswords})
 }
 
 // errNoPassword is the error when no source gives a password.

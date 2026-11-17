@@ -50,6 +50,9 @@ type Options struct {
 	// InactiveUsersAfter is auth.disableInactiveUsersAfter (auth.Users.InactiveAfter), which the
 	// users' inactive answers, when Users is nil; zero marks nobody.
 	InactiveUsersAfter time.Duration
+	// PasswordsOff is auth.localPasswords false (auth.Users.PasswordsOff), when Users is nil: a
+	// password of POST /api/v1/users and POST …/password is 400, naming the setting.
+	PasswordsOff bool
 	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
 	// formats, the audit writer, the clock and the logger of Repos.
 	Bindings *auth.Bindings
@@ -233,7 +236,7 @@ func New(o Options) http.Handler {
 	}
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
-			DisableWithOwner: o.ServiceDisableWithOwner, InactiveAfter: o.InactiveUsersAfter}
+			DisableWithOwner: o.ServiceDisableWithOwner, InactiveAfter: o.InactiveUsersAfter, PasswordsOff: o.PasswordsOff}
 	}
 	if h.bindings == nil {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}

@@ -26,6 +26,9 @@ const DefaultLoginLifetime = 12 * time.Hour
 // throttled account or address.
 type Passwords interface {
 	AuthenticatePassword(ctx context.Context, username, password string) (auth.Principal, auth.Credential, error)
+	// RefusalMessage is the message of the 401 of a refusal, fallback when the authenticator has
+	// none of its own (*auth.Authenticator.RefusalMessage).
+	RefusalMessage(err error, fallback string) string
 }
 
 // Handoffs redeems the code that an OIDC login hands a web UI (oidc.Handoffs.Redeem) with its
@@ -125,8 +128,8 @@ func (h *handler) passwordLogin(w http.ResponseWriter, r *http.Request, user, pa
 		w.Header().Set("Retry-After", strconv.Itoa(max(int(math.Ceil(te.RetryAfter.Seconds())), 1)))
 		return http.StatusTooManyRequests, envelope{Error: envelopeError{Code: codeUnavailable,
 			Message: "too many failed logins: try again after Retry-After seconds"}}, nil
-	case errors.Is(err, auth.ErrBadCredentials):
-		return 0, nil, &clientError{msg: "the user name or the password is wrong", err: format.ErrUnauthenticated}
+	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
+		return 0, nil, &clientError{msg: h.passwords.RefusalMessage(err, "the user name or the password is wrong"), err: format.ErrUnauthenticated}
 	case err != nil:
 		return 0, nil, err
 	}

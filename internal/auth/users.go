@@ -140,10 +140,14 @@ type Users struct {
 	// OIDC login of a user inactive beyond it disables the user and is refused, and
 	// DisableInactive and InactiveUsers count by it. Zero disables nobody.
 	InactiveAfter time.Duration
+	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords): Create
+	// and SetPassword refuse every password (CheckPasswordSet); CreateService is as before.
+	PasswordsOff bool
 }
 
 // Create checks name and password and creates the local user, with a new uid, and one
-// user.create audit event, whose details say whether it is an admin. With admin, the binding
+// user.create audit event, whose details say whether it is an admin; while local passwords are
+// off it creates none (CheckPasswordSet). With admin, the binding
 // (user:<uid>, admin, */*) is created in the same transaction: the bootstrap of
 // docs/spec/rbac.md §6.
 func (s *Users) Create(ctx context.Context, name, password string, admin bool, o Origin) (*User, error) {
@@ -153,6 +157,9 @@ func (s *Users) Create(ctx context.Context, name, password string, admin bool, o
 // create is Create, with before, when it is not nil, run first in the transaction: an error of
 // it rolls the transaction back and is returned as it is.
 func (s *Users) create(ctx context.Context, name, password string, admin bool, o Origin, before func(index.Writer) error) (*User, error) {
+	if err := s.CheckPasswordSet(); err != nil {
+		return nil, err
+	}
 	if err := CheckName(name); err != nil {
 		return nil, err
 	}
@@ -322,7 +329,11 @@ func (s *Users) List(ctx context.Context, kind string) ([]User, error) {
 
 // SetPassword checks password and makes it the user's, with one user.password audit event. The
 // old password stops working at the next request (the Authenticator compares the stored hash).
+// While local passwords are off it sets none (CheckPasswordSet).
 func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin) error {
+	if err := s.CheckPasswordSet(); err != nil {
+		return err
+	}
 	hash, err := HashPassword(password)
 	if err != nil {
 		return err

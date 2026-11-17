@@ -25,9 +25,9 @@ func TestWarnInactiveUsers(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var c config.Config
+	c := config.Default()
 	c.Auth.DisableInactiveUsersAfter = 2160 * time.Hour
-	users := usersOf(&c, st, slog.New(slog.DiscardHandler))
+	users := usersOf(c, st, slog.New(slog.DiscardHandler))
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	users.Now = func() time.Time { return created }
 	for _, u := range []struct {

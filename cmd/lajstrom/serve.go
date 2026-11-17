@@ -93,6 +93,8 @@ func newServeCmd(a *app) *cobra.Command {
 		Short:       "Run the HTTP server",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
+		// auth.localPasswords false needs auth.oidc.issuer, before anything starts.
+		PreRunE: func(*cobra.Command, []string) error { return checkLocalPasswords(a.cfg.Auth, a.log) },
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), drainSignals...)
 			defer stop()
@@ -137,7 +139,7 @@ func newServeCmd(a *app) *cobra.Command {
 			// at most auth.BlockRows a minute on this replica (docs/spec/rbac.md §5)
 			blocks := &auth.Blocks{Index: st, Log: a.log}
 			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log,
-				Blocks: blocks}
+				Blocks: blocks, PasswordsOff: !c.Auth.LocalPasswords}
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
 			}
@@ -213,7 +215,8 @@ func newServeCmd(a *app) *cobra.Command {
 			// sign-in, the server revokes it with its audit row, /api/v1/info answers the bound.
 			// auth.disableInactiveUsersAfter (rbac.md §1, #1283): users disables the inactive.
 			users := usersOf(c, st, a.log)
-			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users, Blocks: blocks})
+			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users, Blocks: blocks,
+				PasswordsOff: !c.Auth.LocalPasswords})
 			warnInactiveUsers(ctx, users, a.log)
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
@@ -227,13 +230,14 @@ func newServeCmd(a *app) *cobra.Command {
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
-				OIDC: edge.login != nil}
+				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords}
 			ciPolicies := newCIPolicies(c, st)
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
 				InactiveUsersAfter:      c.Auth.DisableInactiveUsersAfter,
+				PasswordsOff:            !c.Auth.LocalPasswords,
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, LoginIdle: c.Auth.Login.IdleTimeout,
 				Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},

@@ -87,6 +87,9 @@ type Options struct {
 	// Blocks writes the login.block row of a throttle that trips (docs/spec/rbac.md §5); nil
 	// writes none. Serve gives the Bootstrap the same one.
 	Blocks *Blocks
+	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords): every
+	// password is refused with ErrPasswordsOff before a user is read, and tokens work as before.
+	PasswordsOff bool
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -135,6 +138,9 @@ type Authenticator struct {
 	// blocks writes the rows of the throttles that trip.
 	blocks *Blocks
 
+	// passwordsOff refuses every password (Options.PasswordsOff).
+	passwordsOff bool
+
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
 	logins, addresses, tokens *throttle
@@ -162,9 +168,10 @@ func NewAuthenticator(o Options) *Authenticator {
 	}
 	a := &Authenticator{
 		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize, idle: o.IdleTimeout, users: o.Users,
-		verify:  VerifyPassword,
-		entries: map[cacheKey]*list.Element{},
-		order:   list.New(),
+		passwordsOff: o.PasswordsOff,
+		verify:       VerifyPassword,
+		entries:      map[cacheKey]*list.Element{},
+		order:        list.New(),
 	}
 	if a.log == nil {
 		a.log = slog.Default()
@@ -235,8 +242,12 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, secret strin
 // tells nothing about the secret. A name that no user has is throttled by the name, alike, so
 // that the throttle does not tell whether a user exists either. The failures count against
 // the client address of ctx too (WithClientAddress), which with AddressFailures of them is
-// refused the same way, before the user is read.
+// refused the same way, before the user is read. While passwords are off (Options.PasswordsOff)
+// every secret is refused before anything else (passwordsRefused).
 func (a *Authenticator) authenticatePassword(ctx context.Context, username, secret string) (Principal, error) {
+	if err := a.passwordsRefused(ctx); err != nil {
+		return Principal{}, err
+	}
 	u, account, addr, err := a.loginUser(ctx, username, secret)
 	if err != nil {
 		return Principal{}, err
@@ -255,8 +266,12 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // the cache of verified secrets. It is the check of npm login, whose body carries the password
 // and which makes a personal access token, which a token may never do (#365): a secret of a
 // token's shape is refused as a wrong password is. Everything else is authenticatePassword's:
-// the same refusals, the same throttles, the same argon2id work, every attempt verified.
+// the same refusals, the same throttles, the same argon2id work, every attempt verified, and
+// while passwords are off every password refused first.
 func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
+	if err := a.passwordsRefused(ctx); err != nil {
+		return Principal{}, Credential{}, err
+	}
 	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) || strings.HasPrefix(password, CIPrefix) {
 		return Principal{}, Credential{}, a.refuse(ctx, CredPassword, nil, "a token in place of a password")
 	}

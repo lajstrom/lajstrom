@@ -121,6 +121,12 @@ type seen struct {
 // facade and /test/ handlers record what they see.
 func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 	t.Helper()
+	return authServerWith(t, r, auth.Options{})
+}
+
+// authServerWith is authServer with the authenticator of ao over r.
+func authServerWith(t *testing.T, r index.Store, ao auth.Options) (*Server, *seen, *bytes.Buffer) {
+	t.Helper()
 	var sw seen
 	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw = seen{called: true, principal: auth.PrincipalFrom(r.Context()), credential: auth.CredentialFrom(r.Context()),
@@ -129,7 +135,8 @@ func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 	})
 	o := Options{API: record, Facade: record}
 	if r != nil {
-		o.Authenticator = auth.NewAuthenticator(auth.Options{Index: r})
+		ao.Index = r
+		o.Authenticator = auth.NewAuthenticator(ao)
 	}
 	s, buf := newTestServer(t, o)
 	s.mux.Handle("/test/", record)

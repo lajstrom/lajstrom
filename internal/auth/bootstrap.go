@@ -64,6 +64,10 @@ type Bootstrap struct {
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
+	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, §6): the first admin would
+	// have a password that is no credential, so no token is made valid, the exchange is closed,
+	// and Arm says how to make the first admin through the IdP instead.
+	PasswordsOff bool
 
 	once     sync.Once
 	failures *throttle
@@ -74,8 +78,9 @@ type Bootstrap struct {
 // and a warning says how to make the first admin. A token that is valid already stays; the
 // token of the file, once it is used or expired, is not made valid again: the file needs a new
 // one. Nothing of a token is ever logged. When an admin exists Arm does nothing but warn while
-// the file of tokenFile exists, without reading it. Errors are failures of the index, a file that cannot be
-// read, and a token that ReadBootstrapToken refuses.
+// the file of tokenFile exists, without reading it. While local passwords are off (PasswordsOff)
+// it makes no token either, and warns how to make the first admin through the IdP. Errors are
+// failures of the index, a file that cannot be read, and a token that ReadBootstrapToken refuses.
 func (b *Bootstrap) Arm(ctx context.Context, tokenFile string) error {
 	admin, err := anyAdmin(ctx, b.Index)
 	if err != nil {
@@ -86,6 +91,12 @@ func (b *Bootstrap) Arm(ctx context.Context, tokenFile string) error {
 			b.log().WarnContext(ctx, "the bootstrap token is set but no longer valid, an admin exists: remove auth.bootstrap.tokenFile and its file",
 				"auth.bootstrap.tokenFile", tokenFile)
 		}
+		return nil
+	}
+	if b.PasswordsOff {
+		b.log().WarnContext(ctx, "no admin yet, and local passwords are off (auth.localPasswords: false): no bootstrap token is made valid. "+
+			"Log in through the IdP once, then, with the database, run "+
+			"lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'")
 		return nil
 	}
 	if tokenFile == "" {
@@ -151,8 +162,12 @@ func (b *Bootstrap) arm(ctx context.Context, tokenFile, secret string) (done boo
 	return true, nil
 }
 
-// Open reports whether the exchange is open: no enabled user has an admin binding.
+// Open reports whether the exchange is open: local passwords are on and no enabled user has an
+// admin binding.
 func (b *Bootstrap) Open(ctx context.Context) (bool, error) {
+	if b.PasswordsOff {
+		return false, nil
+	}
 	admin, err := anyAdmin(ctx, b.Index)
 	if err != nil {
 		return false, fmt.Errorf("auth: bootstrap: %w", err)
@@ -183,6 +198,7 @@ func ReadBootstrapToken(path string) (string, error) {
 // bootstrap token secret, and marks the token used, in one transaction: the token makes one
 // admin, on any replica. The audit event is user.create with o's source. In this order:
 //
+//   - local passwords off (PasswordsOff): ErrBootstrapClosed, whatever the token;
 //   - a client address with BootstrapFailures wrong tokens in its window: a *ThrottledError;
 //     a context without an address is never throttled;
 //   - an enabled user with an admin binding: ErrBootstrapClosed, whatever the token;
@@ -192,6 +208,9 @@ func ReadBootstrapToken(path string) (string, error) {
 //   - then the name and the password are checked (ErrInvalid), and a name that exists is
 //     index.ErrConflict, the token left valid.
 func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string, o Origin) (*User, error) {
+	if b.PasswordsOff {
+		return nil, ErrBootstrapClosed
+	}
 	addr := throttleAddress(ctx)
 	if err := b.throttled(addr); err != nil {
 		return nil, err

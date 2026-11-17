@@ -20,11 +20,13 @@ import (
 
 // Accounts is what npm login and npm logout need of internal/auth: a user's password checked as
 // a Basic password is, throttled as failed logins are, and a password only
-// (*auth.Authenticator.AuthenticatePassword), and personal access tokens made and revoked with
-// their audit rows (*auth.Tokens). serve gives the plugin one with WithAccounts; without it the
-// login is 501.
+// (*auth.Authenticator.AuthenticatePassword) and the message of its refusal
+// (*auth.Authenticator.RefusalMessage), and personal access tokens made and revoked with their
+// audit rows (*auth.Tokens). serve gives the plugin one with WithAccounts; without it the login is
+// 501.
 type Accounts interface {
 	AuthenticatePassword(ctx context.Context, username, password string) (auth.Principal, auth.Credential, error)
+	RefusalMessage(err error, fallback string) string
 	CreatePAT(ctx context.Context, user, name string, scopes []string, exp auth.Expiry, o auth.Origin) (*auth.Token, string, error)
 	Revoke(ctx context.Context, id int64, o auth.Origin) error
 }
@@ -112,8 +114,8 @@ func (h *handlers) loginFailed(w http.ResponseWriter, r *http.Request, err error
 	case errors.As(err, &throttled):
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(throttled.RetryAfter.Seconds()))))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed logins; try again later"})
-	case errors.Is(err, auth.ErrBadCredentials):
-		h.fail(w, r, fmt.Errorf("%w: the user name or the password is wrong", format.ErrUnauthenticated))
+	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
+		h.fail(w, r, fmt.Errorf("%w: %s", format.ErrUnauthenticated, h.plugin.Accounts.RefusalMessage(err, "the user name or the password is wrong")))
 	default:
 		h.fail(w, r, fmt.Errorf("npm: login: %w", err))
 	}
