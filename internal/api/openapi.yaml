@@ -1899,7 +1899,14 @@ paths:
     get:
       tags: [audit]
       operationId: listAudit
-      summary: A page of the audit log, newest first (admin).
+      summary: A page of the audit log, newest first; with after, the feed by id (admin).
+      description: >-
+        Without after, the rows newest first, a page at a time with next. With after=<id>, the
+        feed (#1278): the rows whose id is above it, by id ascending, with the other filters and
+        limit, and no next; an empty page is the end for now. A collector keeps the ids it holds
+        and asks again from the one it held 10 minutes before: on PostgreSQL and CockroachDB a
+        row whose transaction commits late shows with an id below rows already answered. No
+        route changes or deletes a row.
       parameters:
         - name: repo
           in: query
@@ -1924,11 +1931,17 @@ paths:
           in: query
           description: Exclusive.
           schema: {type: string, format: date-time}
+        - name: after
+          in: query
+          description: >-
+            The feed: the rows whose id is above this one, by id ascending; 0 starts at the oldest
+            row kept. Not with cursor.
+          schema: {type: integer, format: int64, minimum: 0}
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/cursor"
       responses:
         "200":
-          description: The page.
+          description: The page; in the feed, without next.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/AuditList"}

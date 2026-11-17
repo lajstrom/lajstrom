@@ -26,7 +26,9 @@ type AuditEntry = audit.Entry
 
 // listAudit answers a page of the audit events that match ?repo, ?principal, ?action, ?state,
 // ?since (inclusive) and ?until (exclusive), newest first: ?limit of them after the event of
-// ?cursor.
+// ?cursor. With ?after=<id> it answers the feed instead (docs/spec/rbac.md §5, #1278): the
+// events whose id is above it, by id ascending, ?limit of them, and no next, since a collector
+// keeps the ids it holds.
 func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -35,17 +37,31 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err != nil {
 		return 0, nil, err
 	}
+	feed, err := feedAfter(r, after != "")
+	if err != nil {
+		return 0, nil, err
+	}
 	f, ok, err := h.auditFilter(r)
 	if err != nil || !ok {
 		return http.StatusOK, AuditList{Events: []AuditEntry{}}, err
 	}
-	var from *auditKey
-	if after != "" {
-		if from, err = parseAuditKey(after); err != nil {
-			return 0, nil, invalid("cursor: %q is not the next of a page of this list", r.URL.Query().Get("cursor"))
+	var (
+		evs  []index.AuditEvent
+		more bool
+	)
+	switch {
+	case feed != nil:
+		f.Feed, f.After, f.Limit = true, *feed, limit
+		evs, err = h.repos.Index.ListAudit(r.Context(), f)
+	default:
+		var from *auditKey
+		if after != "" {
+			if from, err = parseAuditKey(after); err != nil {
+				return 0, nil, invalid("cursor: %q is not the next of a page of this list", r.URL.Query().Get("cursor"))
+			}
 		}
+		evs, more, err = auditPage(r.Context(), h.repos.Index, f, limit, from)
 	}
-	evs, more, err := auditPage(r.Context(), h.repos.Index, f, limit, from)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -63,6 +79,24 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 		list.Next = cursor(auditKey{At: last.At, ID: last.ID}.String())
 	}
 	return http.StatusOK, list, nil
+}
+
+// feedAfter returns the id of ?after, the feed's, or nil when the query has none; withCursor
+// says that it has a cursor, which the feed does not take. An id that is not an integer of 0
+// or more is invalid.
+func feedAfter(r *http.Request, withCursor bool) (*int64, error) {
+	v := r.URL.Query().Get("after")
+	if v == "" {
+		return nil, nil
+	}
+	id, err := strconv.ParseInt(v, 10, 64)
+	switch {
+	case err != nil || id < 0:
+		return nil, invalid("after: %q is not an id, an integer of 0 or more", v)
+	case withCursor:
+		return nil, invalid("after: the feed has no cursor; ask again after the newest id you hold")
+	}
+	return &id, nil
 }
 
 // principalKind returns the principalKind of principal (auth.PrincipalKind). kinds keeps the
