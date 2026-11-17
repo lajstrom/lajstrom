@@ -5,11 +5,13 @@
 package sqlstore
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,8 +32,15 @@ var _ index.Store = (*Store)(nil)
 // New returns a Store over db, which the Store owns: Close closes it. db must have the schema
 // of the migrations of d.Name, or get it with Migrate.
 func New(db *sql.DB, d Dialect) *Store {
-	return &Store{conn: &conn{q: db, db: db, d: &d}, db: db}
+	return &Store{conn: &conn{q: db, db: db, d: &d, obs: &auditObserver{}}, db: db}
 }
+
+// ObserveAudit sets fn, which gets after each commit the audit rows that the transaction
+// inserted or whose state it changed, as committed, by id: never after a rollback or a commit
+// that failed, whose result may be unknown, nor for the rows of ImportControlPlane but its
+// opts.Event (docs/spec/rbac.md §5, a line per row; #1278). fn is set before the store is used
+// and runs on the goroutine that committed; nil observes nothing.
+func (s *Store) ObserveAudit(fn func([]index.AuditEvent)) { s.obs.fn = fn }
 
 // Migrate applies the embedded migrations that are not applied yet (index.ApplyMigrations).
 func (s *Store) Migrate(ctx context.Context) error {
@@ -90,11 +99,48 @@ type queryer interface {
 }
 
 // conn implements index.Writer on a queryer: the pool (db is set) or a transaction (db is
-// nil).
+// nil). obs is the Store's observer of audit rows; wrote holds the audit rows that a
+// transaction wrote so far, which obs gets once it commits.
 type conn struct {
-	q  queryer
-	db *sql.DB
-	d  *Dialect
+	q     queryer
+	db    *sql.DB
+	d     *Dialect
+	obs   *auditObserver
+	wrote []index.AuditEvent
+}
+
+// auditObserver holds the function of ObserveAudit.
+type auditObserver struct{ fn func([]index.AuditEvent) }
+
+// notify calls the observer with rows, which committed: each id once, in the last state it
+// was written in, by id.
+func (o *auditObserver) notify(rows []index.AuditEvent) {
+	if o.fn == nil || len(rows) == 0 {
+		return
+	}
+	at := map[int64]int{}
+	out := make([]index.AuditEvent, 0, len(rows))
+	for _, ev := range rows {
+		if i, ok := at[ev.ID]; ok {
+			out[i] = ev
+			continue
+		}
+		at[ev.ID] = len(out)
+		out = append(out, ev)
+	}
+	slices.SortFunc(out, func(a, b index.AuditEvent) int { return cmp.Compare(a.ID, b.ID) })
+	o.fn(out)
+}
+
+// wroteAudit records rows, which a statement on c inserted or whose state it changed: on the
+// pool the statement has committed, and the observer gets them now; in a transaction, once it
+// commits (begin).
+func (c *conn) wroteAudit(rows ...index.AuditEvent) {
+	if c.db != nil {
+		c.obs.notify(rows)
+		return
+	}
+	c.wrote = append(c.wrote, rows...)
 }
 
 var _ index.Writer = (*conn)(nil)
@@ -131,13 +177,15 @@ func (c *conn) begin(ctx context.Context, opts *sql.TxOptions, fn func(*conn) er
 			panic(p)
 		}
 	}()
-	if err := fn(&conn{q: tx, d: c.d}); err != nil {
+	in := &conn{q: tx, d: c.d, obs: c.obs}
+	if err := fn(in); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return c.d.wrap(err, "commit")
 	}
+	c.obs.notify(in.wrote)
 	return nil
 }
 
