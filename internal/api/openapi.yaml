@@ -3720,6 +3720,11 @@ components:
           description: >-
             true while auth.admin.requireMFA is on, absent otherwise: the admin role counts only
             for a web UI's sign-in through OIDC with a second factor.
+        requireReason:
+          type: boolean
+          description: >-
+            auth.requireReason: true when a change of the control plane without changeReason is
+            400 (docs/spec/rbac.md §13). A server before it answers none, which is false.
         caller: {$ref: "#/components/schemas/Caller"}
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."

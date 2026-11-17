@@ -533,6 +533,12 @@ type Auth struct {
 	CI CI `yaml:"ci"`
 	// Admin is the admin mode (docs/spec/rbac.md §12, #1276).
 	Admin Admin `yaml:"admin"`
+	// RequireReason makes a reason required with every change of the control plane
+	// (docs/spec/rbac.md §13, #1285): changeReason through the API, 400 without it, and --reason
+	// or LAJSTROM_REASON on the command line, exit status 2 without it. A person's own tokens and
+	// password, the bootstrap and the writes of artifacts need none. false by default: a reason is
+	// taken when given.
+	RequireReason bool `yaml:"requireReason"`
 }
 
 // Admin configures the admin role (docs/spec/rbac.md §12).
