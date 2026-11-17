@@ -943,6 +943,18 @@ func (s *Tokens) resource(t *index.Token, own tokenOwner, now time.Time) Token {
 	return r
 }
 
+// ViewAt returns the Token of the tokens row t at now as every view of a token answers it
+// (resource), without a read: its owner the user u of a personal access token, repo the
+// <format>/<name> of a deploy token of one repo, and the mask of one over a mask its own (the
+// access report, docs/spec/rbac.md §14).
+func (s *Tokens) ViewAt(t *index.Token, u *index.User, repo string, now time.Time) Token {
+	own := tokenOwner{repo: repo, mask: t.RepoMask}
+	if u != nil {
+		own = tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}
+	}
+	return s.resource(t, own, now)
+}
+
 // storedPrecision is the precision of the times of the index, a microsecond on PostgreSQL: the
 // expiry a bound gives a token is at most that much after createdAt plus the bound once both
 // are stored.

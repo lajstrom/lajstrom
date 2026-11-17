@@ -108,19 +108,25 @@ func (e *serviceError) Unwrap() error { return e.err }
 
 // List returns the policies of the configuration, in its order, then those of the API, by id.
 func (s *Service) List(ctx context.Context) ([]Policy, error) {
-	list := make([]Policy, 0, len(s.Config.Policies))
-	for _, p := range s.Config.Policies {
-		list = append(list, fromConfig(p))
-	}
 	rows, err := s.Index.ListCIPolicies(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ci: list the trust policies: %w", err)
 	}
-	now := s.now()
+	return Views(s.Config.Policies, rows, s.now()), nil
+}
+
+// Views returns the policies of the configuration, configured, in its order, then those of the
+// API, rows, in theirs, as List answers them at now: the access report reads its rows in one
+// transaction of its own (docs/spec/rbac.md §14).
+func Views(configured []config.CIPolicy, rows []index.CIPolicy, now time.Time) []Policy {
+	list := make([]Policy, 0, len(configured)+len(rows))
+	for _, p := range configured {
+		list = append(list, fromConfig(p))
+	}
 	for _, r := range rows {
 		list = append(list, fromRow(r, now))
 	}
-	return list, nil
+	return list
 }
 
 // Get returns the policy called name, of the configuration or of the API.
