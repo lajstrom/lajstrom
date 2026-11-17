@@ -115,6 +115,11 @@ type StepUpError struct {
 func (e *StepUpError) Error() string { return e.msg }
 func (e *StepUpError) Unwrap() error { return ErrScope }
 
+// withPrefix is e with prefix before its message: the step that asks.
+func (e *StepUpError) withPrefix(prefix string) *StepUpError {
+	return &StepUpError{Missing: e.Missing, MaxAge: e.MaxAge, msg: prefix + e.msg}
+}
+
 // CheckSignIn returns nil when the credential cred meets what need asks of its sign-in at now:
 // a fresh one, its auth_time at most FreshSignInWindow before now and at most a minute after it,
 // and one with a second factor (SignIn.SecondFactor). Short of it, the token of a web UI's

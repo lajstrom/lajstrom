@@ -35,7 +35,7 @@ func AdminMFARefusal(cred Credential, now time.Time) error {
 	var stepUp *StepUpError
 	switch {
 	case errors.As(err, &stepUp):
-		return &StepUpError{Missing: stepUp.Missing, MaxAge: stepUp.MaxAge, msg: adminRule + stepUp.msg}
+		return stepUp.withPrefix(adminRule)
 	case err == nil:
 		return &authError{msg: adminRule + "the request's credential does not reach it", err: ErrScope}
 	}

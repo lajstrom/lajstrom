@@ -132,8 +132,9 @@ func TestBindingsCI(t *testing.T) {
 // as their rights allow.
 func TestCICreatesNoToken(t *testing.T) {
 	ci := WithCredential(context.Background(), Credential{Kind: CredCI, Grants: []Grant{{Role: RoleMaintainer, Mask: "*/*"}}})
+	tokens := &Tokens{}
 	for name, f := range map[string]func(context.Context) error{
-		"MayCreatePAT": MayCreatePAT, "MayCreateMaskDeploy": MayCreateMaskDeploy, "MayCreateDeploy": MayCreateDeploy,
+		"MayCreatePAT": tokens.MayCreatePAT, "MayCreateMaskDeploy": tokens.MayCreateMaskDeploy, "MayCreateDeploy": MayCreateDeploy,
 	} {
 		if err := f(ci); !errors.Is(err, ErrScope) {
 			t.Errorf("%s with a CI token = %v, want ErrScope", name, err)

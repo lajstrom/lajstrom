@@ -113,9 +113,10 @@ func (h *handler) listTokens(_ http.ResponseWriter, r *http.Request) (int, any, 
 // createToken creates a personal access token of a user from the TokenRequest of the body: 201
 // with the token, its secret (the one time it is shown) and its Location. A request whose
 // credential is a token, a personal access token with scopes or without or a deploy token, is
-// 403 before anything else (auth.MayCreatePAT, #249): only a password creates one.
+// 403 before anything else (auth.Tokens.MayCreatePAT, #249): a password creates one, and a web
+// UI's sign-in through OIDC in its place when it is fresh (#1323), else 401 asking for more.
 func (h *handler) createToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := auth.MayCreatePAT(r.Context()); err != nil {
+	if err := h.tokens.MayCreatePAT(r.Context()); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	name, err := h.tokenOwner(r)
@@ -206,11 +207,12 @@ func (h *handler) listMaskTokens(_ http.ResponseWriter, r *http.Request) (int, a
 // createMaskToken creates a deploy token over the mask of the MaskTokenRequest of the body: 201
 // with the token, its secret and its Location. Before the body is read (docs/spec/rbac.md §3):
 // a request whose credential is a token, a personal access token with scopes or without, the
-// admin's too, or a deploy token, is 403 naming the rule (auth.MayCreateMaskDeploy, decided on
-// #911): only the admin's password creates one; then the admin role is checked, so that another
-// principal gets 403 whatever the body names.
+// admin's too, or a deploy token, is 403 naming the rule (auth.Tokens.MayCreateMaskDeploy,
+// decided on #911): the admin's password creates one, or a web UI's fresh sign-in through OIDC
+// in its place (#1323), else 401 asking for more; then the admin role is checked, so that
+// another principal gets 403 whatever the body names.
 func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := auth.MayCreateMaskDeploy(r.Context()); err != nil {
+	if err := h.tokens.MayCreateMaskDeploy(r.Context()); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	if err := h.allowAdmin(r); err != nil {
