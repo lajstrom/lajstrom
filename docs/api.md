@@ -58,8 +58,8 @@ Every error is answered with one envelope:
 | Status | Code | When |
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
-| 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log, every token, the registries; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)); or the password is right and its user must change it first ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)) |
+| 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"`. Or a web UI's sign-in through OIDC that a step needs more of, not fresh or without a second factor: with `WWW-Authenticate: DPoP error="insufficient_user_authentication"` ([Asking for more](#asking-for-more)) |
+| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log, every token, the registries; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)); or the password is right and its user must change it first ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)); or, under `auth.admin.requireMFA`, an admin whose credential is not a web UI's sign-in through OIDC, the message naming the setting and the kind of the credential ([auth.md](auth.md#administrative-access-with-a-second-factor)) |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
@@ -1527,7 +1527,9 @@ to is within `auth.ci.apiWriteRepos` (`403` naming the grant); and with
 
 The body has `name`, `issuer`, `claims`, `grants`, and for a policy that writes `expiresAt` if
 you want it sooner. `201` with the resource, its `ETag` and `Location: /api/v1/ci/policies/<name>`.
-A rule broken is `400` naming the field; a step of a policy that writes missing `403`; a name
+A rule broken is `400` naming the field; a step of a policy that writes missing `403`, but a web
+UI's sign-in through OIDC that is not fresh or shows no second factor, which is asked for more,
+`401` ([Asking for more](#asking-for-more)); a name
 taken, the configuration's too, `409`. It counts from the next request on, on every replica, once
 it is `active`; its row is `ci.policy.create`, its event `ci.policy.created`.
 
@@ -1640,6 +1642,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
 | `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
+| `signIn` | the token of a web UI's sign-in through OIDC: `{"authTime", "amr", "acr"}`, the ID token's, each when the IdP sent it, so that a UI knows what its sign-in meets before it asks ([Asking for more](#asking-for-more)); left out for every other token (#1276) |
 | `beyondMaxTTL` | `true` on a live token beyond the bound of its kind, `auth.deployTokens.maxTTL` for a deploy token and `auth.serviceAccounts.maxTokenTTL` for a service account's ([auth.md](auth.md#rules)): made before the bound was set or lowered, it has no expiry, or expires more than the bound after its `createdAt`, and is to be replaced. Worked out when the token is answered, from the configuration of the replica that answers; left out otherwise, and on every token of a person (#1286) |
 
 ### Create: `POST /api/v1/users/<user>/tokens`, `POST /api/v1/repos/<format>/<repo>/deploy-tokens`
@@ -1655,9 +1658,14 @@ set, and not at all without it; the message names the field, the bound and the l
 both `expiresAt` and `expiresIn`, or `delete` in the scopes of a deploy token, or `write` in
 those of a group's (a write through a group is its hosted member's, which the group's token does
 not reach); `404` for a user or repo that does not exist; `409` when the name is taken. The user
-need not be enabled. A personal access token is created with a password only: with a personal
-access token as the credential, with scopes or without, the admin's too, or with a deploy token,
+need not be enabled. A personal access token is created with a password, or with a web UI's
+sign-in through OIDC in its place when it is fresh, its `auth_time` within the last 10 minutes
+(#1323); one that is not fresh is asked for more, `401` with `max_age=600`
+([Asking for more](#asking-for-more)). With any other personal access token as the credential,
+with scopes or without, the admin's too, or with a deploy token,
 `POST /api/v1/users/<user>/tokens` is `403` before the body is read ([auth.md](auth.md#rules)).
+The token made with a sign-in has `createdBy` `token:<id>`, the sign-in's, and `signIn` in its
+`token.create` row.
 
 ```sh
 curl -s -u alice -X POST "$LAJSTROM/api/v1/users/alice/tokens" \
@@ -1687,11 +1695,12 @@ whole segment, reaches every repo the mask matches, those created later included
 ([auth.md](auth.md#a-deploy-token-over-a-mask)). They are a resource of the system: the
 `admin` role only, checked before the body is read, so that any other principal gets `403`
 (`anonymous` `401`) whatever the body says, a `maintainer` on `*/*` included. **Creating one
-takes the admin's password** as the request's credential (decided on #911): with a personal
-access token, with scopes or without, the admin's too, or with a deploy token, `POST
+takes the admin's password** as the request's credential (decided on #911), or a web UI's fresh
+sign-in through OIDC in its place, as a personal access token does (#1323): with any other
+personal access token, with scopes or without, the admin's too, or with a deploy token, `POST
 /api/v1/deploy-tokens` is `403` before the body is read, saying that a deploy token over a mask
-is created with the admin's password. Listing and revoking take the admin role with any
-credential that reaches it.
+is created with the admin's password or a fresh sign-in. Listing and revoking take the admin
+role with any credential that reaches it.
 
 - `POST /api/v1/deploy-tokens` with `repoMask`, `name`, `scopes` (required, `read` and/or
   `write`) and the expiry as above: `201` with the resource and its secret, and `Location`
@@ -2019,6 +2028,7 @@ curl -s "$LAJSTROM/api/v1/info"
   "formats": [{"name": "apt", "artifactType": "application/vnd.lajstrom.deb.v1"}, {"name": "maven", "artifactType": "application/vnd.lajstrom.maven.v1"}],
   "authModes": ["password", "token"],
   "login": {"tokenLifetime": 43200, "idleTimeout": 900},
+  "adminMFA": true,
   "caller": {"principal": "anonymous", "kind": "anonymous", "name": "anonymous", "admin": false}
 }
 ```
@@ -2031,7 +2041,8 @@ curl -s "$LAJSTROM/api/v1/info"
 | `formats` | the format plugins the server serves, by name, each with the artifact type of its manifests. `oci` repos need no plugin and are not listed |
 | `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login), left out while `auth.localPasswords` is `false`; `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
 | `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
-| `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not). Without credentials it is `anonymous`, with the name `anonymous` |
+| `adminMFA` | `true` while `auth.admin.requireMFA` is on, left out otherwise: the admin role counts only for a web UI's sign-in through OIDC with a second factor ([auth.md](auth.md#administrative-access-with-a-second-factor), #1276) |
+| `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not, nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second factor. Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
 
@@ -2191,6 +2202,32 @@ the reason in the message; a token that is unknown, revoked, expired, or bound t
 `401` with `DPoP error="invalid_token"`, and an idle one (`auth.login.idleTimeout`) with
 `DPoP error="invalid_token", error_description="idle"`, after which it is revoked. The token is refused as `Authorization: Bearer`, in
 Basic credentials, and everywhere but `/api/`: docker, pip, npm and `/v2/token` cannot use it.
+
+### Asking for more
+
+The token of a sign-in through OIDC keeps the ID token's `auth_time`, `amr` and `acr` (its
+`signIn`). Some steps need more of it ([rbac.md](spec/rbac.md) §10, §11, §12; RFC 9470):
+
+| Step | Needs |
+| --- | --- |
+| a CI trust policy that publishes: its create, change, renewal and approval ([CI trust policies](#ci-trust-policies)) | a fresh sign-in with a second factor |
+| a personal access token or a deploy token over a mask, in place of the password ([Tokens](#tokens)) | a fresh sign-in |
+| the admin role, under `auth.admin.requireMFA` ([auth.md](auth.md#administrative-access-with-a-second-factor)) | a sign-in with a second factor |
+
+A sign-in is fresh when its `auth_time` is within the last 10 minutes; it shows a second factor
+by its `amr` and `acr` and `auth.oidc.mfa` ([configuration.md](configuration.md#auth)). A sign-in
+short of a step is `401 UNAUTHENTICATED`, the message saying what is missing:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: DPoP error="insufficient_user_authentication", error_description="a fresh sign-in", max_age=600, algs="ES256"
+```
+
+`error_description` is `a fresh sign-in`, `a second factor`, or `a fresh sign-in with a second
+factor`, and `max_age=600` is there when the step needs a fresh sign-in. The token is not revoked
+and keeps working for what needs no more: the UI signs in again with `prompt=login`
+([A web UI in a browser](#a-web-ui-in-a-browser)) and sends the request again. Any other
+credential, which cannot sign in so, gets `403 FORBIDDEN` saying what the step needs (#1296).
 
 ## Who am I: `GET /api/v1/whoami`
 

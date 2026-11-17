@@ -199,6 +199,36 @@ start how many live ones are beyond the bound, and `GET /api/v1/tokens?kind=depl
 marks each `beyondMaxTTL` ([api.md](api.md#every-token-get-apiv1tokens)). A token over a mask that
 a node fleet shares is replaced on every node within the bound.
 
+### Administrative access with a second factor
+
+PCI DSS 8.4.1 asks for a second factor on every administrative access that is not at the console.
+With an IdP that asks for one, `auth.admin.requireMFA` makes the admin role count only for a web
+UI's sign-in through OIDC with a second factor ([auth.md](auth.md#administrative-access-with-a-second-factor)):
+
+1. **The IdP.** Set `auth.oidc` ([OIDC login](auth.md#setting-it-up)) and make the IdP ask the
+   admins, or everyone, for a second factor, and put it in the ID token: `amr` with `mfa` or two
+   kinds of factor (`pwd` and `otp`), or an `acr` of its own. Sign in to the web UI and read the
+   token's `signIn` (`GET /api/v1/users/<you>/tokens`) to see what it sends.
+2. **What counts.** Without `auth.oidc.mfa`, `amr` decides by RFC 8176. Otherwise list the
+   values: `auth.oidc.mfa.amr: [hwk, swk]`, or `auth.oidc.mfa.acr: [<the IdP's level>]`, such as
+   the `acr` of a Keycloak flow with a second factor.
+3. **An admin who signs in through the IdP.** Give an OIDC user or a group the role first, against
+   the database: `lajstrom admin binding create --principal group:<admins> --role admin --mask '*/*'`.
+   Service accounts and local users with `admin` keep the binding, which counts for nothing under
+   the mode; give the ones that publish a `maintainer` binding on what they publish, and run
+   `admin retention` and `admin repo prefetch` with such a binding.
+4. **The mode.** `auth.admin.requireMFA: true`, once every replica runs a release that knows the
+   key (a replica of the release before refuses the configuration), then a restart, recorded as
+   `config.change`. `serve` says at start that the mode is on, warns of the `admin` bindings that
+   count for nothing, and warns when no request can reach the role.
+
+While the IdP is down, the command line against the database does the admin's work
+(`lajstrom admin user|binding|token|ci-policy`); a token it makes reaches no admin role. Using the
+API without the IdP takes turning the mode off, a restart that writes a `config.change` row: the
+documented exception of PCI DSS 8.5.1. Under the mode, an admin's personal access token reaches
+no admin route, so the loop of [Password rules and their change](#password-rules-and-their-change)
+is refused with it (`403`): set `mustChange` in a web UI signed in with a second factor.
+
 ### Failed logins and the edge
 
 Lajstrom throttles what only it can see ([auth.md](auth.md#failed-logins)): failed password
