@@ -163,7 +163,7 @@ that `X-Forwarded-For` names ([`server.trustedProxies`](#server)).
 
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
-| `audit.log` | bool | `true` | none | Writes every audit row as a log line on standard error once its change commits: `msg` `audit`, the row's fields as `GET /api/v1/audit` answers them, at info whatever `log.level` says, in the format of `log.format` ([rbac.md](spec/rbac.md) §5, #1278). It is the export of the audit log, which the platform's log pipeline carries to a SIEM or a write-once store; `GET /api/v1/audit?after=<id>` is the feed to reconcile it with. `serve` and the commands of `lajstrom admin` that write rows read it. `false` writes no line; the rows and the feed stay. Unlike a key of `log`, a change of it is a `config.change` row. |
+| `audit.log` | bool | `true` | none | Writes every audit row as a log line on standard error once its change commits: `msg` `audit`, the row's fields as `GET /api/v1/audit` answers them, at info whatever `log.level` says, in the format of `log.format` ([rbac.md](spec/rbac.md) §5, #1278). It is the export of the audit log, which the platform's log pipeline carries to a SIEM or a write-once store; `GET /api/v1/audit?after=<id>` is the feed to reconcile it with. `serve` reads it, and so do the commands that write rows against the database (`lajstrom admin`, `lajstrom reindex`). `false` writes no line; the rows and the feed stay. Unlike a key of `log`, a change of it is a `config.change` row. |
 
 ### database
 

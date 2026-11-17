@@ -41,8 +41,8 @@ left open:
    `audit`, at info whatever `log.level`, in the format of every line (`log.format`). One shape
    serves the log store and the feed, and a collector needs no second parser. No secret is in it
    because no row holds one: the line is built from the committed row, never from the request.
-2. **When**: after the commit, by the process that committed, `serve` and the commands of
-   `lajstrom admin` alike; a line per state that commits, so a registry write has two. A
+2. **When**: after the commit, by the process that committed, `serve` and the commands against
+   the database alike; a line per state that commits, so a registry write has two. A
    rollback, or a commit whose result is unknown, writes none. A line that cannot be written is
    lost, and the change stands.
 3. **A switch**, `audit.log`, `true` by default. It is a key of the configuration and not of
