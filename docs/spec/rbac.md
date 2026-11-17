@@ -3,10 +3,12 @@
 - Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69);
   service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283); local
   passwords turned off, and the lockout (§1), after the MVP (#1280); the rules of a password, a
-  user's own change and its history (§1) after the MVP (#1281). Owned by `internal/auth`.
+  user's own change and its history (§1) after the MVP (#1281); the admin mode, and a fresh
+  sign-in in place of a password (§12), after the MVP (#1276, #1323). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
+  [ADR 0029](../adr/0029-administrative-access-with-a-second-factor.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -14,7 +16,7 @@
 | Principal | Form | MVP |
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id), unless `auth.localPasswords` is `false` (Local passwords, below) | yes |
-| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days), but a service account's (below); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
+| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days), but a service account's (below); created with a password, with a web UI's fresh sign-in through OIDC (§12) or by an OIDC login (§8), never with any other token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional, within `auth.deployTokens.maxTTL` when it is set (below, #1286) | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | client certificate | `cert:spiffe://<trust domain>/<path>` or `cert:<bundle>/<name>`; a certificate verified by a configured CA, on `/v2/token` only (§9) | #1019 |
@@ -77,10 +79,11 @@ A **deploy token over a mask** (#911) reaches every repo its mask matches, in th
 the matching of a binding's mask (§3): a fleet of nodes sends one credential per registry host,
 and reads several repos of it. The mask names no repo: it matches the repos created after the
 token too, from their creation on, and a repo deleted does not take the token with it. Only the
-admin role creates one, with its password and with no token (§3, the routes; decided on #911,
-2026-11-14), and on the command line the operator: `lajstrom admin token create --mask` writes
-the database as every `lajstrom admin` command of §6 does, with no HTTP and no password, for
-whoever holds the database's credentials is the operator. Everything else is a deploy token's:
+admin role creates one, with its password or a web UI's fresh sign-in through OIDC (§12) and with
+no other token (§3, the routes; decided on #911, 2026-11-14), and on the command line the
+operator: `lajstrom admin token create --mask` writes the database as every `lajstrom admin`
+command of §6 does, with no HTTP and no password, for whoever holds the database's credentials is
+the operator. Everything else is a deploy token's:
 its scopes, its expiry and its bound (below), how it authenticates, its revocation, its audit,
 its hash, its secret shown once.
 
@@ -144,8 +147,8 @@ that owns a live service account is `409`, naming them, whatever the setting, so
 a service account is a live user or a group.
 
 Its tokens are personal access tokens, whose scopes narrow its bindings as a person's do.
-Creating one takes the admin role and the admin's password, or the command line (§3): the
-account has no password and never mints its own. Their lifetime is bounded by
+Creating one takes the admin role and the admin's password or fresh sign-in (§12), or the command
+line (§3): the account has no password and never mints its own. Their lifetime is bounded by
 `auth.serviceAccounts.maxTokenTTL` instead of a person's year, 365 days by default: a token
 created without an expiry expires at the bound, and one asked to expire later is `400`. `0` bounds
 nothing, and a token created without an expiry then never expires. A bound lowered later counts
@@ -257,14 +260,16 @@ fail with exit status 1, naming it. The hashes stored stay, refused: setting `tr
 them credentials again, as they were.
 
 What the API makes only for a password (§3), a personal access token through `POST …/tokens`, a
-service account's token and a deploy token over a mask, is then the command line's
-(`lajstrom admin token create`), as it already is for an OIDC admin, who has no password. The
-bootstrap token is not made valid: the first admin is a person who logs in through the IdP once
-and gets an `admin` binding from `lajstrom admin binding create` (§6). The break-glass path is
-the command line against the database, which needs no password: `lajstrom admin token create
---user <name>` makes an admin a token while the IdP is down. `serve` refuses `false` while
-`auth.oidc.issuer` is empty, since no person could log in. `GET /api/v1/info` leaves `password`
-out of `authModes` (http-routing.md §4), so that a UI shows no password form.
+service account's token and a deploy token over a mask, is then made with a web UI's fresh sign-in
+through OIDC (§12) or on the command line (`lajstrom admin token create`), as for an OIDC admin,
+who has no password. The bootstrap token is not made valid: the first admin is a person who logs
+in through the IdP once and gets an `admin` binding from `lajstrom admin binding create` (§6). The
+break-glass path is the command line against the database, which needs no password:
+`lajstrom admin token create --user <name>` makes an admin a token while the IdP is down; under
+the admin mode (§12) such a token reaches no admin role, and the command line does the admin's
+work itself. `serve` refuses `false` while `auth.oidc.issuer` is empty, since no person could log
+in. `GET /api/v1/info` leaves `password` out of `authModes` (http-routing.md §4), so that a UI
+shows no password form.
 
 **The lockout.** With `auth.lockout.duration` (configuration.md; `0` by default, no lockout;
 `30m` for PCI DSS 8.3.4), the failed passwords of an account are counted in the index, across the
@@ -461,7 +466,9 @@ of an enabled user when no enabled user would keep one: nobody could manage the 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
 credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
 
-1. `admin` binding → allow.
+1. `admin` binding → allow. Under the admin mode (§12) it counts only for the token of a web
+   UI's sign-in through OIDC with a second factor; for every other credential the `admin`
+   bindings, the user's and its groups', are left out of every step.
 2. Deploy token → allow iff the repo is the token's repo, or its mask matches the repo as a
    binding's mask matches (whole segments; never `system` nor `audit`), and `action` is in its
    scopes (`read`/`write`/`attach`, `write` holding `attach`); never `delete`/`manage`.
@@ -532,10 +539,11 @@ this spec, so that a review need not find it in the code:
   (§2). The `admin` role is checked before the body is read, so the `400` of a mask that breaks
   the grammar and the `409` of a name that is taken reach an admin only; every other principal
   gets `403` (`anonymous` `401`), a `maintainer` on `*/*` included. **Creating one takes the
-  admin's password** as the request's credential, as creating a personal access token does
-  (below): a personal access token, with scopes or without, the admin's too, and a deploy token
-  get `403` before the body is read, naming the rule; an admin without a password, an OIDC user
-  (§8), makes one on the command line. A stolen token must not mint a token that needs no expiry
+  admin's password** as the request's credential, or a web UI's fresh sign-in through OIDC in
+  its place (§12), as creating a personal access token does (below): any other personal access
+  token, with scopes or without, the admin's too, and a deploy token get `403` before the body is
+  read, naming the rule; an admin without a password, an OIDC user (§8), makes one with a fresh
+  sign-in or on the command line. A stolen token must not mint a token that needs no expiry
   and outlives its revocation (decided on #911, 2026-11-14). Listing and revoking them take the
   admin role with any credential that reaches it. A mask names no repo, so the routes tell
   nothing of which repos exist.
@@ -552,14 +560,15 @@ this spec, so that a review need not find it in the code:
   without `currentPassword` included, is the admin role's.
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
-  as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
-  one itself (§8), and is no credential of this route. A service account has no password, so
-  only the admin role creates its tokens here (§1). A personal access token, with scopes or without, the admin's too, a deploy token
-  and a CI token (§11) get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
-  tokens that outlive its revocation (decided on #249, 2026-11-10). A personal access token
-  without scopes still lists and revokes its user's tokens; one with scopes and a deploy token
-  get `403`. The command line (`lajstrom admin token create`) has no credential and is the
-  operator's.
+  as the request's credential, or a web UI's fresh sign-in through OIDC in its place (§12),
+  besides the user's own or the `admin` role; an OIDC login mints one itself (§8), and is no
+  credential of this route. A service account has no password, so only the admin role creates
+  its tokens here (§1). Any other personal access token, with scopes or without, the admin's
+  too, a deploy token and a CI token (§11) get `403` before the body is read, whoever's tokens
+  they name: a stolen token must not mint tokens that outlive its revocation (decided on #249,
+  2026-11-10). A personal access token without scopes still lists and revokes its user's
+  tokens; one with scopes and a deploy token get `403`. The command line
+  (`lajstrom admin token create`) has no credential and is the operator's.
 - **Lists** (`GET /api/v1/repos`, `/v2/_catalog`) show only the repos the principal may read.
 - **Search** (`GET /api/v1/search`, #956) runs over the repos the principal may read, as the list
   shows them: a repo it may not read adds no hit, a digest or a name that only such a repo holds
@@ -644,9 +653,13 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 ([index-schema.md](index-schema.md#the-audit-row-of-a-registry-write),
 [guarantees.md](guarantees.md) INV-14). The creation's row also
 names the credential that created the token, `createdBy` in its details: `password`,
-`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8); and, for a deploy token
-or a service account's token created under a bound of §1, `maxTTL`, the seconds of that bound,
-so that the log shows the bound of each creation (#1286); a creation refused writes no row. The
+`token:<id>` for a token (a web UI's fresh sign-in, §12, among them), or `oidc` for the token of
+an OIDC login (§8); and, for a deploy token or a service account's token created under a bound
+of §1, `maxTTL`, the seconds of that bound, so that the log shows the bound of each creation
+(#1286); a creation refused writes no row. **A change made with a web UI's sign-in** through
+OIDC (§10), a token's creation or any other control-plane change, has `signIn`,
+`{token, authTime, amr, acr}`, in its details, each of the last three when the sign-in kept it
+(#1276): an admin's change shows how the admin signed in at the IdP (§12). The
 token of a web UI's sign-in refused as idle (§10) is revoked by the server: a `token.revoke` row by
 `anonymous`, with `source` `idle` and `reason` `idle`. A service account's requests have the
 principal `user:<uid>` and the name of every user, and the answers of the audit log add
@@ -788,7 +801,11 @@ is made in one of two ways, both with an `admin` binding on `*/*`:
 With `auth.localPasswords: false` (§1) neither makes an admin who could log in, so neither is
 taken: `serve` does not make the bootstrap token valid, and says at start how to make the first
 admin instead, a person's first login through the IdP and then
-`lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'`.
+`lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'`. With
+`auth.admin.requireMFA` (§12) the bootstrap token is not made valid either, since a local user
+never signs in through OIDC and so never uses the role: the first admin, and the recovery of a
+lost one, is an OIDC user given the binding on the command line, and
+`lajstrom admin user create --admin` makes a binding without effect while the mode is on.
 
 **Who ran a command** (#1284). Whoever holds the database's credentials is the operator, so a
 command against the database authenticates nobody: its rows stay by `anonymous`. Every row that a
@@ -984,9 +1001,10 @@ throttled per client address as the failed logins are (§1).
 
 **What OIDC does not change.** Local users, their passwords, personal access tokens, deploy
 tokens, anonymous read and the bearer tokens of §4 stay as they are, unless
-`auth.localPasswords` is `false`, which refuses every password (§1). An OIDC user has no
-password, so it cannot create a personal access token with the API (§3); it gets its tokens by
-logging in, and may list and revoke them as any user.
+`auth.localPasswords` is `false`, which refuses every password (§1), and the admin role, which
+`auth.admin.requireMFA` keeps for a web UI's sign-in with a second factor (§12). An OIDC user has
+no password, so it creates a personal access token with the API only with a web UI's fresh
+sign-in (§12); it gets its tokens by logging in, and may list and revoke them as any user.
 
 ## 9. Node and workload identity (after the MVP, #1019)
 
@@ -1127,7 +1145,8 @@ it never gets a cookie for `/api/v1`. `POST /api/v1/login` (http-routing.md §4)
 a password or for an OIDC login. The token is a personal access token of the user, without
 scopes, as one that the user makes, and everything of §1 and §3 holds for it: it is listed with
 the user's tokens, revoked with `DELETE …/tokens/<id>` (the UI's sign-out, with the token
-itself), ended by disabling or deleting the user, and creates no token. It expires after
+itself), ended by disabling or deleting the user, and creates no token, but in place of a
+password when its sign-in through OIDC is fresh (§12). It expires after
 `auth.login.tokenLifetime` (12h by default, at most 24h); there is no refresh token. With
 `auth.login.idleTimeout`, it also ends once unused for that long (Idle, below).
 
@@ -1172,16 +1191,41 @@ or key marks the request `denied`, so a code is tried once: a code read from the
 the page is of no use without the key that started the login. No code, verifier or challenge is
 logged, audited, or put in a URL but the one redirect.
 
-**The sign-in at the IdP** (#937). The callback of a web UI's login keeps the ID token's
-`auth_time` and `amr` (RFC 8176; its strings of at most 64 bytes, at most 16 of them) on the login
-request, and the token of its code keeps them (index-schema.md, `tokens.auth_time` and
-`tokens.amr`), as does its `token.create` row (`authTime`, `amr`): a request with that token and a
-proof of its key carries when and how the person authenticated, which a step that needs a fresh
-sign-in with a second factor reads (§11). A login with `prompt=login` (http-routing.md §7) asks
-the IdP to authenticate the person again, `prompt=login` and `max_age=600` on its authorization
-request; its token is a token of a sign-in as any other, of the same lifetime, and its sign-in is
-fresh for the 10 minutes after `auth_time`. A token of a password, of a login of §8 and of an ID
-token without `auth_time` keeps none.
+**The sign-in at the IdP** (#937, #1276). The callback of a web UI's login keeps the ID token's
+`auth_time`, `amr` (RFC 8176; its strings of at most 64 bytes, at most 16 of them) and `acr` (a
+string of at most 256 bytes) on the login request, and the token of its code keeps them
+(index-schema.md, `tokens.auth_time`, `tokens.amr` and `tokens.acr`), as does its `token.create`
+row (`authTime`, `amr`, `acr`): a request with that token and a proof of its key carries when and
+how the person authenticated, its **sign-in**, which the steps of §11 and §12 read. Each of the
+three is kept when the ID token has it, and an `acr` beyond the bound is left out. A token of a
+password and of a login of §8 keeps none. The views of a token with a sign-in answer it as
+`signIn` (http-routing.md §4), so that a UI knows what its sign-in meets before it asks.
+
+- **Fresh**: its `auth_time` is at most 10 minutes before the request, and at most 60 s after it.
+  A login with `prompt=login` (http-routing.md §7) asks the IdP to authenticate the person again,
+  `prompt=login` and `max_age=600` on its authorization request; its token is a token of a
+  sign-in as any other, of the same lifetime, and its sign-in is fresh for the 10 minutes after
+  `auth_time`. A sign-in without `auth_time` is never fresh.
+- **With a second factor**: with `auth.oidc.mfa.amr` and `auth.oidc.mfa.acr` both empty
+  (configuration.md; the default), its `amr` holds `mfa`, or methods of two kinds of factor,
+  knowledge (`pwd`, `pin`, `kba`), possession (`hwk`, `swk`, `otp`, `sms`, `tel`, `sc`, `pop`)
+  and inherence (`fpt`, `face`, `iris`, `retina`, `vbm`). Otherwise each of the two that is set
+  holds, and the rule of two kinds no longer counts: one of its `amr` is in `auth.oidc.mfa.amr`,
+  and its `acr` is in `auth.oidc.mfa.acr`, each compared as a string. Lajstrom asks the IdP for
+  no `acr_values`: the IdP's policy for its client decides how a person authenticates, and the
+  sign-in says what it did.
+
+**Asking for more** (#1276; RFC 9470, the answer #1296 asked for). A step that needs a sign-in
+which the request's does not meet, one that is not fresh or shows no second factor, answers the
+token of a web UI's sign-in through OIDC, sent with a proof of its key, `401 UNAUTHENTICATED`
+with `WWW-Authenticate: DPoP error="insufficient_user_authentication",
+error_description="<what is missing>", algs="ES256"`, and `max_age=600` when the step needs a
+fresh sign-in (http-routing.md §4); its message says what is missing and how to get it. The UI
+signs in again with `prompt=login` and sends the request again. Any other credential cannot sign
+in again so: a password, a web UI's token of a password, a personal access token, a deploy token,
+a service account's token, a CI token, a client certificate and a Kubernetes token get
+`403 FORBIDDEN`, saying what the step needs. Neither answer is a failed login nor a refused
+credential (§1): the token is not revoked, and keeps working for what needs no more.
 
 **Idle (decided on #1277, 2026-11-16).** With `auth.login.idleTimeout` (configuration.md; `0`,
 the default, is off; `15m` for PCI DSS 8.2.8), a token bound to a key whose last use is more than
@@ -1292,14 +1336,14 @@ on, on every replica, without a restart.
 steps; deleting one, or changing it to grant `reader` only, takes none:
 
 1. **A fresh sign-in with a second factor.** The request's credential is the token of a web UI's
-   sign-in through OIDC (§10), with a proof of its key, whose ID token's `auth_time` is at most 10
-   minutes before the request (and at most 60 s after it), and whose `amr` (RFC 8176) shows a
-   second factor: `mfa`, or methods of two kinds of factor, knowledge (`pwd`, `pin`, `kba`),
-   possession (`hwk`, `swk`, `otp`, `sms`, `tel`, `sc`, `pop`) and inherence (`fpt`, `face`,
-   `iris`, `retina`, `vbm`). A web UI gets one with a login with `prompt=login` (http-routing.md
-   §7), which asks the IdP to authenticate the person again. A password's sign-in, a token the
-   person made, a deploy token, a service account's token, a client certificate, a Kubernetes
-   token, a CI token and the command line never are one: `403` saying what is missing.
+   sign-in through OIDC (§10), with a proof of its key, whose sign-in is fresh, its `auth_time`
+   at most 10 minutes before the request (and at most 60 s after it), and shows a second factor,
+   by the `amr` and `acr` of its ID token and `auth.oidc.mfa` (§10, shared with §12). A web UI
+   gets one with a login with `prompt=login` (http-routing.md §7), which asks the IdP to
+   authenticate the person again. A web UI's sign-in through OIDC that is not fresh or shows no
+   second factor is asked for more (§10: `401`). A password's sign-in, a token the person made, a
+   deploy token, a service account's token, a client certificate, a Kubernetes token, a CI token
+   and the command line never are one: `403` saying what is missing.
 2. **A second admin.** With `auth.ci.apiWriteApproval: second-admin`, the default, the policy
    waits, `state` `pending`, and grants nothing until an admin other than the one who made the
    change (`updatedBy`) approves it: `POST …/<name>/approve` with a fresh sign-in of step 1 and
@@ -1404,6 +1448,82 @@ A create, change, renewal, approval or delete of a policy through the API is `ci
 transaction, by the admin, `subject` the policy's name, no `repo`, and `details` with the policy as
 the change left it (as it was, for a delete): `issuer`, `claims`, `grants`, `state`, and
 `expiresAt` and `renewalExpiresAt` when it has them; the `previous` policy for a change, a renewal
-and an approval; `signIn`, `{token, authTime, amr}`, for a request with the sign-in of a web UI
-(§10); and the origin's keys (`source` `api` or `cli`, `requestId`, `host`). The mark of a policy
-whose expiry passed is `ci.policy.expire`, by `anonymous`, with `source` `expiry`.
+and an approval; `signIn`, `{token, authTime, amr, acr}`, for a request with the sign-in of a
+web UI (§10, §5); and the origin's keys (`source` `api` or `cli`, `requestId`, `host`). The mark
+of a policy whose expiry passed is `ci.policy.expire`, by `anonymous`, with `source` `expiry`.
+
+## 12. Administrative access and a fresh sign-in (after the MVP, #1276, #1323)
+
+The admin role reaches every repo and the system (§3), and PCI DSS 8.4.1 asks for a second factor
+on every administrative access that is not at the console, a browser's and an API's alike.
+Lajstrom checks no factor itself: the IdP does, at an OIDC login, and the sign-in of a web UI
+keeps what its ID token said (§10). Two rules read it
+([ADR 0029](../adr/0029-administrative-access-with-a-second-factor.md), decided on #1276,
+2026-11-16).
+
+**The admin mode.** With `auth.admin.requireMFA: true` (configuration.md; `false` by default), an
+`admin` binding, a user's own or a group's (§8), counts only for a request whose credential is the
+token of a web UI's sign-in through OIDC (§10), with a proof of its key, whose sign-in shows a
+second factor (§10). For every other credential the evaluation of §3 leaves the `admin` bindings
+out, and the principal's other bindings count as they do without them: a password, in Basic
+credentials or in a web UI's sign-in, a personal access token (the token of an OIDC login of §8,
+`lajstrom login`'s, included), a service account's token, on every route, `/v2/token` and `/v2`
+included. The bearer of `/v2/token` is issued without the role. The sign-in need not be fresh: its
+second factor counts for the token's lifetime, which `auth.login.tokenLifetime` and
+`auth.login.idleTimeout` bound (§10).
+
+- **An admin's personal access token** keeps the admin's other bindings, and no more: an admin
+  whose one binding is `admin` does with it what anonymous does, and no `docker push`, no
+  `npm publish`, no read of a repo without `anonymousRead`. An admin who publishes gets a binding
+  for it, as anyone does (a `maintainer` on `*/*` reaches every repo, and neither `system` nor
+  `audit`). The commands of the command line that go over HTTP (`admin retention`,
+  `admin repo prefetch`) need such a binding too.
+- **A service account's `admin` binding, and a local user's,** count for nothing: neither ever has
+  a sign-in through OIDC. The bindings stay, and count again when the mode is off. `serve` logs at
+  warn at start how many `admin` bindings the mode leaves without effect, when there are any, and,
+  when no enabled OIDC user and no group has one, that no request can reach the admin role and how
+  to give one (`lajstrom admin binding create`). The last-admin rule (§3) counts the bindings, as
+  before, not the mode.
+- **No admin from a terminal through the API.** The token of `lajstrom login` is a bearer of a
+  day, bound to no key, and counts as any personal access token. The command line against the
+  database (§6) is unchanged: it authenticates nobody, needs no role, and is the break-glass path
+  while the IdP is down, `lajstrom admin user|binding|token|ci-policy …` doing the admin's work
+  there. A token it makes, `lajstrom admin token create --user <admin>` included, reaches no admin
+  role; an operator who needs the API without the IdP turns the mode off, a restart that writes
+  its `config.change` row (§5).
+- **The first admin** is an OIDC user given the binding on the command line: the bootstrap token
+  is not made valid (§6). `serve` refuses `true` while `auth.oidc.issuer` is empty.
+- **Passwords and the lockout** are not concerned: with `auth.localPasswords` `true`, local users
+  keep their passwords for what their other bindings allow; with `false`, nothing changes. A
+  locked password locks no admin out, since no password reaches the role.
+
+On a route of the admin role (§2, §3; checked before the body is read, as before), a principal
+with an `admin` binding that the mode leaves out is asked for more (§10) when its credential is
+the token of a web UI's sign-in through OIDC, `401` with `insufficient_user_authentication`, and
+gets `403` with any other credential, the message saying that the admin role counts only for a
+web UI's sign-in through OIDC with a second factor (`auth.admin.requireMFA`), and naming the kind
+of the credential. A principal without an `admin` binding gets the `403` of §3. On the routes of
+a repo, the bindings that count answer by the rule of §3, so the mode tells nothing of which repos
+exist. `GET /api/v1/info` answers `adminMFA: true` while the mode is on, and, in its `caller`,
+`adminNeedsMFA: true` for a principal with an `admin` binding that the request's credential does
+not reach (http-routing.md §4), so that a UI offers a sign-in with a second factor. Every change
+the role makes has the sign-in in its row (`signIn`, §5); the mode itself is the configuration,
+and turning it on or off is a `config.change` row. A replica of a release that does not know the
+key refuses the configuration: during a rolling update the replicas of the release before give
+the role as before, and the mode counts once every replica runs a release that knows it.
+
+**A fresh sign-in in place of a password** (#1323). Three creations take a password as the
+request's credential and never a token (§1, §3): a personal access token,
+`POST /api/v1/users/<name>/tokens`, for the user itself or, by the admin role, for another user;
+a service account's token, the same route, by the admin role; and a deploy token over a mask,
+`POST /api/v1/deploy-tokens`, by the admin role. Each also takes, in place of the password, the
+token of a web UI's sign-in through OIDC, with a proof of its key, whose sign-in is fresh (§10):
+the person authenticated at the IdP within the last 10 minutes, as for a step of §11. The roles
+are those of any request with that token: under the admin mode, a creation by the admin role
+needs the sign-in's second factor too. Nothing else asks for one: a password, which the sign-in
+stands for, has none, and an OIDC login of §8 mints a person's token without one. A sign-in that
+is not fresh, or under the mode shows no second factor, is asked for more (§10: `401`, with
+`max_age=600` for the first); every other token is `403` before the body is read, as before. The
+token made has `createdBy` `token:<id>`, the sign-in's, and `signIn` in its `token.create` row
+(§5). With `auth.localPasswords: false`, the web UI and the API make these tokens so (§1); a
+server without OIDC is as before.
