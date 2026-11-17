@@ -2654,6 +2654,19 @@ components:
             The JWK SHA-256 thumbprint (RFC 7638) of the DPoP key that the token of a web UI's
             sign-in is bound to; absent for every other token. A bound token works only as
             Authorization: DPoP with a proof of that key, on /api/.
+        signIn:
+          type: object
+          description: >-
+            The sign-in at the identity provider of the token of a web UI's sign-in through OIDC:
+            the auth_time, the amr and the acr of the ID token of its login, each when it had it;
+            absent for every other token. A step that needs a fresh sign-in, or one with a second
+            factor (auth.oidc.mfa), reads it, so that a UI knows what it meets before it asks.
+          properties:
+            authTime: {type: string, format: date-time}
+            amr:
+              type: array
+              items: {type: string}
+            acr: {type: string}
         beyondMaxTTL:
           type: boolean
           description: >-

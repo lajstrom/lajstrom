@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -39,7 +40,8 @@ func TestFreshSignIn(t *testing.T) {
 		"far ahead":               {signed(-2*time.Minute, "mfa"), "ahead of this server's clock"},
 		"a password only":         {signed(time.Minute, "pwd"), "this sign-in's amr (pwd) shows none"},
 		"no amr":                  {signed(time.Minute), "this sign-in's amr (none) shows none"},
-		"a password sign-in":      {Credential{Kind: CredPAT}, "credential is a personal access token"},
+		"no auth_time":            {Credential{Kind: CredPAT, SignIn: &SignIn{AMR: []string{"mfa"}, ACR: "gold"}}, "ID token had no auth_time"},
+		"a password sign-in":      {Credential{Kind: CredPAT}, "credential is a personal access token, or a web UI's token of a password"},
 		"a password":              {Credential{Kind: CredPassword}, "credential is a password"},
 		"a deploy token":          {Credential{Kind: CredDeploy}, "credential is a deploy token"},
 		"a CI token":              {Credential{Kind: CredCI}, "credential is a CI token"},
@@ -53,6 +55,28 @@ func TestFreshSignIn(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		case tc.why != "" && (!errors.Is(err, ErrScope) || !strings.Contains(err.Error(), tc.why)):
 			t.Errorf("%s: %v, want ErrScope saying %q", name, err, tc.why)
+		}
+	}
+}
+
+// TestAddSignIn: the audit details of a change made with a web UI's sign-in name it, its token and
+// each of auth_time, amr and acr it kept; any other credential adds nothing.
+func TestAddSignIn(t *testing.T) {
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.FixedZone("CET", 3600))
+	for name, tc := range map[string]struct {
+		cred Credential
+		want string
+	}{
+		"all three": {Credential{Kind: CredPAT, TokenID: 7, SignIn: &SignIn{At: at, AMR: []string{"pwd", "otp"}, ACR: "gold"}},
+			`{"signIn":{"acr":"gold","amr":["pwd","otp"],"authTime":"2026-11-16T11:00:00Z","token":7}}`},
+		"no auth_time": {Credential{Kind: CredPAT, TokenID: 8, SignIn: &SignIn{AMR: []string{"mfa"}}},
+			`{"signIn":{"amr":["mfa"],"token":8}}`},
+		"a password sign-in": {Credential{Kind: CredPAT, TokenID: 9}, `{}`},
+		"a password":         {Credential{Kind: CredPassword}, `{}`},
+	} {
+		raw, err := json.Marshal(AddSignIn(WithCredential(t.Context(), tc.cred), map[string]any{}))
+		if err != nil || string(raw) != tc.want {
+			t.Errorf("%s: %s, %v, want %s", name, raw, err, tc.want)
 		}
 	}
 }

@@ -63,9 +63,11 @@ type Identity struct {
 	Groups []string
 	// AuthTime is auth_time, when the person last authenticated at the IdP; nil when the token
 	// has none. AMR is amr (RFC 8176), its strings of at most maxAMRValue bytes, at most maxAMR
-	// of them; nil when it has none. A web UI's token keeps both (docs/spec/rbac.md §10).
+	// of them; nil when it has none. ACR is acr, at most auth.MaxACR bytes; "" when it has none or
+	// a longer one. A web UI's token keeps the three (docs/spec/rbac.md §10).
 	AuthTime *time.Time
 	AMR      []string
+	ACR      string
 }
 
 // Config configures a Client: the keys of auth.oidc and how to reach the IdP.

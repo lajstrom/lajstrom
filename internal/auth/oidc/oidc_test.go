@@ -225,39 +225,41 @@ func TestExchange(t *testing.T) {
 	}
 }
 
-// TestSignInClaims: an ID token's auth_time and amr are read into the identity (docs/spec/rbac.md
-// §10): a time after the epoch, the strings of amr that are short; a claim of another type is
-// none.
+// TestSignInClaims: an ID token's auth_time, amr and acr are read into the identity
+// (docs/spec/rbac.md §10): a time after the epoch, the strings of amr that are short, an acr of
+// at most 256 bytes; a claim of another type is none, and so is a longer acr.
 func TestSignInClaims(t *testing.T) {
 	rs, _, _ := keys(t)
 	p := newIDP(t, rs)
 	c := p.client(t, clockAt(testNow))
 	for name, tc := range map[string]struct {
-		authTime, amr any
-		at            *time.Time
-		want          []string
+		authTime, amr, acr any
+		at                 *time.Time
+		want               []string
+		wantACR            string
 	}{
-		"both":         {testNow.Add(-time.Minute).Unix(), []any{"pwd", "otp"}, ptrTo(testNow.Add(-time.Minute).UTC()), []string{"pwd", "otp"}},
-		"odd values":   {"yesterday", []any{"hwk", 7, "", strings.Repeat("x", 65), "pin"}, nil, []string{"hwk", "pin"}},
-		"amr a string": {0, "mfa", nil, nil},
-		"none":         {nil, nil, nil, nil},
+		"all three": {testNow.Add(-time.Minute).Unix(), []any{"pwd", "otp"}, "gold", ptrTo(testNow.Add(-time.Minute).UTC()),
+			[]string{"pwd", "otp"}, "gold"},
+		"odd values":   {"yesterday", []any{"hwk", 7, "", strings.Repeat("x", 65), "pin"}, 2, nil, []string{"hwk", "pin"}, ""},
+		"amr a string": {0, "mfa", nil, nil, nil, ""},
+		"none":         {nil, nil, nil, nil, nil, ""},
 		"too many": {testNow.Unix(), []any{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"},
-			ptrTo(testNow.UTC()), []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"}},
+			strings.Repeat("y", 257), ptrTo(testNow.UTC()), []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"}, ""},
+		"acr of the bound": {nil, nil, strings.Repeat("y", 256), nil, nil, strings.Repeat("y", 256)},
 	} {
 		claims := p.claims("n-1")
-		if tc.authTime != nil {
-			claims["auth_time"] = tc.authTime
-		}
-		if tc.amr != nil {
-			claims["amr"] = tc.amr
+		for k, v := range map[string]any{"auth_time": tc.authTime, "amr": tc.amr, "acr": tc.acr} {
+			if v != nil {
+				claims[k] = v
+			}
 		}
 		p.answer(sign(t, rs, claims))
 		id, err := c.Exchange(context.Background(), testCode, testVerifier, "n-1")
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if fmt.Sprint(id.AuthTime) != fmt.Sprint(tc.at) || !slices.Equal(id.AMR, tc.want) {
-			t.Errorf("%s: auth_time %v, amr %q; want %v, %q", name, id.AuthTime, id.AMR, tc.at, tc.want)
+		if fmt.Sprint(id.AuthTime) != fmt.Sprint(tc.at) || !slices.Equal(id.AMR, tc.want) || id.ACR != tc.wantACR {
+			t.Errorf("%s: auth_time %v, amr %q, acr %q; want %v, %q, %q", name, id.AuthTime, id.AMR, id.ACR, tc.at, tc.want, tc.wantACR)
 		}
 	}
 }
