@@ -3648,6 +3648,11 @@ components:
                 The seconds of auth.login.idleTimeout, 0 when off: a sign-in token unused for
                 longer is refused (401, error_description="idle") and revoked; the server may
                 refuse up to a minute before. A server before it answers none, which is off.
+        adminMFA:
+          type: boolean
+          description: >-
+            true while auth.admin.requireMFA is on, absent otherwise: the admin role counts only
+            for a web UI's sign-in through OIDC with a second factor.
         caller: {$ref: "#/components/schemas/Caller"}
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."
@@ -3666,6 +3671,11 @@ components:
         name: {type: string}
         uid: {type: string, format: uuid}
         admin: {type: boolean, description: Whether the request's credential reaches the admin role.}
+        adminNeedsMFA:
+          type: boolean
+          description: >-
+            true when the caller has an admin binding that the request's credential does not
+            reach under adminMFA, absent otherwise: a UI offers a sign-in with a second factor.
     Webhook:
       type: object
       required: [id, mask, url, events, active, description, createdBy, createdAt, updatedAt]

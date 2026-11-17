@@ -25,6 +25,9 @@ type ServerInfo struct {
 	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords):
 	// authModes has no password, so that a UI shows no password form.
 	PasswordsOff bool
+	// AdminMFA is auth.admin.requireMFA, the admin mode (docs/spec/rbac.md §12): info answers
+	// adminMFA.
+	AdminMFA bool
 }
 
 // FormatInfo is a format plugin the server serves: its name and the artifact type of its
@@ -55,7 +58,9 @@ type Info struct {
 	Formats       []FormatInfo `json:"formats"`
 	AuthModes     []string     `json:"authModes"`
 	Login         LoginInfo    `json:"login"`
-	Caller        Caller       `json:"caller"`
+	// AdminMFA is true while the admin mode is on (ServerInfo.AdminMFA), absent otherwise.
+	AdminMFA bool   `json:"adminMFA,omitempty"`
+	Caller   Caller `json:"caller"`
 }
 
 // LoginInfo is what GET /api/v1/info tells a web UI of POST /api/v1/login: that the server has
@@ -68,11 +73,14 @@ type LoginInfo struct {
 	IdleTimeout   int64 `json:"idleTimeout"`
 }
 
-// Caller is the request's principal as GET /api/v1/whoami answers it, and whether the
-// request's credential reaches the admin role.
+// Caller is the request's principal as GET /api/v1/whoami answers it, whether the request's
+// credential reaches the admin role, and, under the admin mode, whether the principal has an
+// admin binding that the credential does not reach (docs/spec/rbac.md §12), so that a UI offers
+// a sign-in with a second factor.
 type Caller struct {
 	Whoami
-	Admin bool `json:"admin"`
+	Admin         bool `json:"admin"`
+	AdminNeedsMFA bool `json:"adminNeedsMFA,omitempty"`
 }
 
 // authModes returns the ways a person signs in: a local user's password, over Basic and to POST
@@ -103,13 +111,15 @@ func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, 
 		Formats: h.info.Formats, AuthModes: h.authModes(), Login: LoginInfo{
 			TokenLifetime: int64(h.loginLifetime / time.Second), IdleTimeout: int64(h.loginIdle / time.Second),
 		},
-		Caller: caller,
+		AdminMFA: h.info.AdminMFA, Caller: caller,
 	}, nil
 }
 
 // caller returns the request's principal as whoami answers it, with Admin set when the
 // request's credential reaches the admin role (manage on auth.System, as creating a repo
-// asks). The anonymous principal is named anonymous and is never the admin.
+// asks), and AdminNeedsMFA when the admin mode leaves out an admin binding of the principal
+// for this credential (auth.AdminMode). The anonymous principal is named anonymous and is never
+// the admin.
 func (h *handler) caller(r *http.Request) (Caller, error) {
 	p := auth.PrincipalFrom(r.Context())
 	if p.Kind == auth.KindAnonymous {
@@ -123,8 +133,16 @@ func (h *handler) caller(r *http.Request) (Caller, error) {
 	switch err := h.allow(r, auth.ActionManage, auth.System, auth.System); {
 	case err == nil:
 		c.Admin = true
+		return c, nil
 	case !denied(err):
 		return Caller{}, err
+	}
+	if am, ok := h.auth.(auth.AdminMode); ok {
+		left, err := am.AdminLeftOut(r.Context(), p)
+		if err != nil {
+			return Caller{}, err
+		}
+		c.AdminNeedsMFA = left
 	}
 	return c, nil
 }
