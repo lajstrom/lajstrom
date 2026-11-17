@@ -84,7 +84,8 @@ type RepoList struct {
 // with Upstream, the proxy's settings (proxy.ParseSettings), or group with Group, the group's
 // members and merge patterns, or its routes on a group of oci repos (proxy.ParseGroup), and no
 // Registry. Policy is a JSON object, or empty or the JSON null for none, and none on a group;
-// its keys come with the formats.
+// its keys come with the formats. Reason is the API's changeReason (docs/spec/rbac.md §13); the
+// command line and the bootstrap leave it out.
 type CreateRequest struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
@@ -94,6 +95,7 @@ type CreateRequest struct {
 	Policy        json.RawMessage `json:"policy"`
 	Upstream      json.RawMessage `json:"upstream"`
 	Group         json.RawMessage `json:"group"`
+	Reason
 }
 
 // UpdateRequest is a change to a repo, the body of PATCH /api/v1/repos/{format}/{repo}. A nil

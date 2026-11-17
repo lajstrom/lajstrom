@@ -17,11 +17,12 @@ type BindingList struct {
 }
 
 // BindingRequest is the body of POST /api/v1/bindings: user:<name> or user:<uid>, the role and
-// the mask (docs/spec/rbac.md §3).
+// the mask (docs/spec/rbac.md §3), and the reason of the change (§13).
 type BindingRequest struct {
 	Principal string `json:"principal"`
 	Role      string `json:"role"`
 	RepoMask  string `json:"repoMask"`
+	Reason
 }
 
 // listBindings answers a page of the bindings, of the principal of ?principal or of every
@@ -67,7 +68,11 @@ func (h *handler) createBinding(w http.ResponseWriter, r *http.Request) (int, an
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	b, err := h.bindings.Create(r.Context(), req.Principal, req.Role, req.RepoMask, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	b, err := h.bindings.Create(r.Context(), req.Principal, req.Role, req.RepoMask, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -85,7 +90,11 @@ func (h *handler) deleteBinding(_ http.ResponseWriter, r *http.Request) (int, an
 	if err != nil || id < 1 {
 		return 0, nil, invalid("id: %q is not the id of a binding", r.PathValue("id"))
 	}
-	if err := h.bindings.Delete(r.Context(), id, auth.Origin(origin(r))); err != nil {
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.bindings.Delete(r.Context(), id, o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil

@@ -233,8 +233,8 @@ func (s *Repos) adopter(formatName string) (format.Adopter, bool) {
 }
 
 // convertRepo answers a PATCH whose body is {"kind": "hosted"}: the admin role turns a proxy
-// into a hosted repo (Repos.Convert), 200 with the resource. Any other key beside kind, or
-// another kind, is 400.
+// into a hosted repo (Repos.Convert), 200 with the resource. Any other key beside kind and
+// changeReason, or another kind, is 400.
 func (h *handler) convertRepo(r *http.Request, f, name string, body patchBody) (int, any, error) {
 	if body.AnonymousRead != nil || body.Policy != nil || body.Upstream != nil || body.Group != nil || body.Format != nil ||
 		body.Name != nil || body.Registry != nil {
@@ -246,7 +246,11 @@ func (h *handler) convertRepo(r *http.Request, f, name string, body patchBody) (
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
-	repo, err := h.repos.Convert(r.Context(), f, name, h.journal, auth.PrincipalFrom(r.Context()), origin(r))
+	o, err := h.changeOrigin(r, body.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	repo, err := h.repos.Convert(r.Context(), f, name, h.journal, auth.PrincipalFrom(r.Context()), o)
 	if err != nil {
 		return 0, nil, err
 	}

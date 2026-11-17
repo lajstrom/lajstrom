@@ -134,10 +134,13 @@ func (h *handler) verdictViews(r *http.Request, rows []index.Verdict) ([]Verdict
 	return out, nil
 }
 
-// denyBody is the body of POST …/deny.
+// denyBody is the body of POST …/deny: the verdict's reason, which clients see, its validity, and
+// the reason of the change (docs/spec/rbac.md §13).
 type denyBody struct {
 	Reason     string     `json:"reason"`
 	ValidUntil *time.Time `json:"validUntil"`
+	// ChangeReason is the reason of the change, not the verdict's.
+	ChangeReason *string `json:"changeReason,omitempty"`
 }
 
 // target is a manifest a deny names: the package path of its OCI repository and its digest.
@@ -163,7 +166,11 @@ func (h *handler) denyVersion(w http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
-	ctx := r.Context()
+	o, err := h.changeOrigin(r, body.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	ctx := auth.WithOrigin(r.Context(), o) // the reason of the rows that ingest writes
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
 	if err != nil {
 		return 0, nil, repoError("deny a version in", f, name, err)
@@ -232,7 +239,11 @@ func (h *handler) undenyVersion(_ http.ResponseWriter, r *http.Request) (int, an
 	if h.verdicter == nil {
 		return 0, nil, &clientError{msg: "removing verdicts is not enabled in this server", err: format.ErrUnsupported}
 	}
-	ctx := r.Context()
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	ctx := auth.WithOrigin(r.Context(), o) // the reason of the rows that ingest writes
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
 	if err != nil {
 		return 0, nil, repoError("remove a deny in", f, name, err)
