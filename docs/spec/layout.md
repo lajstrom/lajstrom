@@ -1033,7 +1033,12 @@ type Reader interface {
     // ListOpenSessions: the repo's open publication sessions that expire after at, by id, above
     // after, at most limit; no blob upload of the facade
     ListOpenSessions(ctx context.Context, repoID int64, at time.Time, after int64, limit int) ([]Session, error)
+    // ListAudit: newest first; with f.Feed, the rows whose id is above f.After, by id ascending
+    // (rbac.md §5, #1278). SpanAudit: the count and the first and last ids and times of the
+    // rows that PruneAudit would delete with that cut-off (index-schema.md, The audit feed and
+    // its prune)
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+    SpanAudit(ctx context.Context, before time.Time) (AuditSpan, error)
     // webhooks (webhooks.md, index-schema.md, Webhooks): ListWebhooks by id; the delivery log
     // of a webhook newest first, the ids below before (0: from the newest), at most limit
     GetWebhook(ctx context.Context, id int64) (*Webhook, error)
@@ -1201,6 +1206,9 @@ type Writer interface {
     // unknown rows only); unknown when still pending before before (index-schema.md, audit)
     CompleteAudit(ctx context.Context, ev *AuditEvent) error
     ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
+    // PruneAudit deletes at most limit rows that SpanAudit counts with before, whose id is at most
+    // upTo, the lowest ids first; the number deleted. A transaction of its own (#1278)
+    PruneAudit(ctx context.Context, before time.Time, upTo int64, limit int) (int, error)
     // webhooks. CreateWebhook fills ID, UID (NewUID) when empty, CreatedAt and UpdatedAt;
     // UpdateWebhook stores URL, Events, SecretEnc, Active and Description and sets UpdatedAt
     // (Mask, UID and CreatedBy never change); DeleteWebhook takes its deliveries with it
@@ -1339,8 +1347,9 @@ type Writer interface {
 // PackageFacts, PackageQuery, PackageSort, PackageKey, PackagePlace, AttrValue, SearchQuery,
 // SearchRank, SearchKey, SearchHit (index-schema.md, The package list, one package and search),
 // TokenFilter, RepoStats, IdentityGroup (a row of identity_groups with its identity's UserID and
-// GroupsExpireAt and its user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers,
-// but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
+// GroupsExpireAt and its user's UID), AuditFilter (Feed and After: the feed, #1278) and AuditSpan
+// (Rows, FirstID, LastID, FirstAt, LastAt). Ids are int64, timestamps UTC, nullable columns are
+// pointers, but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
@@ -1614,7 +1623,11 @@ var ErrNotEmpty error                       // ImportControlPlane into a control
 
 // Drivers (internal/index/sqlite, internal/index/postgres): *Store implements index.Store and
 // index.Snapshotter, and adds Ping(ctx) error, ApplyMigrations(ctx, MigrateOptions)
-// (MigrationReport, error), AppliedMigrations(ctx) ([]int, error).
+// (MigrationReport, error), AppliedMigrations(ctx) ([]int, error), and ObserveAudit(fn
+// func([]AuditEvent)): fn, set before the store is used, gets after each commit the audit rows
+// that the transaction inserted or whose state it changed, as committed, by id; never after a
+// rollback or a commit whose result is unknown, nor for the rows of ImportControlPlane but
+// opts.Event (rbac.md §5, a line per row; #1278).
 func Open(ctx context.Context, dsn string) (*Store, error)            // does not migrate
 ```
 

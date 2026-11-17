@@ -565,7 +565,9 @@ longer than `reconcile.graceAge` is outside them
   action, the repo, the subject, the digest, the client address and the request id. A change of
   the index or of the control plane writes its row in its transaction. A write to the registry,
   which no transaction spans, has its row before the write, and the row says how the write
-  ended: `ok`, `failed` with the error, or `unknown` when its writer stopped in between.
+  ended: `ok`, `failed` with the error, or `unknown` when its writer stopped in between. A row
+  stays until `lajstrom admin audit prune` deletes it, a year after it at the soonest without
+  `--force` and 90 days with it (rbac.md §5, #1278).
 - **Scope.** As rbac.md §5 and §7; reads and the bearer tokens of `/v2/token` are not audited. A
   reindex writes one row when it starts (`repo.reindex`), the reconcile loop one row per repo it
   changed (`reconcile`), not one per version. A write refused before the registry is asked to
