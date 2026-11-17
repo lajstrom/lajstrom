@@ -1153,9 +1153,11 @@ checked. Its body is one of:
 - `{"username", "password"}`: a local user's password, checked as Basic credentials are, with
   the same throttles of failed logins and the same lockout (rbac.md §1). A refusal is
   `401 UNAUTHENTICATED`, whatever the reason (an unknown, disabled or password-less user, a wrong
-  password, a locked account, a token in place of the password), and a throttled account or
-  address `429` with `Retry-After`. While `auth.localPasswords` is `false`, every password is
-  `401`, the message saying that passwords are off;
+  password, a locked account, a token in place of the password), its message the same whatever
+  the reason, saying while `auth.lockout.duration` is set that 10 wrong passwords in a row lock a
+  password, and for how long; a throttled account or address is `429` with `Retry-After`. While
+  `auth.localPasswords` is `false`, every password is `401`, the message saying that passwords
+  are off;
 - `{"code", "codeVerifier"}`: the code that the callback of an OIDC login with `return_to` handed
   to the UI (§7), and the PKCE verifier (RFC 7636, 43 to 128 characters of `A-Z a-z 0-9 - . _ ~`)
   whose S256 challenge started that login; the proof's key must be the one whose thumbprint that

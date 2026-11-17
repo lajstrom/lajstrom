@@ -280,11 +280,16 @@ While the account is locked, its password is refused whatever it is. The authent
 a remembered verification does not get past a lock. It answers what a wrong password answers,
 `401` with the challenge and no reason, after one verification against the fixed hash that a name
 no user has costs ([auth.md](../auth.md#the-verification-cache)): neither the answer nor its time
-tells a locked account from a wrong password, or from a name that no user has. The refusal line's
-reason is `locked`. Such a refusal counts against the per-replica throttles as a failure does,
-and not against the lock: it neither lengthens the lock nor counts toward the next one. The lock
-is of the password only: the user's personal access tokens, its OIDC logins and the bearers of §4
-keep working, so that whoever knows a user name can stop that user's password and nothing else.
+tells a locked account from a wrong password, or from a name that no user has. So that a person
+whose password stops working learns why, the message of every `401` that refuses a user name and
+a password (Basic credentials, `/v2/token`, `npm login`, `POST /api/v1/login`) says, while the
+lockout is set, that 10 wrong passwords in a row lock a password, and for how long: the same
+message whatever the reason and whatever the account, which tells nobody more than the
+configuration does. The refusal line's reason is `locked`. Such a refusal counts against the
+per-replica throttles as a failure does, and not against the lock: it neither lengthens the lock
+nor counts toward the next one. The lock is of the password only: the user's personal access
+tokens, its OIDC logins and the bearers of §4 keep working, so that whoever knows a user name can
+stop that user's password and nothing else.
 
 Names that no user has, disabled users and users without a password are not counted in the
 index: their passwords never verify, so there is nothing to lock, and the per-replica throttles
@@ -1070,7 +1075,8 @@ bound to no key, and a bound token is never sent as a bearer.
 **A password.** The user name and the password of the body are checked as Basic credentials are
 (§1): argon2id every time, the throttles of failed logins per account and per address, the
 lockout, a token in place of the password refused as a wrong password, every refusal `401`
-without its reason; with `auth.localPasswords: false`, `401` saying that passwords are off.
+without its reason (its message, while the lockout is set, says what locks a password, §1); with
+`auth.localPasswords: false`, `401` saying that passwords are off.
 The token is named `login <time> <4 hex>`, and its `token.create` row has `createdBy`
 `password` and the source `api`, as npm's login has.
 

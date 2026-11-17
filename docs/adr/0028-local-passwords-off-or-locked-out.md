@@ -47,7 +47,9 @@ the defaults proposed for what the decision left open:
    that no user has are not counted in the index: no write per guessed name, no table of names.
 3. **A locked account answers as a wrong password**: `401` without the reason, after one
    verification against the fixed hash, so that a lock tells nobody whether the user exists or is
-   locked.
+   locked. What the answer says instead is the rule: while the lockout is set, the message of
+   every refused password, the same for every account, says that 10 wrong passwords in a row
+   lock a password, and for how long (decided on #1321).
 4. **The lock is of the password**: tokens, OIDC logins and bearers keep working.
 5. **The throttles stay**, per replica, beside the lockout.
 6. **Ten is a constant**, PCI DSS's most; the duration is `0`, or from `5m` to `24h`.
@@ -60,8 +62,8 @@ the defaults proposed for what the decision left open:
 - An account's password gets at most 10 guesses per lock across every replica, instead of 10 × N
   a minute: with `30m`, 480 a day.
 - Anyone who knows a user name can keep that user's password locked, an admin's included. The
-  user's tokens and OIDC logins keep working, and the command line unlocks; the person learns of
-  the lock from an admin, since the answer does not say it.
+  user's tokens and OIDC logins keep working, and the command line unlocks. The answer tells the
+  person that a lock may be why, not that it is; an admin sees `lockedUntil`.
 - A failure is a write of the user's row, at most 10 per lock. A password check reads nothing
   more, since the authentication reads the row anyway. While the setting is `0`, nothing is
   written.
