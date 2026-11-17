@@ -5,12 +5,14 @@
   passwords turned off, and the lockout (§1), after the MVP (#1280); the rules of a password, a
   user's own change and its history (§1) after the MVP (#1281); the admin mode, and a fresh
   sign-in in place of a password (§12), after the MVP (#1276, #1323); the approval of privileged
-  changes and a reason with every change (§13), after the MVP (#1285). Owned by `internal/auth`.
+  changes and a reason with every change (§13), after the MVP (#1285); the export and the prune
+  of the audit log (§5), after the MVP (#1278). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
   [ADR 0029](../adr/0029-administrative-access-with-a-second-factor.md),
   [ADR 0030](../adr/0030-approval-of-privileged-changes.md),
+  [ADR 0031](../adr/0031-export-and-retention-of-the-audit-log.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -796,6 +798,67 @@ writes the row, whose `release` says why. Replicas that run with different confi
 row at each start that changes the record, which is how it shows that they differ.
 `lajstrom admin` and `lajstrom reindex` record no configuration: their rows say what they did.
 
+**A line per row** (#1278). Every row also leaves the database as a log line: once a transaction
+that inserted rows or changed the state of one commits, the process that committed it writes each
+such row, in id order, as one line on standard error, `msg` `audit` at level info whatever
+`log.level` says, in the format of every line (`log.format`). Its fields are the row's as
+`GET /api/v1/audit` answers it (http-routing.md §4): `id`, `at`, `principal`, `principalName`,
+`principalKind`, `action`, `repo`, `subject`, `digest`, `ip`, `state`, `error` and `details`, whole
+(an object in `json`), each left out when empty. `serve` writes it, and so does every command that
+writes rows against the database (§6). A row has a line per state that commits: a registry write's
+`pending`, then `ok` or `failed`, or `unknown` from the reindex that marks it, then its outcome
+when its writer ends after that; `ok` and `failed` are final. The line is built from the committed
+row and holds nothing else, so the rule that keeps a secret out of it is the row's: no row holds a
+password, a token, a hash of either, or a webhook's URL or secret (above). A transaction rolled
+back writes no line, nor does a commit whose result is unknown (CockroachDB's `40003`, a connection
+lost during the commit). A line that cannot be written is lost and changes nothing: the change
+stands, and the answer is the same. A process that stops between the commit and the line loses the
+line; the feed (below) has the row. A restore of a snapshot writes the line of its own row, not of
+the rows it brings back, and a prune none for the rows it deletes. A line is as long as its row: a
+`config.change` up to 64 KiB. With `audit.log: false` (configuration.md; `true` by default) no
+process writes one; the key is not one of `log.*`, so that turning the lines off is a
+`config.change` row.
+
+**The feed** (#1278). `GET /api/v1/audit?after=<id>` answers the rows whose id is above `<id>` by
+id ascending, where the list without it is newest first: a collector keeps the ids it holds and
+asks again from them. It takes the list's other filters, which all hold, and `limit` (100, 1 to
+1000), answers no `next`, and an empty page is the end for now; `after=0` starts at the oldest row
+kept. An id is unique, never changes and is never used again, a prune's deletions included, but by
+a database restored from a backup or a snapshot, which takes again the ids of the rows written
+after its copy: after a restore, a collector keeps the rows it holds that the database lost, and
+takes the ids above the newest the database has for new rows. The ids ascend in the order the rows
+are inserted, with gaps (an insert rolled back). A row is answered once its transaction commits. On
+SQLite, which commits one write at a time, that is the order of the ids. On PostgreSQL and on
+CockroachDB, whose identity column takes its ids from a sequence as PostgreSQL's does (unless an
+operator caches the sequence per node), a transaction that inserted its row before another's and
+commits after it shows the lower id later, so a collector that resumes from the newest id it holds
+can miss that row. One that resumes from the newest id it held 10 minutes before, and drops the ids
+it already has, misses only a row whose transaction committed more than 10 minutes after a later
+one's: the transactions that insert rows are a few statements each, but for a restore of a
+snapshot, made while no replica serves. A row is answered in its state at the time: a collector
+that holds one `pending` reads its outcome by asking again from an id below it.
+
+**A prune** (#1278). Rows are deleted only by `lajstrom admin audit prune --before <cut-off>`,
+against the database (§6): no route of the API deletes or changes one, so that no credential of the
+admin role can erase the trail of what it did. The cut-off is an RFC 3339 time or an age in days,
+`400d`, as `snapshot create --audit` takes one. A cut-off less than 365 days before now is refused,
+exit status `2` before anything is written, unless `--force`, which takes one down to 90 days and
+no further: PCI DSS 10.5.1 asks for 12 months, the last three immediately available, and the
+operator may keep the year in the log store instead. The command deletes the rows whose `at` is
+before the cut-off, but never a row still `pending`, nor a `push` whose subject is a digest: a
+referrer's, which reindex reads to repair a subject's referrers index (#628). It first counts what
+it would delete, the number of rows and the first and the last of their ids and times, and deletes
+only up to that last id, so that no row inserted while it runs is taken. `--dry-run` prints the
+count and writes nothing. Its row is `audit.prune`, by `anonymous` with `source: cli` and the
+origin of every row of the command line (§6), `subject` `audit`, written as a registry write's:
+`pending` before the first deletion, in a transaction of its own, with `details` `{"before",
+"rows", "firstId", "lastId", "firstAt", "lastAt", "force"}`; then `ok` with `deleted`, the rows it
+deleted, or `failed` with `deleted` and the error. It deletes in batches of 10,000 rows, the oldest
+ids first, each in a transaction of its own, so that no lock is held long and `serve` writes on.
+One that stops leaves what it deleted deleted, its row `pending` (`unknown` after a reindex, as a
+registry write's), and the rest to a next run. It does not reach into the registry: a snapshot made
+before keeps the rows of its window, and its restore brings them back.
+
 ## 6. Bootstrap
 
 No admin password is read from the environment or the configuration (#440). The first admin
@@ -852,7 +915,8 @@ the server writes for the credential they send, and those that write no row do n
 `lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
 the change comes from `LAJSTROM_REASON` there. With `auth.requireReason` (§13), the commands of
 `lajstrom admin user`, `binding`, `token`, `repo`, `webhook`, `ci-policy` and `policy rule` that
-change the control plane exit with status `2` without a reason, before anything is written. No
+change the control plane, and `admin audit prune` (§5), exit with status `2` without a reason,
+before anything is written. No
 command waits for a second admin: the command line makes its change at once, whatever
 `auth.approval` says (§13).
 

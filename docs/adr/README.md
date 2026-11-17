@@ -77,3 +77,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0028](0028-local-passwords-off-or-locked-out.md) | Local passwords: off where an IdP logs people in, else a lockout counted in the index | proposed |
 | [0029](0029-administrative-access-with-a-second-factor.md) | Administrative access with a second factor: the admin role only for a web UI's OIDC sign-in | proposed |
 | [0030](0030-approval-of-privileged-changes.md) | Approval of privileged changes: a second admin for what grants most, a reason with each | proposed |
+| [0031](0031-export-and-retention-of-the-audit-log.md) | Export and retention of the audit log: a line per row, an ascending feed, a prune | proposed |
