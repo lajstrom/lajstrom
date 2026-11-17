@@ -21,6 +21,14 @@ func lockoutOf(a config.Auth) time.Duration {
 	return a.Lockout.Duration
 }
 
+// passwordPolicyOf is auth.passwords, the rules of a password and its change at first use
+// (docs/spec/rbac.md §1, Local passwords), for auth.Users: of serve, of its bootstrap and of
+// lajstrom admin user.
+func passwordPolicyOf(a config.Auth) auth.PasswordPolicy {
+	return auth.PasswordPolicy{MinLength: a.Passwords.MinLength, RequireLettersAndDigits: a.Passwords.RequireLettersAndDigits,
+		ChangeAtFirstUse: a.Passwords.ChangeAtFirstUse}
+}
+
 // checkLocalPasswords is serve's check of auth.localPasswords at start (docs/spec/rbac.md §1,
 // Local passwords): false needs auth.oidc.issuer, since people then log in through the IdP only.
 // It says at info when passwords are off, and when they are locked out after wrong ones

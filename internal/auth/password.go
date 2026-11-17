@@ -9,7 +9,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
@@ -26,8 +25,8 @@ var ErrMalformedHash = errors.New("auth: malformed password hash")
 
 // Bounds of passwords and user names.
 const (
-	// MinPasswordLen and MaxPasswordLen bound a password, in bytes.
-	MinPasswordLen = 8
+	// MaxPasswordLen bounds a password, in bytes; its fewest characters are a rule of
+	// PasswordPolicy, auth.passwords.minLength.
 	MaxPasswordLen = 1024
 	// MaxNameLen bounds a user name, in bytes.
 	MaxNameLen = 64
@@ -163,22 +162,13 @@ func parseParam(part, name string) (uint64, error) {
 	return n, nil
 }
 
-// CheckPassword checks that password is UTF-8 of MinPasswordLen to MaxPasswordLen bytes that
-// does not start with a token prefix, PATPrefix or DeployPrefix: the Authenticator takes a
-// secret with either for a token, never for a password. Any other character is allowed. Errors
-// wrap ErrInvalid and name the bound; they never contain the password.
+// CheckPassword checks password against the rules of the default PasswordPolicy: UTF-8 of
+// DefaultMinPasswordLength characters to MaxPasswordLen bytes that does not start with a token
+// prefix, PATPrefix or DeployPrefix: the Authenticator takes a secret with either for a token,
+// never for a password. Any other character is allowed. Errors wrap ErrInvalid and name the
+// bound; they never contain the password.
 func CheckPassword(password string) error {
-	switch {
-	case len(password) < MinPasswordLen:
-		return invalidf("password: must be at least %d bytes", MinPasswordLen)
-	case len(password) > MaxPasswordLen:
-		return invalidf("password: must be at most %d bytes", MaxPasswordLen)
-	case !utf8.ValidString(password):
-		return invalidf("password: must be UTF-8")
-	case strings.HasPrefix(password, PATPrefix), strings.HasPrefix(password, DeployPrefix):
-		return invalidf("password: must not start with %s or %s: a secret with either is a token's", PATPrefix, DeployPrefix)
-	}
-	return nil
+	return PasswordPolicy{}.Check(password)
 }
 
 // reservedNames are user names that HTTP Basic gives another meaning: deploy:<token> is how a

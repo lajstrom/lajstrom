@@ -117,18 +117,18 @@ func TestVerifyMalformed(t *testing.T) {
 	}
 }
 
-// TestPasswordBounds checks that passwords are 8 to 1024 bytes of UTF-8, that HashPassword
+// TestPasswordBounds checks that passwords are 8 characters to 1024 bytes of UTF-8, that HashPassword
 // refuses the others, and that no error contains the password.
 func TestPasswordBounds(t *testing.T) {
 	tests := []struct {
 		name, password, want string // want: "" for valid, else a substring of the error
 	}{
-		{"8 bytes", "12345678", ""},
+		{"8 characters", "12345678", ""},
 		{"1024 bytes", strings.Repeat("a", 1024), ""},
 		{"multibyte", "пароль!!", ""}, // 6 Cyrillic letters, 14 bytes
 		{"spaces and colons", "a: b: c: d", ""},
-		{"empty", "", "at least 8 bytes"},
-		{"7 bytes", "1234567", "at least 8 bytes"},
+		{"empty", "", "at least 8 characters"},
+		{"7 characters", "1234567", "at least 8 characters"},
 		{"1025 bytes", strings.Repeat("a", 1025), "at most 1024 bytes"},
 		{"not UTF-8", "abcdefg\xff", "must be UTF-8"},
 	}

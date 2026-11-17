@@ -138,7 +138,8 @@ func newServeCmd(a *app) *cobra.Command {
 			// the login.block rows of the throttles of failed logins and of wrong bootstrap tokens,
 			// at most auth.BlockRows a minute on this replica (docs/spec/rbac.md §5)
 			blocks := &auth.Blocks{Index: st, Log: a.log}
-			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log,
+			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log, PasswordPolicy: passwordPolicyOf(c.Auth)},
+				TTL: c.Auth.Bootstrap.TTL, Log: a.log,
 				Blocks: blocks, PasswordsOff: !c.Auth.LocalPasswords}
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
@@ -239,6 +240,7 @@ func newServeCmd(a *app) *cobra.Command {
 				InactiveUsersAfter:      c.Auth.DisableInactiveUsersAfter,
 				PasswordsOff:            !c.Auth.LocalPasswords,
 				Lockout:                 lockoutOf(c.Auth),
+				PasswordPolicy:          passwordPolicyOf(c.Auth),
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, LoginIdle: c.Auth.Login.IdleTimeout,
 				Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
