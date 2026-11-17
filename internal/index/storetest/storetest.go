@@ -131,6 +131,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"WebhookClaimRace", testWebhookClaimRace},
 		{"SnapshotAudit", testSnapshotAudit},
 		{"SnapshotConsistent", testSnapshotConsistent},
+		{"Access", testAccess},
+		{"AccessConsistent", testAccessConsistent},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
