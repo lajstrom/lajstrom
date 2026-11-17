@@ -415,6 +415,60 @@ const (
 	CIPolicyExpired = "expired"
 )
 
+// Approval is a row of approvals: a request for a second admin (docs/spec/rbac.md §13, #1285), a
+// change of the control plane kept as the change, which its approval makes in bindings or tokens.
+// Nothing that reads those tables reads it, so a request grants nothing.
+type Approval struct {
+	ID int64
+	// Kind is ApprovalBinding or ApprovalDeployToken.
+	Kind string
+	// Subject is what the change makes, unique among the pending requests of its Kind: the same
+	// change pending twice is ErrConflict.
+	Subject string
+	// Change is the change, as its Kind keeps it (docs/spec/index-schema.md, approvals): a
+	// binding's {principal, role, repoMask}, a deploy token's {name, repoMask, scopes, expiresAt,
+	// hash, createdBy, signIn}. Owned by the caller; never empty.
+	Change json.RawMessage
+	// ChangeReason is the requester's changeReason; "" when none was given.
+	ChangeReason string
+	// State is ApprovalPending until a decision, then ApprovalApproved, ApprovalRejected or
+	// ApprovalExpired; it changes once.
+	State string
+	// RequestedBy is the requester, user:<uid>; RequestedAt is when; ExpiresAt is when a request
+	// still pending expires.
+	RequestedBy string
+	RequestedAt time.Time
+	ExpiresAt   time.Time
+	// DecidedBy is the principal of the decision, user:<uid>, or anonymous for an expiry;
+	// DecidedAt is when; DecisionReason is the decider's changeReason. "", nil and "" while
+	// pending.
+	DecidedBy      string
+	DecidedAt      *time.Time
+	DecisionReason string
+	// Result is what the approval made, binding:<id> or token:<id>; "" for any other state.
+	Result string
+}
+
+// The kinds of a request for a second admin (docs/spec/rbac.md §13).
+const (
+	// ApprovalBinding is a binding of the role admin, or on */*.
+	ApprovalBinding = "binding"
+	// ApprovalDeployToken is a deploy token over a mask whose scopes hold write.
+	ApprovalDeployToken = "deploy-token"
+)
+
+// The states of a request for a second admin (docs/spec/rbac.md §13).
+const (
+	// ApprovalPending waits for a decision, and grants nothing.
+	ApprovalPending = "pending"
+	// ApprovalApproved was approved: its change was made, Result.
+	ApprovalApproved = "approved"
+	// ApprovalRejected was rejected, or withdrawn by its requester.
+	ApprovalRejected = "rejected"
+	// ApprovalExpired was still pending at its ExpiresAt, and a replica marked it.
+	ApprovalExpired = "expired"
+)
+
 // CIGrant is a role on the repos of a mask, a grant of a CI trust policy.
 type CIGrant struct {
 	Role string `json:"role"`

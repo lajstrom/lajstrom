@@ -95,6 +95,16 @@ type Reader interface {
 	// ListBindings returns the bindings of principal (canonical form, docs/spec/rbac.md §1),
 	// or every binding when principal is "".
 	ListBindings(ctx context.Context, principal string) ([]Binding, error)
+	// The requests that wait for a second admin (docs/spec/rbac.md §13, docs/spec/index-schema.md,
+	// Approvals).
+
+	// GetApproval returns the request id, in any state; ErrNotFound when there is none.
+	GetApproval(ctx context.Context, id int64) (*Approval, error)
+	// ListApprovals returns the requests of state, or of any state when state is "", by id,
+	// newest first: those whose id is below before (0: from the newest), at most limit; none when
+	// limit is below 1.
+	ListApprovals(ctx context.Context, state string, before int64, limit int) ([]Approval, error)
+
 	// AuthVersion returns the counter of auth_version, which every write of bindings and of
 	// repos increments in its transaction (docs/spec/rbac.md §3). An evaluator reads it before
 	// the bindings and the repos of its snapshot, so that a snapshot is never newer than the
@@ -396,6 +406,24 @@ type Writer interface {
 	CreateBinding(ctx context.Context, b *Binding) error
 	// DeleteBinding removes the binding.
 	DeleteBinding(ctx context.Context, id int64) error
+
+	// The requests that wait for a second admin (docs/spec/rbac.md §13, #1285): control plane,
+	// which grants nothing, so no write moves AuthVersion.
+
+	// CreateApproval inserts a, pending whatever its State, and fills ID, State, and RequestedAt
+	// when it is zero; a request of the same Kind and Subject pending wraps ErrConflict: the same
+	// change pending twice.
+	CreateApproval(ctx context.Context, a *Approval) error
+	// DecideApproval stores State (ApprovalApproved or ApprovalRejected), DecidedBy, DecidedAt
+	// (now when nil), DecisionReason and Result of a by a.ID while the row is pending, in one
+	// statement, and fills a from the row. A row that is not pending changes nothing and wraps
+	// ErrConflict, so that of two decisions one is made; no row wraps ErrNotFound. Its caller makes
+	// the change of an approval in the same transaction.
+	DecideApproval(ctx context.Context, a *Approval) error
+	// ExpireApprovals marks expired the pending requests whose ExpiresAt is not after at, in one
+	// statement, DecidedBy anonymous and DecidedAt at, and returns them as stored, by id, for
+	// their audit rows: of the replicas that mark one at once, one returns it.
+	ExpireApprovals(ctx context.Context, at time.Time) ([]Approval, error)
 
 	// CreateIdentity inserts i and fills ID, and CreatedAt and LoginAt when zero; an identity
 	// of the same Issuer and Subject wraps ErrConflict.
