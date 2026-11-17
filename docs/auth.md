@@ -276,6 +276,26 @@ and none of this.
   configuration with `auth.passwords`: set the keys once every replica runs a release that knows
   them. A snapshot keeps `mustChange` and the history.
 
+From a terminal, `lajstrom change-password` makes the user's own change against a server, as
+`lajstrom login` logs in ([Logging in](#logging-in)): it needs no configuration but the server's
+address, and no credential but the passwords it asks for.
+
+```console
+$ lajstrom change-password alice --server https://art.example.com
+Current password:
+New password:
+Repeat the new password:
+The password of alice is changed.
+```
+
+It prompts without echo on a terminal; otherwise it reads the current password from the first
+line of standard input and the new one from the second, and nothing else, so that a script pipes
+them in. It takes no password as a flag. Without `--server` it talks to `server.listen` of the
+configuration on loopback, as `lajstrom admin bootstrap` does, with the pin of
+`server.tls.certFile` when there is one. A refused current password, a new one that breaks a
+rule or that was used before, and a throttled account exit with status 1 and the server's
+status and message.
+
 ### Turning local passwords off
 
 With `auth.localPasswords: false`, no password is a credential, an admin's included: people log
@@ -1469,7 +1489,9 @@ Logged in to art.example.com as alice; the token expires at 2026-11-13T22:00:00Z
 ```
 
 Without `--output token` it prints one JSON line with the server, the user, the token and its
-expiry. It writes no file: the token goes where you put it.
+expiry. It writes no file: the token goes where you put it. A local user with a password changes
+it from a terminal the same way, with `lajstrom change-password <name> --server <url>`
+([Password rules, your own password, change at first use](#password-rules-your-own-password-change-at-first-use)).
 
 The first login of a person creates their user, of kind `oidc` and without a password, named by
 the claim `usernameClaim`. The user is the identity's, the `iss` and `sub` of its ID token, not
