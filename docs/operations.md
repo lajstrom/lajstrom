@@ -100,11 +100,49 @@ admin --password-stdin` runs the binary itself. The Helm chart does it without `
 generates into a Secret, and NOTES.txt says how to read it and how to turn the Job off again
 ([helm.md](deploy/helm.md#a-lost-password)).
 
+With `auth.passwords.changeAtFirstUse`, a password set this way, or by `create`, is one the user
+must change before anything else: it is `403` everywhere but the user's own change, `lajstrom
+change-password` or `POST /api/v1/users/<name>/password` with `currentPassword`
+([auth.md](auth.md#password-rules-your-own-password-change-at-first-use)). The admin you
+recover with `set-password` changes it so first, then signs in.
+
 The bootstrap token is not a way back in: it is valid only while no enabled user has an admin
 binding. This is the Gitea, GitLab and Grafana way (`gitea admin user change-password`,
 `gitlab-rake "gitlab:password:reset"`, `grafana cli admin reset-admin-password`, each against
 the database), not Vault's quorum of key holders: [auth.md](auth.md#how-others-do-it) compares
 them.
+
+### Password rules and their change
+
+Where people keep local passwords, the rules of PCI DSS 8.3.5 to 8.3.7 are three keys
+([configuration.md](configuration.md#auth)):
+
+```yaml
+auth:
+  passwords:
+    minLength: 12                  # characters, 8 by default
+    requireLettersAndDigits: true  # a letter and a digit, of any script
+    changeAtFirstUse: true         # an admin's password is changed by its user first
+```
+
+The rules count when a password is set; passwords set before keep working. To have everyone
+choose a new one under them, set `mustChange` on each user with a password, which is also how
+to rotate passwords every 90 days (8.3.9), there being no maximum age. Do it with an admin's
+personal access token, which keeps working when the admin's own password must change too:
+
+```sh
+auth="Authorization: Bearer $ADMIN_TOKEN"
+for u in $(curl -s -H "$auth" "$LAJSTROM/api/v1/users?kind=local&limit=1000" | jq -r '.users[].name'); do
+  curl -s -H "$auth" -X PATCH "$LAJSTROM/api/v1/users/$u" -H 'Content-Type: application/json' -d '{"mustChange": true}'
+done
+```
+
+Each is a `user.mustchange` row; `lajstrom admin user list` marks the users who have not
+changed yet `(must change its password)`. Their tokens keep working, so CI with a personal access
+token is not stopped; a package client with a stored password gets `403` saying how to change it.
+A user's own change refuses the user's last four passwords. Set the keys once every replica runs a
+release that knows them: one before refuses the configuration, and takes a password that must
+change (migration 0037).
 
 ### Disabling a user
 
@@ -1500,6 +1538,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin; `user.disable` also `serve`, by `anonymous` with `source: inactivity` and `reason: inactive`, at the authentication of a user inactive beyond `auth.disableInactiveUsersAfter` ([auth.md](auth.md#inactive-users)) |
 | `user.unlock` | `POST /api/v1/users/<name>/unlock`, `lajstrom admin user unlock`, and an admin's new password, beside its `user.password`: the end of a lock of the lockout that was in force, with its `lockedUntil` ([auth.md](auth.md#the-lockout)) |
+| `user.password` by the user, `user.mustchange` | a user's own change of its password, `POST /api/v1/users/<name>/password` with `currentPassword` or `lajstrom change-password`, the row's principal its subject; an admin's `PATCH` of `mustChange`, with the new value as `mustChange` in its details. A `user.password` or `user.create` that left the password to be changed has `mustChange: true` ([auth.md](auth.md#password-rules-your-own-password-change-at-first-use)) |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |

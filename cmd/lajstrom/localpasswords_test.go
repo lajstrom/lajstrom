@@ -117,6 +117,9 @@ func TestAdminUserPasswordRules(t *testing.T) {
 		after.PasswordHistory[0] != alice.PasswordHash {
 		t.Errorf("alice after set-password = %+v, %v; want mustChange and her first hash in the history", after, err)
 	}
+	if out, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err != nil || !strings.Contains(out, "false (must change its password)") {
+		t.Errorf("admin user list = %q, %v; want alice marked", out, err)
+	}
 }
 
 // TestAdminUserUnlock: with auth.lockout.duration set, admin user list marks a locked user's

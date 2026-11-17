@@ -60,6 +60,12 @@ type Options struct {
 	// of every password POST /api/v1/users and POST …/password set, and with changeAtFirstUse the
 	// mustChange they set.
 	PasswordPolicy auth.PasswordPolicy
+	// Authenticate runs the authentication of the request's credentials that the server's
+	// middleware leaves to POST /api/v1/users/{user}/password, whose body decides whether it
+	// takes any (server.Server.Authenticate): the admin's new password does, the user's own
+	// change does not. It returns the request with its principal, or false when it answered the
+	// refusal itself. Nil takes the request as it is, its principal the middleware's.
+	Authenticate func(w http.ResponseWriter, r *http.Request) (*http.Request, bool)
 	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
 	// formats, the audit writer, the clock and the logger of Repos.
 	Bindings *auth.Bindings
@@ -225,7 +231,7 @@ func New(o Options) http.Handler {
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, loginIdle: o.LoginIdle, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
-		locate: o.Locate, ci: o.CIPolicies}
+		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -375,6 +381,8 @@ type handler struct {
 	loginIdle     time.Duration
 	handoffs      Handoffs
 	proofs        Proofs
+	// authenticate is Options.Authenticate.
+	authenticate func(w http.ResponseWriter, r *http.Request) (*http.Request, bool)
 	// registries is Options.Registries.
 	registries RegistryReporter
 	// providers is Options.Providers; maxManifest is Options.MaxManifestSize, 4 MiB when it was

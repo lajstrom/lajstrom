@@ -387,7 +387,8 @@ func promptPassword(out io.Writer, fd int, label string) (string, error) {
 }
 
 // writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED, CREATED, LAST
-// SEEN and OWNER. DISABLED has (locked until <time>) for a user whose password is locked
+// SEEN and OWNER. DISABLED has (locked until <time>) for a user whose password is locked, and
+// (must change its password) for one whose password must be changed before anything else
 // (docs/spec/rbac.md §1, Local passwords). LAST SEEN is the user's last activity, - before any
 // record, with (inactive) for a user inactive beyond auth.disableInactiveUsersAfter
 // (docs/spec/rbac.md §1, Inactive users).
@@ -415,6 +416,9 @@ func writeUserTable(out io.Writer, users []auth.User) error {
 		disabled := strconv.FormatBool(u.Disabled)
 		if u.LockedUntil != nil {
 			disabled += " (locked until " + u.LockedUntil.Format(time.RFC3339) + ")"
+		}
+		if u.MustChange {
+			disabled += " (must change its password)"
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, u.UID, u.Kind, disabled, u.CreatedAt.Format(time.RFC3339),
 			seen, owner)

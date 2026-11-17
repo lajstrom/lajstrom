@@ -35,7 +35,9 @@ API ([api.md](api.md#users)), and are the same on every replica.
 
 A user name is 1 to 64 bytes of lowercase letters, digits, `.`, `_` and `-`, starting with a
 letter or a digit. It is what HTTP Basic carries before the colon, so it has no colon, no space and no upper case. `deploy` is reserved: `deploy:<token>` is how a
-deploy token authenticates. A password is 8 to 1024 bytes of UTF-8, any characters, that does
+deploy token authenticates. A password is at least `auth.passwords.minLength` characters (8 by
+default) and at most 1024 bytes of UTF-8, any characters unless the rules ask for letters and
+digits ([Password rules](#password-rules-your-own-password-change-at-first-use)), that does
 not start with `ljs_pat_` or `ljs_dep_`: a secret with either prefix is a token's, never a
 password (a password set before #44 that starts with one no longer logs in; set another).
 
@@ -188,7 +190,8 @@ It is `0` by default, which counts nothing and locks nothing, or from `5m` to `2
 DSS 8.3.4's ([configuration.md](configuration.md#auth)).
 
 - **What counts.** A wrong password of a live, enabled user that has one, on any route that
-  takes a password: Basic credentials, `/v2/token`, `npm login`, `POST /api/v1/login`. Ten is a
+  takes a password: Basic credentials, `/v2/token`, `npm login`, `POST /api/v1/login`, and the
+  current password of a user's own change ([below](#password-rules-your-own-password-change-at-first-use)). Ten is a
   constant, the most PCI DSS allows. A password that verifies sets the count back to `0`. Names
   that no user has, disabled users and users without a password are not counted: their
   passwords never verify, and the throttles above bound them.
@@ -220,6 +223,59 @@ DSS 8.3.4's ([configuration.md](configuration.md#auth)).
   every replica runs a release that knows it; a change takes a restart. A restore of a snapshot
   unlocks every user.
 
+### Password rules, your own password, change at first use
+
+Where local passwords stay, `auth.passwords` sets their rules ([rbac.md](spec/rbac.md) §1, Local
+passwords; [configuration.md](configuration.md#auth)); where they are off, the IdP's rules apply,
+and none of this.
+
+- **The rules.** A password has at least `auth.passwords.minLength` characters, `8` by default
+  and `12` for PCI DSS 8.3.6, counted as Unicode code points of the password as it was sent, which
+  is not normalized: four CJK characters are four, not the twelve bytes they take. It is at most
+  1024 bytes of UTF-8 and does not start with `ljs_pat_` or `ljs_dep_`. With
+  `auth.passwords.requireLettersAndDigits` it holds a letter and a digit, of any script (Unicode
+  categories L and Nd): `пароль пароль 7` passes, `correct horse battery` does not. The rules are
+  checked wherever a password is set: `POST /api/v1/users`, both forms of `POST …/password`,
+  `POST /api/v1/bootstrap`, `lajstrom admin user create` and `set-password`. A password that
+  breaks one is `400`, exit status 1 on the command line, naming the rule and its setting, never
+  the password. A password set before keeps working, since a hash cannot be checked: to have
+  everyone choose one under a raised rule, set `mustChange` on them (below).
+- **Your own password.** A user changes its password with its current one, which is the
+  credential of the request: `POST /api/v1/users/<name>/password` with `{"currentPassword",
+  "password"}` ([api.md](api.md#password-post-apiv1usersuserpassword)). The current password is
+  checked as Basic credentials are, with the throttles and the lockout: a wrong one is `401` with
+  the message of every refused password, and counts as a failure. The request needs no other
+  credential, and its `Authorization` is ignored. The new password follows the rules and is none
+  of the user's **last four passwords**, the current one and the three before it, each compared
+  by argon2id (about 70 ms): one of them is `400`, `password: was used before`. The change is
+  `204`, and the user's tokens are not touched. An admin's new password is not compared with the
+  history, so that the admin does not learn which passwords the user had, but the hash it
+  replaces goes into the history all the same.
+- **Change at first use.** With `auth.passwords.changeAtFirstUse` (`true` for PCI DSS 8.3.5),
+  every password that is not the user's own change, an admin's create or new password, through
+  the API or on the command line, and the bootstrap's, gives the user `mustChange`. Until the user
+  changes it, its password authenticates that change and nothing else: once it has verified,
+  every other request with it is `403`, on every route, `/v2/token`, `npm login` and `POST
+  /api/v1/login` included, with the message `the password must be changed before it is used for
+  anything else: change it with lajstrom change-password, or POST /api/v1/users/{user}/password
+  with currentPassword and password`, and it mints no token. A wrong password is `401` as always,
+  so that only the holder of the password learns it. The user's tokens keep working. Without the
+  setting, an admin's new password clears `mustChange`. Whatever the setting, an admin sets or
+  clears it with `PATCH /api/v1/users/<name>` and `{"mustChange": true}` or `false`
+  ([api.md](api.md#change-patch-apiv1usersuser)): to have a user choose a password under a raised
+  rule, or every 90 days (PCI DSS 8.3.9; there is no maximum age). The users API answers
+  `mustChange: true`, and `lajstrom admin user list` `(must change its password)`.
+- **What is recorded.** Every change of a password is a `user.password` row, by the admin, or by
+  the user itself for its own change, with `mustChange: true` in its details when the change left
+  it set; a create under `changeAtFirstUse` has it in its `user.create` row too, and an admin's
+  `PATCH` is a `user.mustchange` row. A password that a rule or the history refuses writes no
+  row; a wrong current password is a failed login.
+- **Upgrades.** Migration 0037 gives every user `mustChange` `false` and an empty history: the
+  first change after it compares with the current password only. A replica of a release before
+  it knows no user's own change and takes a password whose `mustChange` is set, and refuses a
+  configuration with `auth.passwords`: set the keys once every replica runs a release that knows
+  them. A snapshot keeps `mustChange` and the history.
+
 ### Turning local passwords off
 
 With `auth.localPasswords: false`, no password is a credential, an admin's included: people log
@@ -241,7 +297,8 @@ rules and MFA apply, and get their personal access tokens from `lajstrom login`
   --user <admin>` makes an admin a token while the IdP is down.
 - `GET /api/v1/info` leaves `password` out of `authModes`, so that a UI shows no password form.
 
-The lockout does nothing while local passwords are off.
+The lockout does nothing while local passwords are off, and neither do the keys of
+`auth.passwords`, which are accepted: the IdP's rules apply.
 
 ## HTTP Basic on every route
 

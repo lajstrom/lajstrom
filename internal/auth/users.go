@@ -66,6 +66,10 @@ type User struct {
 	// (Users.Lockout) is set and the lock is in force (docs/spec/rbac.md §1, Local passwords); left
 	// out otherwise. Like LastSeenAt, it moves no revision.
 	LockedUntil *time.Time `json:"lockedUntil,omitempty"`
+	// MustChange is true while the user's password must be changed before it is used for
+	// anything else (docs/spec/rbac.md §1, Change at first use); left out otherwise. A PATCH sets
+	// it, and it moves the revision.
+	MustChange bool `json:"mustChange,omitempty"`
 	// Owner is a service account's owner, user:<uid> or group:<name>; OwnerName the name of a
 	// user owner, and OwnerDisabled whether that user is disabled. All three are empty for every
 	// other kind.
@@ -959,7 +963,7 @@ func userError(op, name string, err error) error {
 // uid, when it has the owner, else read on r.
 func (s *Users) resource(ctx context.Context, r index.Reader, u *index.User, byUID map[string]*index.User) (*User, error) {
 	out := &User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC(), Owner: u.Owner,
-		ID: u.ID, Revision: u.Revision, Inactive: Inactive(u, s.InactiveAfter, s.now())}
+		ID: u.ID, Revision: u.Revision, Inactive: Inactive(u, s.InactiveAfter, s.now()), MustChange: u.MustChange}
 	if u.LastSeenAt != nil {
 		seen := u.LastSeenAt.UTC()
 		out.LastSeenAt = &seen
