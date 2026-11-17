@@ -6,13 +6,15 @@
   user's own change and its history (§1) after the MVP (#1281); the admin mode, and a fresh
   sign-in in place of a password (§12), after the MVP (#1276, #1323); the approval of privileged
   changes and a reason with every change (§13), after the MVP (#1285); the export and the prune
-  of the audit log (§5), after the MVP (#1278). Owned by `internal/auth`.
+  of the audit log (§5), after the MVP (#1278); the access report and its review (§14), after the
+  MVP (#1279). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
   [ADR 0029](../adr/0029-administrative-access-with-a-second-factor.md),
   [ADR 0030](../adr/0030-approval-of-privileged-changes.md),
   [ADR 0031](../adr/0031-export-and-retention-of-the-audit-log.md),
+  [ADR 0032](../adr/0032-access-report-and-its-review.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -220,7 +222,7 @@ passed since its creation.
 **What is shown.** The users API (http-routing.md §4) and `lajstrom admin user list` answer
 `lastSeenAt` for every user, `null` before any record, and, while the setting is not `0`,
 `inactive: true` for an inactive user: before an authentication disables it, and for the last
-enabled admin, whom none disables. The access report (#1279) reads the two. With the setting not
+enabled admin, whom none disables. The access report (§14) reads the two. With the setting not
 `0`, `serve` logs at warn at start how many users are inactive, when there are any, the last
 enabled admin among them if it is, so that an operator who sets or lowers it sees whom it reaches
 before their next authentication disables them (as with `beyondMaxTTL` above). The setting counts from
@@ -752,6 +754,12 @@ approver, with `approval` `{"id", "requestedBy", "requestedAt"}` and the request
 `approval.reject`, by the admin, the requester for a withdrawal, with its `changeReason`; an
 expiry `approval.expire`, by `anonymous`, `source: expiry`. Each has the `signIn` of the request
 that wrote it (above).
+
+**An access review** (§14, #1279) is `access.review`, by the admin who records it, in a
+transaction of its own: `subject` the report's `sha256:<hex>`, no `repo`, and `details`
+`{"sha256", "generatedAt", "scope", "note"}` with the origin of a row of the API (`source: api`,
+`requestId`) and the `signIn` of a web UI's sign-in (above). The report itself is a read, and
+writes no row.
 
 **A change of the configuration** is `config.change` (#1284), by `anonymous`, `source: config`,
 written by `serve` at its start when the configuration it runs with is not the last one recorded
@@ -1712,3 +1720,101 @@ before anything is written, and the commands of the command line that make one e
 A person's own credentials are not among them (its own tokens made or revoked, a sign-in and a
 sign-out, `npm login`, an OIDC login, its own password), nor the bootstrap, nor the writes of
 artifacts (a push, a delete of a version, a yank), nor a reindex or a purge of a proxy's cache.
+
+## 14. The access report and its review (after the MVP, #1279)
+
+PCI DSS 7.2.4 asks that user accounts and their privileges are reviewed at least once every six
+months, and that "management acknowledges that access remains appropriate"; 7.2.5.1 asks the same
+for application and system accounts, as often as the entity's risk analysis says. Lajstrom answers
+what such a review reads, and records that it took place
+([ADR 0032](../adr/0032-access-report-and-its-review.md), decided on #1279, 2026-11-16): one
+report that joins, per principal, what the lists of the API hold apart, and an audit row that
+names the report a person reviewed.
+
+**The report.** `GET /api/v1/access-report` takes the admin role, checked before anything else
+(http-routing.md §4), and answers one JSON document: who has what at one moment, read in one
+read-only transaction ([index-schema.md](index-schema.md#the-access-report)). It holds no secret
+and no hash, but a token's `hashPrefix` as the tokens API answers it. It is a read: no audit row,
+and the access log has it. `lajstrom admin access-report` writes the same document on the command
+line, read from the database without HTTP as every `lajstrom admin` command reads (§6), so that it
+works under the admin mode (§12) and while the IdP is down; it writes no row. The document has:
+
+- `generatedAt`, the database's time of the read, to the second; `scope` and `unusedDays` (below);
+  and `settings`, what the flags read: `adminMFA` and `anonymousRead`, and
+  `disableInactiveUsersAfter`, `deployTokensMaxTTL` and `serviceAccountsMaxTokenTTL` in seconds
+  (`0`: off);
+- `users`: every live user, a disabled one too, as the users API answers it, with `principal`
+  (`user:<uid>`); `groups`, its current groups (§8), each `{"name", "expiresAt"}`, the end of the
+  `auth.oidc.tokenLifetime` of its latest login, when the group lapses; `bindings`, its own and
+  those of its current groups, each as the bindings API answers it, with `via`, the group, for a
+  group's; `tokens`, its live personal access tokens (neither revoked nor expired), each as the
+  tokens API answers it, with its `flags`; and its `flags`. A service account has its `owner`,
+  `ownerName` and `ownerDisabled` there (§1);
+- `groups`: every group that has a binding, with `principal` (`group:<name>`), its `bindings`, its
+  `members`, the users whose current groups name it, each `{"principal", "name", "expiresAt"}`, and
+  its `flags`. A group is known only through its members' logins (§8): one whose members' logins
+  have all lapsed has none;
+- `workloads`: every `cert:` and `k8s:` principal or pattern that has a binding (§9), with
+  `principal`, `pattern: true` for a pattern, its `bindings` and its `flags`. Lajstrom knows
+  nothing more of them: no row, no last use;
+- `deployTokens`: every live deploy token, a repo's and those over a mask, as the tokens API
+  answers it, with `principal` (`token:<id>`) and its `flags`;
+- `ciPolicies`: every CI trust policy (§11), of the configuration and of the API, an expired one
+  too, as `GET /api/v1/ci/policies` answers it, with its `flags`. A CI token's principal,
+  `ci:<issuer>/<project>`, has no row: its rights are its policies' grants;
+- `anonymous`: `{"repos"}`, the repos that anonymous reads (`<format>/<name>`), while
+  `auth.anonymousRead` is on and a repo has `anonymousRead` (§1); left out otherwise.
+
+Requests that wait for a second admin (§13) grant nothing and are not in it:
+`GET /api/v1/approvals` lists them.
+
+**The flags** are what a reviewer looks for: on each entry and each token, a list of those that
+hold, in this order:
+
+- `admin`: a binding of the role `admin`, its own or a current group's;
+- `allRepos`: a binding on `*/*`, of any role, its own or a current group's; a deploy token over
+  `*/*`; a CI trust policy with a grant on `*/*`;
+- `adminWithoutEffect`: an `admin` binding of a service account or of a local user while the admin
+  mode is on, which counts for nothing until it is off (§12);
+- `noExpiry`: a token without an expiry; a CI trust policy without one;
+- `unused`: a token whose last use, or its creation when it has none, is more than `unusedDays`
+  before `generatedAt`; a user whose last activity (§1), or its creation when it has none, is;
+- `beyondMaxTTL`: a token beyond the bound of its kind, as the tokens API answers it (§1);
+- `ownerDisabled`: a service account whose user owner is disabled (§1);
+- `inactive`: a user inactive under `auth.disableInactiveUsersAfter`, as the users API answers it
+  (§1).
+
+`unusedDays` is `?unusedDays=` (`--unused-days`), 1 to 3650, `90` by default: the 90 days of PCI
+DSS 8.2.6. **The scope** is `?scope=` (`--scope`): `all` (the default), `people` or `systems`.
+`people` keeps the users of kind `local` and `oidc` and the groups, for 7.2.4; `systems` keeps the
+service accounts, the workloads, the deploy tokens and the CI trust policies, for 7.2.5.1, whose
+review may come at another frequency. `anonymous` is in every scope. Another value of either is
+`400`.
+
+**One document, one hash.** The document is compact JSON, without insignificant whitespace, its
+object keys in byte order at every level and a line feed at its end. Its lists are in byte order:
+`users` by name, `groups`, `workloads` and `members` by principal, `deployTokens` and `tokens` by
+id, `ciPolicies` by name, `bindings` by role, mask and `via`. So the same rows at the same
+`generatedAt` are the same bytes, from the API and from the command line. It is not paged: a review
+covers one document, named by one sha256, and its size grows with the rows, a few hundred bytes a
+binding or a token. `lajstrom admin access-report` writes it on standard output and `sha256:<hex>`
+of it on standard error, with `--format json` (the default). `--format csv` writes a table instead,
+for a spreadsheet: one line per binding, token and grant, with the columns `principal`, `kind`,
+`name`, `item` (`binding`, `token`, `grant`), `role`, `mask`, `scopes`, `expiresAt`, `lastUsedAt`,
+`via` and `flags` (the entry's and the item's, joined by `;`), and on standard error the sha256 of
+the JSON document of the same read.
+
+**The review.** `POST /api/v1/access-reviews` records that a person reviewed a report. It takes the
+admin role, with any credential that reaches it (under the admin mode, a web UI's sign-in with a
+second factor, §12), and the body `{"sha256", "generatedAt", "scope", "note"}`: the sha256 of the
+document's bytes as the reviewer got them, 64 lowercase hexadecimal digits; its `generatedAt` and
+`scope` as the document says, `scope` `all` when absent; and a note, 1 to 4096 bytes of UTF-8
+without control characters but line feeds: what was found and done, who acknowledged, the ticket. A
+`generatedAt` more than 60 seconds after the server's time, and a field out of its bounds, are
+`400` naming it. Lajstrom keeps no report, and does not compare the sha256 with one: the report
+changes with every use of a token, so it cannot be made again, and the reviewer keeps the document
+with the ticket. The answer is `201` with the row written, as `GET /api/v1/audit` answers it:
+`access.review` (§5), by the reviewer, in a transaction of its own. A review changes no access, so
+it takes no `changeReason` and waits for no second admin (§13). Past reviews are
+`GET /api/v1/audit?action=access.review`, newest first. The command line records none: its rows
+name nobody (§6), and a review is a person's acknowledgement.

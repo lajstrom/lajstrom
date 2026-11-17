@@ -1013,6 +1013,9 @@ type Reader interface {
     GetBootstrapToken(ctx context.Context) (*BootstrapToken, error) // used and expired too; the caller checks
     GetConfigState(ctx context.Context) (*ConfigState, error)       // last recorded (rbac.md §5); none: ErrNotFound
     ListBindings(ctx context.Context, principal string) ([]Binding, error)
+    // ReadAccess: the rows of the access report (rbac.md §14, #1279) in one read-only
+    // transaction, at the database's time, ReadAt (index-schema.md, The access report)
+    ReadAccess(ctx context.Context) (*Access, error)
     // the requests that wait for a second admin (rbac.md §13, index-schema.md, Approvals):
     // ListApprovals by id, newest first, below before (0: from the newest), of state ("": any),
     // at most limit
@@ -1347,9 +1350,11 @@ type Writer interface {
 // PackageFacts, PackageQuery, PackageSort, PackageKey, PackagePlace, AttrValue, SearchQuery,
 // SearchRank, SearchKey, SearchHit (index-schema.md, The package list, one package and search),
 // TokenFilter, RepoStats, IdentityGroup (a row of identity_groups with its identity's UserID and
-// GroupsExpireAt and its user's UID), AuditFilter (Feed and After: the feed, #1278) and AuditSpan
-// (Rows, FirstID, LastID, FirstAt, LastAt). Ids are int64, timestamps UTC, nullable columns are
-// pointers, but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
+// GroupsExpireAt and its user's UID), AuditFilter (Feed and After: the feed, #1278), AuditSpan
+// (Rows, FirstID, LastID, FirstAt, LastAt) and Access (ReadAt, Users, IdentityGroups, Bindings,
+// Tokens, CIPolicies, AnonymousRepos: the access report's read, #1279). Ids are int64, timestamps
+// UTC, nullable columns are pointers, but nullable text, which is "" (Version.OCIRepo:
+// versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
