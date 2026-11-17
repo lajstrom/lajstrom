@@ -49,7 +49,8 @@ func (s *Service) steps(ctx context.Context, r *index.CIPolicy, expiresAt *time.
 // takes at now, and returns its expiry: every mask of a grant that writes within
 // auth.ci.apiWriteRepos (auth.ErrScope), expiresAt after now and at most WriteLifetime ahead, by
 // default WriteLifetime ahead (auth.ErrInvalid), and the fresh sign-in with a second factor of
-// the credential of ctx (auth.FreshSignIn, auth.ErrScope).
+// the credential of ctx (auth.FreshSignIn: auth.ErrScope, an *auth.StepUpError, the API's 401, for a
+// web UI's sign-in through OIDC short of it).
 func (s *Service) writeSteps(ctx context.Context, grants []index.CIGrant, expiresAt *time.Time, now time.Time) (time.Time, error) {
 	if err := s.writeRepos(grants); err != nil {
 		return time.Time{}, err

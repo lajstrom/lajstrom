@@ -35,6 +35,11 @@ var root = auth.Principal{Kind: auth.KindUser, Name: "root"}
 // doSigned runs a request as p with the token of a web UI's sign-in a minute old with a second
 // factor, and the header If-Match when etag is not "".
 func (f *fixture) doSigned(method, target, body string, p auth.Principal, etag string) *httptest.ResponseRecorder {
+	return f.doSignedIn(method, target, body, p, etag, &auth.SignIn{At: time.Now().Add(-time.Minute), AMR: []string{"pwd", "otp"}})
+}
+
+// doSignedIn is doSigned with the sign-in in, nil for the token of a password's sign-in.
+func (f *fixture) doSignedIn(method, target, body string, p auth.Principal, etag string, in *auth.SignIn) *httptest.ResponseRecorder {
 	var r *http.Request
 	if body == "" {
 		r = httptest.NewRequest(method, target, nil)
@@ -44,7 +49,7 @@ func (f *fixture) doSigned(method, target, body string, p auth.Principal, etag s
 	if etag != "" {
 		r.Header.Set("If-Match", etag)
 	}
-	cred := auth.Credential{Kind: auth.CredPAT, TokenID: 3, SignIn: &auth.SignIn{At: time.Now().Add(-time.Minute), AMR: []string{"pwd", "otp"}}}
+	cred := auth.Credential{Kind: auth.CredPAT, TokenID: 3, SignIn: in}
 	r = r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), f.asStored(p)), cred))
 	rr := httptest.NewRecorder()
 	f.h.ServeHTTP(rr, r)
@@ -181,6 +186,47 @@ func TestCIPoliciesAPIWrite(t *testing.T) {
 	wantError(t, f.doSigned(http.MethodPost, "/api/v1/ci/policies/from-config/approve", "", root, etag), http.StatusConflict, codeConflict,
 		"configuration")
 	wantError(t, newFixture(t, Options{}).do(http.MethodGet, "/api/v1/ci/policies", "", admin), http.StatusNotImplemented, codeUnavailable, "not enabled")
+}
+
+// TestCIPoliciesAskForMore: on the four routes of a policy that writes, its create, change,
+// renewal and approval, a web UI's sign-in through OIDC that is not fresh or shows no second
+// factor is asked for more: 401 with RFC 9470's challenge, what is missing and max_age=600, the
+// step needing a fresh sign-in (docs/spec/rbac.md §10, #1296). The token of a password's
+// sign-in, which cannot sign in again so, is 403.
+func TestCIPoliciesAskForMore(t *testing.T) {
+	f := ciFixture(t)
+	rr := f.doSigned(http.MethodPost, "/api/v1/ci/policies", writerBody, admin, "")
+	decodeJSON(t, rr, http.StatusCreated, &ci.Policy{})
+	rr = f.doSigned(http.MethodPost, "/api/v1/ci/policies/w/approve", "", root, rr.Header().Get("ETag"))
+	decodeJSON(t, rr, http.StatusOK, &ci.Policy{})
+	etag := rr.Header().Get("ETag")
+	stale := &auth.SignIn{At: time.Now().Add(-time.Hour), AMR: []string{"pwd", "otp"}}
+	oneFactor := &auth.SignIn{At: time.Now().Add(-time.Minute), AMR: []string{"pwd"}}
+	for _, tc := range []struct {
+		name, method, target, body string
+		in                         *auth.SignIn
+		missing                    string
+	}{
+		{"create, stale", http.MethodPost, "/api/v1/ci/policies", strings.Replace(writerBody, `"w"`, `"w2"`, 1), stale, "a fresh sign-in"},
+		{"change, one factor", http.MethodPut, "/api/v1/ci/policies/w", writerBody, oneFactor, "a second factor"},
+		{"renewal, stale", http.MethodPost, "/api/v1/ci/policies/w/renew", "", stale, "a fresh sign-in"},
+		{"approval, one factor", http.MethodPost, "/api/v1/ci/policies/w/approve", "", oneFactor, "a second factor"},
+		{"approval, neither", http.MethodPost, "/api/v1/ci/policies/w/approve", "", &auth.SignIn{AMR: []string{"pwd"}},
+			"a fresh sign-in with a second factor"},
+	} {
+		rr := f.doSignedIn(tc.method, tc.target, tc.body, root, etag, tc.in)
+		wantError(t, rr, http.StatusUnauthorized, codeUnauthenticated, "this needs a sign-in with a second factor within the last 10 minutes",
+			"sign in again in a web UI through OIDC (prompt=login)")
+		want := `DPoP error="insufficient_user_authentication", error_description="` + tc.missing + `", max_age=600, algs="ES256"`
+		if got := rr.Header().Get("WWW-Authenticate"); got != want {
+			t.Errorf("%s: WWW-Authenticate %q, want %q", tc.name, got, want)
+		}
+	}
+	rr = f.doSignedIn(http.MethodPost, "/api/v1/ci/policies/w/renew", "", root, etag, nil)
+	wantError(t, rr, http.StatusForbidden, codeForbidden, "credential is a personal access token")
+	if got := rr.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("the 403 of a password's sign-in has the challenge %q", got)
+	}
 }
 
 // checkCIPolicyRows checks the rows of TestCIPoliciesAPI: a create, a replace and a delete, each

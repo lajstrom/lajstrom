@@ -57,44 +57,65 @@ func TestSecondFactor(t *testing.T) {
 	}
 }
 
-// TestFreshSignIn: only the sign-in of a web UI's token counts, within 10 minutes and a minute
-// ahead of the clock, with a second factor; every refusal wraps ErrScope and says why.
-func TestFreshSignIn(t *testing.T) {
+// TestCheckSignIn: what a step needs of a web UI's sign-in through OIDC, within 10 minutes and a
+// minute ahead of the clock, with a second factor by auth.oidc.mfa. Short of it, such a sign-in is
+// asked for more (a *StepUpError, max_age when the step needs a fresh one); every other credential
+// gets ErrScope. Each says why.
+func TestCheckSignIn(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	signed := func(ago time.Duration, amr ...string) Credential {
 		return Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-ago), AMR: amr}}
 	}
+	gold := Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-time.Hour), AMR: []string{"pwd"}, ACR: "gold",
+		MFA: MFA{ACR: []string{"gold"}}}}
+	noTime := Credential{Kind: CredPAT, SignIn: &SignIn{AMR: []string{"mfa"}}}
+	both, fresh, factor := Need{Fresh: true, SecondFactor: true}, Need{Fresh: true}, Need{SecondFactor: true}
 	for name, tc := range map[string]struct {
-		cred Credential
-		why  string
+		cred    Credential
+		need    Need
+		why     string // "" passes
+		missing string // "" is ErrScope, a 403; else a step-up of that error_description
 	}{
-		"fresh with mfa":      {signed(time.Minute, "mfa"), ""},
-		"at the window's end": {signed(10*time.Minute, "pwd", "otp"), ""},
-		"a minute ahead":      {signed(-time.Minute, "mfa"), ""},
-		"stale":               {signed(10*time.Minute+time.Second, "mfa"), "authenticated at the identity provider 10m1s ago"},
-		"far ahead":           {signed(-2*time.Minute, "mfa"), "ahead of this server's clock"},
-		"a password only":     {signed(time.Minute, "pwd"), "this sign-in's amr (pwd) shows no second factor"},
-		"no amr":              {signed(time.Minute), "this sign-in's amr (none) shows no second factor"},
-		"acr of auth.oidc.mfa": {Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-time.Minute), AMR: []string{"pwd"}, ACR: "gold",
-			MFA: MFA{ACR: []string{"gold"}}}}, ""},
-		"another acr": {Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-time.Minute), AMR: []string{"mfa"}, ACR: "silver",
-			MFA: MFA{ACR: []string{"gold"}}}}, "this sign-in's amr (mfa) and acr (silver) meet no condition of auth.oidc.mfa"},
-		"no auth_time":            {Credential{Kind: CredPAT, SignIn: &SignIn{AMR: []string{"mfa"}, ACR: "gold"}}, "ID token had no auth_time"},
-		"a password sign-in":      {Credential{Kind: CredPAT}, "credential is a personal access token, or a web UI's token of a password"},
-		"a password":              {Credential{Kind: CredPassword}, "credential is a password"},
-		"a deploy token":          {Credential{Kind: CredDeploy}, "credential is a deploy token"},
-		"a CI token":              {Credential{Kind: CredCI}, "credential is a CI token"},
-		"a client certificate":    {Credential{Kind: CredCertificate}, "credential is a client certificate"},
-		"a Kubernetes token":      {Credential{Kind: CredKubernetes}, "credential is a Kubernetes service-account token"},
-		"the command line's none": {Credential{}, "credential is none"},
+		"fresh with mfa":          {signed(time.Minute, "mfa"), both, "", ""},
+		"at the window's end":     {signed(10*time.Minute, "pwd", "otp"), both, "", ""},
+		"a minute ahead":          {signed(-time.Minute, "mfa"), both, "", ""},
+		"stale":                   {signed(10*time.Minute+time.Second, "mfa"), both, "authenticated at the identity provider 10m1s ago", "a fresh sign-in"},
+		"far ahead":               {signed(-2*time.Minute, "mfa"), both, "ahead of this server's clock", "a fresh sign-in"},
+		"a password only":         {signed(time.Minute, "pwd"), both, "this sign-in's amr (pwd) shows no second factor", "a second factor"},
+		"no amr":                  {signed(time.Minute), both, "this sign-in's amr (none) shows no second factor", "a second factor"},
+		"stale, one factor":       {signed(time.Hour, "pwd"), both, "ago, and this sign-in's amr (pwd)", "a fresh sign-in with a second factor"},
+		"no auth_time":            {noTime, both, "this sign-in's ID token had no auth_time", "a fresh sign-in"},
+		"no auth_time, factor":    {noTime, factor, "", ""},
+		"stale, factor only":      {signed(time.Hour, "mfa"), factor, "", ""},
+		"fresh only, one factor":  {signed(time.Minute, "pwd"), fresh, "", ""},
+		"fresh only, stale":       {signed(time.Hour, "mfa"), fresh, "ago", "a fresh sign-in"},
+		"acr of auth.oidc.mfa":    {gold, factor, "", ""},
+		"acr, stale":              {gold, both, "ago", "a fresh sign-in"},
+		"a password sign-in":      {Credential{Kind: CredPAT}, both, "credential is a personal access token", ""},
+		"a password":              {Credential{Kind: CredPassword}, fresh, "credential is a password", ""},
+		"a deploy token":          {Credential{Kind: CredDeploy}, factor, "credential is a deploy token", ""},
+		"a CI token":              {Credential{Kind: CredCI}, both, "credential is a CI token", ""},
+		"a client certificate":    {Credential{Kind: CredCertificate}, both, "credential is a client certificate", ""},
+		"a Kubernetes token":      {Credential{Kind: CredKubernetes}, both, "credential is a Kubernetes service-account token", ""},
+		"the command line's none": {Credential{}, both, "credential is none", ""},
 	} {
-		err := FreshSignIn(tc.cred, now)
+		err := CheckSignIn(tc.cred, now, tc.need)
+		var stepUp *StepUpError
 		switch {
 		case tc.why == "" && err != nil:
 			t.Errorf("%s: %v", name, err)
-		case tc.why != "" && (!errors.Is(err, ErrScope) || !strings.Contains(err.Error(), tc.why)):
+		case tc.why == "":
+		case !errors.Is(err, ErrScope) || !strings.Contains(err.Error(), tc.why):
 			t.Errorf("%s: %v, want ErrScope saying %q", name, err, tc.why)
+		case errors.As(err, &stepUp) != (tc.missing != ""):
+			t.Errorf("%s: %T, want a step-up %v", name, err, tc.missing != "")
+		case stepUp != nil && (stepUp.Missing != tc.missing || (stepUp.MaxAge == FreshSignInWindow) != tc.need.Fresh):
+			t.Errorf("%s: missing %q, max_age %s, want %q and max_age with a step that needs a fresh sign-in", name,
+				stepUp.Missing, stepUp.MaxAge, tc.missing)
 		}
+	}
+	if err := FreshSignIn(signed(time.Hour, "pwd"), now); !strings.Contains(err.Error(), "with a second factor within the last 10 minutes") {
+		t.Errorf("FreshSignIn needs both: %v", err)
 	}
 }
 
