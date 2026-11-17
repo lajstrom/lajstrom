@@ -855,14 +855,14 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&q=&attr=&facet=&sort=&order=&limit=&cursor=]`, `GET …/packages/<name>`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `GET …/packages/<name>/versions/<version>/manifest[?variant=]`, `GET …/packages/<name>/versions/<version>/referrers[?variant=&artifactType=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi) |
 | search | `GET /api/v1/search?q=[&format=&limit=&cursor=]` (#956) |
 | users | `GET /api/v1/users[?kind=&limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password`, `POST …/unlock`; a service account is a user of kind `service` (rbac.md §1). `POST …/password` takes `{"password"}` from the admin role, or `{"currentPassword", "password"}`, the user's own change (#1281, rbac.md §1, Local passwords): `204`; a password that breaks a rule of `auth.passwords` is `400` naming the rule, and in the user's own change one of its last four passwords is `400` too. `PATCH` takes `mustChange`, `true` or `false`, for a user with a password (`400` otherwise), and a user whose password must be changed is answered with `mustChange: true`, left out otherwise. While `auth.localPasswords` is `false`, a `password` in `POST /api/v1/users` and `POST …/password` are `400`, naming the setting (rbac.md §1, Local passwords). `POST …/unlock` (#1280) ends the user's lock of the lockout and sets its count of failures to `0`: `204`, with a `user.unlock` audit row when a lock was in force, and without one when none was. A user is answered with `lastSeenAt`, its last activity (`null` before any record), and, while `auth.disableInactiveUsersAfter` is not `0`, `inactive: true` when it is inactive (rbac.md §1, Inactive users); while `auth.lockout.duration` is not `0`, a locked user with `lockedUntil`, the end of its lock, left out otherwise. None of the three is taken in a body, and none moves the user's revision: its `ETag` names what a `PATCH` changes, and a `304` of `If-None-Match` may stand for an older `lastSeenAt`, `inactive` and `lockedUntil` (the revisions below) |
-| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>`. A deploy token's expiry is within `auth.deployTokens.maxTTL` when it is set, a service account's within `auth.serviceAccounts.maxTokenTTL` (rbac.md §1, #1286): created without an expiry, it expires at the bound; an `expiresAt` or `expiresIn` beyond is `400` naming the field, the bound and the latest expiry. Every view of a token answers a live one beyond the bound of its kind with `beyondMaxTTL: true`, and leaves the field out otherwise |
+| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>`. A deploy token's expiry is within `auth.deployTokens.maxTTL` when it is set, a service account's within `auth.serviceAccounts.maxTokenTTL` (rbac.md §1, #1286): created without an expiry, it expires at the bound; an `expiresAt` or `expiresIn` beyond is `400` naming the field, the bound and the latest expiry. Every view of a token answers a live one beyond the bound of its kind with `beyondMaxTTL: true`, and leaves the field out otherwise, and a token of a web UI's sign-in through OIDC with `signIn`, `{authTime, amr, acr}`, each when kept (rbac.md §10, #1276). `POST /api/v1/users/<name>/tokens` and `POST /api/v1/deploy-tokens` take a password as the request's credential, or a web UI's fresh sign-in through OIDC in its place (rbac.md §12, #1323) |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>`, `group:<name>`, or a `cert:` or `k8s:` principal or pattern (rbac.md §3, §8, §9); a `ci:` principal has none (rbac.md §11) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
 | publication sessions | `GET /api/v1/repos/<format>/<repo>/sessions[?limit=&cursor=]` |
 | every token | `GET /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]` |
 | registries | `GET /api/v1/registries` |
 | policy (#101, [policy.md](policy.md)) | `GET /api/v1/policy/rules[?repo=]`, `POST /api/v1/policy/rules`, `DELETE /api/v1/policy/rules/<id>`, `GET /api/v1/policy/verdicts?digest=&repo=`, `POST` and `DELETE /api/v1/repos/<format>/<repo>/packages/<name>/versions/<version>/deny[?variant=]`, `GET /api/v1/policy/denylist`, `GET /api/v1/policy/key` |
-| CI trust policies (rbac.md §11, #937) | `GET /api/v1/ci/policies`, `POST /api/v1/ci/policies`, `GET/PUT/DELETE /api/v1/ci/policies/<name>`, `POST …/<name>/renew`, `POST …/<name>/approve`; the admin role. A policy is `{name, issuer, claims, grants, expiresAt}`, answered with `source` (`config` or `api`), `state` (`active`, `pending` or `expired`; the configuration's `active`) and, for the API's, `renewal` (`{expiresAt}`, a renewal that waits), `createdBy`, `createdAt`, `updatedBy`, `updatedAt`, `approvedBy` and `approvedAt`, and its revision as `ETag` (the revisions below). `POST` answers `201` with its `Location`; `PUT` replaces `issuer`, `claims`, `grants` and `expiresAt`, its body's `name`, when present, the path's; `renew` takes `{expiresAt}` or no body; `approve` takes no body and requires `If-Match`, the ETag of the revision approved (`400` without, or with `*`); `DELETE` `204`. A rule of rbac.md §11 broken, and an `expiresAt` of a policy that reads, past, or more than 180 days ahead, are `400` naming the field; a step of a policy that writes missing (a fresh sign-in with a second factor, a mask within `auth.ci.apiWriteRepos`, an approver who did not make the change) `403`; a change, renewal or approval of a policy of the configuration, a `POST` with a name that is taken, a renewal of a policy that reads or waits, an approval when nothing waits or after the expiry, and a change made meanwhile, `409`; an unknown name `404` |
+| CI trust policies (rbac.md §11, #937) | `GET /api/v1/ci/policies`, `POST /api/v1/ci/policies`, `GET/PUT/DELETE /api/v1/ci/policies/<name>`, `POST …/<name>/renew`, `POST …/<name>/approve`; the admin role. A policy is `{name, issuer, claims, grants, expiresAt}`, answered with `source` (`config` or `api`), `state` (`active`, `pending` or `expired`; the configuration's `active`) and, for the API's, `renewal` (`{expiresAt}`, a renewal that waits), `createdBy`, `createdAt`, `updatedBy`, `updatedAt`, `approvedBy` and `approvedAt`, and its revision as `ETag` (the revisions below). `POST` answers `201` with its `Location`; `PUT` replaces `issuer`, `claims`, `grants` and `expiresAt`, its body's `name`, when present, the path's; `renew` takes `{expiresAt}` or no body; `approve` takes no body and requires `If-Match`, the ETag of the revision approved (`400` without, or with `*`); `DELETE` `204`. A rule of rbac.md §11 broken, and an `expiresAt` of a policy that reads, past, or more than 180 days ahead, are `400` naming the field; a step of a policy that writes missing (a fresh sign-in with a second factor, a mask within `auth.ci.apiWriteRepos`, an approver who did not make the change) `403`, but a web UI's sign-in through OIDC that is not fresh or shows no second factor, which is asked for more: `401` with `insufficient_user_authentication` (below; rbac.md §10, #1296); a change, renewal or approval of a policy of the configuration, a `POST` with a name that is taken, a renewal of a policy that reads or waits, an approval when nothing waits or after the expiry, and a change made meanwhile, `409`; an unknown name `404` |
 | webhooks (#77, [webhooks.md](webhooks.md)) | a repo's: `GET/POST /api/v1/repos/<format>/<repo>/webhooks`, `GET/PATCH/DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`; every mask: the same under `/api/v1/webhooks` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
@@ -871,7 +871,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|UNAUTHENTICATED|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
 A `401` (no credentials, or credentials refused, with the Basic challenge, or the DPoP challenge
-of a web UI's token, below) is `UNAUTHENTICATED`,
+of a web UI's token, below, or a sign-in asked for more, below) is `UNAUTHENTICATED`,
 a `403` (the caller lacks the action) `FORBIDDEN` (#579), and so is the `403` of a write the
 registry refuses for a limit or a quota of its own (`provider.ErrLimit`, §2; a prefetch), whose
 message names the limit. A `429` (a throttle of failed logins,
@@ -1082,8 +1082,14 @@ signs in:
   `code_challenge` and `dpop_jkt` (§7). A server without them answers no `login`, and one of a
   release before #1277 no `idleTimeout`, which is off. A UI warns the person before the idle bound
   (rbac.md §10): the server may refuse up to a minute before it;
+- `adminMFA`: `true` while `auth.admin.requireMFA` is on (rbac.md §12, #1276), left out
+  otherwise: the admin role counts only for a web UI's sign-in through OIDC with a second factor;
 - `caller`: the request's principal, as `GET /api/v1/whoami` answers it, and `admin`, whether
-  the request's credential reaches the admin role (a personal access token with scopes does not).
+  the request's credential reaches the admin role (a personal access token with scopes does not,
+  nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and
+  `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does
+  not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second
+  factor.
 
 Unlike whoami, a request without credentials gets `200`, with the caller `anonymous`. Credentials
 that are refused get `401`, as on every route.
@@ -1091,7 +1097,8 @@ that are refused get `401`, as on every route.
 A browser (#136): the API sets no cookie and reads none. A web UI signs in with
 `POST /api/v1/login` (below), which answers a personal access token bound to a key that the
 browser holds (DPoP, RFC 9449), or by creating one: `POST /api/v1/users/<name>/tokens` with the
-user's password over Basic, since a token creates none. It sends the bound token as
+user's password over Basic, since a token creates none, or with a fresh sign-in through OIDC
+(rbac.md §12). It sends the bound token as
 `Authorization: DPoP` with a proof of the key on every request (below), any other token as
 `Authorization: Bearer`, and signing out revokes it (`DELETE …/tokens/<id>`, with the token
 itself). A token the person already has is sent as a bearer. The OIDC login (#69) mints a
@@ -1206,7 +1213,14 @@ algs="ES256"`. A token that passes those and whose proof verifies, but that is i
 `auth.login.idleTimeout`, #1277), is `401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP
 error="invalid_token", error_description="idle", algs="ES256"`, the message saying that the
 sign-in was idle, and the server revokes it. The UI reads `idle` to say why it signs the person
-out: a token that is unknown, revoked or expired, sent as `DPoP`, has no `error_description`. A bound token is refused
+out: a token that is unknown, revoked or expired, sent as `DPoP`, has no `error_description`.
+A token that passes those, whose proof verifies and whose sign-in through OIDC does not meet a
+step that needs a fresh one or one with a second factor (rbac.md §10, §11, §12; #1276, #1296) is
+`401 UNAUTHENTICATED` with `WWW-Authenticate: DPoP error="insufficient_user_authentication",
+error_description="<what is missing>", algs="ES256"` (RFC 9470 §3), with `max_age=600` when the
+step needs a fresh sign-in, the message saying what is missing; the token is not revoked, and the
+UI signs in again with `prompt=login` (§7) and repeats the request. Any other credential that
+such a step refuses gets `403 FORBIDDEN`. A bound token is refused
 everywhere else, `401` as credentials refused: as
 `Authorization: Bearer` or in Basic credentials on `/api/`, with
 `WWW-Authenticate: DPoP error="invalid_token", …` (RFC 9449 §7.2); on the frontends, `/v2` and
