@@ -4,11 +4,13 @@
   service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283); local
   passwords turned off, and the lockout (§1), after the MVP (#1280); the rules of a password, a
   user's own change and its history (§1) after the MVP (#1281); the admin mode, and a fresh
-  sign-in in place of a password (§12), after the MVP (#1276, #1323). Owned by `internal/auth`.
+  sign-in in place of a password (§12), after the MVP (#1276, #1323); the approval of privileged
+  changes and a reason with every change (§13), after the MVP (#1285). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
   [ADR 0029](../adr/0029-administrative-access-with-a-second-factor.md),
+  [ADR 0030](../adr/0030-approval-of-privileged-changes.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -83,7 +85,8 @@ admin role creates one, with its password or a web UI's fresh sign-in through OI
 no other token (§3, the routes; decided on #911, 2026-11-14), and on the command line the
 operator: `lajstrom admin token create --mask` writes the database as every `lajstrom admin`
 command of §6 does, with no HTTP and no password, for whoever holds the database's credentials is
-the operator. Everything else is a deploy token's:
+the operator. With `auth.approval: second-admin`, one whose scopes hold `write` made through the
+API waits for a second admin (§13). Everything else is a deploy token's:
 its scopes, its expiry and its bound (below), how it authenticates, its revocation, its audit,
 its hash, its secret shown once.
 
@@ -394,7 +397,8 @@ the settings are set once every replica runs a release that knows them.
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
 are after the MVP. Three system-level resources, which only the `admin` role reaches: `system`
 (users, bindings, registries, creating a repo, every user's tokens, every token at once
-(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask, the CI trust policies of §11), `audit`, and
+(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask, the CI trust
+policies of §11, the requests that wait for a second admin (§13)), `audit`, and
 `policy` (the policy rules of any mask other than one repo, and the list of every rule;
 [policy.md](policy.md), #101).
 
@@ -461,7 +465,9 @@ of an enabled user when no enabled user would keep one: nobody could manage the 
 `/api/v1` after it. A group's `admin` binding does not count for this rule nor for the bootstrap
 (§6): a group lapses without a change of the bindings (§8). Neither does a service account's
 (§1), which cannot make a token once its own expire.
-`lajstrom admin binding create` on the command line can always make one (§6).
+`lajstrom admin binding create` on the command line can always make one (§6). With
+`auth.approval: second-admin`, a binding of the role `admin` or on `*/*` made through the API
+waits for a second admin (§13).
 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
 credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
@@ -696,9 +702,9 @@ HTTP, `host`, the machine of a change of the command line or the replica of a ch
 `serve`'s start, and, on a row of the command line, `osUser`, `actor` and `changeReason` (§6).
 Every row with `source: cli` has `host` and `osUser`, the rows of `lajstrom admin key` included.
 `changeReason` is the key of a person's reason for a change, whatever its source: a reason given
-over the API (#1285) goes there too. It is not `reason`, which rows already hold with other
-meanings: a rule's text (`policy.rule.create`), why something was refused (`proxy.reject`,
-`token.exchange`), a verdict's reason.
+over the API, the field `changeReason` of §13 (#1285), goes there too. It is not `reason`, which
+rows already hold with other meanings: a rule's text (`policy.rule.create`), why something was
+refused (`proxy.reject`, `token.exchange`), a verdict's reason.
 
 **A throttle of failed logins that trips** (§1) is `login.block` (#1284), by `anonymous`, in a
 transaction of its own, written by the failure that fills the budget of a window: the 10th
@@ -731,6 +737,19 @@ the user itself for its own change (§1), the row's principal then its subject; 
 `mustChange: true` when the change left it set. An admin's `mustChange` through `PATCH` is
 `user.mustchange`, with the new value as `mustChange` in its details; a value the user has
 already writes none. A change that a rule or the history refuses writes no row.
+
+**A request for a second admin** (§13, #1285) is `approval.request`, by the requester, in the
+transaction that makes the request: `subject` `approval:<id>`, no `repo`, `details` `{"kind",
+"change", "expiresAt"}` with `changeReason` when one was given, `change` the binding
+(`principal`, `role`, `repoMask`) or the deploy token (`name`, `repoMask`, `scopes`,
+`expiresAt`, never its hash). Its approval is `approval.approve`, by the approver, with the
+request's `kind`, `change` and `requestedBy` and the approver's own `changeReason`; the change it
+makes writes its own row in the same transaction, `binding.create` or `token.create` by the
+approver, with `approval` `{"id", "requestedBy", "requestedAt"}` and the request's
+`changeReason` in its details, and the `createdBy` of the request for a token. A rejection is
+`approval.reject`, by the admin, the requester for a withdrawal, with its `changeReason`; an
+expiry `approval.expire`, by `anonymous`, `source: expiry`. Each has the `signIn` of the request
+that wrote it (above).
 
 **A change of the configuration** is `config.change` (#1284), by `anonymous`, `source: config`,
 written by `serve` at its start when the configuration it runs with is not the last one recorded
@@ -831,7 +850,11 @@ command writes. Each command that writes rows against the database takes both fl
 commands that go over HTTP (`admin bootstrap`, `admin retention`, `admin repo prefetch`), whose rows
 the server writes for the credential they send, and those that write no row do not. On
 `lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
-the change comes from `LAJSTROM_REASON` there.
+the change comes from `LAJSTROM_REASON` there. With `auth.requireReason` (§13), the commands of
+`lajstrom admin user`, `binding`, `token`, `repo`, `webhook`, `ci-policy` and `policy rule` that
+change the control plane exit with status `2` without a reason, before anything is written. No
+command waits for a second admin: the command line makes its change at once, whatever
+`auth.approval` says (§13).
 
 The bindings of other users are made with
 `lajstrom admin binding create|list|delete` from the command line (#45), which needs the database
@@ -1527,3 +1550,96 @@ is not fresh, or under the mode shows no second factor, is asked for more (§10:
 token made has `createdBy` `token:<id>`, the sign-in's, and `signIn` in its `token.create` row
 (§5). With `auth.localPasswords: false`, the web UI and the API make these tokens so (§1); a
 server without OIDC is as before.
+
+## 13. Approval of privileged changes (after the MVP, #1285)
+
+PCI DSS 7.2.3 asks that "required privileges are approved by authorized personnel", and 8.2.4 that
+user IDs and authentication factors are added and changed with "the appropriate approval". Two
+settings answer it ([ADR 0030](../adr/0030-approval-of-privileged-changes.md), decided on #1285,
+2026-11-16), both off by default: a second admin approves the changes that grant the most, as a
+CI trust policy that writes is approved (§11), and every control-plane change carries a reason,
+the reference of its approval in the operator's records. The declarative bindings of ADR 0015,
+reviewed in git, stay the long-term path.
+
+**What waits.** With `auth.approval: second-admin` (configuration.md; `none` by default), these
+changes through the API wait for a second admin, and no other:
+
+- a binding of the role `admin`, whatever its principal: a user, a group (§8), a service account
+  (§1), whose `admin` binding is what "a service account with admin" means;
+- a binding on the mask `*/*`, whatever its role;
+- a deploy token over a mask whose scopes hold `write` (§1).
+
+The route checks what it checks today, its role, its credential and its body, the `409` of a
+binding that exists or of a name that is taken included, and then makes a **request** instead of
+the change: a row of `approvals` ([index-schema.md](index-schema.md#approvals)), `pending`,
+answered `202 Accepted` with the request and its `Location`, `/api/v1/approvals/<id>`
+(http-routing.md §4). The same change pending twice is `409`. A request grants nothing; its
+approval makes the change, which then counts as any change does (§3: from the next request on, on
+every replica). A token of a service account, whatever its bindings, does not wait.
+
+**A deploy token that waits.** Its secret is made with the request and answered to the requester
+in the `202`, once, as a creation answers it (§1); the request keeps its sha256, as `tokens`
+does, and never the secret. The token, its row of `tokens` with that hash, is made by the
+approval: until then the secret is no credential (`401`, as a token that is unknown), and a
+request rejected or expired leaves nothing to revoke. The approver never sees the secret, and the
+token's expiry is the one the request asked for.
+
+**The approval.** `POST /api/v1/approvals/<id>/approve` takes the admin role of an admin other
+than the requester, compared by uid, with what creating a deploy token over a mask takes: the
+admin's password, or a web UI's fresh sign-in through OIDC in its place (§12), and no other token
+(`403` before the request is looked up). Under the admin mode that is a fresh sign-in with a second
+factor (§12). The approver who made the request is `403`. The approval checks again what the
+request checked, and that the requester is an enabled user and a binding's principal live: one
+that fails is `409` naming it, and the request stays pending. In one transaction it marks the
+request `approved` while it is still `pending`, so that of two decisions one is made, and makes
+the change, with its rows (§5). A request never changes, so the approval needs no `If-Match`: a
+different change is a new request.
+
+**Rejection and expiry.** `POST /api/v1/approvals/<id>/reject` takes the admin role with any
+credential that reaches it, the requester's included, who so withdraws its request. A request
+still pending 7 days after it was made expires: each replica looks once a minute for such requests
+and marks each `expired` while it is still `pending`, so that one replica marks it, with its row,
+as the expiry of a CI trust policy is marked (§11). A request approved, rejected or expired is
+decided: another decision is `409`. Requests are kept, decided or not; the audit log has them too.
+
+**Lists.** `GET /api/v1/approvals` and `GET /api/v1/approvals/<id>` take the admin role
+(http-routing.md §4), and `lajstrom admin approval list` reads the same on the command line, from
+which a web UI shows the requests that wait. No webhook event is sent for a request.
+
+**The command line** writes the database without a credential and is the operator's (§6):
+`lajstrom admin binding create`, `user create --admin` and `token create --mask` make the change at
+once whatever the setting, with their `source: cli` rows and their reason. It is the break-glass
+path, and the way to the second admin of a server that has one.
+
+**The setting** is configuration: a change takes a restart, each replica applies its own, and a
+replica of a release that does not know it refuses the configuration. Turning it on leaves the
+bindings and the tokens made before as they are. With `none`, nothing new waits, and the requests
+made before stay pending, to be approved, rejected or to expire. With `second-admin`, `serve` logs
+at warn at start when fewer than two enabled users have an `admin` binding that counts, under the
+admin mode an OIDC user's (§12): no request could be approved. `GET /api/v1/info` answers the
+setting as `approval` (http-routing.md §4), so that a UI expects the `202`.
+
+**A reason.** A control-plane change through `/api/v1` takes a reason, `changeReason`: a ticket or
+a sentence of 1 to 1024 bytes of UTF-8 without control characters, as the command line's
+`--reason` (§6). It is a field of the body on a route that takes a JSON body, and the query
+parameter `?changeReason=` on a route that takes none (a `DELETE`, an approval, a rejection, an
+unlock); one outside its bounds is `400` naming it. It goes into the change's row, as
+`details.changeReason` (§5). With `auth.requireReason: true` (configuration.md; `false` by
+default), a change without one is `400` naming `changeReason`, after the role is checked and
+before anything is written, and the commands of the command line that make one exit with status
+`2` without a reason (§6); `GET /api/v1/info` answers `requireReason: true`. The changes are:
+
+- repos: creating one, a repo's `PATCH` and `DELETE`;
+- users: every route of the admin role (a create, a `PATCH`, a `DELETE`, a password an admin
+  sets, an unlock);
+- bindings: a create and a delete;
+- tokens: those made or revoked for another user or for a service account, a repo's deploy
+  tokens, the deploy tokens over a mask;
+- webhooks: a create, a change, a delete and the rotation of a secret;
+- policy: a rule's create and delete, a version's deny and its removal;
+- CI trust policies: a create, a change, a renewal, an approval and a delete;
+- requests for a second admin: an approval and a rejection, the request being the change's.
+
+A person's own credentials are not among them (its own tokens made or revoked, a sign-in and a
+sign-out, `npm login`, an OIDC login, its own password), nor the bootstrap, nor the writes of
+artifacts (a push, a delete of a version, a yank), nor a reindex or a purge of a proxy's cache.
