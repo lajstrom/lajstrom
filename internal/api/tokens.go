@@ -324,11 +324,15 @@ func tokenRequest(w http.ResponseWriter, r *http.Request) (TokenRequest, auth.Ex
 }
 
 // serviceError turns an error of auth.Tokens into the one the API answers: auth.ErrInvalid is
-// 400 with the service's message, which names the field; auth.ErrScope is 403 with it, a
-// credential that may not create a personal access token; index.ErrNotFound and
-// index.ErrConflict keep their message and status; anything else is a 500.
+// 400 with the service's message, which names the field; an *auth.StepUpError stays as it is,
+// the 401 of a sign-in asked for more (fail); auth.ErrScope is 403 with it, a credential that
+// may not create a personal access token; index.ErrNotFound and index.ErrConflict keep their
+// message and status; anything else is a 500.
 func serviceError(err error) error {
+	var stepUp *auth.StepUpError
 	switch {
+	case errors.As(err, &stepUp):
+		return err
 	case errors.Is(err, auth.ErrInvalid):
 		return &clientError{msg: err.Error(), err: format.ErrInvalid}
 	case errors.Is(err, auth.ErrScope):

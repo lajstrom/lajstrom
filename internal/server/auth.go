@@ -293,13 +293,24 @@ func (s *Server) refuseDPoP(w http.ResponseWriter, r *http.Request, code, why st
 // refuseDPoPWith is refuseDPoP with msg as the message of the envelope, and without a line of its
 // own: refuseIdle's token is refused by the authenticator, which writes the line.
 func (s *Server) refuseDPoPWith(w http.ResponseWriter, code, why, msg string) {
+	w.Header().Set("WWW-Authenticate", DPoPChallenge(code, why, 0))
+	writeJSONRefusal(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "UNAUTHENTICATED",
+		"message": msg}})
+}
+
+// DPoPChallenge is the WWW-Authenticate header of a 401 of the DPoP scheme (RFC 9449 §7.1): the
+// error code, why as error_description when it is not "", max_age in seconds when maxAge is
+// not zero (RFC 9470 §3, a sign-in asked for more: docs/spec/http-routing.md §4), and algs
+// ES256. why is fixed text of Lajstrom's, never the client's.
+func DPoPChallenge(code, why string, maxAge time.Duration) string {
 	challenge := `DPoP error="` + code + `"`
 	if why != "" {
 		challenge += `, error_description="` + why + `"`
 	}
-	w.Header().Set("WWW-Authenticate", challenge+`, algs="`+dpop.Algorithm+`"`)
-	writeJSONRefusal(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "UNAUTHENTICATED",
-		"message": msg}})
+	if maxAge > 0 {
+		challenge += ", max_age=" + strconv.Itoa(int(maxAge/time.Second))
+	}
+	return challenge + `, algs="` + dpop.Algorithm + `"`
 }
 
 // refuseIdle answers the token of a web UI's sign-in that the authenticator refused as idle
