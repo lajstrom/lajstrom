@@ -142,7 +142,7 @@ func newServeCmd(a *app) *cobra.Command {
 			blocks := &auth.Blocks{Index: st, Log: a.log}
 			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log, PasswordPolicy: passwordPolicyOf(c.Auth)},
 				TTL: c.Auth.Bootstrap.TTL, Log: a.log,
-				Blocks: blocks, PasswordsOff: !c.Auth.LocalPasswords}
+				Blocks: blocks, PasswordsOff: !c.Auth.LocalPasswords, AdminMFA: c.Auth.Admin.RequireMFA}
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
 			}
@@ -210,6 +210,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Proxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			warnBeyondMaxTTL(ctx, c.Auth, st, a.log)
+			warnAdminMFA(ctx, c.Auth, st, a.log)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,

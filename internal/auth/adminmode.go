@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // The admin mode of docs/spec/rbac.md §12 (auth.admin.requireMFA, decided on #1276): an admin
@@ -38,4 +40,37 @@ func AdminMFARefusal(cred Credential, now time.Time) error {
 		return &authError{msg: adminRule + "the request's credential does not reach it", err: ErrScope}
 	}
 	return &authError{msg: adminRule + err.Error(), err: ErrScope}
+}
+
+// AdminBindingsUnderMFA counts, for serve's warnings at start under the admin mode
+// (docs/spec/rbac.md §12), the admin bindings that the mode leaves without effect, those of
+// service accounts and local users, who never sign in through OIDC, and reports whether a
+// request can reach the role at all: whether an enabled OIDC user or a group has an admin
+// binding. A binding of a user that no longer exists counts for neither.
+func AdminBindingsUnderMFA(ctx context.Context, r index.Reader) (idle int, reachable bool, err error) {
+	bindings, err := r.ListBindings(ctx, "")
+	if err != nil {
+		return 0, false, err
+	}
+	for _, b := range bindings {
+		p, perr := ParsePrincipal(b.Principal)
+		switch {
+		case b.Role != RoleAdmin || perr != nil:
+			continue
+		case p.Kind == KindGroup:
+			reachable = true
+			continue
+		}
+		u, err := LookupUser(ctx, r, p)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+		case err != nil:
+			return 0, false, err
+		case u.Kind == KindOIDC:
+			reachable = reachable || !u.Disabled
+		default:
+			idle++
+		}
+	}
+	return idle, reachable, nil
 }

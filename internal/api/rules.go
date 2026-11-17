@@ -172,7 +172,7 @@ func (s *Rules) changed(ctx context.Context, w index.Writer, action, typ string,
 	if row.ExpiresAt != nil {
 		details["expiresAt"] = row.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	raw, err := json.Marshal(o.AddTo(details))
+	raw, err := json.Marshal(o.AddTo(auth.AddSignIn(ctx, details)))
 	if err != nil {
 		return index.AuditEvent{}, err
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +79,50 @@ func TestAdminModeAnswers(t *testing.T) {
 		if challenge != want {
 			t.Errorf("%s: WWW-Authenticate %q, want %q", tt.name, challenge, want)
 		}
+	}
+}
+
+// TestAdminModeAuditSignIn: every control-plane change made with a web UI's sign-in through OIDC
+// has signIn, {token, authTime, amr, acr}, each of the last three when kept, in its audit row's
+// details (docs/spec/rbac.md §5): a repo's, a binding's and a user's; a change made with a
+// password has none.
+func TestAdminModeAuditSignIn(t *testing.T) {
+	f := adminModeFixture(t)
+	root := auth.Principal{Kind: auth.KindUser, Name: "root"}
+	mfa := auth.Credential{Kind: auth.CredPAT, TokenID: 9, SignIn: &auth.SignIn{AMR: []string{"hwk"}, ACR: "gold",
+		MFA: auth.MFA{ACR: []string{"gold"}}}}
+	for _, req := range [][2]string{
+		{"/api/v1/repos", scratch},
+		{"/api/v1/bindings", `{"principal": "user:alice", "role": "writer", "repoMask": "raw/*"}`},
+		{"/api/v1/users", `{"name": "robot", "kind": "service", "owner": "user:root"}`},
+	} {
+		if rr := f.doAs(http.MethodPost, req[0], req[1], root, mfa); rr.Code != http.StatusCreated {
+			t.Fatalf("POST %s: %d %s", req[0], rr.Code, rr.Body)
+		}
+	}
+	ops := auth.Principal{Kind: auth.KindUser, Name: "ops"}
+	if rr := f.doAs(http.MethodPatch, "/api/v1/repos/raw/open", `{"anonymousRead": true}`, ops, auth.Credential{Kind: auth.CredPassword}); rr.Code != http.StatusOK {
+		t.Fatalf("a maintainer's password: %d %s", rr.Code, rr.Body)
+	}
+	rows, err := f.st.ListAudit(context.Background(), index.AuditFilter{})
+	must(t, err)
+	var signed []string
+	for _, r := range rows {
+		var d struct {
+			SignIn map[string]any `json:"signIn"`
+		}
+		must(t, json.Unmarshal(r.Details, &d))
+		if d.SignIn == nil {
+			continue
+		}
+		signed = append(signed, r.Action)
+		if d.SignIn["token"] != float64(9) || d.SignIn["acr"] != "gold" || d.SignIn["authTime"] != nil {
+			t.Errorf("%s: signIn %v", r.Action, d.SignIn)
+		}
+	}
+	slices.Sort(signed)
+	if got := strings.Join(signed, " "); got != "binding.create repo.create user.create" {
+		t.Errorf("the rows with signIn: %s", got)
 	}
 }
 
