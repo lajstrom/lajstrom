@@ -31,7 +31,7 @@ var ForcedTables = []string{
 	"webhook_deliveries", "webhooks", "policy_rules", "policy_seen", "bootstrap_token", "journal_state", "journal", "verdicts",
 	"attachments", "files", "versions",
 	"packages", "blob_map", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
-	"reindex_runs", "prune_sightings", "dpop_proofs", "ci_policies", "config_state", "repos", "users",
+	"reindex_runs", "prune_sightings", "dpop_proofs", "ci_policies", "approvals", "config_state", "repos", "users",
 }
 
 // KeptTables are the tables a forced import leaves: the schema's version, the counter it
