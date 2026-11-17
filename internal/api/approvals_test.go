@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,4 +140,89 @@ func TestApprovalAdminMode(t *testing.T) {
 	wantError(t, f.doAs(http.MethodPost, approve, "", ops, pass), http.StatusForbidden, codeForbidden, "auth.admin.requireMFA")
 	wantError(t, f.doAs(http.MethodPost, approve, "", ops, oneFactor), http.StatusUnauthorized, codeUnauthenticated, "second factor")
 	wantStatus(t, f.doAs(http.MethodPost, approve, "", ops, freshMFA), http.StatusOK)
+}
+
+// secondAdmin is f with auth.approval second-admin when second is true, and the info that says it.
+func (f *fixture) secondAdmin(second bool) *fixture {
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, SecondAdmin: second,
+		Info: ServerInfo{Approval: map[bool]string{true: "second-admin", false: "none"}[second]},
+		Auth: fakeAuth{grants: map[string]bool{"user:admin manage */*": true, "user:root manage */*": true, "user:alice read raw/open": true}}}))
+	return f
+}
+
+// request posts body to target as admin and checks the 202 of a change that waits for a second
+// admin, its Location and its pending request, which it returns.
+func (f *fixture) request(t *testing.T, target, body string) CreatedApproval {
+	t.Helper()
+	rr := f.doAs(http.MethodPost, target, body, admin, pass)
+	var a CreatedApproval
+	decodeJSON(t, rr, http.StatusAccepted, &a)
+	if loc := rr.Header().Get("Location"); loc != fmt.Sprintf("/api/v1/approvals/%d", a.ID) || a.State != index.ApprovalPending {
+		t.Errorf("%s: Location %q, request %+v", target, loc, a)
+	}
+	return a
+}
+
+// TestApprovalRequests: with auth.approval second-admin, a binding of the role admin or on */*
+// and a deploy token over a mask with write answer 202 with a request and its Location, the token
+// with its secret, which authenticates once the request is approved; the other changes are made
+// at once. The same change twice is 409.
+func TestApprovalRequests(t *testing.T) {
+	f := approvalFixture(t).secondAdmin(true)
+	bind := f.request(t, "/api/v1/bindings", `{"principal": "user:alice", "role": "admin", "repoMask": "*/*", "changeReason": "CHG-1"}`)
+	f.request(t, "/api/v1/bindings", `{"principal": "group:ops", "role": "reader", "repoMask": "*/*"}`)
+	tok := f.request(t, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "fleet", "scopes": ["read", "write"], "expiresIn": "30d"}`)
+	if bind.Kind != "binding" || bind.ChangeReason != "CHG-1" || bind.Secret != "" {
+		t.Errorf("the binding's request: %+v", bind)
+	}
+	if tok.Kind != "deploy-token" || !strings.HasPrefix(tok.Secret, auth.DeployPrefix) || strings.Contains(string(tok.Change), "hash") {
+		t.Errorf("the token's request: %+v", tok)
+	}
+	if bs, _ := f.st.ListBindings(context.Background(), ""); len(bs) != 2 {
+		t.Errorf("bindings after the requests: %+v, want the admins' only", bs)
+	}
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "user:alice", "role": "reader", "repoMask": "raw/*"}`, admin,
+		pass), http.StatusCreated)
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "reads", "scopes": ["read"]}`, admin,
+		pass), http.StatusCreated)
+	wantError(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "user:alice", "role": "admin", "repoMask": "*/*"}`, root,
+		pass), http.StatusConflict, codeConflict, "waits for a second admin already")
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "x", "scopes": ["write"]}`, admin,
+		auth.Credential{Kind: auth.CredPAT, TokenID: 3}), http.StatusForbidden)
+
+	authn := auth.NewAuthenticator(auth.Options{Index: f.st, Now: func() time.Time { return testNow }})
+	if _, _, err := authn.AuthenticateBearer(context.Background(), tok.Secret); err == nil {
+		t.Error("the secret of a request that waits authenticates")
+	}
+	var done auth.Approval
+	decodeJSON(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/approve", tok.ID), "", root, pass), http.StatusOK, &done)
+	if p, _, err := authn.AuthenticateBearer(context.Background(), tok.Secret); err != nil || "token:"+p.Name != done.Result {
+		t.Errorf("the secret of the approved request: %v, %v; want %s", p, err, done.Result)
+	}
+}
+
+// TestApprovalNone: with auth.approval none, an admin binding is made at once, and a request made
+// before is still decided.
+func TestApprovalNone(t *testing.T) {
+	f := approvalFixture(t).secondAdmin(true)
+	a := f.request(t, "/api/v1/bindings", `{"principal": "group:ops", "role": "admin", "repoMask": "*/*"}`)
+	f.secondAdmin(false)
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "group:dev", "role": "admin", "repoMask": "*/*"}`, admin, pass),
+		http.StatusCreated)
+	wantStatus(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/approve", a.ID), "", root, pass), http.StatusOK)
+	if bs, _ := f.st.ListBindings(context.Background(), "group:ops"); len(bs) != 1 {
+		t.Errorf("the binding of the request of before: %+v", bs)
+	}
+}
+
+// TestApprovalInfo: GET /api/v1/info answers auth.approval as approval.
+func TestApprovalInfo(t *testing.T) {
+	for _, second := range []bool{true, false} {
+		f := approvalFixture(t).secondAdmin(second)
+		var info map[string]any
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous), http.StatusOK, &info)
+		if want := map[bool]string{true: "second-admin", false: "none"}[second]; info["approval"] != want {
+			t.Errorf("approval %v, want %s", info["approval"], want)
+		}
+	}
 }

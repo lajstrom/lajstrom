@@ -228,7 +228,10 @@ func (h *handler) listMaskTokens(_ http.ResponseWriter, r *http.Request) (int, a
 // admin's too, or a deploy token, is 403 naming the rule (auth.Tokens.MayCreateMaskDeploy,
 // decided on #911): the admin's password creates one, or a web UI's fresh sign-in through OIDC
 // in its place (#1323), else 401 asking for more; then the admin role is checked, so that
-// another principal gets 403 whatever the body names.
+// another principal gets 403 whatever the body names. Under auth.approval second-admin, one whose
+// scopes hold write is a request for a second admin in its place
+// (auth.Approvals.RequestMaskDeploy): 202 with the request, its Location and the secret, which is
+// no credential until the request is approved (docs/spec/rbac.md §13).
 func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.tokens.MayCreateMaskDeploy(r.Context()); err != nil {
 		return 0, nil, serviceError(err)
@@ -247,6 +250,13 @@ func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, 
 	o, err := h.changeOrigin(r, req.ChangeReason)
 	if err != nil {
 		return 0, nil, err
+	}
+	if h.secondAdmin && auth.MaskDeployWaits(req.Scopes) {
+		a, secret, err := h.approvals.RequestMaskDeploy(r.Context(), req.RepoMask, req.Name, req.Scopes, exp, o)
+		if err != nil {
+			return 0, nil, serviceError(err)
+		}
+		return waiting(w, a, secret)
 	}
 	t, secret, err := h.tokens.CreateMaskDeploy(r.Context(), req.RepoMask, req.Name, req.Scopes, exp, o)
 	if err != nil {

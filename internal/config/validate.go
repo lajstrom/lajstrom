@@ -975,6 +975,9 @@ func (a Auth) validate(p *problems, s Server) {
 	if o := a.ServiceAccounts.OnOwnerDisabled; o != OwnerFlag && o != OwnerDisable {
 		p.add("auth.serviceAccounts.onOwnerDisabled", "%q is not flag or disable", o)
 	}
+	if a.Approval != ApprovalNone && a.Approval != ApprovalSecondAdmin {
+		p.add("auth.approval", "%q is not %s or %s", a.Approval, ApprovalNone, ApprovalSecondAdmin)
+	}
 	if a.Login.TokenLifetime <= 0 || a.Login.TokenLifetime > MaxLoginTokenLifetime {
 		p.add("auth.login.tokenLifetime", "must be positive and at most 24h: a token for longer is a personal access token the person makes")
 	}
