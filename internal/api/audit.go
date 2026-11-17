@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -20,26 +20,9 @@ type AuditList struct {
 	Next   string       `json:"next,omitempty"`
 }
 
-// AuditEntry is an audit event as the API answers it (docs/spec/rbac.md §5).
-type AuditEntry struct {
-	ID            int64     `json:"id"`
-	At            time.Time `json:"at"`
-	Principal     string    `json:"principal"`
-	PrincipalName string    `json:"principalName,omitempty"`
-	// PrincipalKind is service when the principal is a service account's user:<uid>
-	// (docs/spec/rbac.md §5); absent otherwise.
-	PrincipalKind string          `json:"principalKind,omitempty"`
-	Action        string          `json:"action"`
-	Repo          string          `json:"repo,omitempty"`
-	Subject       string          `json:"subject,omitempty"`
-	Digest        string          `json:"digest,omitempty"`
-	IP            string          `json:"ip,omitempty"`
-	Details       json.RawMessage `json:"details,omitempty"`
-	// State is ok, or for a registry write pending, failed (Error says why) or unknown
-	// (docs/spec/index-schema.md, audit).
-	State string `json:"state"`
-	Error string `json:"error,omitempty"`
-}
+// AuditEntry is an audit event as the API answers it (docs/spec/rbac.md §5), and as its log line
+// holds it (audit.Lines).
+type AuditEntry = audit.Entry
 
 // listAudit answers a page of the audit events that match ?repo, ?principal, ?action, ?state,
 // ?since (inclusive) and ?until (exclusive), newest first: ?limit of them after the event of
@@ -73,9 +56,7 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 		if err != nil {
 			return 0, nil, err
 		}
-		list.Events[i] = AuditEntry{ID: ev.ID, At: ev.At.UTC(), Principal: ev.Principal, PrincipalName: ev.PrincipalName,
-			PrincipalKind: kind, Action: ev.Action, Repo: ev.Repo, Subject: ev.Subject, Digest: string(ev.Digest), IP: ev.IP,
-			Details: ev.Details, State: ev.State, Error: ev.Error}
+		list.Events[i] = audit.NewEntry(ev, kind)
 	}
 	if more {
 		last := evs[len(evs)-1]
@@ -84,22 +65,15 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 	return http.StatusOK, list, nil
 }
 
-// principalKind returns service when principal is user:<uid> of a service account, live or
-// deleted, and "" for every other principal, a user that does not exist among them. kinds keeps
-// the answers by principal, so that a page reads each user once.
+// principalKind returns the principalKind of principal (auth.PrincipalKind). kinds keeps the
+// answers by principal, so that a page reads each user once.
 func (h *handler) principalKind(ctx context.Context, principal string, kinds map[string]string) (string, error) {
 	if kind, ok := kinds[principal]; ok {
 		return kind, nil
 	}
-	kind := ""
-	if uid, ok := strings.CutPrefix(principal, string(auth.KindUser)+":"); ok && index.IsUID(uid) {
-		u, err := h.repos.Index.GetUserByUID(ctx, uid)
-		switch {
-		case err == nil && u.Kind == auth.KindService:
-			kind = auth.KindService
-		case err != nil && !errors.Is(err, index.ErrNotFound):
-			return "", err
-		}
+	kind, err := auth.PrincipalKind(ctx, h.repos.Index, principal)
+	if err != nil {
+		return "", err
 	}
 	kinds[principal] = kind
 	return kind, nil

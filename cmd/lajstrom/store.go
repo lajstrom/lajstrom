@@ -16,13 +16,15 @@ import (
 )
 
 // store is the index as the commands use it: index.Store, and what both engines add to it, the
-// snapshots of the control plane, the readiness check and the migration report.
+// snapshots of the control plane, the readiness check, the migration report and the observer of
+// the audit rows that commit (observeAudit).
 type store interface {
 	index.Store
 	index.Snapshotter
 	Ping(ctx context.Context) error
 	ApplyMigrations(ctx context.Context, opts index.MigrateOptions) (index.MigrationReport, error)
 	AppliedMigrations(ctx context.Context) ([]int, error)
+	ObserveAudit(fn func([]index.AuditEvent))
 }
 
 // openStore opens the index database of database.driver and database.dsn. It does not migrate.
@@ -46,7 +48,8 @@ func openStore(ctx context.Context, cfg config.Database) (store, error) {
 }
 
 // openMigrated is openStore of the configuration for the commands that need the schema and do
-// not migrate it, admin and reindex: on a database that lacks a migration of this binary it
+// not migrate it, admin and reindex, with the log line of each audit row they commit
+// (observeAudit): on a database that lacks a migration of this binary it
 // fails with the command that applies it, instead of a query's "no such table" (#575); on a
 // host whose clock is too far off the database's it fails too (checkClock). A SQLite file that
 // does not exist is reported, not created (#719): such a command run in another directory, or
@@ -60,6 +63,7 @@ func (a *app) openMigrated(ctx context.Context) (store, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.observeAudit(st)
 	if err := checkSchema(ctx, st, a.cfg.Database.Driver); err != nil {
 		return nil, errors.Join(inFile(a.cfg.Database, err), st.Close())
 	}

@@ -123,6 +123,7 @@ func newServeCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			a.observeAudit(st)
 			defer func() { err = errors.Join(err, st.Close()) }()
 			if err := serveMigrations(ctx, st, c.Database, a.log); err != nil {
 				return err

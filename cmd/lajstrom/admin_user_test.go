@@ -345,7 +345,7 @@ func TestAdminUserPrompt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if stderr != "Password: \nRepeat the password: \n" {
+			if stderr = withoutAuditLines(stderr); stderr != "Password: \nRepeat the password: \n" {
 				t.Errorf("prompts = %q", stderr)
 			}
 			wantPassword(t, c.dsn, name, tt.answers[0])
