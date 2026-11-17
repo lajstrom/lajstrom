@@ -531,6 +531,17 @@ type Auth struct {
 	Login Login `yaml:"login"`
 	// CI is token exchange for CI (docs/spec/rbac.md §11, #937); off while it has no issuer.
 	CI CI `yaml:"ci"`
+	// Admin is the admin mode (docs/spec/rbac.md §12, #1276).
+	Admin Admin `yaml:"admin"`
+}
+
+// Admin configures the admin role (docs/spec/rbac.md §12).
+type Admin struct {
+	// RequireMFA is the admin mode: an admin binding counts only for the token of a web UI's
+	// sign-in through OIDC whose ID token shows a second factor (auth.oidc.mfa); passwords,
+	// personal access tokens and service accounts' tokens keep their other bindings. false by
+	// default; true for PCI DSS 8.4.1. serve refuses it without auth.oidc.issuer.
+	RequireMFA bool `yaml:"requireMFA"`
 }
 
 // Lockout configures the lockout of local passwords (docs/spec/rbac.md §1, Local passwords).

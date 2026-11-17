@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,7 @@ func MaskMatches(mask, format, name string) bool {
 type RBAC struct {
 	idx           index.Reader
 	anonymousRead bool
+	adminMFA      bool
 	log           *slog.Logger
 	now           func() time.Time
 
@@ -139,6 +141,12 @@ type RBACOptions struct {
 	// Now is the clock that a user's groups lapse by (docs/spec/rbac.md §8); nil means
 	// time.Now.
 	Now func() time.Time
+	// AdminMFA is auth.admin.requireMFA, the admin mode (docs/spec/rbac.md §12): an admin
+	// binding, a user's own or a group's, counts only for a credential whose sign-in shows a
+	// second factor (SignIn.SecondFactor), the token of a web UI's sign-in through OIDC; for every
+	// other credential the admin bindings are left out of every step, and the other bindings
+	// count (AdminLeftOut).
+	AdminMFA bool
 }
 
 // NewRBAC returns the evaluator over o.Index. It reads nothing before the first evaluation.
@@ -147,7 +155,7 @@ func NewRBAC(o RBACOptions) *RBAC {
 	if o.Index == nil {
 		panic("auth: NewRBAC: nil Options.Index")
 	}
-	r := &RBAC{idx: o.Index, anonymousRead: o.AnonymousRead, log: o.Log, now: o.Now}
+	r := &RBAC{idx: o.Index, anonymousRead: o.AnonymousRead, adminMFA: o.AdminMFA, log: o.Log, now: o.Now}
 	if r.log == nil {
 		r.log = slog.Default()
 	}
@@ -167,11 +175,30 @@ func (r *RBAC) Allowed(ctx context.Context, p Principal, a Action, format, repo 
 	return s.allowed(p, a, repoKey{format, repo}, CredentialFrom(ctx), r.now()), nil
 }
 
+// AdminLeftOut reports whether the user p has an admin binding, its own or one of a group it is
+// in that has not lapsed, that the admin mode (RBACOptions.AdminMFA) leaves out for the
+// credential of ctx, one whose sign-in shows no second factor. It is false while the mode is
+// off, for a credential that reaches the role, and for every other principal.
+func (r *RBAC) AdminLeftOut(ctx context.Context, p Principal) (bool, error) {
+	if !r.adminMFA || p.Kind != KindUser || CredentialFrom(ctx).SignIn.SecondFactor() {
+		return false, nil
+	}
+	s, err := r.current(ctx)
+	if err != nil {
+		return false, err
+	}
+	now := r.now()
+	return s.admins[p] || slices.ContainsFunc(s.groups[p], func(m membership) bool {
+		return m.until != nil && now.Before(*m.until) && s.admins[m.group]
+	}), nil
+}
+
 // snapshot is what RBAC evaluates from: the bindings, the repos with anonymous_read and the
 // users' groups as of auth_version version.
 type snapshot struct {
 	version       int64
 	anonymousRead bool                                // auth.anonymousRead
+	adminMFA      bool                                // auth.admin.requireMFA
 	admins        map[Principal]bool                  // the principals with an admin binding, users and groups
 	grants        map[Principal]map[repoKey]actionSet // the other bindings, by principal and mask
 	anon          map[repoKey]bool                    // the repos with anonymous_read
@@ -227,14 +254,16 @@ func byCredential(p Principal, a Action, repo repoKey, c Credential) bool {
 }
 
 // user is steps 1, 3 and 4 for the user p, its own bindings and those of its groups that have
-// not lapsed at now: decided is false when they leave a to step 5.
+// not lapsed at now: decided is false when they leave a to step 5. Under the admin mode, the
+// admin bindings count only when the sign-in of c shows a second factor (docs/spec/rbac.md §12).
 func (s *snapshot) user(p Principal, a Action, repo repoKey, system bool, c Credential, now time.Time) (allow, decided bool) {
 	// Step 3: a personal access token with scopes keeps those actions, admin's included.
 	if c.Kind == CredPAT && c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) != nil {
 		return false, true
 	}
+	admin := !s.adminMFA || c.SignIn.SecondFactor()
 	grants := func(q Principal) bool { // steps 1 and 4 for one principal
-		return s.admins[q] || (!system && s.granted(q, repo)&actionBit(a) != 0)
+		return admin && s.admins[q] || (!system && s.granted(q, repo)&actionBit(a) != 0)
 	}
 	if grants(p) {
 		return true, true
@@ -357,6 +386,7 @@ func (r *RBAC) load(ctx context.Context) (*snapshot, error) {
 	s := &snapshot{
 		version:       v,
 		anonymousRead: r.anonymousRead,
+		adminMFA:      r.adminMFA,
 		admins:        map[Principal]bool{},
 		grants:        map[Principal]map[repoKey]actionSet{},
 		anon:          map[repoKey]bool{},

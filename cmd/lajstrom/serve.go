@@ -94,8 +94,9 @@ func newServeCmd(a *app) *cobra.Command {
 		Short:       "Run the HTTP server",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
-		// auth.localPasswords false needs auth.oidc.issuer, before anything starts.
-		PreRunE: func(*cobra.Command, []string) error { return checkLocalPasswords(a.cfg.Auth, a.log) },
+		// auth.localPasswords false and auth.admin.requireMFA need auth.oidc.issuer, before
+		// anything starts.
+		PreRunE: func(*cobra.Command, []string) error { return checkAuthModes(a.cfg.Auth, a.log) },
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), drainSignals...)
 			defer stop()
@@ -203,7 +204,8 @@ func newServeCmd(a *app) *cobra.Command {
 				OCIUpstreams: ociUpstreams, Mirror: pipe, MaxManifestSize: c.Server.MaxManifestSize, Policy: decider,
 				Lifted: liftedBy(pipe, pkey)})
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
-			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
+			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log,
+				AdminMFA: c.Auth.Admin.RequireMFA})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
 				Proxy: proxyCore, Policy: decider, Encryption: asEncryption(encryption)}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
@@ -234,7 +236,7 @@ func newServeCmd(a *app) *cobra.Command {
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
-				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords}
+				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords, AdminMFA: c.Auth.Admin.RequireMFA}
 			ciPolicies := newCIPolicies(c, st)
 			// the authentication that the server leaves to POST /api/v1/users/{user}/password, whose
 			// body decides whether it takes one (docs/spec/rbac.md §1, A user's own password)
