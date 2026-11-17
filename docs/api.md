@@ -42,6 +42,15 @@ The OpenAPI 3.1 document of these endpoints is
   `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client
   address and details: the change, its source (`api`, `cli`, `config` or `bootstrap`) and the
   request id.
+- **A reason.** A change of the control plane takes `changeReason`, a ticket or a sentence of 1
+  to 1024 bytes of UTF-8 without control characters: a field of its JSON body, or
+  `?changeReason=` on a route without a body (a `DELETE`, an unlock, a webhook's new secret, an
+  approval, a rejection), never both; it is kept in the audit row as `details.changeReason`. It is
+  never `reason`, which a policy rule's and a deny's bodies hold with their own meaning. One
+  outside its bounds is `400` naming it. With `auth.requireReason: true` (`info` answers
+  `requireReason`), a change without one is `400` naming `changeReason`, after the role and before
+  anything is written; a person's own tokens and password never need one
+  ([auth.md](auth.md#a-reason-with-each-change)).
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
 - **Any other method or path** under `/api/` answers `404 NOT_FOUND`, `OPTIONS` too, but the
@@ -1458,7 +1467,8 @@ The body has `principal`, `role` and `repoMask`. `201` with the resource and `Lo
 /api/v1/bindings/<id>`. A user that does not exist, a principal that is not a user (a deploy
 token gets its repo and scopes, `anonymous` a repo's `anonymousRead`), a role or a mask that
 breaks its rule are `400`; the same binding again is `409`. The binding counts from the next
-request on, on every replica.
+request on, on every replica. With `auth.approval: second-admin`, a binding of the role `admin` or
+on `*/*` is `202` with a request for a second admin in its place ([Approvals](#approvals)).
 
 ### Delete: `DELETE /api/v1/bindings/<id>`
 
@@ -1473,6 +1483,75 @@ The admin role only, also to list one's own bindings; anyone else is `403`, anon
 
 The same, straight against the database of the configuration: `create`, `list`, `delete`
 ([auth.md](auth.md#bindings)).
+
+## Approvals
+
+The requests for a second admin ([auth.md](auth.md#changes-that-wait-for-a-second-admin),
+[rbac.md](spec/rbac.md) §13): with `auth.approval: second-admin`, `POST /api/v1/bindings` of a
+binding of the role `admin` or on `*/*`, and `POST /api/v1/deploy-tokens` whose `scopes` hold
+`write`, answer `202 Accepted` with a request in place of the change, and its `Location`,
+`/api/v1/approvals/<id>`; a deploy token's request has its `secret`, shown once, which is no
+credential until the request is approved. The same change pending twice is `409`.
+
+### The resource
+
+```json
+{
+  "id": 12,
+  "kind": "deploy-token",
+  "change": {"name": "fleet", "repoMask": "raw/*", "scopes": ["read", "write"], "expiresAt": "2026-12-17T09:00:00Z"},
+  "changeReason": "CHG-1050",
+  "state": "approved",
+  "requestedBy": "user:01a0c136-51a6-7883-a350-b1cf6000a23f",
+  "requestedAt": "2026-11-17T09:00:00Z",
+  "expiresAt": "2026-11-24T09:00:00Z",
+  "decidedBy": "user:01a2c136-51a6-7883-a350-b1cf6000a23f",
+  "decidedAt": "2026-11-17T09:30:00Z",
+  "decisionReason": "CHG-1050",
+  "result": "token:41"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `kind` | `binding` or `deploy-token` |
+| `change` | what the approval makes: a binding's `principal` (`user:<uid>` for a user), `role` and `repoMask`, or a deploy token's `name`, `repoMask`, `scopes` and `expiresAt` (`null` for none); never the token's secret or its hash |
+| `changeReason` | the requester's reason; absent without one |
+| `state` | `pending`, `approved`, `rejected` or `expired`; it changes once |
+| `requestedBy`, `requestedAt` | the requester, `user:<uid>`, and when |
+| `expiresAt` | 7 days after the request: one still pending then expires |
+| `decidedBy`, `decidedAt`, `decisionReason` | once decided: the admin, or `anonymous` for an expiry, when, and the decider's reason |
+| `result` | what an approval made: `binding:<id>` or `token:<id>` |
+
+### List: `GET /api/v1/approvals`
+
+`{"approvals": […], "next": "…"}`: a page of the requests, newest first ([Conventions](#conventions)),
+of every state or of `?state=pending|approved|rejected|expired`; another state is `400`.
+`GET /api/v1/approvals/<id>` answers one, `404` for an id that is none.
+
+### Approve: `POST /api/v1/approvals/<id>/approve`
+
+No body, no `If-Match`: a request never changes. In this order, before the request is looked up:
+the admin role (under `auth.admin.requireMFA`, a web UI's sign-in with a second factor), then the
+admin's password as the request's credential, or a web UI's sign-in through OIDC in its place
+when it is fresh, its `auth_time` within the last 10 minutes; one that is not is asked for more
+(`401`, [Asking for more](#asking-for-more)), any other token is `403`. Then the requester is
+`403`; a request decided or expired is `409`; a change that no longer holds, or a requester no
+longer an enabled admin, is `409` naming it, and the request stays pending. `200` with the
+request approved and its `result`. `?changeReason=` is the approver's reason.
+
+### Reject: `POST /api/v1/approvals/<id>/reject`
+
+No body. The admin role, with any credential that reaches it; the requester's is a withdrawal.
+`200` with the request rejected; `409` for one decided or expired. `?changeReason=` is the
+reason.
+
+### `lajstrom admin approval list`
+
+The same list, straight against the database of the configuration, as a table:
+`--state pending` for those that wait, `--limit` the newest so many. The command line decides
+none: an approval is a second admin's, through the API; `lajstrom admin binding create` and
+`admin token create --mask` make the change at once instead.
 
 ## CI trust policies
 
@@ -1707,7 +1786,9 @@ role with any credential that reaches it.
   `/api/v1/deploy-tokens/<id>`; `400` for a mask that is not two segments, a format this server
   does not serve or a repo name that breaks its rule (naming `repoMask`), and for the fields
   above; `409` when the name is taken by a live token over the same mask. The mask need not
-  match a repo now.
+  match a repo now. With `auth.approval: second-admin`, one whose `scopes` hold `write` is `202`
+  with a request for a second admin in its place and the secret, which is no credential until
+  the request is approved ([Approvals](#approvals)).
 - `GET /api/v1/deploy-tokens[?repoMask=<mask>]`: `200` with `{"tokens": [...]}`, every deploy
   token over a mask, or those over that mask as it was written (`oci/*` does not list a token
   over `*/*`), in the order of their creation, the revoked and expired ones included.
@@ -2029,6 +2110,8 @@ curl -s "$LAJSTROM/api/v1/info"
   "authModes": ["password", "token"],
   "login": {"tokenLifetime": 43200, "idleTimeout": 900},
   "adminMFA": true,
+  "requireReason": true,
+  "approval": "second-admin",
   "caller": {"principal": "anonymous", "kind": "anonymous", "name": "anonymous", "admin": false}
 }
 ```
@@ -2042,6 +2125,8 @@ curl -s "$LAJSTROM/api/v1/info"
 | `authModes` | how a person signs in: `password`, a local user's password, over Basic and to [`POST /api/v1/login`](#sign-in-post-apiv1login), left out while `auth.localPasswords` is `false`; `token`, a personal access token; and `oidc` while the OIDC login (#69) is on |
 | `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
 | `adminMFA` | `true` while `auth.admin.requireMFA` is on, left out otherwise: the admin role counts only for a web UI's sign-in through OIDC with a second factor ([auth.md](auth.md#administrative-access-with-a-second-factor), #1276) |
+| `requireReason` | `auth.requireReason`: `true` when a change of the control plane without `changeReason` is `400` ([Conventions](#conventions), #1285). A server before it answers none, which is `false` |
+| `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it. A server before it answers none, which is `none` |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not, nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second factor. Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.

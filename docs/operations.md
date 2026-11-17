@@ -229,6 +229,35 @@ documented exception of PCI DSS 8.5.1. Under the mode, an admin's personal acces
 no admin route, so the loop of [Password rules and their change](#password-rules-and-their-change)
 is refused with it (`403`): set `mustChange` in a web UI signed in with a second factor.
 
+### Approval of privileged changes
+
+PCI DSS 7.2.3 and 8.2.4 ask that privileges, and user IDs and their factors, change with an
+approval. Two settings tie the changes to theirs ([auth.md](auth.md#approval-of-privileged-changes)):
+
+1. **A reason.** `auth.requireReason: true`: every change of the control plane takes
+   `changeReason` through the API (`400` without it) and `--reason` or `LAJSTROM_REASON` on the
+   command line (exit status 2 without it), kept in its audit row. Name the ticket of the
+   change's approval, `CHG-1042`, so that an assessor matches a row to it. Scripts and pipelines
+   that change the control plane send one from then on.
+2. **A second admin.** Have two admins who can sign in: under the admin mode, two OIDC users
+   with an `admin` binding. Then `auth.approval: second-admin`: an `admin` binding, a binding on
+   `*/*` and a deploy token over a mask with `write`, made through the API, answer `202` with a
+   request that another admin approves (`POST /api/v1/approvals/<id>/approve`, with a password or
+   a web UI's fresh sign-in). A script or a Terraform provider that makes these gets the `202`, and
+   no binding or working token until the approval.
+3. **Each key** once every replica runs a release that knows it (a replica of the release before
+   refuses the configuration), then a restart, recorded as `config.change`. With `second-admin`,
+   `serve` says at start that the setting is on, and warns when fewer than two users could approve
+   a request.
+
+The requests that wait are `GET /api/v1/approvals?state=pending` and `lajstrom admin approval
+list --state pending`; nothing notifies the second admin, so tell them through your own channel.
+A request expires after 7 days. The command line against the database makes these changes at
+once, without a second admin: it is the break-glass path, and the way to the second admin of a
+server that has one; guard its credentials, and give it a reason. Turning `auth.approval` back to
+`none` makes every change at once again; the requests made before stay, to be decided or to
+expire.
+
 ### Failed logins and the edge
 
 Lajstrom throttles what only it can see ([auth.md](auth.md#failed-logins)): failed password
@@ -1576,6 +1605,8 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
+| `approval.request`, `approval.approve`, `approval.reject` | the API: a request for a second admin made in place of a change, by the requester, subject `approval:<id>`; its approval, beside the `binding.create` or `token.create` it makes, with `approval` and the request's `changeReason`; its rejection ([Approval of privileged changes](#approval-of-privileged-changes)) |
+| `approval.expire` | `serve`, by `anonymous` with `source: expiry`: a request still pending 7 days after it was made, marked once by one replica within a minute |
 | `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed`; and a lock of the lockout, `limit: lockout`, once per lock whatever the replicas, with its `until` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
 | `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
@@ -1587,8 +1618,9 @@ action, the repo, the subject (a package and version, the user or binding acted 
 manifest digest, the client address and details: the change, the source of a change of the
 control plane (`api`, `cli`, `config`, `bootstrap` for the first admin, `npm` for the token of
 `npm login` and `npm logout`), the request id of a change made over HTTP, and for the command
-line the `host`, the `osUser` and, when given, the `actor` and the `changeReason` ([A lost
-password](#a-lost-password)); a write or a fetch that came through a group is its
+line the `host`, the `osUser` and, when given, the `actor`, and the `changeReason` of the command
+line or of the API, required with `auth.requireReason` ([A lost password](#a-lost-password),
+[Approval of privileged changes](#approval-of-privileged-changes)); a write or a fetch that came through a group is its
 member's row, with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
 ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
 `server.trustedProxies`, the client that `X-Forwarded-For` names, not the proxy. The rows of the
