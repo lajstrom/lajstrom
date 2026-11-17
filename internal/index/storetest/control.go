@@ -303,10 +303,14 @@ func testTokens(t *testing.T, s index.Store) {
 		{Kind: "pat", UserID: &alice.ID, Name: "laptop", Hash: "h1", Scopes: []string{"read", "write"},
 			ExpiresAt: ptr(at(3600)), LastUsedAt: ptr(at(5)), CreatedAt: at(1)},
 		{Kind: "pat", UserID: &alice.ID, Name: "full", Hash: "h2", Scopes: []string{}, DPoPJKT: "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I",
-			AuthTime: ptr(at(-30)), AMR: []string{"pwd", "otp"}},
+			AuthTime: ptr(at(-30)), AMR: []string{"pwd", "otp"}, ACR: "urn:mace:incommon:iap:silver"},
 		{Kind: "deploy", RepoID: &repo.ID, Name: "deploy", Hash: "h3", Scopes: []string{"read"}, RevokedAt: ptr(at(7))},
 		{Kind: "pat", UserID: &alice.ID, Name: "legacy", Hash: "h4"},
 		{Kind: "deploy", RepoMask: "raw/*", Name: "fleet", Hash: "h5", Scopes: []string{"read"}, CreatedAt: at(2)},
+		// A sign-in whose ID token had no auth_time keeps its amr and acr (0038), an acr of the
+		// bound's 256 bytes whole.
+		{Kind: "pat", UserID: &alice.ID, Name: "no-auth-time", Hash: "h6", DPoPJKT: "jkt6", AMR: []string{"mfa"},
+			ACR: strings.Repeat("a", 256)},
 	}
 	for i := range tokens {
 		must(t, s.CreateToken(ctx, &tokens[i]))
@@ -323,7 +327,7 @@ func testTokens(t *testing.T, s index.Store) {
 		want           []index.Token
 	}{
 		{"all", nil, nil, tokens},
-		{"of alice", &alice.ID, nil, []index.Token{tokens[0], tokens[1], tokens[3]}},
+		{"of alice", &alice.ID, nil, []index.Token{tokens[0], tokens[1], tokens[3], tokens[5]}},
 		{"of the repo, not over a mask that matches it", nil, &repo.ID, []index.Token{tokens[2]}},
 		{"of alice and the repo", &alice.ID, &repo.ID, []index.Token{}},
 	} {
@@ -386,7 +390,7 @@ func testTokens(t *testing.T, s index.Store) {
 	must(t, s.DeleteRepo(ctx, repo.ID))
 	left, err := s.ListTokens(ctx, nil, nil)
 	must(t, err)
-	same(t, "ListTokens after DeleteRepo", ids([]index.Token{tokens[0], tokens[1], tokens[3], tokens[4]}, tokenID), ids(left, tokenID))
+	same(t, "ListTokens after DeleteRepo", ids([]index.Token{tokens[0], tokens[1], tokens[3], tokens[4], tokens[5]}, tokenID), ids(left, tokenID))
 	mask, err := s.GetTokenByHash(ctx, "h5")
 	must(t, err)
 	same(t, "the token over a mask after DeleteRepo", tokens[4], *mask)

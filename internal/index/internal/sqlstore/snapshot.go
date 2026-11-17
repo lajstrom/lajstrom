@@ -342,7 +342,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 		add(fmt.Sprintf("tokens id %d", t.ID), "tokens", tokCols, t.ID, t.Kind, idArg(t.UserID), idArg(t.RepoID), textArg(t.RepoMask),
 			t.Name, t.Hash, scopesArg(t.Scopes), c.d.encodeNullTime(t.ExpiresAt), c.d.encodeNullTime(t.LastUsedAt),
 			c.d.EncodeTime(t.CreatedAt), c.d.encodeNullTime(t.RevokedAt), textArg(t.DPoPJKT), c.d.encodeNullTime(t.AuthTime),
-			scopesArg(t.AMR))
+			scopesArg(t.AMR), textArg(t.ACR))
 	}
 	for _, b := range cp.Bindings {
 		add(fmt.Sprintf("bindings id %d", b.ID), "bindings", bindingCols, b.ID, b.Principal, b.Role, b.RepoMask, c.d.EncodeTime(b.CreatedAt))
