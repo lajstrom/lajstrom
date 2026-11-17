@@ -777,6 +777,17 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/CreatedToken"}
+        "202":
+          description: >-
+            With auth.approval second-admin, one whose scopes hold write: a request for a second admin in its place,
+            pending, which makes nothing until an admin other than the requester approves it
+            (docs/spec/rbac.md §13). The answer has the token's secret, once,
+            which is no credential until then.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedApproval"}
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -1594,6 +1605,16 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Binding"}
+        "202":
+          description: >-
+            With auth.approval second-admin, a binding of the role admin, or on */*: a request for a second admin in its place,
+            pending, which makes nothing until an admin other than the requester approves it
+            (docs/spec/rbac.md §13). The same change pending twice is 409.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedApproval"}
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -2868,6 +2889,12 @@ components:
           type: array
           items: {$ref: "#/components/schemas/Approval"}
         next: {type: string, description: The cursor of the next page; absent on the last.}
+    CreatedApproval:
+      allOf:
+        - $ref: "#/components/schemas/Approval"
+        - type: object
+          properties:
+            secret: {type: string, description: "A deploy token's secret, shown this once: no credential until the request is approved."}
     CreatedToken:
       allOf:
         - $ref: "#/components/schemas/Token"
@@ -3852,6 +3879,13 @@ components:
           description: >-
             auth.requireReason: true when a change of the control plane without changeReason is
             400 (docs/spec/rbac.md §13). A server before it answers none, which is false.
+        approval:
+          type: string
+          enum: [none, second-admin]
+          description: >-
+            auth.approval: with second-admin, an admin binding, a binding on */* and a deploy token
+            over a mask with write are answered 202 with a request for a second admin
+            (docs/spec/rbac.md §13). A server before it answers none.
         caller: {$ref: "#/components/schemas/Caller"}
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."

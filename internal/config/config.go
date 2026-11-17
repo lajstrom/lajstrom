@@ -533,6 +533,12 @@ type Auth struct {
 	CI CI `yaml:"ci"`
 	// Admin is the admin mode (docs/spec/rbac.md §12, #1276).
 	Admin Admin `yaml:"admin"`
+	// Approval is who approves the changes that grant the most, made through the API
+	// (docs/spec/rbac.md §13, #1285): ApprovalNone, the default, makes every change at once;
+	// ApprovalSecondAdmin makes an admin binding, a binding on */* and a deploy token over a mask
+	// with write requests that an admin other than the requester approves. The command line makes
+	// them at once whatever it says.
+	Approval string `yaml:"approval"`
 	// RequireReason makes a reason required with every change of the control plane
 	// (docs/spec/rbac.md §13, #1285): changeReason through the API, 400 without it, and --reason
 	// or LAJSTROM_REASON on the command line, exit status 2 without it. A person's own tokens and
@@ -540,6 +546,14 @@ type Auth struct {
 	// taken when given.
 	RequireReason bool `yaml:"requireReason"`
 }
+
+// The values of auth.approval (docs/spec/rbac.md §13).
+const (
+	// ApprovalNone makes every change at once, as before #1285.
+	ApprovalNone = "none"
+	// ApprovalSecondAdmin makes the changes that grant the most requests for a second admin.
+	ApprovalSecondAdmin = "second-admin"
+)
 
 // Admin configures the admin role (docs/spec/rbac.md §12).
 type Admin struct {
@@ -948,7 +962,7 @@ func Default() *Config {
 		Database:  Database{Driver: DefaultDatabaseDriver},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
-		Auth: Auth{LocalPasswords: true, Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
+		Auth: Auth{LocalPasswords: true, Approval: ApprovalNone, Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
 			Passwords:       Passwords{MinLength: DefaultMinPasswordLength},
 			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},

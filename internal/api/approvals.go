@@ -9,15 +9,32 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// The requests that wait for a second admin (docs/spec/rbac.md §13, http-routing.md §4; #1285),
-// made in place of the changes that grant the most (auth.Approvals): /api/v1/approvals lists
-// them, an admin other than the requester approves one, and any admin rejects one.
+// The requests that wait for a second admin (docs/spec/rbac.md §13, http-routing.md §4; #1285):
+// with auth.approval second-admin (Options.SecondAdmin), POST /api/v1/bindings of an admin binding
+// or of one on */*, and POST /api/v1/deploy-tokens whose scopes hold write, answer 202 with a
+// request in place of the change (auth.Approvals, waiting); /api/v1/approvals lists them, an admin
+// other than the requester approves one, and any admin rejects one.
 
 // ApprovalList is the answer of GET /api/v1/approvals: a page of the requests, newest first, and
 // in Next the cursor of the page after it, absent on the last page.
 type ApprovalList struct {
 	Approvals []auth.Approval `json:"approvals"`
 	Next      string          `json:"next,omitempty"`
+}
+
+// CreatedApproval is the answer of a change that waits for a second admin, 202: the request, and
+// for a deploy token its secret, the one time it is shown, which is no credential until the
+// request is approved.
+type CreatedApproval struct {
+	auth.Approval
+	Secret string `json:"secret,omitempty"`
+}
+
+// waiting answers the request a made in place of a change, 202 with its Location, and secret, a
+// deploy token's, when it is not "".
+func waiting(w http.ResponseWriter, a *auth.Approval, secret string) (int, any, error) {
+	w.Header().Set("Location", fmt.Sprintf("/api/v1/approvals/%d", a.ID))
+	return http.StatusAccepted, CreatedApproval{Approval: *a, Secret: secret}, nil
 }
 
 // listApprovals answers a page of the requests of ?state, or of every state, newest first: ?limit

@@ -59,7 +59,9 @@ func (h *handler) listBindings(_ http.ResponseWriter, r *http.Request) (int, any
 }
 
 // createBinding creates a binding from the BindingRequest of the body: 201 with the binding
-// and its Location.
+// and its Location. Under auth.approval second-admin, one of the role admin or on */* is a
+// request for a second admin in its place (auth.Approvals.RequestBinding): 202 with the request
+// and its Location (docs/spec/rbac.md §13).
 func (h *handler) createBinding(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -71,6 +73,13 @@ func (h *handler) createBinding(w http.ResponseWriter, r *http.Request) (int, an
 	o, err := h.changeOrigin(r, req.ChangeReason)
 	if err != nil {
 		return 0, nil, err
+	}
+	if h.secondAdmin && auth.BindingWaits(req.Role, req.RepoMask) {
+		a, err := h.approvals.RequestBinding(r.Context(), req.Principal, req.Role, req.RepoMask, o)
+		if err != nil {
+			return 0, nil, serviceError(err)
+		}
+		return waiting(w, a, "")
 	}
 	b, err := h.bindings.Create(r.Context(), req.Principal, req.Role, req.RepoMask, o)
 	if err != nil {

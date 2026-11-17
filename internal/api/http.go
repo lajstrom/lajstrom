@@ -135,6 +135,10 @@ type Options struct {
 	// RequireReason is auth.requireReason (docs/spec/rbac.md §13): a change of the control plane
 	// without changeReason is 400. False takes a reason when one is given.
 	RequireReason bool
+	// SecondAdmin is auth.approval second-admin (docs/spec/rbac.md §13): an admin binding, a
+	// binding on */* and a deploy token over a mask with write are requests for a second admin,
+	// answered 202. False makes every change at once; the requests made before are still decided.
+	SecondAdmin bool
 	// Approvals is the service behind /api/v1/approvals, the requests for a second admin
 	// (docs/spec/rbac.md §13); nil means one over the index, the audit writer, the clock and the
 	// logger of Repos, with the services of the bindings and of the tokens.
@@ -179,7 +183,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
 //	GET    /api/v1/deploy-tokens[?repoMask=]           the deploy tokens over a mask (admin)
-//	POST   /api/v1/deploy-tokens                       create one over the body's repoMask; the answer has its secret
+//	POST   /api/v1/deploy-tokens                       create one over the body's repoMask; the answer has its secret; 202 when it waits
 //	DELETE /api/v1/deploy-tokens/{id}                  revoke one
 //	GET    /api/v1/tokens[?kind=&user=&repo=&repoMask=&live=&limit=&cursor=]  every token, a page at a time (admin)
 //	GET    /api/v1/repos/{format}/{repo}/webhooks          the webhooks whose mask is the repo
@@ -210,7 +214,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/users/{user}/tokens                 create one; the answer has its secret
 //	DELETE /api/v1/users/{user}/tokens/{id}            revoke one
 //	GET    /api/v1/bindings[?principal=&limit=&cursor=]  list the bindings, a page at a time
-//	POST   /api/v1/bindings                            create a binding
+//	POST   /api/v1/bindings                            create a binding; one that waits for a second admin is 202
 //	DELETE /api/v1/bindings/{id}                       delete one
 //	GET    /api/v1/ci/policies                         the CI trust policies, of the configuration and of the API (admin)
 //	POST   /api/v1/ci/policies                         make one of the API
@@ -242,7 +246,7 @@ func New(o Options) http.Handler {
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, loginIdle: o.LoginIdle, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
-		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason,
+		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason, secondAdmin: o.SecondAdmin,
 		approvals: o.Approvals}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
@@ -416,8 +420,10 @@ type handler struct {
 	locate    denylist.Locate
 	// ci is Options.CIPolicies.
 	ci *ci.Service
-	// requireReason and approvals are Options.RequireReason and Options.Approvals, never nil.
+	// requireReason, secondAdmin and approvals are Options.RequireReason, Options.SecondAdmin and
+	// Options.Approvals, never nil.
 	requireReason bool
+	secondAdmin   bool
 	approvals     *auth.Approvals
 	log           *slog.Logger
 }
