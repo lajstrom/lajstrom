@@ -1611,6 +1611,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
+| `audit.prune` | `lajstrom admin audit prune`, by `anonymous` with `source: cli`: a prune of the oldest rows, `pending` with what it counted, then `ok` or `failed` with what it deleted ([Pruning the audit log](#pruning-the-audit-log)) |
 
 A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
@@ -1658,8 +1659,170 @@ curl -fsS -u admin "$LAJSTROM/api/v1/audit?repo=raw/scratch&since=2026-11-09T00:
 curl -fsS -u admin "$LAJSTROM/api/v1/audit?state=unknown" | jq -c '.events[] | {at, action, repo, subject, digest}'
 ```
 
-or SQL on the index. The table only grows in this version: no retention, no export; it is part
-of the backup of the index.
+or SQL on the index. The table is part of the backup of the index; with `audit.log` every row
+also leaves it as a log line (below), and `lajstrom admin audit prune` deletes the oldest.
+
+### Exporting the audit log
+
+With `audit.log` (on by default, [configuration.md](configuration.md#audit)) every row is also a
+log line on standard error once its change commits, written by the process that committed it,
+`serve` or a command against the database ([rbac.md](spec/rbac.md) §5, #1278). The line is `msg`
+`audit` at info whatever `log.level` says, in the format of `log.format`, with the row's fields as
+`GET /api/v1/audit` answers them and `details` whole, so one parser reads the log store and the
+API:
+
+```json
+{"time":"2026-11-17T09:30:01.204Z","level":"INFO","msg":"audit","id":4181,"at":"2026-11-17T09:30:01.198112Z","principal":"user:01a1c136-5180-7b5e-95ce-428e99e68887","principalName":"admin","action":"binding.create","subject":"user:01a1c136-51a6-7883-a350-b1cf6000a23f","ip":"10.0.4.17","state":"ok","details":{"id":2,"role":"writer","repoMask":"raw/*","source":"api","requestId":"…"}}
+```
+
+- **A line per committed state.** A registry write has two: `pending`, then `ok` or `failed`;
+  a row marked `unknown` by a reindex has that line too, and its outcome's when its writer ends
+  after it. A transaction rolled back writes none, nor does a commit whose result is unknown.
+- **No secret.** The line holds the committed row and nothing else, and no row holds a password,
+  a token, a hash of either, or a webhook's URL or secret.
+- **What loses a line.** A process that stops between its commit and its line, or a line that
+  standard error cannot take: the change stands, and the feed has the row (below). A restore of a
+  snapshot writes the line of its own row, not of the rows it brings back; a prune writes none for
+  the rows it deletes.
+- **Long lines.** A `config.change` line can reach 64 KiB, which a container runtime splits
+  (containerd at 16 KiB) and the collector's CRI parser joins again.
+- **Turning it off.** `audit.log: false` writes no line; the rows and the feed stay. It is a key
+  of the configuration and not of `log`, so the start that turns it off writes `config.change`.
+
+**A collector's recipe.** The platform's pipeline that collects standard error (Fluent Bit,
+Vector, the cloud's agent) sends the lines with `msg` `audit` to a store of their own: a SIEM, or
+a bucket with object lock, whose admins are not the database's. That copy is what the database's
+credentials do not reach. With `log.format: json`, in Vector:
+
+```yaml
+sources:
+  lajstrom:
+    type: kubernetes_logs          # joins the lines that containerd split
+    extra_label_selector: app.kubernetes.io/name=lajstrom
+transforms:
+  parsed:
+    type: remap
+    inputs: [lajstrom]
+    source: . = parse_json!(.message)
+  audit:
+    type: filter
+    inputs: [parsed]
+    condition: .msg == "audit"
+sinks:
+  audit-store:
+    type: aws_s3                   # a bucket with object lock: a write-once store
+    inputs: [audit]
+    bucket: lajstrom-audit
+    region: eu-central-1
+    key_prefix: "audit/%Y/%m/%d/"
+    encoding: {codec: json}
+```
+
+### Reconciling the log store with the feed
+
+`GET /api/v1/audit?after=<id>` answers the rows whose id is above `<id>` by id ascending, with the
+list's filters, `limit` up to 1000 and no `next` ([api.md](api.md#feed-get-apiv1auditafterid)).
+It finds what the log store lacks and what changed in the database since the line was written:
+
+- **A line lost.** A row of the feed that the log store does not have: its process stopped
+  between the commit and the line. Add it from the feed.
+- **A row changed or deleted in the database.** A line of the log store whose row the feed
+  answers otherwise, in another final state, with other fields, or not at all while no prune
+  took it: whoever holds the database's credentials changed it. Alert; the log store's line is
+  the row as it committed (PCI DSS 10.3.4).
+- **A row still pending.** The feed answers a row in its state at the time: ask again from an id
+  below a `pending` one for its outcome.
+
+The ids are unique and never used again, a prune's deletions included, but on PostgreSQL and
+CockroachDB a row whose transaction commits after another's can show with a lower id after it. A
+collector of the feed resumes from the newest id it held 10 minutes before, and drops the ids it
+already has. After a restore from a backup or a snapshot, the database takes again the ids of the
+rows written after its copy: keep the rows held that the database lost, and take the ids above the
+newest the database has for new ones. A job with the admin role, here for the ids of one page:
+
+```sh
+from=4180   # the newest id the job held 10 minutes ago
+curl -fsS -u admin "$LAJSTROM/api/v1/audit?after=$from&limit=1000" | jq -cS '.events[]' >feed.jsonl
+# the log store's lines of the same ids, the last line of each id, without the line's own fields
+jq -cS --argjson from "$from" 'select(.msg == "audit" and .id > $from) | del(.time, .level, .msg)' lines.jsonl |
+	jq -scS 'group_by(.id) | map(last) | .[]' >lines-last.jsonl
+diff lines-last.jsonl feed.jsonl   # a line lost, a row changed or deleted, or one still pending
+```
+
+### Pruning the audit log
+
+The table grows by a row per write and per change. `lajstrom admin audit prune` deletes the rows
+before a cut-off, against the database, with the configuration and the credentials of `serve`;
+no route of the API deletes a row, so that no credential of the admin role can erase the trail of
+what it did ([rbac.md](spec/rbac.md) §5):
+
+```sh
+# what it would delete: the count, and the first and the last of the ids and times
+lajstrom admin audit prune --before 400d --dry-run
+lajstrom admin audit prune --before 400d --actor ops@example.com --reason CHG-2211
+lajstrom admin audit prune --before 2025-09-01T00:00:00Z --force --reason "the log store keeps 7 years"
+```
+
+- **The floors.** `--before` takes an RFC 3339 time or an age in days. A cut-off less than 365
+  days before the database's time is refused, exit status `2`, before anything is written, unless
+  `--force`, which goes down to 90 days and no further: PCI DSS 10.5.1 asks for 12 months of
+  history, the last three immediately available, and with `--force` the log store keeps the year.
+  The age, the cut-off and the floors are counted on the database's clock, and, as every command
+  against the database, the prune writes nothing while this host's clock is more than 60 seconds
+  off it ([Clocks](#clocks)).
+- **What it keeps.** A row still `pending`, and a `push` whose subject is a digest, a referrer's,
+  which a reindex reads to repair a subject's referrers index on a registry without the referrers
+  API.
+- **How it deletes.** It counts first, then writes its row `audit.prune` (`subject` `audit`,
+  `details` `{"before", "rows", "firstId", "lastId", "firstAt", "lastAt", "force"}` with the
+  origin of the command line), `pending`, in a transaction of its own, and deletes up to the last
+  id it counted, 10,000 rows at a time, the oldest first, each batch a transaction of its own, so
+  that `serve` writes on. Its row ends `ok` with `deleted`, or `failed` with `deleted` and the
+  error. One that stops leaves what it deleted deleted, its row `pending` (`unknown` after a
+  reindex) and the rest to a next run. It prints what it counted and deleted as one line of JSON.
+- **A reason.** It takes `--actor` and `--reason`, and with `auth.requireReason` it needs a
+  reason ([Approval of privileged changes](#approval-of-privileged-changes)).
+- **Snapshots** are not touched: a snapshot made before keeps the rows of its window, and its
+  restore brings them back. A deleted row is otherwise only in the log store and in the backups
+  made before.
+- **The space.** PostgreSQL reuses the space of the deleted rows after a vacuum, which autovacuum
+  runs. SQLite keeps it in its free pages for its own reuse; `VACUUM` gives it back to the file
+  system, with `serve` stopped, since it rewrites the file.
+
+**A CronJob**, with the Deployment's configuration and the database's Secret, as `serve` has them:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lajstrom-audit-prune
+spec:
+  schedule: "41 2 * * 0"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: prune
+              image: ghcr.io/lajstrom/lajstrom:v0.1.0
+              args: [admin, audit, prune, --before, 400d, --config, /etc/lajstrom/lajstrom.yaml]
+              env:
+                - {name: LAJSTROM_ACTOR, value: cronjob/lajstrom-audit-prune}
+                - {name: LAJSTROM_REASON, value: "retention: 400 days in the table, the log store keeps the rest"}
+                - name: LAJSTROM_DATABASE_DSN
+                  valueFrom: {secretKeyRef: {name: lajstrom-database, key: dsn}}
+              volumeMounts:
+                - {name: config, mountPath: /etc/lajstrom, readOnly: true}
+          volumes:
+            - name: config
+              configMap: {name: lajstrom}
+```
+
+Run it once with `--dry-run` before you schedule it. Its `audit.prune` rows, a week apart, are the
+record that the retention runs.
 
 ## Webhooks
 
