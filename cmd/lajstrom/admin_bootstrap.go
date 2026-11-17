@@ -125,6 +125,20 @@ func readBootstrapToken(cmd *cobra.Command, file string) (string, error) {
 	return strings.TrimSpace(token), err
 }
 
+// answerMessage returns the message of the error envelope of an answer of the management API,
+// body, or its first line when it has none (firstLine).
+func answerMessage(body []byte) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &env) == nil && env.Error.Message != "" {
+		return env.Error.Message
+	}
+	return firstLine(bytes.NewReader(body))
+}
+
 // bootstrap POSTs req to /api/v1/bootstrap under base, without following a redirect, and
 // returns the body of the 201, the admin as JSON on one line. Any other answer is an error
 // with its status and the message of its envelope; a 404 says what it means.
@@ -157,15 +171,7 @@ func bootstrap(ctx context.Context, base string, tlsConfig *tls.Config, req api.
 	if resp.StatusCode == http.StatusCreated {
 		return append(bytes.TrimSpace(body), '\n'), nil
 	}
-	var env struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	msg := firstLine(bytes.NewReader(body))
-	if json.Unmarshal(body, &env) == nil && env.Error.Message != "" {
-		msg = env.Error.Message
-	}
+	msg := answerMessage(body)
 	if resp.StatusCode == http.StatusNotFound {
 		msg = "an admin exists already, or this is not a server with the bootstrap; " +
 			"with the database, lajstrom admin user create --admin still makes one"
