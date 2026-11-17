@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -233,6 +234,10 @@ func newServeCmd(a *app) *cobra.Command {
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
 				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords}
 			ciPolicies := newCIPolicies(c, st)
+			// the authentication that the server leaves to POST /api/v1/users/{user}/password, whose
+			// body decides whether it takes one (docs/spec/rbac.md §1, A user's own password)
+			var srv *server.Server
+			authenticate := func(w http.ResponseWriter, r *http.Request) (*http.Request, bool) { return srv.Authenticate(w, r) }
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
 				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
@@ -241,6 +246,7 @@ func newServeCmd(a *app) *cobra.Command {
 				PasswordsOff:            !c.Auth.LocalPasswords,
 				Lockout:                 lockoutOf(c.Auth),
 				PasswordPolicy:          passwordPolicyOf(c.Auth),
+				Authenticate:            authenticate,
 				Passwords:               authn, LoginLifetime: c.Auth.Login.TokenLifetime, LoginIdle: c.Auth.Login.IdleTimeout,
 				Handoffs: handoffsOf(edge), DPoP: proofs,
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
@@ -249,7 +255,7 @@ func newServeCmd(a *app) *cobra.Command {
 				CIPolicies: ciPolicies})
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
 			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
-			srv, err := server.New(server.Options{
+			srv, err = server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,
 				TLSCertFile:      c.Server.TLS.CertFile,

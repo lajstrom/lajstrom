@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
@@ -34,16 +35,21 @@ type UserRequest struct {
 }
 
 // UserPatch is the body of PATCH /api/v1/users/{user}: the fields to change, at least one. Owner
-// is a service account's only.
+// is a service account's only; MustChange a user's with a password (docs/spec/rbac.md §1, Change
+// at first use).
 type UserPatch struct {
-	Name     *string `json:"name"`
-	Disabled *bool   `json:"disabled"`
-	Owner    *string `json:"owner"`
+	Name       *string `json:"name"`
+	Disabled   *bool   `json:"disabled"`
+	Owner      *string `json:"owner"`
+	MustChange *bool   `json:"mustChange"`
 }
 
-// PasswordRequest is the body of POST /api/v1/users/{user}/password.
+// PasswordRequest is the body of POST /api/v1/users/{user}/password: Password alone is an admin's
+// new password; with CurrentPassword, the user's own change, whose credential is CurrentPassword
+// (docs/spec/rbac.md §1, A user's own password).
 type PasswordRequest struct {
-	Password string `json:"password"`
+	Password        string  `json:"password"`
+	CurrentPassword *string `json:"currentPassword,omitempty"`
 }
 
 // Bounds of ?limit on the lists of the API.
@@ -186,9 +192,10 @@ func (h *handler) getUser(w http.ResponseWriter, r *http.Request) (int, any, err
 
 // updateUser applies the UserPatch of the body in one transaction (auth.Users.Change) and
 // answers the user as it is then, with its ETag: disabled first, then a service account's owner,
-// under the old name, then the name; each change is an audit event of its own (user.disable or
-// user.enable, user.owner, user.rename), and a change to what the user already has is no event.
-// With If-Match, the change is made only while the user has a revision it names.
+// under the old name, then the name, then mustChange; each change is an audit event of its own
+// (user.disable or user.enable, user.owner, user.rename, user.mustchange), and a change to what
+// the user already has is no event. With If-Match, the change is made only while the user has a
+// revision it names.
 func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -201,14 +208,14 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := decodeBody(w, r, &patch); err != nil {
 		return 0, nil, err
 	}
-	if patch.Name == nil && patch.Disabled == nil && patch.Owner == nil {
-		return 0, nil, invalid("body: nothing to change; the fields are name, disabled and owner")
+	if patch.Name == nil && patch.Disabled == nil && patch.Owner == nil && patch.MustChange == nil {
+		return 0, nil, invalid("body: nothing to change; the fields are name, disabled, owner and mustChange")
 	}
 	if r, err = conditional(r, TableUsers, "user "+name); err != nil {
 		return 0, nil, err
 	}
-	u, err := h.users.Change(r.Context(), name, auth.UserChange{Disabled: patch.Disabled, Owner: patch.Owner, Name: patch.Name},
-		auth.Origin(origin(r)))
+	u, err := h.users.Change(r.Context(), name, auth.UserChange{Disabled: patch.Disabled, Owner: patch.Owner, Name: patch.Name,
+		MustChange: patch.MustChange}, auth.Origin(origin(r)))
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -252,8 +259,25 @@ func (h *handler) unlockUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusNoContent, nil, nil
 }
 
-// setPassword sets the password of a user from the PasswordRequest of the body: 204.
+// setPassword sets the password of a user from the PasswordRequest of the body: 204. With
+// currentPassword it is the user's own change (ownPassword), which takes no role and ignores the
+// request's Authorization; without, an admin's new password: the authentication of the request,
+// which the server's middleware leaves to this handler (Options.Authenticate), then the admin
+// role (docs/spec/rbac.md §1, A user's own password; §3).
 func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	var req PasswordRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		return 0, nil, err
+	}
+	if req.CurrentPassword != nil {
+		return h.ownPassword(w, r, *req.CurrentPassword, req.Password)
+	}
+	if h.authenticate != nil {
+		var ok bool
+		if r, ok = h.authenticate(w, r); !ok {
+			return 0, nil, nil // answered: the credentials were refused
+		}
+	}
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
@@ -261,12 +285,55 @@ func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
-	var req PasswordRequest
-	if err := decodeBody(w, r, &req); err != nil {
-		return 0, nil, err
-	}
 	if err := h.users.SetPassword(r.Context(), name, req.Password, auth.Origin(origin(r))); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// ownPassword is a user's own change of its password, to password, from current
+// (auth.Authenticator.ChangeOwnPassword; docs/spec/rbac.md §1, A user's own password): the
+// current password is the request's credential, checked as Basic credentials are, with the
+// throttles and the lockout, and the request's Authorization is ignored. 204; a refused current
+// password, of whatever user, 401 with the message of every refused password; a throttled account
+// or address 429 with Retry-After; a new password that breaks a rule or is one of the last four
+// 400; passwords turned off 400 naming the setting; 501 on a server that checks no passwords.
+func (h *handler) ownPassword(w http.ResponseWriter, r *http.Request, current, password string) (int, any, error) {
+	if h.passwords == nil {
+		return 0, nil, &clientError{msg: "this server checks no passwords", err: format.ErrUnsupported}
+	}
+	name, err := h.ownName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	err = h.passwords.ChangeOwnPassword(r.Context(), name, current, password, auth.Origin(origin(r)))
+	var te *auth.ThrottledError
+	switch {
+	case errors.As(err, &te):
+		return tooManyLogins(w, te)
+	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
+		return 0, nil, &clientError{msg: h.passwords.RefusalMessage(err, msgBadPassword), err: format.ErrUnauthenticated}
+	case err != nil:
+		return 0, nil, serviceError(err)
+	}
+	return http.StatusNoContent, nil, nil
+}
+
+// ownName returns the name that the path segment {user} gives a user's own change: a name as it
+// is, and for a uid (index.IsUID) the name of its live user. A uid of no live user stays as it is:
+// no user has such a name, so that the change is refused as one of a name no user has is, and
+// tells nobody whether the uid is a user's.
+func (h *handler) ownName(r *http.Request) (string, error) {
+	s := r.PathValue("user")
+	if !index.IsUID(s) {
+		return s, nil
+	}
+	u, err := h.users.Index.GetUserByUID(r.Context(), s)
+	switch {
+	case errors.Is(err, index.ErrNotFound) || err == nil && u.DeletedAt != nil:
+		return s, nil
+	case err != nil:
+		return "", err
+	}
+	return u.Name, nil
 }

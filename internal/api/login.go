@@ -23,12 +23,28 @@ const DefaultLoginLifetime = 12 * time.Hour
 
 // Passwords checks the password of a sign-in (auth.Authenticator.AuthenticatePassword): the
 // principal and a CredPassword, ErrBadCredentials for a refusal, a *ThrottledError for a
-// throttled account or address.
+// throttled account or address, ErrMustChange for a password whose user must change it.
 type Passwords interface {
 	AuthenticatePassword(ctx context.Context, username, password string) (auth.Principal, auth.Credential, error)
 	// RefusalMessage is the message of the 401 of a refusal, fallback when the authenticator has
 	// none of its own (*auth.Authenticator.RefusalMessage).
 	RefusalMessage(err error, fallback string) string
+	// ChangeOwnPassword is a user's own change of its password, with its current password as the
+	// credential (*auth.Authenticator.ChangeOwnPassword): the refusals of AuthenticatePassword,
+	// and ErrInvalid for a new password that breaks a rule or is one of the last four.
+	ChangeOwnPassword(ctx context.Context, username, current, password string, o auth.Origin) error
+}
+
+// msgBadPassword is the message of a refused password when the authenticator has none of its own
+// (RefusalMessage).
+const msgBadPassword = "the user name or the password is wrong"
+
+// tooManyLogins answers a throttled account or address (te): 429 with Retry-After in whole
+// seconds, rounded up, at least one.
+func tooManyLogins(w http.ResponseWriter, te *auth.ThrottledError) (int, any, error) {
+	w.Header().Set("Retry-After", strconv.Itoa(max(int(math.Ceil(te.RetryAfter.Seconds())), 1)))
+	return http.StatusTooManyRequests, envelope{Error: envelopeError{Code: codeUnavailable,
+		Message: "too many failed logins: try again after Retry-After seconds"}}, nil
 }
 
 // Handoffs redeems the code that an OIDC login hands a web UI (oidc.Handoffs.Redeem) with its
@@ -126,11 +142,9 @@ func (h *handler) passwordLogin(w http.ResponseWriter, r *http.Request, user, pa
 	var te *auth.ThrottledError
 	switch {
 	case errors.As(err, &te):
-		w.Header().Set("Retry-After", strconv.Itoa(max(int(math.Ceil(te.RetryAfter.Seconds())), 1)))
-		return http.StatusTooManyRequests, envelope{Error: envelopeError{Code: codeUnavailable,
-			Message: "too many failed logins: try again after Retry-After seconds"}}, nil
+		return tooManyLogins(w, te)
 	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
-		return 0, nil, &clientError{msg: h.passwords.RefusalMessage(err, "the user name or the password is wrong"), err: format.ErrUnauthenticated}
+		return 0, nil, &clientError{msg: h.passwords.RefusalMessage(err, msgBadPassword), err: format.ErrUnauthenticated}
 	case errors.Is(err, auth.ErrMustChange): // the one 403 of a sign-in: the UI offers the change
 		return 0, nil, &clientError{msg: auth.MsgMustChange, err: format.ErrForbidden}
 	case err != nil:

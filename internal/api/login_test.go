@@ -223,6 +223,10 @@ func (throttledPasswords) AuthenticatePassword(context.Context, string, string) 
 
 func (throttledPasswords) RefusalMessage(_ error, fallback string) string { return fallback }
 
+func (throttledPasswords) ChangeOwnPassword(context.Context, string, string, string, auth.Origin) error {
+	return &auth.ThrottledError{Throttle: "address", RetryAfter: 2500 * time.Millisecond}
+}
+
 // TestLoginThrottled checks that a throttled account or address is 429 with Retry-After in whole
 // seconds, rounded up, and that a server without passwords or without a DPoP verifier answers
 // 501.

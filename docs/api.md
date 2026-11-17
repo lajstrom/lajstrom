@@ -23,7 +23,9 @@ The OpenAPI 3.1 document of these endpoints is
   ([auth.md](auth.md)): a request with credentials runs as the user (`user:<uid>`, for a
   personal access token too) or the deploy token (`token:<id>`, Basic `deploy:<token>`, under
   any user name, or `Bearer ljs_dep_…`), one without as `anonymous`,
-  and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells who the
+  and credentials that are refused are `401` at once; a right password whose user must change
+  it is `403` ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)).
+  `GET /api/v1/whoami` tells who the
   caller is. **Authorization** is RBAC's ([rbac.md](spec/rbac.md)): the bindings of the
   principal decide, behind the scopes of its token ([auth.md](auth.md#what-a-token-may-do)).
   Reading a repo and listing it need `read` on it, changing, deleting and reindexing
@@ -36,7 +38,7 @@ The OpenAPI 3.1 document of these endpoints is
   principal, the action (`repo.create`, `repo.update`, `repo.delete`, `repo.reindex`,
   `repo.cache.purge`, `delete` for each manifest of a version delete, `pypi.yank` for a yank
   or an unyank, `user.create`,
-  `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`,
+  `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.mustchange`, `user.delete`,
   `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client
   address and details: the change, its source (`api`, `cli`, `config` or `bootstrap`) and the
   request id.
@@ -57,7 +59,7 @@ Every error is answered with one envelope:
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
 | 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log, every token, the registries; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)) |
+| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log, every token, the registries; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)); or the password is right and its user must change it first ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)) |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
@@ -97,7 +99,7 @@ and created again under its name included.
 
 Every write of the resource's row moves the revision: a `PATCH` that changes something (one
 that changes nothing moves nothing, but for a webhook's, which always writes), a proxy that
-becomes hosted, a group's members, a user's password and its deletion, a webhook's new secret,
+becomes hosted, a group's members, a user's password, its own change and its deletion, a webhook's new secret,
 and the same changes by `lajstrom admin`. The password and the secret move it though the
 resource shows neither. A binding and a token have no revision: they never change (a binding is
 replaced by a delete and a create, a token is only revoked, and revoked again is `204`), and their
@@ -1260,6 +1262,7 @@ and its name, is in [auth.md](auth.md#the-uid-and-the-name), and what a service 
 | `lastSeenAt` | the user's last activity: its last successful authentication (a password, a personal access token, an OIDC login; a service account's token), less than a minute behind, or its enabling when later; `null` before any record. It moves no revision: the `ETag` stands for what a `PATCH` changes ([Inactive users](auth.md#inactive-users)) |
 | `inactive` | `true` while `auth.disableInactiveUsersAfter` is set and the user, enabled, has had no activity for longer: its next authentication disables it, unless it is the last enabled admin. Left out when `false` |
 | `lockedUntil` | while `auth.lockout.duration` is set, the end of the lock of the user's password after 10 wrong passwords in a row ([The lockout](auth.md#the-lockout)); left out while it is not locked. Like `lastSeenAt`, it moves no revision |
+| `mustChange` | `true` while the user's password must be changed before it is used for anything else: it authenticates the user's own change and is `403` everywhere else ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)); left out otherwise. A `PATCH` sets and clears it, and moves the revision |
 | `owner` | a service account's owner: `user:<uid>` of a person, or `group:<name>`; left out for every other kind |
 | `ownerName` | the name of a user owner; left out for a group |
 | `ownerDisabled` | `true` while a user owner is disabled; the service account keeps working unless `auth.serviceAccounts.onOwnerDisabled` is `disable` ([Change](#change-patch-apiv1usersuser)). Left out when `false` |
@@ -1287,9 +1290,13 @@ those kinds; another kind is `400`.
 
 ### Create: `POST /api/v1/users`
 
-The body has `name`, `password` (8 to 1024 bytes) and optionally `admin`, `true` to bind the
-user to the admin role on `*/*` in the same transaction. `201` with the resource, its `ETag` and `Location:
-/api/v1/users/<name>`; a name that a live user has is `409`.
+The body has `name`, `password` and optionally `admin`, `true` to bind the user to the admin role
+on `*/*` in the same transaction. `201` with the resource, its `ETag` and `Location:
+/api/v1/users/<name>`; a name that a live user has is `409`. The password follows the rules of
+`auth.passwords`: at least `minLength` characters (8 by default), at most 1024 bytes, and with
+`requireLettersAndDigits` a letter and a digit; one that breaks a rule is `400` naming it
+([Password rules](auth.md#password-rules-your-own-password-change-at-first-use)). With
+`auth.passwords.changeAtFirstUse`, the user is made with `mustChange`.
 
 A service account has `"kind": "service"` and `owner`, and neither `password` nor `admin`:
 `user:<name>` or `user:<uid>` of a live user that is not a service account, kept as its
@@ -1313,13 +1320,17 @@ was deleted.
 
 ### Change: `PATCH /api/v1/users/<user>`
 
-The body has `name`, `disabled`, a service account's `owner`, or several of them, changed in one
-transaction. `disabled` changes first, then the owner, then the name; each change is an audit
-event of its own (`user.owner` for the owner), and a value the user has already is none. `200`
-with the resource and its `ETag`. A new name that another live user has is `409`; disabling the
-last enabled user with an admin binding is `409` (a service account's admin binding does not
-count); an owner given to a user that is not a service account is `400`; each changes nothing of
-the body. With `auth.serviceAccounts.onOwnerDisabled: disable`, disabling a user disables the
+The body has `name`, `disabled`, a service account's `owner`, `mustChange`, or several of them,
+changed in one transaction. `disabled` changes first, then the owner, then the name, then
+`mustChange`; each change is an audit event of its own (`user.owner` for the owner,
+`user.mustchange` with the new value as `mustChange` for `mustChange`), and a value the user has
+already is none. `200` with the resource and its `ETag`. `"mustChange": true` makes the user change
+its password before it uses it for anything else, whatever `auth.passwords.changeAtFirstUse` is,
+and `false` lets it keep the password ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)).
+A new name that another live user has is `409`; disabling the last enabled user with an admin
+binding is `409` (a service account's admin binding does not count); an owner given to a user
+that is not a service account is `400`, and so is `mustChange` for a user without a password (a
+service account, an OIDC user); each changes nothing of the body. With `auth.serviceAccounts.onOwnerDisabled: disable`, disabling a user disables the
 enabled service accounts it owns in the same transaction, a `user.disable` event each with
 `owner` in its details; `"disabled": false` on the owner later enables none of them. With
 `If-Match`, only while the user has the revision the client read, else `412`
@@ -1327,10 +1338,33 @@ enabled service accounts it owns in the same transaction, a `user.disable` event
 
 ### Password: `POST /api/v1/users/<user>/password`
 
-The body is `{"password": "…"}`; `204`. The old password fails from the next request on. The new
-password ends a lock of the lockout too, with a `user.unlock` row when one was in force
-([The lockout](auth.md#the-lockout)). A service account has no password: `400`; and while
-`auth.localPasswords` is `false`, no user has one: `400`, naming the setting.
+Two bodies ([Password rules, your own password, change at first use](auth.md#password-rules-your-own-password-change-at-first-use)):
+
+- **An admin's new password**, `{"password": "…"}`, the admin role's; `204`. The old password
+  fails from the next request on. The new password ends a lock of the lockout too, with a
+  `user.unlock` row when one was in force ([The lockout](auth.md#the-lockout)). It is not
+  compared with the user's last passwords, and the one it replaces goes into the user's history.
+  With `auth.passwords.changeAtFirstUse` it gives the user `mustChange`; without it, it clears
+  it. A service account has no password: `400`.
+- **The user's own change**, `{"currentPassword": "…", "password": "…"}`, which takes no other
+  credential: the request's `Authorization` is ignored, so that a user whose password must be
+  changed can change it. The current password is checked as Basic credentials are, with the
+  [throttles of failed logins](auth.md#failed-logins) and the [lockout](auth.md#the-lockout): a
+  wrong one, or one of a name that no user has, of a disabled user or of a user without a
+  password, is `401`, its message the same whatever the reason (with the lockout, what locks a
+  password), and a throttled account or address `429` with `Retry-After`. The new password is
+  none of the user's last four passwords, the current one and the three before it: `400`,
+  `password: was used before`. `204`; `mustChange` is cleared, and the `user.password` row is by
+  the user itself.
+
+```sh
+curl -s -X POST "$LAJSTROM/api/v1/users/alice/password" -H 'Content-Type: application/json' \
+  -d '{"currentPassword": "the first password", "password": "a password of her own 7"}'
+```
+
+Either new password follows the rules of `auth.passwords`, else `400` naming the rule. While
+`auth.localPasswords` is `false`, no user has a password: either body is `400`, naming the
+setting.
 
 ### Unlock: `POST /api/v1/users/<user>/unlock`
 
@@ -1353,7 +1387,9 @@ the user has the revision the client read, else `412`.
 
 The admin role only, for every endpoint of users, a user's own record included (the caller
 reads itself with `GET /api/v1/whoami`); anyone else is `403`, anonymous `401`. A personal access
-token with scopes and a deploy token never manage users.
+token with scopes and a deploy token never manage users. The one exception is a user's own
+change of its password, `POST /api/v1/users/<name>/password` with `currentPassword`, which takes
+no role: the current password in the body is its credential (rbac.md §3).
 
 ### `lajstrom admin user`
 
@@ -2104,7 +2140,10 @@ The password is checked as HTTP Basic checks it, with the same
 a wrong password, a locked one or a token in its place, its message the same whatever the reason
 and, while `auth.lockout.duration` is set, saying that 10 wrong passwords in a row lock a password
 and for how long; `429` with `Retry-After` for a throttled account or client address. While
-`auth.localPasswords` is `false`, every password is `401`, saying that passwords are off. A body that is neither
+`auth.localPasswords` is `false`, every password is `401`, saying that passwords are off. A right
+password whose user must change it is `403 FORBIDDEN`, the one `403` of a sign-in, and makes no
+token: the UI offers the change, [`POST /api/v1/users/<name>/password`](#password-post-apiv1usersuserpassword)
+with `currentPassword` ([Change at first use](auth.md#password-rules-your-own-password-change-at-first-use)). A body that is neither
 `{"username", "password"}` nor `{"code", "codeVerifier"}` is `400`.
 
 **With OIDC** ([auth.md](auth.md#a-web-ui)), while `auth.oidc` is on, the UI signs a person in
