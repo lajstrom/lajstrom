@@ -90,6 +90,11 @@ type Options struct {
 	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords): every
 	// password is refused with ErrPasswordsOff before a user is read, and tokens work as before.
 	PasswordsOff bool
+	// Lockout is auth.lockout.duration (docs/spec/rbac.md §1, Local passwords): LockoutFailures
+	// wrong passwords of a user in a row, counted in the index, lock its password for this long,
+	// and every refused password is ErrPasswordRefused. Zero, and any while PasswordsOff, counts
+	// nothing and locks nothing.
+	Lockout time.Duration
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -138,8 +143,11 @@ type Authenticator struct {
 	// blocks writes the rows of the throttles that trip.
 	blocks *Blocks
 
-	// passwordsOff refuses every password (Options.PasswordsOff).
+	// passwordsOff refuses every password (Options.PasswordsOff); lockout is Options.Lockout,
+	// 0 while passwordsOff, and lockoutMsg its LockoutMessage.
 	passwordsOff bool
+	lockout      time.Duration
+	lockoutMsg   string
 
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
@@ -180,6 +188,9 @@ func NewAuthenticator(o Options) *Authenticator {
 		a.now = time.Now
 	}
 	a.blocks = o.Blocks
+	if !a.passwordsOff {
+		a.lockout, a.lockoutMsg = o.Lockout, lockoutMessage(o.Lockout)
+	}
 	if a.ttl <= 0 {
 		a.ttl = DefaultCacheTTL
 	}
@@ -252,13 +263,13 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 	if err != nil {
 		return Principal{}, err
 	}
-	if unusable(u) == "" && a.cached(keyOf(username, secret), u.PasswordHash) {
-		return a.admitPassword(ctx, u, account, addr)
+	if a.passwordUnusable(u) == "" && a.cached(keyOf(username, secret), u.PasswordHash) {
+		return a.admitPassword(ctx, u, account, addr, false)
 	}
 	if _, err := a.verifyPassword(ctx, u, username, secret, account, addr); err != nil {
 		return Principal{}, err
 	}
-	return a.admitPassword(ctx, u, account, addr)
+	return a.admitPassword(ctx, u, account, addr, true)
 }
 
 // AuthenticatePassword returns the principal user:<uid> of the user called username when
@@ -283,7 +294,7 @@ func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, pass
 	if _, err := a.checkPassword(ctx, u, password, account, addr); err != nil {
 		return Principal{}, Credential{}, err
 	}
-	p, err := a.admitPassword(ctx, u, account, addr)
+	p, err := a.admitPassword(ctx, u, account, addr, true)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
@@ -330,7 +341,7 @@ func (a *Authenticator) loginUser(ctx context.Context, username, secret string) 
 func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, username, secret, account, addr string) (Principal, error) {
 	defer a.lockLogin(addr, account)()
 	key := keyOf(username, secret)
-	if err := a.throttledLogin(addr, account, u); err == nil && unusable(u) == "" && a.cached(key, u.PasswordHash) {
+	if err := a.throttledLogin(addr, account, u); err == nil && a.passwordUnusable(u) == "" && a.cached(key, u.PasswordHash) {
 		return UserPrincipal(u), nil
 	}
 	p, err := a.checkPassword(ctx, u, secret, account, addr)
@@ -341,13 +352,15 @@ func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, usern
 }
 
 // checkPassword verifies secret against the password of u with argon2id, under the locks of
-// addr and account that the caller holds: the throttles are asked again, an unusable user costs
-// the work of a verification all the same, and a failure counts against account and addr.
+// addr and account that the caller holds: the throttles are asked again, an unusable user or a
+// locked password costs the work of a verification all the same, and a failure counts against
+// account and addr; a wrong password of a user that has one counts toward the lockout too
+// (failPassword).
 func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret, account, addr string) (Principal, error) {
 	if err := a.throttledLogin(addr, account, u); err != nil {
 		return Principal{}, err
 	}
-	if reason := unusable(u); reason != "" {
+	if reason := a.passwordUnusable(u); reason != "" {
 		a.dummyVerify(secret)
 		a.failed(ctx, account, addr)
 		return Principal{}, a.refuse(ctx, CredPassword, u, reason)
@@ -358,6 +371,7 @@ func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret
 		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", UserPrincipal(u), err)
 	case !ok:
 		a.failed(ctx, account, addr)
+		a.failPassword(ctx, u)
 		return Principal{}, a.refuse(ctx, CredPassword, u, "wrong password")
 	}
 	return UserPrincipal(u), nil
@@ -407,6 +421,18 @@ func (a *Authenticator) lockLogin(addr, account string) func() {
 	}
 }
 
+// passwordUnusable returns why the password of the user u cannot be checked now: unusable's
+// reasons, or locked while a lock of the lockout is in force (locked); "" when it can.
+func (a *Authenticator) passwordUnusable(u *index.User) string {
+	if reason := unusable(u); reason != "" {
+		return reason
+	}
+	if a.locked(u) {
+		return "locked"
+	}
+	return ""
+}
+
 // unusable returns why the password of the user u cannot be checked, "" when it can: none (u
 // nil), disabled, without a password.
 func unusable(u *index.User) string {
@@ -447,7 +473,8 @@ func accountKey(u *index.User, username string) string {
 }
 
 // refuse logs the refusal of a credential of kind cred at info (LogRefusal), with the account
-// user:<uid> of the user u, or unknown when it is nil, and returns ErrBadCredentials. A user name
+// user:<uid> of the user u, or unknown when it is nil, and returns ErrBadCredentials, or for a
+// password while the lockout is set ErrPasswordRefused, whatever the reason. A user name
 // as it was typed is never logged: it may be a password typed into the wrong field, or a token
 // pasted there (threat model L-3).
 func (a *Authenticator) refuse(ctx context.Context, cred CredentialKind, u *index.User, reason string) error {
@@ -456,6 +483,9 @@ func (a *Authenticator) refuse(ctx context.Context, cred CredentialKind, u *inde
 		account = UserPrincipal(u).String()
 	}
 	LogRefusal(ctx, a.log, string(cred), account, 0, reason)
+	if cred == CredPassword && a.lockout > 0 {
+		return ErrPasswordRefused
+	}
 	return ErrBadCredentials
 }
 
