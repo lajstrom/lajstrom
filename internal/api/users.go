@@ -235,6 +235,23 @@ func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusNoContent, nil, nil
 }
 
+// unlockUser ends the lock of the lockout of a user and sets its count of wrong passwords to 0
+// (auth.Users.Unlock; docs/spec/rbac.md §1, Local passwords): 204, with a user.unlock audit row
+// when a lock was in force. It takes no body.
+func (h *handler) unlockUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := h.allowAdmin(r); err != nil {
+		return 0, nil, err
+	}
+	name, err := h.userName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.users.Unlock(r.Context(), name, auth.Origin(origin(r))); err != nil {
+		return 0, nil, serviceError(err)
+	}
+	return http.StatusNoContent, nil, nil
+}
+
 // setPassword sets the password of a user from the PasswordRequest of the body: 204.
 func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {

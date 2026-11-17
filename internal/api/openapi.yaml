@@ -1316,6 +1316,9 @@ paths:
       tags: [users]
       operationId: createUser
       summary: Create a local user or a service account (admin).
+      description: >-
+        While auth.localPasswords is false no password is set, so a local user is 400, naming the
+        setting (docs/spec/rbac.md §1, Local passwords); a service account is made as before.
       requestBody:
         required: true
         content:
@@ -1405,6 +1408,10 @@ paths:
       tags: [users]
       operationId: setPassword
       summary: Set the password of a user (admin); a service account has none, 400.
+      description: >-
+        The new password ends a lock of the lockout too, with a user.unlock audit row when one was
+        in force. While auth.localPasswords is false no password is set: 400, naming the setting
+        (docs/spec/rbac.md §1, Local passwords).
       requestBody:
         required: true
         content:
@@ -1413,6 +1420,22 @@ paths:
       responses:
         "204": {description: Set.}
         "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/users/{user}/unlock:
+    parameters:
+      - $ref: "#/components/parameters/user"
+    post:
+      tags: [users]
+      operationId: unlockUser
+      summary: End the lock of a user's password and its count of wrong passwords (admin).
+      description: >-
+        The lockout of auth.lockout.duration (docs/spec/rbac.md §1, Local passwords): the lock ends
+        and the count of wrong passwords is 0. A user.unlock audit row, with the end of the lock in
+        its lockedUntil, is written when a lock was in force, none otherwise. No body.
+      responses:
+        "204": {description: "Unlocked, or not locked."}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -2669,6 +2692,7 @@ components:
         createdAt: {type: string, format: date-time}
         lastSeenAt: {type: [string, "null"], format: date-time, description: "The user's last activity, its last successful authentication or its enabling, less than a minute behind; null before any record (docs/spec/rbac.md §1, Inactive users). It moves no revision."}
         inactive: {type: boolean, description: "With auth.disableInactiveUsersAfter set, the user is inactive beyond it: its next authentication disables it, but for the last enabled admin. Absent when false."}
+        lockedUntil: {type: string, format: date-time, description: "With auth.lockout.duration set, the end of the lock of the user's password after 10 wrong passwords in a row; absent while it is not locked (docs/spec/rbac.md §1, Local passwords). It moves no revision."}
         owner: {type: string, description: "A service account's owner, user:<uid> or group:<name>; absent for every other kind."}
         ownerName: {type: string, description: The name of a user owner.}
         ownerDisabled: {type: boolean, description: "A user owner is disabled; the service account is not, for that, unless auth.serviceAccounts.onOwnerDisabled is disable."}

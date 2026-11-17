@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -44,7 +45,7 @@ func newAdminUserCmd(a *app) *cobra.Command {
 		Short: "Manage local users and service accounts",
 	}
 	user.AddCommand(newUserCreateCmd(a), newUserListCmd(a), newUserDisableCmd(a), newUserEnableCmd(a), newUserSetPasswordCmd(a),
-		newUserRenameCmd(a), newUserDeleteCmd(a), newUserSetOwnerCmd(a))
+		newUserRenameCmd(a), newUserDeleteCmd(a), newUserSetOwnerCmd(a), newUserUnlockCmd(a))
 	return user
 }
 
@@ -243,6 +244,22 @@ func newUserEnableCmd(a *app) *cobra.Command {
 	return cmd
 }
 
+// newUserUnlockCmd returns admin user unlock: the lock of the lockout ends, and the count of wrong
+// passwords is 0 (docs/spec/rbac.md §1, Local passwords).
+func newUserUnlockCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:         "unlock <name>",
+		Short:       "End the lock of a user's password after wrong passwords (auth.lockout.duration), and its count of them",
+		Args:        cobra.ExactArgs(1),
+		Annotations: needsConfig,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				return users.Unlock(ctx, args[0], a.cliOrigin())
+			})
+		},
+	}
+}
+
 // newUserSetPasswordCmd returns admin user set-password: the old password stops working at the
 // next request.
 func newUserSetPasswordCmd(a *app) *cobra.Command {
@@ -286,8 +303,8 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 // withUsers opens the index database of the configuration, runs fn with the users service over
 // it, which disables the service accounts of an owner it disables when
 // auth.serviceAccounts.onOwnerDisabled is disable and marks the users inactive beyond
-// auth.disableInactiveUsersAfter, and sets no password while auth.localPasswords is false, and
-// closes the database.
+// auth.disableInactiveUsersAfter, sets no password while auth.localPasswords is false and shows
+// the locks of auth.lockout.duration, and closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
@@ -295,7 +312,7 @@ func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.User
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
 	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter, PasswordsOff: !a.cfg.Auth.LocalPasswords})
+		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter, PasswordsOff: !a.cfg.Auth.LocalPasswords, Lockout: lockoutOf(a.cfg.Auth)})
 }
 
 // errNoPassword is the error when no source gives a password.
@@ -368,8 +385,10 @@ func promptPassword(out io.Writer, fd int, label string) (string, error) {
 }
 
 // writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED, CREATED, LAST
-// SEEN and OWNER. LAST SEEN is the user's last activity, - before any record, with (inactive) for
-// a user inactive beyond auth.disableInactiveUsersAfter (docs/spec/rbac.md §1, Inactive users).
+// SEEN and OWNER. DISABLED has (locked until <time>) for a user whose password is locked
+// (docs/spec/rbac.md §1, Local passwords). LAST SEEN is the user's last activity, - before any
+// record, with (inactive) for a user inactive beyond auth.disableInactiveUsersAfter
+// (docs/spec/rbac.md §1, Inactive users).
 // OWNER is a service account's, user:<name> of a person, with (disabled) while that user is, or
 // group:<name>; - for every other kind.
 func writeUserTable(out io.Writer, users []auth.User) error {
@@ -391,7 +410,11 @@ func writeUserTable(out io.Writer, users []auth.User) error {
 		if u.Inactive {
 			seen += " (inactive)"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\t%s\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339),
+		disabled := strconv.FormatBool(u.Disabled)
+		if u.LockedUntil != nil {
+			disabled += " (locked until " + u.LockedUntil.Format(time.RFC3339) + ")"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.Name, u.UID, u.Kind, disabled, u.CreatedAt.Format(time.RFC3339),
 			seen, owner)
 	}
 	if err := tw.Flush(); err != nil {
