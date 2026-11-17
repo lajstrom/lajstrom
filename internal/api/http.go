@@ -135,6 +135,10 @@ type Options struct {
 	// RequireReason is auth.requireReason (docs/spec/rbac.md §13): a change of the control plane
 	// without changeReason is 400. False takes a reason when one is given.
 	RequireReason bool
+	// Approvals is the service behind /api/v1/approvals, the requests for a second admin
+	// (docs/spec/rbac.md §13); nil means one over the index, the audit writer, the clock and the
+	// logger of Repos, with the services of the bindings and of the tokens.
+	Approvals *auth.Approvals
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -215,6 +219,10 @@ const maxBody = 64 << 10
 //	DELETE /api/v1/ci/policies/{name}                  delete one of the API
 //	POST   /api/v1/ci/policies/{name}/renew            renew one of the API that grants write
 //	POST   /api/v1/ci/policies/{name}/approve          approve what waits on one of the API (If-Match)
+//	GET    /api/v1/approvals[?state=&limit=&cursor=]   the requests for a second admin, newest first (admin)
+//	GET    /api/v1/approvals/{id}                      one request
+//	POST   /api/v1/approvals/{id}/approve              approve one, another admin's, with a password or a fresh sign-in
+//	POST   /api/v1/approvals/{id}/reject               reject one, or withdraw one's own
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
@@ -234,7 +242,8 @@ func New(o Options) http.Handler {
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, loginIdle: o.LoginIdle, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
-		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason}
+		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason,
+		approvals: o.Approvals}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -258,6 +267,10 @@ func New(o Options) http.Handler {
 	}
 	if h.bindings == nil {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+	}
+	if h.approvals == nil {
+		h.approvals = &auth.Approvals{Index: o.Repos.Index, Bindings: h.bindings, Tokens: h.tokens, Audit: o.Repos.Audit, Now: o.Repos.Now,
+			Log: h.log}
 	}
 	mux := http.NewServeMux()
 	for _, rt := range h.routes() {
@@ -350,6 +363,10 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/ci/policies/{name}", h.deleteCIPolicy},
 		{"POST /api/v1/ci/policies/{name}/renew", h.renewCIPolicy},
 		{"POST /api/v1/ci/policies/{name}/approve", h.approveCIPolicy},
+		{"GET /api/v1/approvals", h.listApprovals},
+		{"GET /api/v1/approvals/{id}", h.getApproval},
+		{"POST /api/v1/approvals/{id}/approve", h.approveApproval},
+		{"POST /api/v1/approvals/{id}/reject", h.rejectApproval},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
@@ -399,8 +416,9 @@ type handler struct {
 	locate    denylist.Locate
 	// ci is Options.CIPolicies.
 	ci *ci.Service
-	// requireReason is Options.RequireReason.
+	// requireReason and approvals are Options.RequireReason and Options.Approvals, never nil.
 	requireReason bool
+	approvals     *auth.Approvals
 	log           *slog.Logger
 }
 

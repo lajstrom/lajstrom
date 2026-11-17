@@ -27,6 +27,8 @@ tags:
     description: Roles of users on the repos of a mask.
   - name: ci
     description: The CI trust policies of the token exchange for CI (docs/spec/rbac.md §11).
+  - name: approvals
+    description: The requests for a second admin, the changes that wait for one (docs/spec/rbac.md §13).
   - name: audit
     description: The audit log.
   - name: webhooks
@@ -1785,6 +1787,93 @@ paths:
         "409": {$ref: "#/components/responses/Conflict"}
         "412": {$ref: "#/components/responses/Changed"}
         "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/approvals:
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      summary: A page of the requests for a second admin, newest first (admin).
+      parameters:
+        - name: state
+          in: query
+          description: Only the requests of this state; pending are those that wait.
+          schema: {type: string, enum: [pending, approved, rejected, expired]}
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ApprovalList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/approvals/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [approvals]
+      operationId: getApproval
+      summary: One request for a second admin (admin).
+      responses:
+        "200":
+          description: The request.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Approval"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/approvals/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [approvals]
+      operationId: approveApproval
+      summary: Approve a request, which makes its change (admin, another admin than the requester).
+      description: >-
+        The admin role first, then the admin's password as the request's credential, or a web
+        UI's sign-in through OIDC in its place when it is fresh, its auth_time within the last 10
+        minutes (401 with insufficient_user_authentication and max_age=600 for one that is not);
+        any other token is 403, all before the request is looked up. Under auth.admin.requireMFA,
+        the role needs the sign-in's second factor. The requester is 403. The approval checks
+        again what the request checked, and that the requester is an enabled user with the admin
+        role: one that fails is 409 naming it, and the request stays pending. No body, and no
+        If-Match: a request never changes.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
+      responses:
+        "200":
+          description: The request, approved, with the result of its change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Approval"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/approvals/{id}/reject:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [approvals]
+      operationId: rejectApproval
+      summary: Reject a request, or withdraw one's own (admin, any credential that reaches the role).
+      description: 409 for a request decided or expired. No body.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
+      responses:
+        "200":
+          description: The request, rejected.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Approval"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/audit:
     get:
       tags: [audit]
@@ -2741,6 +2830,44 @@ components:
             before the bound was set or lowered, it has no expiry, or expires more than the bound
             after its creation, and is to be replaced. Worked out when it is answered; absent
             otherwise.
+    Approval:
+      type: object
+      description: A request for a second admin (docs/spec/rbac.md §13); it never changes, but for its decision.
+      required: [id, kind, change, state, requestedBy, requestedAt, expiresAt]
+      properties:
+        id: {type: integer, format: int64}
+        kind: {type: string, enum: [binding, deploy-token]}
+        change:
+          type: object
+          description: >-
+            What its approval makes: a binding's principal (user:<uid> for a user), role and
+            repoMask, or a deploy token's name, repoMask, scopes and expiresAt (null for none).
+          properties:
+            principal: {type: string}
+            role: {type: string}
+            repoMask: {type: string}
+            name: {type: string}
+            scopes:
+              type: array
+              items: {type: string}
+            expiresAt: {type: [string, "null"], format: date-time}
+        changeReason: {type: string, description: "The requester's reason; absent without one."}
+        state: {type: string, enum: [pending, approved, rejected, expired]}
+        requestedBy: {type: string, description: "The requester, user:<uid>."}
+        requestedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time, description: 7 days after the request; a request still pending then expires.}
+        decidedBy: {type: string, description: "Once decided: user:<uid>, or anonymous for an expiry."}
+        decidedAt: {type: string, format: date-time}
+        decisionReason: {type: string, description: "The decider's reason."}
+        result: {type: string, description: "What the approval made: binding:<id> or token:<id>."}
+    ApprovalList:
+      type: object
+      required: [approvals]
+      properties:
+        approvals:
+          type: array
+          items: {$ref: "#/components/schemas/Approval"}
+        next: {type: string, description: The cursor of the next page; absent on the last.}
     CreatedToken:
       allOf:
         - $ref: "#/components/schemas/Token"
