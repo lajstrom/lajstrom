@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -92,6 +93,11 @@ const basicChallenge = `Basic realm="lajstrom"`
 // does not answer, Retry-After (format.SetRetryAfter). A 412 of If-Match (*PreconditionError)
 // answers its own message, whatever wraps it, and the row's ETag now.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var stepUp *auth.StepUpError
+	if errors.As(err, &stepUp) {
+		h.askForMore(w, r, stepUp, err)
+		return
+	}
 	var pe *PreconditionError
 	if errors.As(err, &pe) {
 		err = pe
@@ -109,6 +115,20 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	format.SetRetryAfter(w.Header(), err)
 	h.writeJSON(w, r, status, envelope{Error: envelopeError{Code: codeOf(status), Message: msg}})
+}
+
+// insufficientUserAuthentication is the error code of RFC 9470's challenge.
+const insufficientUserAuthentication = "insufficient_user_authentication"
+
+// askForMore answers a web UI's sign-in through OIDC that a step refused, e (docs/spec/rbac.md
+// §10, Asking for more; #1296): 401 UNAUTHENTICATED with the challenge of RFC 9470,
+// WWW-Authenticate: DPoP error="insufficient_user_authentication", what is missing as
+// error_description, and max_age when the step needs a fresh sign-in; err's message, which says
+// what is missing and how to get it. It is no failed login: nothing is logged, and the token is
+// not revoked.
+func (h *handler) askForMore(w http.ResponseWriter, r *http.Request, e *auth.StepUpError, err error) {
+	w.Header().Set("WWW-Authenticate", server.DPoPChallenge(insufficientUserAuthentication, e.Missing, e.MaxAge))
+	h.writeJSON(w, r, http.StatusUnauthorized, envelope{Error: envelopeError{Code: codeUnauthenticated, Message: err.Error()}})
 }
 
 // internalBody is the answer when an answer cannot be encoded.

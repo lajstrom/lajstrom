@@ -2017,7 +2017,11 @@ components:
         ES256, htm and htu of the request (htu with the scheme and host of server.externalURL),
         iat within 5 minutes, ath the base64url SHA-256 of the token, a jti used once. On /api/
         only. A refused proof is 401 with WWW-Authenticate DPoP error="invalid_dpop_proof", a
-        refused token error="invalid_token"; there is no DPoP-Nonce.
+        refused token error="invalid_token"; there is no DPoP-Nonce. A step that needs a fresh
+        sign-in through OIDC, or one with a second factor, asks a sign-in short of it for more
+        (RFC 9470): 401 with WWW-Authenticate DPoP error="insufficient_user_authentication",
+        error_description what is missing, and max_age=600 when the step needs a fresh sign-in;
+        the token is not revoked, and the UI signs in again with prompt=login.
   headers:
     Location:
       description: The path of the created resource.
@@ -2102,10 +2106,15 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     Unauthorized:
-      description: No credentials, or credentials that are refused; code UNAUTHENTICATED.
+      description: >-
+        No credentials, or credentials that are refused, or a web UI's sign-in through OIDC asked
+        for more; code UNAUTHENTICATED.
       headers:
         WWW-Authenticate:
-          description: Basic realm="lajstrom".
+          description: >-
+            Basic realm="lajstrom"; to a web UI's token, the DPoP challenge, and to a sign-in that
+            a step needs more of DPoP error="insufficient_user_authentication" (RFC 9470), with
+            error_description and max_age when the step needs a fresh sign-in.
           schema: {type: string}
       content:
         application/json:

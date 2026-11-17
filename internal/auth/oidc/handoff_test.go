@@ -263,11 +263,12 @@ func checkNoSignIn(t *testing.T, f *loginFixture, verifier string) {
 		t.Errorf("the view of a token without auth_time: %+v", tok.SignIn)
 	}
 	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
+	var stepUp *auth.StepUpError
 	switch {
 	case err != nil || cred.SignIn == nil || !cred.SignIn.At.IsZero() || cred.SignIn.ACR != "gold" || !cred.SignIn.SecondFactor():
 		t.Errorf("a login without auth_time: %+v, %v; want its amr and acr", cred, err)
-	case !errors.Is(auth.FreshSignIn(cred, *f.now.Load()), auth.ErrScope):
-		t.Errorf("a sign-in without auth_time is fresh")
+	case !errors.As(auth.FreshSignIn(cred, *f.now.Load()), &stepUp):
+		t.Errorf("a sign-in without auth_time is fresh, or not asked for more")
 	}
 	f.p.id.AMR, f.p.id.ACR = nil, ""
 	_, secret, err = f.handoffs(time.Hour).Redeem(ctx, f.handOff(uiOrigin+"/ui/", verifier), verifier, testJKT, auth.Origin{})
