@@ -71,6 +71,13 @@ type User struct {
 	// (users.last_seen_at; docs/spec/rbac.md §1, Inactive users); nil when none is recorded.
 	// TouchUser writes it, and ImportControlPlane; CreateUser and UpdateUser leave it.
 	LastSeenAt *time.Time
+	// PasswordFailures is the count of the user's wrong passwords in a row, and LockedUntil
+	// the end of its last lock, nil when it has none (users.password_failures and
+	// users.locked_until; docs/spec/rbac.md §1, Local passwords; #1280). FailPassword,
+	// ResetPasswordFailures and UnlockUser write them, and nothing else: CreateUser, UpdateUser
+	// and ImportControlPlane leave them, and a snapshot does not carry them.
+	PasswordFailures int
+	LockedUntil      *time.Time
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.

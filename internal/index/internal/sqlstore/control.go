@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -184,17 +185,27 @@ func prefixed(p, cols string) string {
 	return strings.Join(parts, ", ")
 }
 
-const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision, last_seen_at"
+// userCols are the columns of users that a snapshot carries, and userDests their destinations;
+// userReadCols and userReadDests add those of the lockout, which a snapshot leaves out
+// (docs/spec/index-schema.md, The lockout).
+const (
+	userCols     = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision, last_seen_at"
+	userReadCols = userCols + ", password_failures, locked_until"
+)
 
 func userDests(u *index.User) []any {
 	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
 		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision, nullTimeDest{&u.LastSeenAt}}
 }
 
+func userReadDests(u *index.User) []any {
+	return append(userDests(u), &u.PasswordFailures, nullTimeDest{&u.LockedUntil})
+}
+
 // GetUser returns the live user with the given name.
 func (c *conn) GetUser(ctx context.Context, name string) (*index.User, error) {
-	return getOne(ctx, c, "users "+name, userDests,
-		"SELECT "+userCols+" FROM users WHERE name = ? AND deleted_at IS NULL", name)
+	return getOne(ctx, c, "users "+name, userReadDests,
+		"SELECT "+userReadCols+" FROM users WHERE name = ? AND deleted_at IS NULL", name)
 }
 
 // GetUserByUID returns the user with the given uid, live or deleted. A string that is not of
@@ -203,17 +214,17 @@ func (c *conn) GetUserByUID(ctx context.Context, uid string) (*index.User, error
 	if !index.IsUID(uid) {
 		return nil, fmt.Errorf("%w: users uid %q", index.ErrNotFound, uid)
 	}
-	return getOne(ctx, c, "users uid "+uid, userDests, "SELECT "+userCols+" FROM users WHERE uid = ?", uid)
+	return getOne(ctx, c, "users uid "+uid, userReadDests, "SELECT "+userReadCols+" FROM users WHERE uid = ?", uid)
 }
 
 // GetUserByID returns the user with the given id, live or deleted.
 func (c *conn) GetUserByID(ctx context.Context, id int64) (*index.User, error) {
-	return getOne(ctx, c, fmt.Sprintf("users id %d", id), userDests, "SELECT "+userCols+" FROM users WHERE id = ?", id)
+	return getOne(ctx, c, fmt.Sprintf("users id %d", id), userReadDests, "SELECT "+userReadCols+" FROM users WHERE id = ?", id)
 }
 
 // ListUsers returns the live users ordered by name.
 func (c *conn) ListUsers(ctx context.Context) ([]index.User, error) {
-	return getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")
+	return getAll(ctx, c, "users", userReadDests, "SELECT "+userReadCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")
 }
 
 // CreateUser inserts u, at revision 1, with a new uid when UID is empty.
@@ -257,6 +268,80 @@ func (c *conn) TouchUser(ctx context.Context, id int64, seenAt time.Time) error 
 	}
 	var one int
 	return c.scanRow(ctx, what, "SELECT 1 FROM users WHERE id = ?", []any{id}, &one)
+}
+
+// FailPassword counts a wrong password of the user at at (docs/spec/rbac.md §1, Local passwords;
+// docs/spec/index-schema.md, The lockout), in one UPDATE: unless locked_until is later than at,
+// it adds one to password_failures, and the failure that reaches limit sets locked_until to
+// lockUntil and the count back to 0, in the same statement, and reports true. Every statement
+// reads the row as the one before it left it, so that of replicas that count at once exactly one
+// locks. A user whose lock is in force changes nothing and reports false; only then is the row
+// read, to tell it from no user. Neither the revision nor auth_version moves.
+func (c *conn) FailPassword(ctx context.Context, id int64, at, lockUntil time.Time, limit int) (bool, error) {
+	what := fmt.Sprintf("users id %d", id)
+	failedAt := c.d.EncodeTime(stamp(&at, now()))
+	var count int
+	err := c.scanRow(ctx, what, "UPDATE users SET"+
+		" password_failures = CASE WHEN password_failures + 1 >= ? THEN 0 ELSE password_failures + 1 END,"+
+		" locked_until = CASE WHEN password_failures + 1 >= ? THEN ? ELSE locked_until END"+
+		" WHERE id = ? AND (locked_until IS NULL OR locked_until <= ?) RETURNING password_failures",
+		[]any{limit, limit, c.d.EncodeTime(Normalize(lockUntil)), id, failedAt}, &count)
+	if !errors.Is(err, index.ErrNotFound) {
+		return err == nil && count == 0, err
+	}
+	var one int
+	return false, c.scanRow(ctx, what, "SELECT 1 FROM users WHERE id = ?", []any{id}, &one)
+}
+
+// ResetPasswordFailures sets password_failures of the user back to 0 while no lock is in force at
+// at; a lock in force changes nothing and wraps index.ErrConflict, so that a password verified
+// while another replica locked the user is not taken. A count that is 0 already is not written:
+// the row is read instead, as it is to tell a lock from no user.
+func (c *conn) ResetPasswordFailures(ctx context.Context, id int64, at time.Time) error {
+	what := fmt.Sprintf("users id %d", id)
+	n, err := c.exec(ctx, what, "UPDATE users SET password_failures = 0"+
+		" WHERE id = ? AND password_failures <> 0 AND (locked_until IS NULL OR locked_until <= ?)", id, c.d.EncodeTime(stamp(&at, now())))
+	if err != nil || n > 0 {
+		return err
+	}
+	var until *time.Time
+	if err := c.scanRow(ctx, what, "SELECT locked_until FROM users WHERE id = ?", []any{id}, nullTimeDest{&until}); err != nil {
+		return err
+	}
+	if until != nil && until.After(at) {
+		return fmt.Errorf("%w: %s is locked until %s", index.ErrConflict, what, until.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// UnlockUser sets password_failures of the user to 0 and locked_until to NULL, and returns the
+// locked_until it ended when that was later than at, nil otherwise. In one transaction whose first
+// statement writes the row, so that the row is held from there: of two unlocks at once, one ends
+// the lock, and a lock set meanwhile is not cleared unseen.
+func (c *conn) UnlockUser(ctx context.Context, id int64, at time.Time) (*time.Time, error) {
+	what := fmt.Sprintf("users id %d", id)
+	stamp(&at, now())
+	var ended *time.Time
+	err := c.withTx(ctx, func(c *conn) error {
+		ended = nil
+		var until *time.Time
+		if err := c.scanRow(ctx, what, "UPDATE users SET password_failures = 0 WHERE id = ? RETURNING locked_until", []any{id},
+			nullTimeDest{&until}); err != nil {
+			return err
+		}
+		if until == nil {
+			return nil
+		}
+		if until.After(at) {
+			ended = until
+		}
+		_, err := c.exec(ctx, what, "UPDATE users SET locked_until = NULL WHERE id = ?", id)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ended, nil
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.

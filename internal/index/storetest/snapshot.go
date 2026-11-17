@@ -46,7 +46,13 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 
 	alice := newUser(t, s, "alice")
 	must(t, s.TouchUser(ctx, alice.ID, at(65)))
+	if _, err := s.FailPassword(ctx, alice.ID, at(66), at(4000), 1); err != nil { // a lock, which a snapshot leaves out
+		t.Fatal(err)
+	}
 	gone := newUser(t, s, "gone")
+	if _, err := s.FailPassword(ctx, gone.ID, at(67), at(4000), 10); err != nil { // a count, left out too
+		t.Fatal(err)
+	}
 	gone.Name, gone.DeletedName, gone.DeletedAt = "~"+gone.UID, "gone", ptr(at(50))
 	must(t, s.UpdateUser(ctx, &gone))
 	dora := index.User{Name: "dora", Kind: "oidc", CreatedAt: at(2)}
@@ -131,6 +137,9 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	src := open(t)
 	f := fullControlPlane(t, src)
 	cp := export(t, src)
+	if alice, err := src.GetUser(ctx, "alice"); err != nil || alice.LockedUntil == nil {
+		t.Errorf("alice of the source: %+v, %v; want her locked", alice, err)
+	}
 	if cp.Schema < 26 || cp.ReadAt.IsZero() || !cp.WithAudit {
 		t.Errorf("Schema %d, ReadAt %v, WithAudit %v: want the newest migration, the database's time and the audit rows",
 			cp.Schema, cp.ReadAt, cp.WithAudit)
@@ -172,6 +181,21 @@ func checkServiceAccount(t *testing.T, dst index.Store) {
 	}
 }
 
+// checkUnlocked checks that cp, a snapshot, has no count and no lock of the lockout, and that
+// neither has any of its users in dst, where it was imported: a snapshot leaves them out, and a
+// restore unlocks every user (docs/spec/index-schema.md, The lockout).
+func checkUnlocked(t *testing.T, dst index.Store, cp *index.ControlPlane) {
+	t.Helper()
+	for _, u := range cp.Users {
+		got, err := dst.GetUserByID(t.Context(), u.ID)
+		must(t, err)
+		if u.PasswordFailures != 0 || u.LockedUntil != nil || got.PasswordFailures != 0 || got.LockedUntil != nil {
+			t.Errorf("user %s: the snapshot has PasswordFailures %d, LockedUntil %v, the import %d, %v; want 0 and none",
+				u.Name, u.PasswordFailures, u.LockedUntil, got.PasswordFailures, got.LockedUntil)
+		}
+	}
+}
+
 // checkImported checks dst after the import of cp, the snapshot of a fullControlPlane whose
 // fixture is f: its rows read as they did, the rows made after the import take ids past the
 // restored ones, and the rows a snapshot leaves out are not there.
@@ -206,6 +230,7 @@ func checkImported(t *testing.T, dst index.Store, cp *index.ControlPlane, f fixt
 	if _, err := dst.GetUser(ctx, "gone"); err == nil {
 		t.Error("the deleted user is live after the import")
 	}
+	checkUnlocked(t, dst, cp)
 	checkServiceAccount(t, dst)
 	groups, err := dst.ListIdentityGroups(ctx)
 	must(t, err)
