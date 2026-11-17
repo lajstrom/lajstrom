@@ -110,29 +110,34 @@ func TestUsersPasswordsOff(t *testing.T) {
 	}
 }
 
-// TestBootstrapPasswordsOff: while local passwords are off and no admin exists, Arm makes no
-// token valid and says how to make the first admin through the IdP; the exchange is closed,
-// the right token included (docs/spec/rbac.md §6).
+// TestBootstrapPasswordsOff: while local passwords are off, or the admin mode is on, and no admin
+// exists, Arm makes no token valid and says how to make the first admin through the IdP; the
+// exchange is closed, the right token included (docs/spec/rbac.md §6, §12).
 func TestBootstrapPasswordsOff(t *testing.T) {
-	ctx := context.Background()
-	replicas, logs, users, _ := newBootstrap(t, 1)
-	b := replicas[0]
-	b.PasswordsOff = true
-	const token = "0123456789abcdef0123456789abcdef"
-	if err := b.Arm(ctx, writeToken(t, token)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := users.Index.GetBootstrapToken(ctx); !errors.Is(err, index.ErrNotFound) {
-		t.Errorf("the bootstrap token = %v, want none made", err)
-	}
-	if l := logs[0].String(); !strings.Contains(l, "auth.localPasswords: false") ||
-		!strings.Contains(l, "lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'") {
-		t.Errorf("Arm does not say how to make the first admin:\n%s", l)
-	}
-	if open, err := b.Open(ctx); err != nil || open {
-		t.Errorf("Open = %v, %v; want closed", open, err)
-	}
-	if _, err := b.Exchange(ctx, token, "admin", "admin-password", cli); !errors.Is(err, ErrBootstrapClosed) {
-		t.Errorf("Exchange = %v, want ErrBootstrapClosed", err)
+	for setting, closeIt := range map[string]func(*Bootstrap){
+		"auth.localPasswords: false":  func(b *Bootstrap) { b.PasswordsOff = true },
+		"auth.admin.requireMFA: true": func(b *Bootstrap) { b.AdminMFA = true },
+	} {
+		ctx := context.Background()
+		replicas, logs, users, _ := newBootstrap(t, 1)
+		b := replicas[0]
+		closeIt(b)
+		const token = "0123456789abcdef0123456789abcdef"
+		if err := b.Arm(ctx, writeToken(t, token)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := users.Index.GetBootstrapToken(ctx); !errors.Is(err, index.ErrNotFound) {
+			t.Errorf("%s: the bootstrap token = %v, want none made", setting, err)
+		}
+		if l := logs[0].String(); !strings.Contains(l, setting) ||
+			!strings.Contains(l, "lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'") {
+			t.Errorf("%s: Arm does not say how to make the first admin:\n%s", setting, l)
+		}
+		if open, err := b.Open(ctx); err != nil || open {
+			t.Errorf("%s: Open = %v, %v; want closed", setting, open, err)
+		}
+		if _, err := b.Exchange(ctx, token, "admin", "admin-password", cli); !errors.Is(err, ErrBootstrapClosed) {
+			t.Errorf("%s: Exchange = %v, want ErrBootstrapClosed", setting, err)
+		}
 	}
 }

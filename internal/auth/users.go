@@ -913,11 +913,12 @@ func (s *Users) writeAudit(ctx context.Context, ev index.AuditEvent) {
 }
 
 // recordAudit completes ev, an event of a change with its time, action, subject and repo: the
-// principal is PrincipalFrom(ctx), the IP the origin's, the details details with the origin's
-// keys (Origin.AddTo). It appends ev on w, in the transaction of the change, when aw is nil;
-// the caller passes the event to writeAuditEvent after the commit.
+// principal is PrincipalFrom(ctx), the IP the origin's, the details details with the sign-in of
+// a web UI's token (AddSignIn) and the origin's keys (Origin.AddTo). It appends ev on w, in the
+// transaction of the change, when aw is nil; the caller passes the event to writeAuditEvent
+// after the commit.
 func recordAudit(ctx context.Context, w index.Writer, aw audit.Writer, ev index.AuditEvent, o Origin, details map[string]any) (index.AuditEvent, error) {
-	raw, err := json.Marshal(o.AddTo(details))
+	raw, err := json.Marshal(o.AddTo(AddSignIn(ctx, details)))
 	if err != nil {
 		return index.AuditEvent{}, fmt.Errorf("auth: audit details of %s: %w", ev.Action, err)
 	}

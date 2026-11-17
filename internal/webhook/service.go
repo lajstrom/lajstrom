@@ -294,10 +294,11 @@ func (s *Service) checkMask(mask string) error {
 }
 
 // record appends the audit row of a change of h on w: repo the mask, subject webhook:<id>,
-// the details of rbac.md §5 (the host of the URL, never the URL) and the origin.
+// the details of rbac.md §5 (the host of the URL, never the URL), the sign-in of a web UI's
+// token (auth.AddSignIn) and the origin.
 func (s *Service) record(ctx context.Context, w index.Writer, action string, h *index.Webhook, o Origin) error {
 	details := map[string]any{"mask": h.Mask, "urlHost": hostOf(h.URL), "events": h.Events, "active": h.Active}
-	raw, err := json.Marshal(o.AddTo(details))
+	raw, err := json.Marshal(o.AddTo(auth.AddSignIn(ctx, details)))
 	if err != nil {
 		return err
 	}
