@@ -732,7 +732,30 @@ type OIDC struct {
 	// the login count as long. DefaultOIDCTokenLifetime when the file leaves it out; at most a
 	// year.
 	TokenLifetime time.Duration `yaml:"tokenLifetime"`
+	// MFA is what counts as a second factor of a web UI's sign-in (docs/spec/rbac.md §10,
+	// #1276), for every step that needs one: the admin role under auth.admin.requireMFA, a CI
+	// trust policy of the API that writes, and its approval.
+	MFA OIDCMFA `yaml:"mfa"`
 }
+
+// OIDCMFA is auth.oidc.mfa: the values of the ID token's amr and acr taken as a second factor.
+// With both empty, the default, a second factor is mfa in amr, or methods of two kinds of factor
+// of RFC 8176; otherwise each list that is set must hold.
+type OIDCMFA struct {
+	// AMR are the values of amr taken: one of the sign-in's must be in the list ([mfa],
+	// [hwk, swk]). Each at most MaxMFAAMRValue bytes, as a sign-in keeps no longer one.
+	AMR []string `yaml:"amr"`
+	// ACR are the values of acr taken: the sign-in's must be one of them. Each at most
+	// MaxMFAACRValue bytes.
+	ACR []string `yaml:"acr"`
+}
+
+// MaxMFAAMRValue and MaxMFAACRValue bound a value of auth.oidc.mfa.amr and auth.oidc.mfa.acr:
+// those of the amr and the acr a sign-in keeps (docs/spec/rbac.md §10).
+const (
+	MaxMFAAMRValue = 64
+	MaxMFAACRValue = 256
+)
 
 // Defaults of auth.oidc.
 const (

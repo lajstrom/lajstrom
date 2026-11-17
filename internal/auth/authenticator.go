@@ -95,6 +95,9 @@ type Options struct {
 	// and every refused password is ErrPasswordRefused. Zero, and any while PasswordsOff, counts
 	// nothing and locks nothing.
 	Lockout time.Duration
+	// MFA is auth.oidc.mfa, what a second factor of a web UI's sign-in through OIDC is
+	// (docs/spec/rbac.md §10): AuthenticateDPoP gives it to the sign-in of each request.
+	MFA MFA
 }
 
 // Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
@@ -122,6 +125,7 @@ type Authenticator struct {
 	ttl   time.Duration
 	size  int
 	idle  time.Duration
+	mfa   MFA
 
 	// verify is VerifyPassword; the tests count the calls.
 	verify func(hash, password string) (bool, error)
@@ -180,10 +184,10 @@ func NewAuthenticator(o Options) *Authenticator {
 	}
 	a := &Authenticator{
 		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize, idle: o.IdleTimeout, users: o.Users,
-		passwordsOff: o.PasswordsOff,
-		verify:       VerifyPassword,
-		entries:      map[cacheKey]*list.Element{},
-		order:        list.New(),
+		passwordsOff: o.PasswordsOff, mfa: o.MFA,
+		verify:  VerifyPassword,
+		entries: map[cacheKey]*list.Element{},
+		order:   list.New(),
 	}
 	if a.log == nil {
 		a.log = slog.Default()

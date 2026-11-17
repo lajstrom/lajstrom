@@ -194,8 +194,9 @@ func TestUIHandoffWrongKey(t *testing.T) {
 // TestUIStepUp checks a web UI's login with prompt=login (docs/spec/rbac.md §10): the IdP is asked
 // to authenticate again, the callback keeps the ID token's auth_time, amr and acr on the login,
 // and the token of its code keeps them, so that a request with it and its DPoP proof carries the
-// sign-in; the token's view answers it. A login whose ID token has no auth_time keeps its amr and
-// acr, a sign-in never fresh, and one with none of the three gives a token without a sign-in.
+// sign-in, judged by auth.oidc.mfa; the token's view answers it. A login whose ID token has no
+// auth_time keeps its amr and acr, a sign-in never fresh, and one with none of the three gives a
+// token without a sign-in.
 func TestUIStepUp(t *testing.T) {
 	f := newLoginFixture(t)
 	ctx := context.Background()
@@ -217,13 +218,14 @@ func TestUIStepUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkStepUpToken(t, f, tok, at)
-	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
+	gold := auth.MFA{ACR: []string{"gold"}}
+	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st, MFA: gold}).AuthenticateDPoP(ctx, secret, testJKT)
 	if err != nil || cred.SignIn == nil || !cred.SignIn.At.Equal(at) || !slices.Equal(cred.SignIn.AMR, []string{"pwd", "otp"}) ||
-		cred.SignIn.ACR != "gold" {
+		cred.SignIn.ACR != "gold" || !slices.Equal(cred.SignIn.MFA.ACR, gold.ACR) {
 		t.Fatalf("the token's credential: %+v, %v", cred, err)
 	}
 	if err := auth.FreshSignIn(cred, *f.now.Load()); err != nil {
-		t.Errorf("a sign-in a minute old with pwd and otp: %v", err)
+		t.Errorf("a sign-in a minute old with the acr of auth.oidc.mfa: %v", err)
 	}
 	checkNoSignIn(t, f, verifier)
 }
@@ -244,8 +246,8 @@ func checkStepUpToken(t *testing.T, f *loginFixture, tok *auth.Token, at time.Ti
 }
 
 // checkNoSignIn checks that a login of the fixture f without prompt asks no step-up; that, its
-// ID token without auth_time, its token keeps amr and acr, a sign-in that is never fresh; and
-// that, its ID token with none of the three, its token carries no sign-in.
+// ID token without auth_time, its token keeps amr and acr, a sign-in with a second factor that is
+// never fresh; and that, its ID token with none of the three, its token carries no sign-in.
 func checkNoSignIn(t *testing.T, f *loginFixture, verifier string) {
 	t.Helper()
 	ctx := context.Background()
@@ -262,7 +264,7 @@ func checkNoSignIn(t *testing.T, f *loginFixture, verifier string) {
 	}
 	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
 	switch {
-	case err != nil || cred.SignIn == nil || !cred.SignIn.At.IsZero() || cred.SignIn.ACR != "gold" || !slices.Equal(cred.SignIn.AMR, []string{"mfa"}):
+	case err != nil || cred.SignIn == nil || !cred.SignIn.At.IsZero() || cred.SignIn.ACR != "gold" || !cred.SignIn.SecondFactor():
 		t.Errorf("a login without auth_time: %+v, %v; want its amr and acr", cred, err)
 	case !errors.Is(auth.FreshSignIn(cred, *f.now.Load()), auth.ErrScope):
 		t.Errorf("a sign-in without auth_time is fresh")

@@ -438,6 +438,10 @@ func TestLoadErrors(t *testing.T) {
 				"auth.oidc.usernameClaim: must not be empty", "auth.oidc.tokenLifetime: must be positive and at most 8760h"}},
 		{name: "oidc issuer with a query", file: minimal + "auth: {oidc: {issuer: \"https://idp.example/?a=b\", clientID: c, clientSecretFile: /s}}\n",
 			want: []string{"auth.oidc.issuer: must be an absolute http(s) URL without a query"}, wantNot: []string{"clientID"}},
+		{name: "oidc mfa values", file: minimal + "auth: {oidc: {issuer: \"https://idp.example\", clientID: c, clientSecretFile: /s, " +
+			"mfa: {amr: [hwk, \"\", " + strings.Repeat("x", 65) + "], acr: [gold, " + strings.Repeat("y", 257) + "]}}}\n",
+			want: []string{"auth.oidc.mfa.amr[1]: must be 1 to 64 bytes", "auth.oidc.mfa.amr[2]: must be 1 to 64 bytes",
+				"auth.oidc.mfa.acr[1]: must be 1 to 256 bytes"}, wantNot: []string{"amr[0]", "acr[0]"}},
 		{name: "negative grace age", file: minimal + "reconcile: {graceAge: -24h}\n", want: []string{"reconcile.graceAge: must not be negative"}},
 		{name: "webhooks out of bounds",
 			file: minimal + "webhooks: {timeout: 2m, maxAttempts: 0, retention: 0s, workers: -1, allowedHosts: [\"https://ci.internal\", \"ci.internal:8080\", \"\"]}\n",
