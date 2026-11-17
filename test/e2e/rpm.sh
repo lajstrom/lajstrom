@@ -249,8 +249,11 @@ if [ -n "$zypper_image" ]; then
 	[ -n "$key" ] || gpg_opts="--no-gpgcheck"
 	(umask 077 && printf 'username=%s\npassword=%s\n' "$E2E_USER" "$E2E_PASSWORD" >"$work/client/zypp.credentials")
 	docker run -d --name "$zclient" --network host --platform linux/amd64 -v "$work/client:/w" "$zypper_image" sleep infinity >/dev/null
+	# Only the repo under test: the image's own repos, refreshed from the openSUSE mirrors by the
+	# install, took five of make e2e's ten minutes (train 7, #1354).
 	docker exec "$zclient" bash -ec "
 		install -D -m 0600 /w/zypp.credentials /etc/zypp/credentials.d/lajstrom
+		zypper -n modifyrepo --all --disable
 		zypper -n addrepo $gpg_opts '$base/rpm/$repo/?credentials=lajstrom' $repo
 		zypper -n --gpg-auto-import-keys refresh $repo
 		zypper -n install $two
