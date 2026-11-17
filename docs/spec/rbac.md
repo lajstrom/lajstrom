@@ -1603,13 +1603,14 @@ as the expiry of a CI trust policy is marked (§11). A request approved, rejecte
 decided: another decision is `409`. Requests are kept, decided or not; the audit log has them too.
 
 **Lists.** `GET /api/v1/approvals` and `GET /api/v1/approvals/<id>` take the admin role
-(http-routing.md §4), and `lajstrom admin approval list` reads the same on the command line, from
-which a web UI shows the requests that wait. No webhook event is sent for a request.
+(http-routing.md §4); a web UI shows the requests that wait from them, and
+`lajstrom admin approval list` reads the same on the command line. No webhook event is sent for a
+request.
 
 **The command line** writes the database without a credential and is the operator's (§6):
 `lajstrom admin binding create`, `user create --admin` and `token create --mask` make the change at
 once whatever the setting, with their `source: cli` rows and their reason. It is the break-glass
-path, and the way to the second admin of a server that has one.
+path, and the way to the second admin of a server that has only one.
 
 **The setting** is configuration: a change takes a restart, each replica applies its own, and a
 replica of a release that does not know it refuses the configuration. Turning it on leaves the
