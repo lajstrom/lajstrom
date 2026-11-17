@@ -1942,6 +1942,15 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
+        "403":
+          description: >-
+            The password is right and its user must change it before anything else
+            (auth.passwords.changeAtFirstUse, or an admin's mustChange): the one 403 of a
+            sign-in, which mints no token. The UI offers the change, POST
+            /api/v1/users/{user}/password with currentPassword (docs/spec/rbac.md §1).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "429":
           description: Too many failed logins of the account or from the client address; try again after Retry-After.
           headers:

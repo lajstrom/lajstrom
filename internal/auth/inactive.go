@@ -231,19 +231,32 @@ func (a *Authenticator) admit(ctx context.Context, cred CredentialKind, u *index
 	return nil
 }
 
-// admitPassword is admit for a password of the user u, verified (checked) or remembered, whose
-// refusal counts as a failed login of account and addr, as a disabled user's does; first the
-// count of the lockout goes back to 0, unless a lock is in force (resetFailures). It returns the
-// principal user:<uid>.
+// admitPassword is admitVerified for a password of the user u, verified (checked) or remembered,
+// then, when u must change its password, ErrMustChange (mustChange): the password authenticates
+// its own change and nothing else (docs/spec/rbac.md §1, Change at first use), and only once it
+// has verified. It returns the principal user:<uid>.
 func (a *Authenticator) admitPassword(ctx context.Context, u *index.User, account, addr string, checked bool) (Principal, error) {
-	if err := a.resetFailures(ctx, u, checked, account, addr); err != nil {
+	if err := a.admitVerified(ctx, u, account, addr, checked); err != nil {
 		return Principal{}, err
+	}
+	if u.MustChange {
+		return Principal{}, a.mustChange(ctx, u)
+	}
+	return UserPrincipal(u), nil
+}
+
+// admitVerified is admit for a password of the user u, verified (checked) or remembered, whose
+// refusal counts as a failed login of account and addr, as a disabled user's does; first the
+// count of the lockout goes back to 0, unless a lock is in force (resetFailures).
+func (a *Authenticator) admitVerified(ctx context.Context, u *index.User, account, addr string, checked bool) error {
+	if err := a.resetFailures(ctx, u, checked, account, addr); err != nil {
+		return err
 	}
 	if err := a.admit(ctx, CredPassword, u); err != nil {
 		a.failed(ctx, account, addr)
-		return Principal{}, err
+		return err
 	}
-	return UserPrincipal(u), nil
+	return nil
 }
 
 // recordSeen records the activity of the user u now (TouchUser) as touch records a token's use:
