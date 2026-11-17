@@ -22,6 +22,9 @@ type ServerInfo struct {
 	Formats []FormatInfo
 	// OIDC is whether the OIDC login is on (auth.oidc.issuer is set): authModes has oidc.
 	OIDC bool
+	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords):
+	// authModes has no password, so that a UI shows no password form.
+	PasswordsOff bool
 }
 
 // FormatInfo is a format plugin the server serves: its name and the artifact type of its
@@ -73,12 +76,17 @@ type Caller struct {
 }
 
 // authModes returns the ways a person signs in: a local user's password, over Basic and to POST
-// /api/v1/login, a personal access token, and the OIDC login (#69) while it is on.
+// /api/v1/login, while local passwords are on, a personal access token, and the OIDC login (#69)
+// while it is on.
 func (h *handler) authModes() []string {
-	if h.info.OIDC {
-		return []string{"password", "token", "oidc"}
+	modes := []string{"token"}
+	if !h.info.PasswordsOff {
+		modes = []string{"password", "token"}
 	}
-	return []string{"password", "token"}
+	if h.info.OIDC {
+		modes = append(modes, "oidc")
+	}
+	return modes
 }
 
 // serverInfo answers GET /api/v1/info. No authorization is asked for: anyone may read it. Unlike

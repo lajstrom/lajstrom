@@ -34,7 +34,7 @@ func loginFixture(t *testing.T, o Options) *fixture {
 		}
 	}
 	if o.Passwords == nil {
-		o.Passwords = auth.NewAuthenticator(auth.Options{Index: f.st})
+		o.Passwords = auth.NewAuthenticator(auth.Options{Index: f.st, PasswordsOff: o.PasswordsOff})
 	}
 	if o.DPoP == nil {
 		o.DPoP = loginVerifier(f.st)
@@ -220,6 +220,8 @@ type throttledPasswords struct{}
 func (throttledPasswords) AuthenticatePassword(context.Context, string, string) (auth.Principal, auth.Credential, error) {
 	return auth.Principal{}, auth.Credential{}, &auth.ThrottledError{Throttle: "account", Account: "user:x", RetryAfter: 1500 * time.Millisecond}
 }
+
+func (throttledPasswords) RefusalMessage(_ error, fallback string) string { return fallback }
 
 // TestLoginThrottled checks that a throttled account or address is 429 with Retry-After in whole
 // seconds, rounded up, and that a server without passwords or without a DPoP verifier answers

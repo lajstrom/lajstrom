@@ -503,6 +503,10 @@ type Auth struct {
 	// next authentication (docs/spec/rbac.md §1, Inactive users; #1283). Zero, the default,
 	// disables nobody; otherwise at least MinInactiveUsersAfter.
 	DisableInactiveUsersAfter time.Duration `yaml:"disableInactiveUsersAfter"`
+	// LocalPasswords is whether a local user's password is a credential (docs/spec/rbac.md §1,
+	// Local passwords; #1280); true by default. false refuses every password, on every route that
+	// takes one, and sets none: people log in through OIDC, which serve then requires.
+	LocalPasswords bool `yaml:"localPasswords"`
 	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
 	Bootstrap Bootstrap `yaml:"bootstrap"`
 	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
@@ -858,7 +862,7 @@ func Default() *Config {
 		Database:  Database{Driver: DefaultDatabaseDriver},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
-		Auth: Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
+		Auth: Auth{LocalPasswords: true, Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
 			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},
 			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime},

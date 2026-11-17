@@ -25,6 +25,12 @@ type accounts struct {
 // password"), carol (disabled) and dave, who may not read the repo; authz decides.
 func (p *pipeline) loginRoutes(t *testing.T, authz auth.Authorizer) http.Handler {
 	t.Helper()
+	return p.loginRoutesWith(t, authz, auth.Options{})
+}
+
+// loginRoutesWith is loginRoutes with the authenticator of o.
+func (p *pipeline) loginRoutesWith(t *testing.T, authz auth.Authorizer, o auth.Options) http.Handler {
+	t.Helper()
 	ctx := t.Context()
 	for _, u := range []struct {
 		name     string
@@ -34,7 +40,8 @@ func (p *pipeline) loginRoutes(t *testing.T, authz auth.Authorizer) http.Handler
 		must(t, err)
 		must(t, p.st.CreateUser(ctx, &index.User{Name: u.name, PasswordHash: hash, Kind: "local", Disabled: u.disabled}))
 	}
-	a := accounts{auth.NewAuthenticator(auth.Options{Index: p.st, Log: slog.New(slog.DiscardHandler)}), &auth.Tokens{Index: p.st}}
+	o.Index, o.Log = p.st, slog.New(slog.DiscardHandler)
+	a := accounts{auth.NewAuthenticator(o), &auth.Tokens{Index: p.st}}
 	deps := format.Deps{Index: p.st, Ingest: p.pipe, Providers: provider.Map{"local": p.fake}, Auth: authz, Log: slog.New(slog.DiscardHandler)}
 	mux := http.NewServeMux()
 	Plugin{Accounts: a}.Routes(format.NewRouter(mux, Name, deps), deps)
@@ -133,6 +140,20 @@ func TestLoginRefused(t *testing.T) {
 	}
 	if rr := do(p.routes(nil), http.MethodPut, path+"alice", loginBody("alice", "alice's password"), true); rr.Code != http.StatusNotImplemented {
 		t.Errorf("a login without accounts: %d", rr.Code)
+	}
+}
+
+// TestLoginPasswordsOff: with auth.localPasswords false npm login is 401, the right password
+// too, with the message that passwords are off, and makes no token (docs/spec/rbac.md §1).
+func TestLoginPasswordsOff(t *testing.T) {
+	p := newPipeline(t)
+	h := p.loginRoutesWith(t, readers{}, auth.Options{PasswordsOff: true})
+	rr := as(h, auth.Anonymous, http.MethodPut, "/npm/internal/-/user/org.couchdb.user:alice", loginBody("alice", "alice's password"))
+	if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "passwords are off on this server") {
+		t.Errorf("npm login: %d %s, want 401 saying passwords are off", rr.Code, rr.Body)
+	}
+	if audit, _ := p.st.ListAudit(t.Context(), index.AuditFilter{Action: "token.create"}); len(audit) != 0 {
+		t.Errorf("%d tokens made", len(audit))
 	}
 }
 
