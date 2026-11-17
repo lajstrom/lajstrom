@@ -1362,7 +1362,7 @@ paths:
     patch:
       tags: [users]
       operationId: updateUser
-      summary: Change the name, disabled, and a service account's owner (admin).
+      summary: Change the name, disabled, a service account's owner, and mustChange (admin).
       requestBody:
         required: true
         content:
@@ -1407,22 +1407,46 @@ paths:
     post:
       tags: [users]
       operationId: setPassword
-      summary: Set the password of a user (admin); a service account has none, 400.
+      summary: Set the password of a user (admin), or change one's own with the current password.
       description: >-
-        The new password ends a lock of the lockout too, with a user.unlock audit row when one was
-        in force. While auth.localPasswords is false no password is set: 400, naming the setting
-        (docs/spec/rbac.md §1, Local passwords).
+        Two bodies (docs/spec/rbac.md §1, Local passwords). {"password"} is an admin's new
+        password, which takes the admin role: it ends a lock of the lockout too, with a
+        user.unlock audit row when one was in force, is not compared with the user's last
+        passwords, and with auth.passwords.changeAtFirstUse sets mustChange (without it, clears
+        it); a service account has no password, 400. {"currentPassword", "password"} is the
+        user's own change, which takes no other credential and ignores Authorization: the
+        current password is checked as Basic credentials are, with the throttles of failed
+        logins and the lockout, a wrong one 401 with the message of every refused password; the
+        new one is none of the user's last four passwords, else 400; the change clears
+        mustChange and is a user.password audit row by the user. Either new password follows
+        the rules of auth.passwords (minLength, requireLettersAndDigits), else 400 naming the
+        rule. While auth.localPasswords is false no password is set: 400, naming the setting.
+      security:
+        - {}
+        - basic: []
+        - bearer: []
+        - dpop: []
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: "#/components/schemas/PasswordRequest"}
       responses:
-        "204": {description: Set.}
+        "204": {description: "Set, or changed."}
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "429":
+          description: The user's own change, too many failed logins of the account or from the client address; try again after Retry-After.
+          headers:
+            Retry-After:
+              description: Seconds to wait.
+              schema: {type: integer}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/users/{user}/unlock:
     parameters:
       - $ref: "#/components/parameters/user"
@@ -2702,6 +2726,7 @@ components:
         lastSeenAt: {type: [string, "null"], format: date-time, description: "The user's last activity, its last successful authentication or its enabling, less than a minute behind; null before any record (docs/spec/rbac.md §1, Inactive users). It moves no revision."}
         inactive: {type: boolean, description: "With auth.disableInactiveUsersAfter set, the user is inactive beyond it: its next authentication disables it, but for the last enabled admin. Absent when false."}
         lockedUntil: {type: string, format: date-time, description: "With auth.lockout.duration set, the end of the lock of the user's password after 10 wrong passwords in a row; absent while it is not locked (docs/spec/rbac.md §1, Local passwords). It moves no revision."}
+        mustChange: {type: boolean, description: "The user's password must be changed before it is used for anything else: it authenticates its own change and is 403 everywhere else (docs/spec/rbac.md §1, Change at first use). Absent when false."}
         owner: {type: string, description: "A service account's owner, user:<uid> or group:<name>; absent for every other kind."}
         ownerName: {type: string, description: The name of a user owner.}
         ownerDisabled: {type: boolean, description: "A user owner is disabled; the service account is not, for that, unless auth.serviceAccounts.onOwnerDisabled is disable."}
@@ -2758,17 +2783,24 @@ components:
         name: {type: string}
         disabled: {type: boolean}
         owner: {type: string, description: "A service account's new owner, as in UserRequest; 400 for a user of another kind."}
+        mustChange: {type: boolean, description: "true: the user's password must be changed before it is used for anything else; false clears it. Whatever auth.passwords.changeAtFirstUse is; 400 for a user without a password (docs/spec/rbac.md §1, Change at first use)."}
     PasswordRequest:
       type: object
       required: [password]
       additionalProperties: false
+      description: "{password} alone is an admin's new password; with currentPassword, the user's own change."
       properties:
         password: {$ref: "#/components/schemas/Password"}
+        currentPassword: {type: string, description: "The user's current password, the credential of its own change."}
     Password:
       type: string
       minLength: 8
       maxLength: 1024
-      description: A password of 8 to 1024 bytes of UTF-8; the server counts bytes, and the lengths here count characters.
+      description: >-
+        A password of at least auth.passwords.minLength characters, Unicode code points (8 by
+        default, 12 for PCI DSS), and at most 1024 bytes of UTF-8; with
+        auth.passwords.requireLettersAndDigits, a letter and a digit of any script. The server
+        counts bytes for the maximum, and the lengths here count characters.
     CIPolicy:
       type: object
       description: >-

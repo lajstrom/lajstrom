@@ -103,6 +103,10 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //   - The legacy login of npm (npmLogin): the request goes on as anonymous with the header
 //     untouched, whatever it says. Its body carries the password, which the npm plugin checks,
 //     and npm sends with it the token it had, revoked or not (docs/spec/http-routing.md, npm).
+//   - POST /api/v1/users/{user}/password (passwordPath): the request goes on as anonymous with
+//     the header untouched, and the management API authenticates it when its body is an admin's
+//     new password (Authenticate); a user's own change, whose credential is the current password
+//     of its body, ignores the header (docs/spec/rbac.md §1, A user's own password).
 //   - Any other bearer, a bearer on /v2 and any other scheme: the request goes on as anonymous
 //     with the header untouched. The OCI facade verifies the bearer of /v2, a JWT, and records
 //     its principal (HoldPrincipal).
@@ -132,17 +136,28 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			s.authenticateForm(w, r, next)
 			return
 		}
-		if scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " "); strings.EqualFold(scheme, "DPoP") {
-			s.authenticateDPoP(w, r, next, strings.TrimSpace(value))
+		if r.Method == http.MethodPost && passwordPath.MatchString(r.URL.Path) {
+			s.deferAuthentication(w, r, next)
 			return
 		}
-		p, cred, ok, err := s.credential(r)
-		if !ok {
-			next.ServeHTTP(w, r)
-			return
-		}
-		s.settle(w, r, next, p, cred, err)
+		s.authenticateHeader(w, r, next)
 	})
+}
+
+// authenticateHeader authenticates the Authorization header of r, or the client certificate of a
+// GET of /v2/token without one (authenticate): a DPoP token on /api/, else the credential of
+// credential, settled. Without one, r goes on to next as anonymous with the header untouched.
+func (s *Server) authenticateHeader(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " "); strings.EqualFold(scheme, "DPoP") {
+		s.authenticateDPoP(w, r, next, strings.TrimSpace(value))
+		return
+	}
+	p, cred, ok, err := s.credential(r)
+	if !ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+	s.settle(w, r, next, p, cred, err)
 }
 
 // credential authenticates the credential of r's Authorization header, or the client
