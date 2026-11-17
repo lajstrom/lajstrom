@@ -49,13 +49,20 @@ func serveConfig(t *testing.T, dir string) (cfg, addr string) {
 // and returns stop, which ends it and returns its error. The test's end stops it too.
 func startServe(t *testing.T, cfg, addr string) (stop func() error) {
 	t.Helper()
+	return startServeWith(t, cfg, addr, io.Discard)
+}
+
+// startServeWith is startServe with stderr as the standard error of serve, and args after its
+// --config.
+func startServeWith(t *testing.T, cfg, addr string, stderr io.Writer, args ...string) (stop func() error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		cmd := newRootCmd(func(string) (string, bool) { return "", false })
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
-		cmd.SetArgs([]string{"serve", "--config", cfg})
+		cmd.SetErr(stderr)
+		cmd.SetArgs(append([]string{"serve", "--config", cfg}, args...))
 		done <- cmd.ExecuteContext(ctx)
 	}()
 	stopped := false

@@ -71,6 +71,7 @@ func TestRecorded(t *testing.T) {
 		"auth.clientCertificates.bundles[corp].caFile":   `{"path":"/etc/lajstrom/corp-ca.pem","sha256":"` + hex.EncodeToString(sum[:]) + `"}`,
 		"auth.clientCertificates.bundles[corp].identity": `"cn"`,
 		"server.tls.certFile":                            `""`,
+		"audit.log":                                      `true`,
 	} {
 		if got := string(view[k]); got != want {
 			t.Errorf("%s = %s, want %s", k, got, want)

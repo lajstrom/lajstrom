@@ -59,6 +59,7 @@ func TestLoadDefaults(t *testing.T) {
 					StallTimeout: time.Minute, MaxConcurrentUploads: 32, MaxCreatedAhead: 5 * time.Minute, MaxCreatedBehind: time.Hour,
 					UploadSessions: UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
 				Log:       Log{Level: "info", Format: "text"},
+				Audit:     Audit{Log: true},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
@@ -89,6 +90,18 @@ func TestLoadWebhooks(t *testing.T) {
 		Retention: 168 * time.Hour}
 	if !reflect.DeepEqual(c.Webhooks, want) {
 		t.Errorf("webhooks %+v, want %+v", c.Webhooks, want)
+	}
+}
+
+// TestLoadAudit: audit.log is true by default, and a file turns it off (#1278).
+func TestLoadAudit(t *testing.T) {
+	for file, want := range map[string]bool{minimal: true, minimal + "audit: {log: false}\n": false} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Audit.Log != want {
+			t.Errorf("Load(%q): audit.log %v, want %v", file, c.Audit.Log, want)
+		}
 	}
 }
 

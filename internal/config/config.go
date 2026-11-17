@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server      Server      `yaml:"server"`
 	Log         Log         `yaml:"log"`
+	Audit       Audit       `yaml:"audit"`
 	Database    Database    `yaml:"database"`
 	Registries  []Registry  `yaml:"registries"`
 	Upstreams   []Upstream  `yaml:"upstreams"`
@@ -122,6 +123,14 @@ type Log struct {
 	Level string `yaml:"level"`
 	// Format is text or json.
 	Format string `yaml:"format"`
+}
+
+// Audit configures the export of the audit log (docs/spec/rbac.md §5, #1278).
+type Audit struct {
+	// Log writes every audit row as a log line on standard error once its change commits, msg
+	// audit at info whatever log.level says. A key of its own, not of log, so that a change of
+	// it is a config.change row.
+	Log bool `yaml:"log"`
 }
 
 // Database selects the index database (docs/spec/index-schema.md).
@@ -959,6 +968,7 @@ func Default() *Config {
 			MaxCreatedAhead: DefaultMaxCreatedAhead, MaxCreatedBehind: DefaultMaxCreatedBehind,
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Audit:     Audit{Log: true},
 		Database:  Database{Driver: DefaultDatabaseDriver},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
