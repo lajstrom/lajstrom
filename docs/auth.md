@@ -443,7 +443,9 @@ lajstrom: binding 1 is the last admin binding of an enabled user: create another
 `list --principal user:alice` lists one principal's. `delete <id>` refuses the last admin
 binding of an enabled user, so that somebody can still manage the server. Every change is an
 audit event, `binding.create` or `binding.delete`, with the principal (`user:<uid>`) as its
-subject and the id, role and mask in the details.
+subject and the id, role and mask in the details. With `auth.approval: second-admin`, a binding
+of the role `admin` or on `*/*` made through the API waits for a second admin, and the command
+line makes it at once ([Changes that wait for a second admin](#changes-that-wait-for-a-second-admin)).
 
 ### How a request is decided
 
@@ -1016,6 +1018,9 @@ with the secret as its password, on the frontends and at `/v2/token`, as with an
   for the repos the nodes need and no more: name the repos so that one mask covers them
   (`*/talos`, `oci/*` on a server whose `oci` repos are all for the nodes), or give each
   cluster an exact mask per repo where it has a credential per host anyway.
+- With `auth.approval: second-admin`, one whose scopes hold `write`, made through the API, waits
+  for a second admin: the `POST` answers `202` with a request and the secret, which works once
+  another admin approves the request ([Changes that wait for a second admin](#changes-that-wait-for-a-second-admin)).
 - Only the `admin` role creates one, **with its password**: a `maintainer`, even on `*/*`,
   gets `403`, and so does a request whose credential is a token, a personal access token with
   scopes or without, the admin's too, or a deploy token, before its body is read. A stolen admin
@@ -1639,6 +1644,109 @@ audit log with the issuer, the subject and the groups, a first login `user.creat
 Not yet: token exchange for CI (a GitHub Actions or GitLab OIDC token for a short-lived token,
 proposed on #69; meanwhile a pipeline uses a [deploy token](#in-ci)), and joining an existing
 local user to an identity.
+
+## Approval of privileged changes
+
+Two settings, both off by default, tie a change of the control plane to its approval
+([rbac.md](spec/rbac.md) §13, [ADR 0030](adr/0030-approval-of-privileged-changes.md); PCI DSS
+7.2.3 and 8.2.4): a second admin approves the changes that grant the most, and every change
+carries a reason, the reference of its approval in your records.
+
+### A reason with each change
+
+Every change of the control plane through `/api/v1` takes `changeReason`: a ticket or a sentence,
+1 to 1024 bytes of UTF-8 without control characters, as `--reason` (or `LAJSTROM_REASON`) on the
+command line. It is a field of the JSON body, or `?changeReason=` on a route without one (a
+`DELETE`, an unlock, a webhook's new secret, an approval, a rejection), never both; it is kept in
+the change's audit row as `details.changeReason`, never `reason`, which a policy rule and a deny
+keep with their own meaning:
+
+```console
+$ curl -s -u admin:<password> -X POST https://art.example.com/api/v1/bindings \
+    -d '{"principal": "user:alice", "role": "writer", "repoMask": "pypi/*", "changeReason": "CHG-1042"}'
+$ curl -s -u admin:<password> -X DELETE 'https://art.example.com/api/v1/bindings/7?changeReason=CHG-1043'
+```
+
+With `auth.requireReason: true`, a change without one is `400` naming `changeReason`, after the
+role is checked and before anything is written, and the commands of `lajstrom admin user`,
+`binding`, `token`, `repo`, `webhook`, `ci-policy` and `policy rule` that write exit with status
+`2` without a reason (`admin policy rule create`, whose `--reason` is the rule's, takes
+`LAJSTROM_REASON`). The changes are a repo's create, change and delete; every user route of the
+admin role; a binding's create and delete; the tokens made or revoked for another user or a
+service account, a repo's deploy tokens and those over a mask; a webhook's create, change, delete
+and new secret; a policy rule's create and delete, a deny and its removal; a CI trust policy's
+create, change, renewal, approval and delete; a request's approval and rejection. A person's own
+tokens and password, the bootstrap, the writes of artifacts, a reindex and a purge of a proxy's
+cache need none. `GET /api/v1/info` answers `requireReason`, so that a UI asks for one.
+
+### Changes that wait for a second admin
+
+With `auth.approval: second-admin`, three changes made through the API wait for a second admin,
+and no other:
+
+- a binding of the role `admin`, whatever its principal: a user, a group, a service account;
+- a binding on the mask `*/*`, whatever its role;
+- a deploy token over a mask whose scopes hold `write`.
+
+The route checks what it checks for the change (the role, the credential, the body, the `409` of
+a binding that exists or a name that is taken), then answers `202 Accepted` with a **request** in
+its place, and its `Location`, `/api/v1/approvals/<id>`. A request grants nothing: no binding or
+token exists until it is approved. The same change pending twice is `409`. A deploy token's
+secret is made with the request and answered once in the `202`; it is no credential (`401`, an
+unknown token) until the approval makes the token with it, with the expiry asked, and a request
+rejected or expired leaves nothing to revoke. The approver never sees the secret.
+
+```console
+$ curl -s -u admin:<password> -X POST https://art.example.com/api/v1/bindings \
+    -d '{"principal": "user:carol", "role": "admin", "repoMask": "*/*", "changeReason": "CHG-1050"}'
+{"id":12,"kind":"binding","change":{"principal":"user:01a1…","role":"admin","repoMask":"*/*"},
+ "changeReason":"CHG-1050","state":"pending","requestedBy":"user:01a0…",
+ "requestedAt":"2026-11-17T09:00:00Z","expiresAt":"2026-11-24T09:00:00Z"}
+$ curl -s -u root:<password> -X POST 'https://art.example.com/api/v1/approvals/12/approve?changeReason=CHG-1050'
+{"id":12,…,"state":"approved","decidedBy":"user:01a2…","decidedAt":"…","decisionReason":"CHG-1050","result":"binding:31"}
+```
+
+- **The approval** is an admin's other than the requester, compared by uid, with what a deploy
+  token over a mask takes: the admin's password, or a web UI's fresh sign-in through OIDC in its
+  place ([Rules](#rules)), never another token; under `auth.admin.requireMFA`
+  ([Administrative access with a second factor](#administrative-access-with-a-second-factor)),
+  a fresh sign-in with a second factor. It
+  checks again what the request checked, and that the requester is still an enabled user with the
+  admin role: one that fails is `409` naming it (the requester disabled or demoted, the
+  principal deleted, the binding or the name made meanwhile, an expiry beyond a bound lowered
+  meanwhile), and the request stays pending. It makes the change, which counts from the next
+  request on, on every replica.
+- **A rejection** is any admin's, with any credential that reaches the role; the requester's is a
+  withdrawal.
+- **An expiry**: a request still pending 7 days after it was made expires; each replica looks once
+  a minute. A request decided or expired is `409` to another decision.
+- **Who sees them**: `GET /api/v1/approvals[?state=pending]` and `GET /api/v1/approvals/<id>`,
+  the admin role ([api.md](api.md#approvals)), and `lajstrom admin approval list` on the command
+  line. No webhook event is sent for a request: tell the second admin through your own channel.
+- **The command line**, `lajstrom admin binding create`, `user create --admin` and
+  `token create --mask`, makes the change at once whatever the setting: it is the operator's,
+  the break-glass path, and the way to the second admin of a server that has one.
+- **A token of a service account** does not wait, whatever its bindings, so that rotating one
+  takes one admin.
+
+With `second-admin`, `serve` warns at start when fewer than two enabled users have an `admin`
+binding that counts (under the admin mode, OIDC users only): no request could be approved.
+Turning the setting on leaves the bindings and tokens made before as they are; turning it to
+`none` makes every change at once again, and the requests made before stay, to be approved,
+rejected or to expire. `GET /api/v1/info` answers `approval`, so that a UI expects the `202`.
+The approval of a CI trust policy that writes is `auth.ci.apiWriteApproval`, apart
+([Token exchange for CI](#token-exchange-for-ci)).
+
+### Audit
+
+A request is `approval.request`, by the requester, subject `approval:<id>`, with its `kind`, its
+`change` (a deploy token's without its hash) and `expiresAt`. Its approval is
+`approval.approve`, by the approver, with the request's `kind`, `change` and `requestedBy` and the
+approver's `changeReason`; the change writes its own `binding.create` or `token.create` beside it,
+by the approver, with `approval` `{id, requestedBy, requestedAt}`, the request's `changeReason`
+and, for a token, the request's `createdBy`. A rejection is `approval.reject`, an expiry
+`approval.expire` by `anonymous` with `source: expiry`. Each has `signIn` when it was made with a
+web UI's sign-in. Requests are kept, decided or not, and are not in a snapshot.
 
 ## Node and workload identity
 
