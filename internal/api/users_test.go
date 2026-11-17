@@ -136,6 +136,8 @@ func TestUsersAPIAuthorization(t *testing.T) {
 		{"a user lists", true, alice, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users", "", 403},
 		{"a user reads itself", true, alice, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users/alice", "", 403},
 		{"a user sets its password", true, alice, auth.Credential{Kind: auth.CredPassword}, "POST", "/api/v1/users/alice/password", `{"password": "battery staple"}`, 403},
+		{"a user unlocks itself", true, alice, auth.Credential{Kind: auth.CredPAT}, "POST", "/api/v1/users/alice/unlock", "", 403},
+		{"anonymous unlocks", true, auth.Anonymous, auth.Credential{}, "POST", "/api/v1/users/alice/unlock", "", 401},
 		{"a user reads one that does not exist", true, bob, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users/dave", "", 403},
 		{"a user creates", true, bob, auth.Credential{Kind: auth.CredPassword}, "POST", "/api/v1/users", `{"name": "x"}`, 403},
 		{"a scoped pat", false, alice, scoped, "GET", "/api/v1/users", "", 403},

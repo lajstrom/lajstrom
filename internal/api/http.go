@@ -53,6 +53,9 @@ type Options struct {
 	// PasswordsOff is auth.localPasswords false (auth.Users.PasswordsOff), when Users is nil: a
 	// password of POST /api/v1/users and POST …/password is 400, naming the setting.
 	PasswordsOff bool
+	// Lockout is auth.lockout.duration (auth.Users.Lockout), when Users is nil: a locked user is
+	// answered with lockedUntil while it is not 0.
+	Lockout time.Duration
 	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
 	// formats, the audit writer, the clock and the logger of Repos.
 	Bindings *auth.Bindings
@@ -185,6 +188,7 @@ const maxBody = 64 << 10
 //	PATCH  /api/v1/users/{user}                        change its name and disabled
 //	DELETE /api/v1/users/{user}                        delete it
 //	POST   /api/v1/users/{user}/password               set its password
+//	POST   /api/v1/users/{user}/unlock                 end the lock of its password
 //	GET    /api/v1/users/{user}/tokens                 the personal access tokens of a user
 //	POST   /api/v1/users/{user}/tokens                 create one; the answer has its secret
 //	DELETE /api/v1/users/{user}/tokens/{id}            revoke one
@@ -236,7 +240,8 @@ func New(o Options) http.Handler {
 	}
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
-			DisableWithOwner: o.ServiceDisableWithOwner, InactiveAfter: o.InactiveUsersAfter, PasswordsOff: o.PasswordsOff}
+			DisableWithOwner: o.ServiceDisableWithOwner, InactiveAfter: o.InactiveUsersAfter, PasswordsOff: o.PasswordsOff,
+			Lockout: o.Lockout}
 	}
 	if h.bindings == nil {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
@@ -318,6 +323,7 @@ func (h *handler) routes() []route {
 		{"PATCH /api/v1/users/{user}", h.updateUser},
 		{"DELETE /api/v1/users/{user}", h.deleteUser},
 		{"POST /api/v1/users/{user}/password", h.setPassword},
+		{"POST /api/v1/users/{user}/unlock", h.unlockUser},
 		{"GET /api/v1/users/{user}/tokens", h.listTokens},
 		{"POST /api/v1/users/{user}/tokens", h.createToken},
 		{"DELETE /api/v1/users/{user}/tokens/{id}", h.revokeToken},

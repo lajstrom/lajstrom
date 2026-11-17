@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -11,6 +12,14 @@ import (
 // errPasswordsOffWithoutOIDC is serve's refusal of auth.localPasswords false without an IdP.
 var errPasswordsOffWithoutOIDC = errors.New("auth.localPasswords is false and auth.oidc.issuer is empty: no person could log in. " +
 	"Configure auth.oidc, or set auth.localPasswords to true")
+
+// lockoutOf is auth.lockout.duration, 0 while auth.localPasswords is false, when it does nothing.
+func lockoutOf(a config.Auth) time.Duration {
+	if !a.LocalPasswords {
+		return 0
+	}
+	return a.Lockout.Duration
+}
 
 // checkLocalPasswords is serve's check of auth.localPasswords at start (docs/spec/rbac.md §1,
 // Local passwords): false needs auth.oidc.issuer, since people then log in through the IdP only.

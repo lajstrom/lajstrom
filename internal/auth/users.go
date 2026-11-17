@@ -39,6 +39,8 @@ const (
 	ActionUserRename   = "user.rename"
 	ActionUserDelete   = "user.delete"
 	ActionUserOwner    = "user.owner"
+	// ActionUserUnlock ends a lock of the lockout (docs/spec/rbac.md §1, Local passwords).
+	ActionUserUnlock = "user.unlock"
 )
 
 // User is a user as the CLI prints it and the users API (#47) answers it. It never carries the
@@ -57,6 +59,10 @@ type User struct {
 	// user is inactive beyond it: its next authentication disables it, but for the last enabled
 	// admin. Left out when false.
 	Inactive bool `json:"inactive,omitempty"`
+	// LockedUntil is the end of the lock of the user's password while auth.lockout.duration
+	// (Users.Lockout) is set and the lock is in force (docs/spec/rbac.md §1, Local passwords); left
+	// out otherwise. Like LastSeenAt, it moves no revision.
+	LockedUntil *time.Time `json:"lockedUntil,omitempty"`
 	// Owner is a service account's owner, user:<uid> or group:<name>; OwnerName the name of a
 	// user owner, and OwnerDisabled whether that user is disabled. All three are empty for every
 	// other kind.
@@ -143,6 +149,10 @@ type Users struct {
 	// PasswordsOff is auth.localPasswords false (docs/spec/rbac.md §1, Local passwords): Create
 	// and SetPassword refuse every password (CheckPasswordSet); CreateService is as before.
 	PasswordsOff bool
+	// Lockout is auth.lockout.duration (docs/spec/rbac.md §1, Local passwords): while it is not 0,
+	// a user whose lock is in force is answered with its LockedUntil. Unlock and SetPassword end a
+	// lock whatever it is.
+	Lockout time.Duration
 }
 
 // Create checks name and password and creates the local user, with a new uid, and one
@@ -329,7 +339,9 @@ func (s *Users) List(ctx context.Context, kind string) ([]User, error) {
 
 // SetPassword checks password and makes it the user's, with one user.password audit event. The
 // old password stops working at the next request (the Authenticator compares the stored hash).
-// While local passwords are off it sets none (CheckPasswordSet).
+// It ends a lock of the lockout too, with a user.unlock event when one was in force: the admin
+// who sets it has checked who asks (docs/spec/rbac.md §1). While local passwords are off it sets
+// none (CheckPasswordSet).
 func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin) error {
 	if err := s.CheckPasswordSet(); err != nil {
 		return err
@@ -345,6 +357,41 @@ func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin
 		u.PasswordHash = hash
 		return true, nil
 	})
+}
+
+// Unlock ends the lock of the lockout of the user called name and sets its count of wrong
+// passwords to 0 (index.Writer.UnlockUser; docs/spec/rbac.md §1, Local passwords), with one
+// user.unlock audit event, whose details have lockedUntil, the end of the lock it ended, when a
+// lock was in force; a user that is not locked is unlocked without one. No such user wraps
+// index.ErrNotFound.
+func (s *Users) Unlock(ctx context.Context, name string, o Origin) error {
+	var ev *index.AuditEvent
+	err := s.Index.Tx(ctx, func(w index.Writer) error {
+		row, err := w.GetUser(ctx, name)
+		if err != nil {
+			return err
+		}
+		ev, err = s.unlock(ctx, w, row, o)
+		return err
+	})
+	if err != nil {
+		return userError(ActionUserUnlock, name, err)
+	}
+	if ev != nil {
+		s.writeAudit(ctx, *ev)
+	}
+	return nil
+}
+
+// unlock unlocks row on w and returns its user.unlock event when a lock was in force, nil
+// otherwise.
+func (s *Users) unlock(ctx context.Context, w index.Writer, row *index.User, o Origin) (*index.AuditEvent, error) {
+	ended, err := w.UnlockUser(ctx, row.ID, s.now())
+	if err != nil || ended == nil {
+		return nil, err
+	}
+	ev, err := s.record(ctx, w, ActionUserUnlock, row, o, map[string]any{"lockedUntil": ended.UTC().Format(time.RFC3339)})
+	return &ev, err
 }
 
 // Disable disables the user, with one user.disable audit event: its credentials are refused
@@ -639,11 +686,24 @@ func (s *Users) updated(ctx context.Context, w index.Writer, name, action string
 		details["from"] = name
 	}
 	ev, err := s.record(ctx, w, action, row, o, details)
+	if err == nil && action == ActionUserPassword {
+		return s.unlockedBy(ctx, w, row, o, ev)
+	}
 	if err != nil || !disabling || !s.DisableWithOwner {
 		return []index.AuditEvent{ev}, err
 	}
 	owned, err := s.disableOwned(ctx, w, row, o)
 	return append([]index.AuditEvent{ev}, owned...), err
+}
+
+// unlockedBy ends the lock of row on w, whose new password the event ev records, and returns ev,
+// then the user.unlock event when a lock was in force (docs/spec/rbac.md §1, §5).
+func (s *Users) unlockedBy(ctx context.Context, w index.Writer, row *index.User, o Origin, ev index.AuditEvent) ([]index.AuditEvent, error) {
+	unlocked, err := s.unlock(ctx, w, row, o)
+	if err != nil || unlocked == nil {
+		return []index.AuditEvent{ev}, err
+	}
+	return []index.AuditEvent{ev, *unlocked}, nil
 }
 
 // restartClock sets the last activity of row, a user just enabled on w, to now, so that the
@@ -864,6 +924,10 @@ func (s *Users) resource(ctx context.Context, r index.Reader, u *index.User, byU
 	if u.LastSeenAt != nil {
 		seen := u.LastSeenAt.UTC()
 		out.LastSeenAt = &seen
+	}
+	if s.Lockout > 0 && u.LockedUntil != nil && u.LockedUntil.After(s.now()) {
+		until := u.LockedUntil.UTC()
+		out.LockedUntil = &until
 	}
 	p, err := ParsePrincipal(u.Owner)
 	if err != nil || p.Kind != KindUser {

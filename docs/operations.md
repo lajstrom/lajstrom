@@ -172,7 +172,14 @@ with an empty list they are off, and the startup line says so. Without an edge, 
 
 The counts live in the memory of each replica and are not shared: N replicas are N budgets, and
 a restart starts over. That makes guessing a password slow and keeps argon2id from eating a
-replica; it is not a bound across replicas, and it is no volume limit. Both belong to the edge:
+replica; it is not a bound across replicas, and it is no volume limit. The lockout is the bound
+on an account across replicas: with `auth.lockout.duration` (`30m` for PCI DSS 8.3.4), 10 wrong
+passwords in a row, counted in the index, lock the account's password for that duration, and
+`lajstrom admin user list` shows `(locked until <time>)` ([auth.md](auth.md#the-lockout)). A
+person locked out keeps their tokens; after you have checked who asks,
+`lajstrom admin user unlock <name>` or `POST /api/v1/users/<name>/unlock` ends the lock, and an
+admin's new password does too. Where people log in through an IdP, `auth.localPasswords: false`
+leaves no password to guess at all ([auth.md](auth.md#turning-local-passwords-off)). Both belong to the edge:
 a request limit per client address there, on every route, is the bound across replicas, and the
 one that holds when the per-address throttle is off. Each throttled request is a `throttled`
 line at info with the throttle, the account's uid when it is an account's, and the client
@@ -1492,6 +1499,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `proxy.reject` | a proxy repo that refused a file of its upstream for its bytes: a checksum, `Validate`, a bound ([rbac.md](spec/rbac.md) §7) |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin; `user.disable` also `serve`, by `anonymous` with `source: inactivity` and `reason: inactive`, at the authentication of a user inactive beyond `auth.disableInactiveUsersAfter` ([auth.md](auth.md#inactive-users)) |
+| `user.unlock` | `POST /api/v1/users/<name>/unlock`, `lajstrom admin user unlock`, and an admin's new password, beside its `user.password`: the end of a lock of the lockout that was in force, with its `lockedUntil` ([auth.md](auth.md#the-lockout)) |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
@@ -1499,7 +1507,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
-| `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
+| `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed`; and a lock of the lockout, `limit: lockout`, once per lock whatever the replicas, with its `until` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
 | `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
