@@ -160,7 +160,8 @@ type Tokens struct {
 // The expiry is mandatory: DefaultPATLifetime when exp gives none, at most MaxPATLifetime
 // ahead; a service account's is bounded by ServiceMaxLifetime instead (lifetime). The user need
 // not be enabled. The credential of ctx must be one that may create it (MayCreatePAT): a
-// service account has no password, so its tokens are created by an admin or on the command line.
+// service account has no password, so its tokens are created by an admin, with a password or a
+// web UI's fresh sign-in, or on the command line.
 func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
 	return s.createPAT(ctx, user, name, scopes, binding{}, exp, o)
 }
@@ -188,7 +189,7 @@ type binding struct {
 // createPAT is CreatePAT, the token bound to the DPoP key of b unless its thumbprint is "", with
 // the sign-in of b.
 func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []string, b binding, exp Expiry, o Origin) (*Token, string, error) {
-	if err := MayCreatePAT(ctx); err != nil {
+	if err := s.MayCreatePAT(ctx); err != nil {
 		return nil, "", err
 	}
 	scopes, err := checkScopes(scopes, TokenPAT)
@@ -216,36 +217,65 @@ func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []stri
 }
 
 // MayCreatePAT returns nil when the credential of ctx may create a personal access token: a
-// password, an OIDC login (docs/spec/rbac.md §8), or none, as from the command line, which the
-// operator runs. A personal access
-// token, with scopes or without, and a deploy token may not, an error wrapping ErrScope: a
-// stolen token would otherwise mint tokens that outlive its revocation (decided on #249,
-// docs/auth.md, Rules). Nor may a client certificate or a Kubernetes service-account token,
-// which authenticate /v2/token only (docs/spec/rbac.md §9), nor a CI token, whose minutes must
-// not become a secret that lasts (§11).
-func MayCreatePAT(ctx context.Context) error {
-	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredCertificate, CredKubernetes, CredCI:
-		return &authError{msg: "a personal access token is created with a password, not with a token", err: ErrScope}
+// password, an OIDC login (docs/spec/rbac.md §8), none, as from the command line, which the
+// operator runs, or, in place of a password, the token of a web UI's sign-in through OIDC whose
+// sign-in is fresh at s's now (inPlaceOfPassword, §12, #1323). Any other personal access token,
+// with scopes or without, and a deploy token may not, an error wrapping ErrScope: a stolen token
+// would otherwise mint tokens that outlive its revocation (decided on #249, docs/auth.md, Rules).
+// Nor may a client certificate or a Kubernetes service-account token, which authenticate
+// /v2/token only (docs/spec/rbac.md §9), nor a CI token, whose minutes must not become a secret
+// that lasts (§11).
+func (s *Tokens) MayCreatePAT(ctx context.Context) error {
+	const rule = "a personal access token is created with a password or a web UI's fresh sign-in through OIDC, not with a token"
+	switch cred := CredentialFrom(ctx); cred.Kind {
+	case CredPAT:
+		return s.inPlaceOfPassword(cred, rule)
+	case CredDeploy, CredCertificate, CredKubernetes, CredCI:
+		return &authError{msg: rule, err: ErrScope}
 	case CredPassword, CredOIDC:
 	}
 	return nil
 }
 
 // MayCreateMaskDeploy returns nil when the credential of ctx may create a deploy token over a
-// mask: a password, or none, as from the command line, which writes the database and is the
-// operator's (docs/spec/rbac.md §1, §3). Every other credential may not, an error wrapping
-// ErrScope that names the rule: a personal access token, with scopes or without, the admin's
-// too, a deploy token, and an OIDC login, which is no credential of a request and has no
-// password. A stolen token would otherwise mint a token that needs no expiry, covers every repo
-// of its mask and outlives its revocation (decided on #911, 2026-11-14).
-func MayCreateMaskDeploy(ctx context.Context) error {
-	switch CredentialFrom(ctx).Kind {
-	case CredPAT, CredDeploy, CredOIDC, CredCertificate, CredKubernetes, CredCI:
-		return &authError{msg: "a deploy token over a mask is created with the admin's password, not with a token", err: ErrScope}
+// mask: a password, none, as from the command line, which writes the database and is the
+// operator's (docs/spec/rbac.md §1, §3), or, in place of the password, the token of a web UI's
+// sign-in through OIDC whose sign-in is fresh at s's now (inPlaceOfPassword, §12, #1323). Every
+// other credential may not, an error wrapping ErrScope that names the rule: any other personal
+// access token, with scopes or without, the admin's too, a deploy token, and an OIDC login,
+// which is no credential of a request and has no password. A stolen token would otherwise mint a
+// token that needs no expiry, covers every repo of its mask and outlives its revocation (decided
+// on #911, 2026-11-14).
+func (s *Tokens) MayCreateMaskDeploy(ctx context.Context) error {
+	const rule = "a deploy token over a mask is created with the admin's password or a web UI's fresh sign-in through OIDC, " +
+		"not with a token"
+	switch cred := CredentialFrom(ctx); cred.Kind {
+	case CredPAT:
+		return s.inPlaceOfPassword(cred, rule)
+	case CredDeploy, CredOIDC, CredCertificate, CredKubernetes, CredCI:
+		return &authError{msg: rule, err: ErrScope}
 	case CredPassword:
 	}
 	return nil
+}
+
+// inPlaceOfPassword is the rule of a creation that takes a password, for cred, a personal access
+// token (docs/spec/rbac.md §12, A fresh sign-in in place of a password; #1323): the token of a
+// web UI's sign-in through OIDC stands for the password when its sign-in is fresh, its auth_time
+// within FreshSignInWindow at s's now, as for a step of §11; one that is not is asked for more, a
+// *StepUpError with max_age. A second factor is the admin role's to ask, under the admin mode,
+// not the rule's: a password has none either. Any other personal access token is refused with
+// rule, ErrScope.
+func (s *Tokens) inPlaceOfPassword(cred Credential, rule string) error {
+	if cred.SignIn == nil {
+		return &authError{msg: rule, err: ErrScope}
+	}
+	err := CheckSignIn(cred, s.now(), Need{Fresh: true})
+	var stepUp *StepUpError
+	if errors.As(err, &stepUp) {
+		return stepUp.withPrefix("a token in place of a password: ")
+	}
+	return err
 }
 
 // MayCreateDeploy returns nil when the credential of ctx may create a deploy token of a repo,
@@ -315,9 +345,9 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 // the same mask; scopes and the expiry are those of CreateDeploy. Only the admin role may create
 // one: the caller decides that (the API asks it before the body is read; the command line is
 // the operator's). The credential of ctx must be one that may create it (MayCreateMaskDeploy):
-// a password, or none from the command line.
+// a password, a web UI's fresh sign-in through OIDC, or none from the command line.
 func (s *Tokens) CreateMaskDeploy(ctx context.Context, mask, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
-	if err := MayCreateMaskDeploy(ctx); err != nil {
+	if err := s.MayCreateMaskDeploy(ctx); err != nil {
 		return nil, "", err
 	}
 	if err := checkMask(mask, s.Formats); err != nil {

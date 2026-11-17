@@ -752,7 +752,12 @@ paths:
     post:
       tags: [tokens]
       operationId: createMaskToken
-      summary: Create a deploy token over a mask (admin, with its password only, checked before the body); the answer has its secret, once.
+      summary: Create a deploy token over a mask (admin, with its password or a fresh sign-in, checked before the body); the answer has its secret, once.
+      description: >-
+        The admin's password is the request's credential, or a web UI's sign-in through OIDC in
+        its place when it is fresh, its auth_time within the last 10 minutes; one that is not is
+        asked for more, 401 with insufficient_user_authentication and max_age=600. Any other
+        personal access token, the admin's too, and a deploy token are 403.
       requestBody:
         required: true
         content:
@@ -1484,7 +1489,9 @@ paths:
       operationId: createToken
       summary: Create a personal access token of a user; the answer has its secret, once.
       description: >-
-        Only a password creates one: a request whose credential is a personal access token,
+        Only a password creates one, or a web UI's sign-in through OIDC in its place when it is
+        fresh, its auth_time within the last 10 minutes; one that is not is asked for more, 401
+        with insufficient_user_authentication and max_age=600. Any other personal access token,
         with scopes or without, or a deploy token is 403. A service account's are created by
         the admin; their expiry is bounded by auth.serviceAccounts.maxTokenTTL, 365 days by
         default, and with the bound 0 one created without an expiry never expires.

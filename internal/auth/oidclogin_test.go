@@ -30,7 +30,7 @@ func TestLoginToken(t *testing.T) {
 		!strings.Contains(string(evs[0].Details), `"createdBy":"oidc"`) || !strings.Contains(string(evs[0].Details), `"source":"oidc"`) {
 		t.Errorf("token.create = %+v, %v", evs, err)
 	}
-	if err := MayCreatePAT(WithCredential(ctx, Credential{Kind: CredOIDC})); err != nil {
+	if err := (&Tokens{}).MayCreatePAT(WithCredential(ctx, Credential{Kind: CredOIDC})); err != nil {
 		t.Errorf("MayCreatePAT with an OIDC login = %v", err)
 	}
 }
