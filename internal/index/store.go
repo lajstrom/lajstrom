@@ -136,8 +136,14 @@ type Reader interface {
 	// sessions). A limit below 1 returns none.
 	ListOpenSessions(ctx context.Context, repoID int64, at time.Time, after int64, limit int) ([]Session, error)
 
-	// ListAudit returns the audit events matching f, newest first.
+	// ListAudit returns the audit events matching f, newest first; with f.Feed, those whose ID
+	// is above f.After, by ID ascending (docs/spec/rbac.md §5, the feed; #1278).
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+	// SpanAudit counts the audit rows that PruneAudit would delete with the cut-off before: At
+	// before it, State not AuditPending, and not a push whose Subject is a digest (a
+	// referrer's, which the repair of a referrers index reads), with the first and the last of
+	// their ids and times (docs/spec/index-schema.md, The audit feed and its prune).
+	SpanAudit(ctx context.Context, before time.Time) (AuditSpan, error)
 
 	// CI trust policies (docs/spec/rbac.md §11, docs/spec/index-schema.md, ci_policies).
 
@@ -457,7 +463,7 @@ type Writer interface {
 
 	// AppendAudit inserts ev; At is set when zero, State to AuditOK when empty, and
 	// PrincipalName, when empty and Principal is user:<uid>, to that user's name at the time (the
-	// name it had when deleted, for a deleted user). Audit rows are never deleted, and only
+	// name it had when deleted, for a deleted user). Only PruneAudit deletes audit rows, and only
 	// CompleteAudit and ExpirePendingAudit change one: its state.
 	AppendAudit(ctx context.Context, ev *AuditEvent) error
 	// CompleteAudit stores State, Error and Details of ev in the row ev.ID, the pending row of a
@@ -470,6 +476,10 @@ type Writer interface {
 	// AuditUnknown, and returns how many it changed (reindex and the reconcile loop, with
 	// ingest.claimTTL).
 	ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
+	// PruneAudit deletes at most limit of the rows that SpanAudit counts with before whose id is
+	// at most upTo, the lowest ids first, and returns how many it deleted. Outside Tx it is a
+	// transaction of its own, so that a prune holds its rows for one batch only (#1278).
+	PruneAudit(ctx context.Context, before time.Time, upTo int64, limit int) (int, error)
 
 	// CI trust policies (docs/spec/rbac.md §11): control plane. Each write increments
 	// AuthVersion in its transaction, as a write of bindings does.

@@ -647,9 +647,15 @@ func auditDests(ev *index.AuditEvent) []any {
 // defaultAuditLimit is the page size of ListAudit when the filter has none.
 const defaultAuditLimit = 100
 
-// ListAudit returns the events matching f, newest first. Since is inclusive, Until exclusive.
+// ListAudit returns the events matching f, newest first, on audit_at; with f.Feed those whose
+// id is above f.After, by id, on the primary key. Since is inclusive, Until exclusive.
 func (c *conn) ListAudit(ctx context.Context, f index.AuditFilter) ([]index.AuditEvent, error) {
 	var w where
+	order := " ORDER BY at DESC, id DESC"
+	if f.Feed {
+		w.add("id > ?", f.After)
+		order = " ORDER BY id"
+	}
 	for _, eq := range []struct{ col, v string }{{"principal", f.Principal}, {"repo", f.Repo}, {"action", f.Action}, {"state", f.State}} {
 		if eq.v != "" {
 			w.add(eq.col+" = ?", eq.v)
@@ -667,10 +673,11 @@ func (c *conn) ListAudit(ctx context.Context, f index.AuditFilter) ([]index.Audi
 	}
 	args := append(w.args, limit, max(f.Offset, 0))
 	return getAll(ctx, c, "audit", auditDests,
-		"SELECT "+auditCols+" FROM audit"+w.clause()+" ORDER BY at DESC, id DESC LIMIT ? OFFSET ?", args...)
+		"SELECT "+auditCols+" FROM audit"+w.clause()+order+" LIMIT ? OFFSET ?", args...)
 }
 
-// AppendAudit inserts ev; At is set when zero, State to ok when empty.
+// AppendAudit inserts ev; At is set when zero, State to ok when empty. The row as inserted goes
+// to the observer (wroteAudit).
 func (c *conn) AppendAudit(ctx context.Context, ev *index.AuditEvent) error {
 	var uid any // the uid of a user principal, whose name the row gets when it has none
 	if rest, ok := strings.CutPrefix(ev.Principal, "user:"); ok && index.IsUID(rest) {
@@ -680,21 +687,33 @@ func (c *conn) AppendAudit(ctx context.Context, ev *index.AuditEvent) error {
 		ev.State = index.AuditOK
 	}
 	ev.Error = auditError(ev.Error)
-	return c.scanRow(ctx, "audit "+ev.Action,
+	var row index.AuditEvent
+	err := c.scanRow(ctx, "audit "+ev.Action,
 		"INSERT INTO audit (at, principal, principal_name, action, repo, subject, digest, ip, details, state, error)"+
 			" VALUES (?, ?, COALESCE(?, (SELECT COALESCE(deleted_name, name) FROM users WHERE CAST(uid AS TEXT) = ?)), ?, ?, ?, ?, ?, ?, ?, ?)"+
-			" RETURNING id, principal_name",
+			" RETURNING "+auditCols,
 		[]any{c.d.EncodeTime(stamp(&ev.At, now())), ev.Principal, textArg(ev.PrincipalName), uid, ev.Action, ev.Repo, ev.Subject,
 			textArg(string(ev.Digest)), ev.IP, rawArg(ev.Details), ev.State, textArg(ev.Error)},
-		&ev.ID, textDest{&ev.PrincipalName})
+		auditDests(&row)...)
+	if err != nil {
+		return err
+	}
+	ev.ID, ev.PrincipalName = row.ID, row.PrincipalName
+	c.wroteAudit(row)
+	return nil
 }
 
 // CompleteAudit stores the state, the error and the details of a pending or unknown row.
 func (c *conn) CompleteAudit(ctx context.Context, ev *index.AuditEvent) error {
 	ev.Error = auditError(ev.Error)
-	return c.scanRow(ctx, fmt.Sprintf("pending audit id %d", ev.ID),
+	err := c.scanRow(ctx, fmt.Sprintf("pending audit id %d", ev.ID),
 		"UPDATE audit SET state = ?, error = ?, details = ? WHERE id = ? AND state IN ('pending', 'unknown') RETURNING "+auditCols,
 		[]any{ev.State, textArg(ev.Error), rawArg(ev.Details), ev.ID}, auditDests(ev)...)
+	if err != nil {
+		return err
+	}
+	c.wroteAudit(*ev)
+	return nil
 }
 
 // maxAuditError is how much of an error a row keeps: an error of the registry may quote a
@@ -709,7 +728,51 @@ func auditError(s string) string {
 	return strings.ToValidUTF8(s[:maxAuditError], "")
 }
 
-// ExpirePendingAudit sets the pending rows older than before to unknown.
+// ExpirePendingAudit sets the pending rows older than before to unknown, and hands them to the
+// observer as they are now.
 func (c *conn) ExpirePendingAudit(ctx context.Context, before time.Time) (int, error) {
-	return c.exec(ctx, "audit", "UPDATE audit SET state = 'unknown' WHERE state = 'pending' AND at < ?", c.d.EncodeTime(before))
+	rows, err := getAll(ctx, c, "audit", auditDests,
+		"UPDATE audit SET state = 'unknown' WHERE state = 'pending' AND at < ? RETURNING "+auditCols, c.d.EncodeTime(before))
+	if err != nil {
+		return 0, err
+	}
+	c.wroteAudit(rows...)
+	return len(rows), nil
+}
+
+// prunable is the condition of the audit rows that a prune may delete with the cut-off of its one
+// parameter (docs/spec/rbac.md §5, A prune): before it, not pending, and not a push whose subject
+// is a digest, a referrer's, which the repair of a subject's referrers index reads (#628). A
+// subject is a digest when it starts with an algorithm of go-digest and a colon; a push of a
+// version has "<name> <version>".
+const prunable = "at < ? AND state <> 'pending' AND NOT (action = 'push' AND" +
+	" (subject LIKE 'sha256:%' OR subject LIKE 'sha384:%' OR subject LIKE 'sha512:%'))"
+
+// SpanAudit counts the rows that PruneAudit would delete with before, with the first and the
+// last of their ids and times, in one statement on audit_at.
+func (c *conn) SpanAudit(ctx context.Context, before time.Time) (index.AuditSpan, error) {
+	var (
+		s           index.AuditSpan
+		first, last *time.Time
+	)
+	err := c.scanRow(ctx, "audit", "SELECT COUNT(*), COALESCE(MIN(id), 0), COALESCE(MAX(id), 0), MIN(at), MAX(at) FROM audit WHERE "+prunable,
+		[]any{c.d.EncodeTime(before)}, &s.Rows, &s.FirstID, &s.LastID, nullTimeDest{&first}, nullTimeDest{&last})
+	if err != nil {
+		return index.AuditSpan{}, err
+	}
+	if first != nil && last != nil {
+		s.FirstAt, s.LastAt = *first, *last
+	}
+	return s, nil
+}
+
+// PruneAudit deletes at most limit of the rows that SpanAudit counts with before whose id is at
+// most upTo, the lowest ids first, in one statement: a transaction of its own on the pool.
+func (c *conn) PruneAudit(ctx context.Context, before time.Time, upTo int64, limit int) (int, error) {
+	if limit < 1 {
+		return 0, nil
+	}
+	return c.exec(ctx, "audit",
+		"DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE "+prunable+" AND id <= ? ORDER BY id LIMIT ?)",
+		c.d.EncodeTime(before), upTo, limit)
 }

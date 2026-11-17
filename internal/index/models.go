@@ -1015,4 +1015,18 @@ type AuditFilter struct {
 	Until     time.Time
 	Limit     int
 	Offset    int
+	// Feed selects the feed (docs/spec/rbac.md §5, #1278): the events whose ID is above After,
+	// by ID ascending, instead of the newest first.
+	Feed  bool
+	After int64
+}
+
+// AuditSpan is what Reader.SpanAudit counts: the audit rows that a prune with its cut-off would
+// delete, how many, and the first and the last of their ids and times; all zero when none.
+type AuditSpan struct {
+	Rows    int
+	FirstID int64
+	LastID  int64
+	FirstAt time.Time
+	LastAt  time.Time
 }

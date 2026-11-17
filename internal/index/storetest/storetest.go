@@ -54,6 +54,9 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Audit", testAudit},
 		{"AuditDefaultLimit", testAuditDefaultLimit},
 		{"AuditState", testAuditState},
+		{"AuditFeed", testAuditFeed},
+		{"AuditObserve", testAuditObserve},
+		{"AuditPrune", testAuditPrune},
 		{"TagClaims", testTagClaims},
 		{"TagClaimRace", testTagClaimRace},
 		{"TagClaimsLifecycle", testTagClaimsLifecycle},
@@ -145,6 +148,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"SnapshotNotEmpty", testSnapshotNotEmpty},
 		{"SnapshotRefused", testSnapshotRefused},
 		{"SnapshotLastSeenBefore0034", testSnapshotLastSeenBefore0034},
+		{"AuditObserveImport", testAuditObserveImport},
 	}
 	for _, tt := range multi {
 		t.Run(tt.name, func(t *testing.T) {
