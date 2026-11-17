@@ -68,10 +68,11 @@ func (f *lockoutFixture) lastVerified() string {
 }
 
 // refused checks that user and secret are refused in Basic credentials with the message of the
-// lockout.
+// lockout, and waits for the count of a wrong password.
 func (f *lockoutFixture) refused(t *testing.T, user, secret string) {
 	t.Helper()
 	_, _, err := f.a.Authenticate(f.ctx, user, secret)
+	f.a.counting.Wait() // the count, written behind the answer
 	if !errors.Is(err, ErrPasswordRefused) || f.a.RefusalMessage(err, "fallback") != lockoutMsg {
 		t.Fatalf("Authenticate(%s) = %v, message %q; want a refusal saying what locks a password", user, err,
 			f.a.RefusalMessage(err, "fallback"))
@@ -293,4 +294,58 @@ func jsonEqual(a, b map[string]any) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// slowTx is a store whose transactions wait for release, as a database that is slow to commit.
+type slowTx struct {
+	index.Store
+	release chan struct{}
+}
+
+func (s slowTx) Tx(ctx context.Context, fn func(index.Writer) error) error {
+	<-s.release
+	return s.Store.Tx(ctx, fn)
+}
+
+// TestLockoutNotWaited: a wrong password is answered before its count is written, so that it
+// takes the time of a name that no user has; the count is written all the same, after the
+// request's context is cancelled. With lockoutWriters counts in flight, a failure is counted before
+// its answer.
+func TestLockoutNotWaited(t *testing.T) {
+	f := newLockoutFixture(t, Options{Lockout: 30 * time.Minute})
+	release := make(chan struct{})
+	slow := NewAuthenticator(Options{Index: slowTx{f.st, release}, Lockout: 30 * time.Minute, Now: func() time.Time { return usersNow }})
+	ctx, cancel := context.WithCancel(t.Context())
+	answered := make(chan error, 1)
+	go func() {
+		_, _, err := slow.Authenticate(ctx, "alice", "a wrong password")
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, ErrPasswordRefused) {
+			t.Errorf("a wrong password = %v, want a refusal", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refusal waits for the count")
+	}
+	cancel()
+	if u := f.user(t, "alice"); u.PasswordFailures != 0 {
+		t.Fatalf("counted before the write: %d", u.PasswordFailures)
+	}
+	close(release)
+	slow.counting.Wait()
+	if u := f.user(t, "alice"); u.PasswordFailures != 1 {
+		t.Errorf("after the write: %d failures, want 1", u.PasswordFailures)
+	}
+
+	for range lockoutWriters {
+		f.a.writers <- struct{}{}
+	}
+	if _, _, err := f.a.Authenticate(f.ctx, "alice", "a wrong password"); !errors.Is(err, ErrPasswordRefused) {
+		t.Fatal(err)
+	}
+	if u := f.user(t, "alice"); u.PasswordFailures != 2 {
+		t.Errorf("with every writer busy: %d failures before the answer, want 2", u.PasswordFailures)
+	}
 }

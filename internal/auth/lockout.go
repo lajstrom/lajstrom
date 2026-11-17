@@ -19,6 +19,13 @@ import (
 // is set: a constant, the most PCI DSS 8.3.4 allows.
 const LockoutFailures = 10
 
+// lockoutWriters bounds the counts of wrong passwords that an Authenticator writes at once behind
+// their answers (failPassword); lockoutWriteTimeout bounds each write, which outlives its request.
+const (
+	lockoutWriters      = 16
+	lockoutWriteTimeout = 5 * time.Second
+)
+
 // ErrPasswordRefused is the refusal of a user name and a password while the lockout is set,
 // whatever its reason, a locked password among them: the message of its 401 says what locks a
 // password and for how long (LockoutMessage), the same for every account and every reason. It
@@ -49,32 +56,54 @@ func (a *Authenticator) locked(u *index.User) bool {
 }
 
 // failPassword counts the wrong password of u in the index while the lockout is set
-// (index.Writer.FailPassword). The failure that locks writes its login.block row, with the limit
-// lockout and no window, in the transaction of the lock: one row per lock, whatever the replicas,
-// and none of the BlockRows of a minute. A count that cannot be written is logged at error and
-// changes no answer.
+// (countFailure), behind the answer: the refusal does not wait for the write, so that a wrong
+// password of a user that exists takes the time of a name that no user has, of a disabled user and
+// of a locked one, which write nothing (docs/spec/rbac.md §1, Local passwords). The write keeps
+// the values of ctx, not its cancellation. At most lockoutWriters of them are in flight; beyond,
+// while the database is that far behind, a failure is counted before its answer, so that every
+// failure counts.
 func (a *Authenticator) failPassword(ctx context.Context, u *index.User) {
 	if a.lockout <= 0 {
 		return
 	}
-	now := a.now()
+	ctx = context.WithoutCancel(ctx)
+	id, subject, now := u.ID, UserPrincipal(u).String(), a.now()
+	select {
+	case a.writers <- struct{}{}:
+		a.counting.Go(func() {
+			defer func() { <-a.writers }()
+			a.countFailure(ctx, id, subject, now)
+		})
+	default:
+		a.countFailure(ctx, id, subject, now)
+	}
+}
+
+// countFailure writes a wrong password at now of the user id, user:<uid> subject
+// (index.Writer.FailPassword), within lockoutWriteTimeout. The failure that locks writes its
+// login.block row, with the limit lockout and no window, in the transaction of the lock: one row
+// per lock, whatever the replicas, and none of the BlockRows of a minute. A count that cannot be
+// written is logged at error.
+func (a *Authenticator) countFailure(ctx context.Context, id int64, subject string, now time.Time) {
+	wctx, cancel := context.WithTimeout(ctx, lockoutWriteTimeout)
+	defer cancel()
 	until := now.Add(a.lockout)
 	var locked bool
-	err := a.index.Tx(ctx, func(w index.Writer) (err error) {
-		if locked, err = w.FailPassword(ctx, u.ID, now, until, LockoutFailures); err != nil || !locked {
+	err := a.index.Tx(wctx, func(w index.Writer) (err error) {
+		if locked, err = w.FailPassword(wctx, id, now, until, LockoutFailures); err != nil || !locked {
 			return err
 		}
-		ev := block{limit: LimitLockout, credential: string(CredPassword), subject: UserPrincipal(u).String(),
-			failures: LockoutFailures, until: until}.event(ctx, now, 0)
-		return w.AppendAudit(ctx, &ev)
+		ev := block{limit: LimitLockout, credential: string(CredPassword), subject: subject, failures: LockoutFailures,
+			until: until}.event(ctx, now, 0)
+		return w.AppendAudit(wctx, &ev)
 	})
 	r := RequestFrom(ctx)
 	switch {
 	case err != nil:
-		a.log.ErrorContext(ctx, "auth: a wrong password is not counted toward the lockout", "user", UserPrincipal(u).String(),
-			"error", err.Error(), "requestId", r.ID)
+		a.log.ErrorContext(ctx, "auth: a wrong password is not counted toward the lockout", "user", subject, "error", err.Error(),
+			"requestId", r.ID)
 	case locked:
-		a.log.InfoContext(ctx, "password locked", "user", UserPrincipal(u).String(), "failures", LockoutFailures,
+		a.log.InfoContext(ctx, "password locked", "user", subject, "failures", LockoutFailures,
 			"until", until.UTC().Format(time.RFC3339), "address", r.Address, "requestId", r.ID)
 	}
 }
