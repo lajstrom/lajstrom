@@ -76,6 +76,25 @@ func LookupUser(ctx context.Context, r index.Reader, p Principal) (*index.User, 
 	return u, nil
 }
 
+// PrincipalKind is the principalKind of an audit row's principal (docs/spec/rbac.md §5):
+// KindService for the user:<uid> of a service account, live or deleted, and "" for every other
+// principal, a user that does not exist among them. Only a user's principal is read from r. The
+// answers of GET /api/v1/audit and the log lines of the rows (audit.Lines) both take it from here.
+func PrincipalKind(ctx context.Context, r index.Reader, principal string) (string, error) {
+	uid, ok := strings.CutPrefix(principal, string(KindUser)+":")
+	if !ok || !index.IsUID(uid) {
+		return "", nil
+	}
+	u, err := r.GetUserByUID(ctx, uid)
+	switch {
+	case err == nil && u.Kind == KindService:
+		return KindService, nil
+	case err == nil, errors.Is(err, index.ErrNotFound):
+		return "", nil
+	}
+	return "", err
+}
+
 // MaxGroupNameLen bounds the name of a group, in bytes (docs/spec/rbac.md §8).
 const MaxGroupNameLen = 256
 
