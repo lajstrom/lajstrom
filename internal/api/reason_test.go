@@ -163,9 +163,22 @@ func TestRequireReason(t *testing.T) {
 	// The role first: whoever does not have it is not told about the reason.
 	wantStatus(t, f.do(http.MethodPost, "/api/v1/bindings", `{"principal": "user:carol", "role": "admin", "repoMask": "*/*"}`, bob), 403)
 	wantStatus(t, f.do(http.MethodDelete, "/api/v1/bindings/1", "", auth.Anonymous), 401)
-	// A person's own token needs none; another's, with one, is made.
+	// A person's own token needs none; a change with one is made.
 	var own created
 	decodeJSON(t, f.do(http.MethodPost, "/api/v1/users/alice/tokens", `{"name": "laptop"}`, alice), 201, &own)
 	wantStatus(t, f.do(http.MethodDelete, fmt.Sprintf("/api/v1/users/alice/tokens/%d", own.ID), "", alice), 204)
 	wantStatus(t, f.do(http.MethodDelete, "/api/v1/repos/raw/open?force=true&changeReason=CHG-9", "", admin), 204)
+}
+
+// TestRequireReasonInfo: GET /api/v1/info answers auth.requireReason as requireReason, false
+// included, so that a UI asks for a reason.
+func TestRequireReasonInfo(t *testing.T) {
+	for _, require := range []bool{true, false} {
+		f := newFixture(t, Options{Info: ServerInfo{RequireReason: require}, RequireReason: require})
+		var info map[string]any
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/info", "", auth.Anonymous), http.StatusOK, &info)
+		if info["requireReason"] != require {
+			t.Errorf("requireReason %v, want %v", info["requireReason"], require)
+		}
+	}
 }

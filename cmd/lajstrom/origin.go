@@ -44,6 +44,7 @@ var auditedCommands = map[string]bool{
 	"admin user rename":        true,
 	"admin user delete":        true,
 	"admin user set-password":  true,
+	"admin user unlock":        true,
 	"admin token create":       true,
 	"admin token revoke":       true,
 	"admin binding create":     true,
@@ -60,6 +61,17 @@ var auditedCommands = map[string]bool{
 	"admin ci-policy delete":   true,
 }
 
+// reasonGroups are the groups of auditedCommands whose commands change the control plane: with
+// auth.requireReason each needs a reason (docs/spec/rbac.md §6, §13).
+var reasonGroups = []string{"admin user ", "admin binding ", "admin token ", "admin repo ", "admin webhook ", "admin ci-policy ",
+	"admin policy rule "}
+
+// needsReason reports whether the command of auditedCommands at path needs a reason under
+// auth.requireReason.
+func needsReason(path string) bool {
+	return slices.ContainsFunc(reasonGroups, func(g string) bool { return strings.HasPrefix(path, g) })
+}
+
 // withOrigins applies withOrigin to the commands of auditedCommands below root, and panics on one
 // that root does not have, which a test catches.
 func (a *app) withOrigins(root *cobra.Command) {
@@ -68,7 +80,7 @@ func (a *app) withOrigins(root *cobra.Command) {
 		if err != nil || len(rest) > 0 || cmd.CommandPath() != root.Name()+" "+path {
 			panic("lajstrom: auditedCommands: no command " + path)
 		}
-		a.withOrigin(cmd, reason)
+		a.withOrigin(cmd, reason, needsReason(path))
 	}
 }
 
@@ -80,8 +92,10 @@ var principalKinds = []auth.Kind{auth.KindUser, auth.KindToken, auth.KindGroup, 
 // and, unless the command has a --reason of its own (admin policy rule create, whose reason is
 // the rule's), --reason. Its PreRunE reads them, or their variables, checks them before anything
 // is written, and stores the command line's origin in a and in the command's context
-// (auth.WithOrigin), where the writers that take no Origin find it.
-func (a *app) withOrigin(cmd *cobra.Command, reason bool) *cobra.Command {
+// (auth.WithOrigin), where the writers that take no Origin find it. A command that changes the
+// control plane, need, without a reason while the configuration has auth.requireReason is a usage
+// error, exit status 2, before anything is written.
+func (a *app) withOrigin(cmd *cobra.Command, reason, need bool) *cobra.Command {
 	cmd.Flags().StringVar(&a.actor, "actor", "", "who runs this, as your organisation names people (an e-mail address, a login); "+
 		"a label in the audit rows, never a principal (env "+envActor+")")
 	if reason {
@@ -91,6 +105,14 @@ func (a *app) withOrigin(cmd *cobra.Command, reason bool) *cobra.Command {
 		o, err := a.loadOrigin()
 		if err != nil {
 			return err
+		}
+		if need && o.ChangeReason == "" && a.cfg != nil && a.cfg.Auth.RequireReason {
+			flag := "--reason (" + envReason + ")"
+			if !reason {
+				flag = envReason // the command's --reason is another's
+			}
+			return usageError("%s: required (auth.requireReason): a ticket or a sentence, the reference of the change's approval",
+				flag)
 		}
 		cmd.SetContext(auth.WithOrigin(cmd.Context(), o))
 		return nil

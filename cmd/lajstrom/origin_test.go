@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,6 +114,37 @@ func TestOriginOfARule(t *testing.T) {
 		d["actor"] != "dana" || d["osUser"] != osUser() {
 		t.Errorf("details %s, %v; want the rule's reason, changeReason INC-9, actor dana", evs[0].Details, err)
 	}
+}
+
+// TestRequireReasonOnTheCommandLine: with auth.requireReason, a command that changes the control
+// plane without --reason or LAJSTROM_REASON is exit status 2 and writes nothing; admin policy rule
+// create, whose --reason is the rule's, needs LAJSTROM_REASON; a command that reads, or that is no
+// change of §13 (admin key rotate), needs none (docs/spec/rbac.md §6, §13).
+func TestRequireReasonOnTheCommandLine(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeAuthConfig(t, dir, "keys:\n  masterKeyEnv: LAJSTROM_MASTER_KEY\nauth:\n  requireReason: true\n")
+	runEnv(t, cfg, nil, []step{{args: []string{"migrate"}}})
+	const required = "required (auth.requireReason)"
+	binding := []string{"admin", "binding", "create", "--principal", "group:ops", "--role", "reader", "--mask", "raw/*"}
+	rule := []string{"admin", "policy", "rule", "create", "--mask", "raw/*", "--name", "evil", "--reason", "CVE-2026-1"}
+	for _, args := range [][]string{binding, rule, {"admin", "user", "unlock", "nobody"}, {"admin", "binding", "delete", "1"}} {
+		_, _, err := run(t, nil, append(args, "--config", cfg)...)
+		if err == nil || !strings.Contains(err.Error(), required) || exitStatus(err) != 2 {
+			t.Errorf("%v without a reason: %v (exit status %d), want %q, exit status 2", args, err, exitStatus(err), required)
+		}
+	}
+	if _, _, err := run(t, nil, append(rule, "--config", cfg)...); err == nil || !strings.Contains(err.Error(), envReason+": required") {
+		t.Errorf("a rule without %s: %v", envReason, err)
+	}
+	if bs, err := openTestStore(t, "file:"+filepath.Join(dir, "lajstrom.db")).ListBindings(t.Context(), ""); err != nil || len(bs) != 0 {
+		t.Fatalf("bindings made without a reason: %v, %v", bs, err)
+	}
+	runEnv(t, cfg, map[string]string{"LAJSTROM_MASTER_KEY": testMasterKey}, []step{
+		{args: append(binding, "--reason", "CHG-1")},
+		{args: []string{"admin", "binding", "list"}, wantOut: "group:ops"},
+		{args: []string{"admin", "key", "rotate", "--token"}},
+	})
+	runEnv(t, cfg, map[string]string{envReason: "CHG-2"}, []step{{args: rule, wantOut: `"name":"evil"`}})
 }
 
 // TestOSUser: the name of the uid, never $USER; uid:<n> only where the system has no name.
