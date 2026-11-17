@@ -31,6 +31,8 @@ tags:
     description: The requests for a second admin, the changes that wait for one (docs/spec/rbac.md §13).
   - name: audit
     description: The audit log.
+  - name: access
+    description: The access report of who has what, and the record of its review (docs/spec/rbac.md §14).
   - name: webhooks
     description: Where the events of the repos of a mask are sent, and the delivery log.
   - name: policy
@@ -1948,6 +1950,43 @@ paths:
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/access-report:
+    get:
+      tags: [access]
+      operationId: accessReport
+      summary: Who has what at one moment, one document in its canonical form (admin).
+      description: >-
+        One JSON document, read in one read-only transaction, of the users with their groups,
+        bindings and live tokens, the groups that have a binding with their members, the cert: and
+        k8s: principals and patterns, the live deploy tokens, the CI trust policies and what
+        anonymous reads, each entry with the flags a reviewer looks for (docs/spec/rbac.md §14). It
+        is in its canonical form, compact, the keys of every object in byte order, its lists in a
+        fixed order, its times in UTC to the second and a line feed at the end, so that the same
+        rows at the same time are the same bytes, from here and from lajstrom admin
+        access-report: a review names it by the sha256 of the bytes as the client got them. Not
+        paged. It holds no secret and no hash, but a token's hashPrefix. A read: it writes no audit
+        row. The admin role is checked before anything else.
+      parameters:
+        - name: scope
+          in: query
+          description: >-
+            all, the default; people, the users of kind local and oidc and the groups (PCI DSS
+            7.2.4); or systems, the service accounts, the workloads, the deploy tokens and the CI
+            trust policies (7.2.5.1). anonymous is in every scope.
+          schema: {type: string, enum: [all, people, systems], default: all}
+        - name: unusedDays
+          in: query
+          description: A user or a token without a use for more days than this before generatedAt is unused (PCI DSS 8.2.6).
+          schema: {type: integer, minimum: 1, maximum: 3650, default: 90}
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessReport"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /api/v1/whoami:
     get:
       tags: [meta]
@@ -3168,6 +3207,142 @@ components:
           type: array
           items: {$ref: "#/components/schemas/AuditEntry"}
         next: {type: string}
+    AccessFlags:
+      type: array
+      description: >-
+        The flags that hold, in this order: admin, a binding of the role admin, its own or a
+        current group's; allRepos, a binding on */*, a deploy token over */*, a CI grant on */*;
+        adminWithoutEffect, an admin binding of a service account or a local user under the admin
+        mode; noExpiry, a token or a CI trust policy without an expiry; unused, no use for more than
+        unusedDays; beyondMaxTTL, a token beyond the bound of its kind; ownerDisabled, a service
+        account whose user owner is disabled; inactive, a user inactive under
+        auth.disableInactiveUsersAfter. A reader tolerates a flag it does not know.
+      items: {type: string, enum: [admin, allRepos, adminWithoutEffect, noExpiry, unused, beyondMaxTTL, ownerDisabled, inactive]}
+    AccessBinding:
+      description: A binding as the bindings API answers it.
+      allOf:
+        - {$ref: "#/components/schemas/Binding"}
+        - type: object
+          properties:
+            via: {type: string, description: "group:<name>: a user's binding through a current group of it."}
+    AccessToken:
+      description: A live token as the tokens API answers it, with its flags.
+      allOf:
+        - {$ref: "#/components/schemas/Token"}
+        - type: object
+          required: [flags]
+          properties:
+            principal: {type: string, description: "token:<id>, of a deploy token."}
+            flags: {$ref: "#/components/schemas/AccessFlags"}
+    AccessUser:
+      description: A live user, a disabled one too, as the users API answers it.
+      allOf:
+        - {$ref: "#/components/schemas/User"}
+        - type: object
+          required: [principal, groups, bindings, tokens, flags]
+          properties:
+            principal: {type: string, description: "user:<uid>."}
+            groups:
+              type: array
+              description: Its current groups, by name, each until the end of the lifetime of its latest login.
+              items:
+                type: object
+                required: [name, expiresAt]
+                properties:
+                  name: {type: string}
+                  expiresAt: {type: string, format: date-time}
+            bindings:
+              type: array
+              description: Its own bindings and those of its current groups, by role, mask and via.
+              items: {$ref: "#/components/schemas/AccessBinding"}
+            tokens:
+              type: array
+              description: Its personal access tokens neither revoked nor expired, by id.
+              items: {$ref: "#/components/schemas/AccessToken"}
+            flags: {$ref: "#/components/schemas/AccessFlags"}
+    AccessReport:
+      type: object
+      description: >-
+        Who has what at generatedAt (docs/spec/rbac.md §14). A section that the scope leaves out is
+        absent; anonymous is absent while auth.anonymousRead is off. Lists are in byte order: users
+        by name, groups, workloads and members by principal, deployTokens and tokens by id,
+        ciPolicies by name, bindings by role, mask and via.
+      required: [generatedAt, scope, unusedDays, settings, users]
+      properties:
+        generatedAt: {type: string, format: date-time, description: "The database's time of the read, to the second."}
+        scope: {type: string, enum: [all, people, systems]}
+        unusedDays: {type: integer}
+        settings:
+          type: object
+          description: What the flags read of the configuration; the durations in seconds, 0 for off.
+          required: [adminMFA, anonymousRead, disableInactiveUsersAfter, deployTokensMaxTTL, serviceAccountsMaxTokenTTL]
+          properties:
+            adminMFA: {type: boolean}
+            anonymousRead: {type: boolean}
+            disableInactiveUsersAfter: {type: integer}
+            deployTokensMaxTTL: {type: integer}
+            serviceAccountsMaxTokenTTL: {type: integer}
+        users:
+          type: array
+          description: "The users of the scope: every kind for all, local and oidc for people, service for systems."
+          items: {$ref: "#/components/schemas/AccessUser"}
+        groups:
+          type: array
+          description: Every group that has a binding.
+          items:
+            type: object
+            required: [principal, bindings, members, flags]
+            properties:
+              principal: {type: string, description: "group:<name>."}
+              bindings:
+                type: array
+                items: {$ref: "#/components/schemas/AccessBinding"}
+              members:
+                type: array
+                description: The live users whose current groups name it.
+                items:
+                  type: object
+                  required: [principal, name, expiresAt]
+                  properties:
+                    principal: {type: string}
+                    name: {type: string}
+                    expiresAt: {type: string, format: date-time}
+              flags: {$ref: "#/components/schemas/AccessFlags"}
+        workloads:
+          type: array
+          description: "Every cert: and k8s: principal or pattern that has a binding."
+          items:
+            type: object
+            required: [principal, bindings, flags]
+            properties:
+              principal: {type: string}
+              pattern: {type: boolean, description: true for a pattern; absent otherwise.}
+              bindings:
+                type: array
+                items: {$ref: "#/components/schemas/AccessBinding"}
+              flags: {$ref: "#/components/schemas/AccessFlags"}
+        deployTokens:
+          type: array
+          description: Every live deploy token, of a repo and over a mask.
+          items: {$ref: "#/components/schemas/AccessToken"}
+        ciPolicies:
+          type: array
+          description: Every CI trust policy, of the configuration and of the API, an expired one too.
+          items:
+            allOf:
+              - {$ref: "#/components/schemas/CIPolicy"}
+              - type: object
+                required: [flags]
+                properties:
+                  flags: {$ref: "#/components/schemas/AccessFlags"}
+        anonymous:
+          type: object
+          required: [repos]
+          properties:
+            repos:
+              type: array
+              description: The repos with anonymousRead, <format>/<name>.
+              items: {type: string}
     Package:
       description: A package with the facts of its manifests, all read from the index.
       type: object

@@ -963,34 +963,63 @@ func userError(op, name string, err error) error {
 // owner, with the name of a user owner and whether it is disabled: from byUID, the users by their
 // uid, when it has the owner, else read on r.
 func (s *Users) resource(ctx context.Context, r index.Reader, u *index.User, byUID map[string]*index.User) (*User, error) {
-	out := &User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC(), Owner: u.Owner,
-		ID: u.ID, Revision: u.Revision, Inactive: Inactive(u, s.InactiveAfter, s.now()), MustChange: u.MustChange}
-	if u.LastSeenAt != nil {
-		seen := u.LastSeenAt.UTC()
-		out.LastSeenAt = &seen
-	}
-	if s.Lockout > 0 && u.LockedUntil != nil && u.LockedUntil.After(s.now()) {
-		until := u.LockedUntil.UTC()
-		out.LockedUntil = &until
-	}
+	out := s.view(u, s.now())
 	p, err := ParsePrincipal(u.Owner)
 	if err != nil || p.Kind != KindUser {
-		return out, nil //nolint:nilerr // no owner, or a group: no name of a user
+		return &out, nil //nolint:nilerr // no owner, or a group: no name of a user
 	}
 	owner := byUID[p.Name]
 	if owner == nil {
 		switch owner, err = r.GetUserByUID(ctx, p.Name); {
 		case errors.Is(err, index.ErrNotFound):
-			return out, nil
+			return &out, nil
 		case err != nil:
 			return nil, err
 		}
 	}
+	withOwner(&out, owner)
+	return &out, nil
+}
+
+// ViewAt returns the User of the users row u at now as the users API answers it (resource),
+// without a read: the owner of a service account is looked up in live, the live users by uid,
+// and an owner that live lacks, a user since deleted, is answered disabled and without a name
+// (the access report, docs/spec/rbac.md §14).
+func (s *Users) ViewAt(u *index.User, live map[string]*index.User, now time.Time) User {
+	out := s.view(u, now)
+	if p, err := ParsePrincipal(u.Owner); err == nil && p.Kind == KindUser {
+		if owner := live[p.Name]; owner != nil {
+			withOwner(&out, owner)
+		} else {
+			out.OwnerDisabled = true
+		}
+	}
+	return out
+}
+
+// view returns the User of the users row u at now, with UTC times, without the name of its
+// owner: inactive by InactiveAfter, and locked by Lockout.
+func (s *Users) view(u *index.User, now time.Time) User {
+	out := User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC(), Owner: u.Owner,
+		ID: u.ID, Revision: u.Revision, Inactive: Inactive(u, s.InactiveAfter, now), MustChange: u.MustChange}
+	if u.LastSeenAt != nil {
+		seen := u.LastSeenAt.UTC()
+		out.LastSeenAt = &seen
+	}
+	if s.Lockout > 0 && u.LockedUntil != nil && u.LockedUntil.After(now) {
+		until := u.LockedUntil.UTC()
+		out.LockedUntil = &until
+	}
+	return out
+}
+
+// withOwner sets the name of the user owner of out and whether it is disabled; a deleted owner
+// by the name it had, and disabled.
+func withOwner(out *User, owner *index.User) {
 	out.OwnerName, out.OwnerDisabled = owner.Name, owner.Disabled
 	if owner.DeletedAt != nil {
 		out.OwnerName, out.OwnerDisabled = owner.DeletedName, true
 	}
-	return out, nil
 }
 
 func (s *Users) now() time.Time {
