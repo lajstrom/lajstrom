@@ -74,3 +74,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0025](0025-node-and-workload-identity.md) | Node and workload identity: client certificates and Kubernetes service-account tokens at `/v2/token` | proposed |
 | [0026](0026-token-exchange-for-ci.md) | Token exchange for CI: a CI platform's OIDC token for a short-lived Lajstrom token | proposed |
 | [0027](0027-inactive-users-disabled-at-authentication.md) | Inactive users: a last activity per user, and a disabling at the next authentication | proposed |
+| [0028](0028-local-passwords-off-or-locked-out.md) | Local passwords: off where an IdP logs people in, else a lockout counted in the index | proposed |

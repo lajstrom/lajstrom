@@ -1,17 +1,18 @@
 # Spec: authentication, tokens and RBAC
 
 - Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69);
-  service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283). Owned
-  by `internal/auth`.
+  service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283); local
+  passwords turned off, and the lockout (§1), after the MVP (#1280). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
+  [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
 
 | Principal | Form | MVP |
 | --- | --- | --- |
-| local user | `user:<uid>` (below); password (argon2id) | yes |
+| local user | `user:<uid>` (below); password (argon2id), unless `auth.localPasswords` is `false` (Local passwords, below) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days), but a service account's (below); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read`, `write` and `attach`, one or more; expiry optional, within `auth.deployTokens.maxTTL` when it is set (below, #1286) | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
@@ -43,7 +44,10 @@ name) and per client address, where Lajstrom knows the client: with `server.trus
 behind an edge, or with `server.tls`, when the peer is the client (#248); a throttled request is
 `429` with `Retry-After`, whatever its password. Failed token secrets are not throttled
 (docs/auth.md, #130). The token endpoint `/v2/token` is rate-limited per client address, where
-Lajstrom knows it: 100 requests a second, then `429` with `Retry-After`.
+Lajstrom knows it: 100 requests a second, then `429` with `Retry-After`. These throttles count in
+each replica's memory (decided on #282). With `auth.lockout.duration`, failed passwords also lock
+the account out, counted in the index across the replicas; with `auth.localPasswords: false`, no
+password is checked at all (Local passwords, below).
 
 **A refused credential is a line at info** (#1284), `authentication refused`, one per request,
 beside its access line, with:
@@ -54,7 +58,8 @@ beside its access line, with:
   its token resolves to, `token:<id>` of a deploy token, else `unknown`; and `token`, the id of a
   token that was found (revoked, expired);
 - `reason`, from a fixed list (`unknown user`, `disabled`, `no password`, `wrong password`,
-  `unknown token`, `revoked`, `expired`, …), never a value of the request;
+  `locked`, `passwords off`, `unknown token`, `revoked`, `expired`, …), never a value of the
+  request;
 - `address`, the client address (ADR 0011), and `requestId`.
 
 Never the user name as it was typed, which may be a password typed into the wrong field or a
@@ -221,6 +226,97 @@ logins for a user without one, a service account or an OIDC user. So the upgrade
 user with a password inactive; a service account or an OIDC user whose records are older than
 the setting is inactive at once. A snapshot of before 0034 is restored alike (index-schema.md,
 Snapshots of the control plane).
+
+### Local passwords
+
+A local user's password (`users.password_hash`, argon2id) is the one credential of this section
+that a person chooses and that can be guessed: a token is 256 random bits, and an OIDC login, a
+certificate and a service-account token are verified by their issuer. Two settings bound it
+(#1280, decided 2026-11-16, [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md)), both
+off by default: a server whose people log in through an IdP turns local passwords off, and one
+without an IdP locks an account out after failed passwords. The throttles above stay as they are
+with either.
+
+**Turning them off.** With `auth.localPasswords: false` (configuration.md; `true` by default), no
+password is a credential, an admin's included. A password in Basic credentials, on any route and
+on `/v2/token`, in the password grant of `POST /v2/token`, in `npm login` and in a web UI's
+`POST /api/v1/login` (§10) is refused before a user is read: `401` with the challenge, and a
+message that says that passwords are off on this server and to use a personal access token or
+the IdP's login, the same for every name. No argon2id runs, the throttles count nothing, and the
+refusal line's reason is `passwords off`. What a token is does not change: Basic
+`<name>:<personal access token>`, `deploy:<token>`, a CI token or a Kubernetes service-account
+token under any name, a client certificate, a bearer of §4. People log in through the IdP (§8),
+which mints their personal access tokens and whose lockout and password rules apply; a service
+account has no password and is not concerned. No password is set either: a `password` in
+`POST /api/v1/users` and `POST /api/v1/users/<name>/password` are `400`, naming the setting, and
+`lajstrom admin user create`, but for a service account, and `lajstrom admin user set-password`
+fail with exit status 1, naming it. The hashes stored stay, refused: setting `true` again makes
+them credentials again, as they were.
+
+What the API makes only for a password (§3), a personal access token through `POST …/tokens`, a
+service account's token and a deploy token over a mask, is then the command line's
+(`lajstrom admin token create`), as it already is for an OIDC admin, who has no password. The
+bootstrap token is not made valid: the first admin is a person who logs in through the IdP once
+and gets an `admin` binding from `lajstrom admin binding create` (§6). The break-glass path is
+the command line against the database, which needs no password: `lajstrom admin token create
+--user <name>` makes an admin a token while the IdP is down. `serve` refuses `false` while
+`auth.oidc.issuer` is empty, since no person could log in. `GET /api/v1/info` leaves `password`
+out of `authModes` (http-routing.md §4), so that a UI shows no password form.
+
+**The lockout.** With `auth.lockout.duration` (configuration.md; `0` by default, no lockout;
+`30m` for PCI DSS 8.3.4), the failed passwords of an account are counted in the index, across the
+replicas, and the 10th in a row locks its password for that duration. Ten is a constant, the most
+PCI DSS allows. A failure is a wrong password of a live, enabled user that has one, on any route
+that takes a password (Basic, `/v2/token`, `npm login`, `POST /api/v1/login`); it adds one to
+`users.password_failures` in one statement ([index-schema.md](index-schema.md#the-lockout)), so
+the count is exact whatever replica took each failure. A password that verifies sets a count that
+is not `0` back to `0`, and so do an unlock and an admin's new password (below). The failure that
+makes 10 sets `users.locked_until` and the count back to `0`, and writes `login.block` in its
+transaction (§5): one row per lock, whatever the replicas. Neither write moves the user's revision
+nor `auth_version`.
+
+While the account is locked, its password is refused whatever it is. The authentication reads
+`locked_until` with the user's row, which it reads anyway, before the verification cache, so that
+a remembered verification does not get past a lock. It answers what a wrong password answers,
+`401` with the challenge and no reason, after one verification against the fixed hash that a name
+no user has costs ([auth.md](../auth.md#the-verification-cache)): neither the answer nor its time
+tells a locked account from a wrong password, or from a name that no user has. The refusal line's
+reason is `locked`. Such a refusal counts against the per-replica throttles as a failure does,
+and not against the lock: it neither lengthens the lock nor counts toward the next one. The lock
+is of the password only: the user's personal access tokens, its OIDC logins and the bearers of §4
+keep working, so that whoever knows a user name can stop that user's password and nothing else.
+
+Names that no user has, disabled users and users without a password are not counted in the
+index: their passwords never verify, so there is nothing to lock, and the per-replica throttles
+bound them as before. Counting a name that no user has would be a write per name guessed, into a
+table of names; since a locked account answers as a wrong password does, leaving them out tells
+nobody whether a user exists.
+
+A password that verifies sets the count back only while no lock is in force, and is otherwise
+refused as a locked account's: a password verified while another replica set the lock is not
+answered as a success. Each failure is a write of the user's row: at most 10 for each lock, since
+a locked account's passwords are not verified, and no more a minute than the throttles allow. The
+hot row that #282 weighed is so bounded by the lock itself.
+
+A lock ends at `locked_until`, and the count starts from `0`; or earlier, by an **unlock**:
+`POST /api/v1/users/<name>/unlock` (the admin role; http-routing.md §4) or
+`lajstrom admin user unlock <name>`. It sets the count to `0` and ends the lock, with a
+`user.unlock` row (§5) when a lock was in force; unlocking a user that is not locked writes no
+row. An admin's new password for the user (`POST …/password`, `set-password`) unlocks it too, in
+its transaction and with that row: the admin has checked who asks (PCI DSS 8.3.4's "until the
+user's identity is confirmed"). The last enabled admin is locked as anyone is: its tokens keep
+working, and the command line unlocks it.
+
+**What is shown.** While the setting is not `0`, the users API (http-routing.md §4) and
+`lajstrom admin user list` answer `lockedUntil` for a user that is locked, and leave it out
+otherwise; it moves no revision, as `lastSeenAt` does not. The count is not answered.
+
+**Configuration and upgrades.** The setting is configuration: a change takes a restart, and each
+replica applies its own. A replica with `0` reads no lock and counts nothing, and so does a
+replica of a release before migration 0036: during a rolling update, a locked password works on
+such a replica. A lock set before the setting was turned to `0` is not read while it is `0`, and a
+restore of a snapshot unlocks every user (index-schema.md, Snapshots of the control plane). The
+setting is `0`, or from `5m` to `24h`; it does nothing while `auth.localPasswords` is `false`.
 
 ## 2. Resources and actions
 
@@ -534,8 +630,18 @@ credentials are checked again (RFC 3339). A replica writes at most 60 of them a 
 the keys: beyond, a trip is counted, not written, and the next row it writes carries
 `suppressed`, the trips left out since its last row; the `throttled` lines and
 `lajstrom_auth_throttled_total` have every one. A row that cannot be written is logged at error
-and changes no answer. An account lockout (#1280) is meant to write this action too, with a
-`limit` of its own, so that one query finds every account and address that was blocked.
+and changes no answer. **A lock of the lockout** (§1, #1280) is this action too, with the `limit`
+`lockout`, so that one query finds every account and address that was blocked. It is written by
+the 10th failure in the transaction that sets the lock, so that neither is written without the
+other, once per lock whatever the replicas, and is not among the 60 a minute: `subject` the
+account's `user:<uid>`, `ip` and `requestId` those of the failure, `credential` `password`,
+`failures` `10`, no `window`, and `until` the end of the lock. The end of a lock writes nothing.
+
+**An unlock** (§1) is `user.unlock`, in its transaction, by the admin over the API, or by
+`anonymous` with `source: cli` on the command line (§6): `subject` the user's `user:<uid>`, and
+in its details `lockedUntil`, the end of the lock it ended. An admin's new password that ends a
+lock writes it too, beside its `user.password` row. Unlocking a user that is not locked writes
+none.
 
 **A change of the configuration** is `config.change` (#1284), by `anonymous`, `source: config`,
 written by `serve` at its start when the configuration it runs with is not the last one recorded
@@ -602,6 +708,11 @@ is made in one of two ways, both with an `admin` binding on `*/*`:
   not: it is also the recovery of a lost admin, with `lajstrom admin user set-password`. Its
   audit events have the source `cli` and the `host` the command ran on, and say who ran it as
   far as Lajstrom can tell (below).
+
+With `auth.localPasswords: false` (§1) neither makes an admin who could log in, so neither is
+taken: `serve` does not make the bootstrap token valid, and says at start how to make the first
+admin instead, a person's first login through the IdP and then
+`lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'`.
 
 **Who ran a command** (#1284). Whoever holds the database's credentials is the operator, so a
 command against the database authenticates nobody: its rows stay by `anonymous`. Every row that a
@@ -796,7 +907,8 @@ expired or approved is a page that asks again; the pages and the start of a devi
 throttled per client address as the failed logins are (§1).
 
 **What OIDC does not change.** Local users, their passwords, personal access tokens, deploy
-tokens, anonymous read and the bearer tokens of §4 stay as they are. An OIDC user has no
+tokens, anonymous read and the bearer tokens of §4 stay as they are, unless
+`auth.localPasswords` is `false`, which refuses every password (§1). An OIDC user has no
 password, so it cannot create a personal access token with the API (§3); it gets its tokens by
 logging in, and may list and revoke them as any user.
 
@@ -956,8 +1068,9 @@ off the browser without the key can use it. The `token.create` row of a bound to
 bound to no key, and a bound token is never sent as a bearer.
 
 **A password.** The user name and the password of the body are checked as Basic credentials are
-(§1): argon2id every time, the throttles of failed logins per account and per address, a token
-in place of the password refused as a wrong password, every refusal `401` without its reason.
+(§1): argon2id every time, the throttles of failed logins per account and per address, the
+lockout, a token in place of the password refused as a wrong password, every refusal `401`
+without its reason; with `auth.localPasswords: false`, `401` saying that passwords are off.
 The token is named `login <time> <4 hex>`, and its `token.create` row has `createdBy`
 `password` and the source `api`, as npm's login has.
 

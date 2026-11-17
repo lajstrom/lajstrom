@@ -1138,6 +1138,17 @@ type Writer interface {
     // changes nothing, as TouchToken does; it moves neither Revision nor auth_version; no user
     // ErrNotFound (#1283)
     TouchUser(ctx context.Context, id int64, seenAt time.Time) error
+    // the lockout (#1280, index-schema.md, The lockout). FailPassword adds one to
+    // PasswordFailures (users.password_failures) unless LockedUntil is later than at, which
+    // changes nothing and returns false; the failure that reaches limit sets LockedUntil to
+    // lockUntil and the count to 0, in the same statement, and returns true.
+    // ResetPasswordFailures sets the count to 0 while LockedUntil is not later than at, else
+    // changes nothing and wraps ErrConflict. UnlockUser sets the count to 0 and LockedUntil to
+    // nil, and returns the LockedUntil it ended when that was later than at (nil: none). None
+    // moves Revision or auth_version; no user ErrNotFound
+    FailPassword(ctx context.Context, id int64, at, lockUntil time.Time, limit int) (bool, error)
+    ResetPasswordFailures(ctx context.Context, id int64, at time.Time) error
+    UnlockUser(ctx context.Context, id int64, at time.Time) (*time.Time, error)
     CreateToken(ctx context.Context, t *Token) error
     // RevokeToken sets RevokedAt while it is null; a token revoked already keeps its time and
     // wraps ErrConflict, so that of callers that revoke it at once one does (#1277)
