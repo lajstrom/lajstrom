@@ -28,6 +28,9 @@ type ServerInfo struct {
 	// AdminMFA is auth.admin.requireMFA, the admin mode (docs/spec/rbac.md §12): info answers
 	// adminMFA.
 	AdminMFA bool
+	// RequireReason is auth.requireReason (docs/spec/rbac.md §13): info answers requireReason, so
+	// that a UI asks for a reason with each change of the control plane.
+	RequireReason bool
 }
 
 // FormatInfo is a format plugin the server serves: its name and the artifact type of its
@@ -59,8 +62,11 @@ type Info struct {
 	AuthModes     []string     `json:"authModes"`
 	Login         LoginInfo    `json:"login"`
 	// AdminMFA is true while the admin mode is on (ServerInfo.AdminMFA), absent otherwise.
-	AdminMFA bool   `json:"adminMFA,omitempty"`
-	Caller   Caller `json:"caller"`
+	AdminMFA bool `json:"adminMFA,omitempty"`
+	// RequireReason is auth.requireReason (ServerInfo.RequireReason): a change of the control
+	// plane without changeReason is 400.
+	RequireReason bool   `json:"requireReason"`
+	Caller        Caller `json:"caller"`
 }
 
 // LoginInfo is what GET /api/v1/info tells a web UI of POST /api/v1/login: that the server has
@@ -111,7 +117,7 @@ func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, 
 		Formats: h.info.Formats, AuthModes: h.authModes(), Login: LoginInfo{
 			TokenLifetime: int64(h.loginLifetime / time.Second), IdleTimeout: int64(h.loginIdle / time.Second),
 		},
-		AdminMFA: h.info.AdminMFA, Caller: caller,
+		AdminMFA: h.info.AdminMFA, RequireReason: h.info.RequireReason, Caller: caller,
 	}, nil
 }
 

@@ -237,7 +237,8 @@ func newServeCmd(a *app) *cobra.Command {
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
-				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords, AdminMFA: c.Auth.Admin.RequireMFA}
+				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords, AdminMFA: c.Auth.Admin.RequireMFA,
+				RequireReason: c.Auth.RequireReason}
 			ciPolicies := newCIPolicies(c, st)
 			// the authentication that the server leaves to POST /api/v1/users/{user}/password, whose
 			// body decides whether it takes one (docs/spec/rbac.md §1, A user's own password)
@@ -257,7 +258,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
 				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize,
 				Rules: newRules(c, st, a.log), Verdicter: pipe, PolicyKey: apiPolicyKey(pkey), Locate: locateIn(lookupIn(plugins)),
-				CIPolicies: ciPolicies})
+				CIPolicies: ciPolicies, RequireReason: c.Auth.RequireReason})
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
 			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
 			srv, err = server.New(server.Options{
