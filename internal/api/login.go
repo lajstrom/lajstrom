@@ -115,8 +115,9 @@ func (h *handler) codeLogin(w http.ResponseWriter, r *http.Request, code, verifi
 // passwordLogin checks the password of user as Basic credentials are, with the throttles of
 // failed logins, then mints a personal access token of the user without scopes, bound to the
 // DPoP key of the thumbprint jkt, named login <time> <4 hex>, expiring after the login lifetime.
-// A refusal is 401 whatever its reason, a throttled account or address 429 with Retry-After, and
-// 501 without Options.Passwords.
+// A refusal is 401 whatever its reason, a throttled account or address 429 with Retry-After, a
+// right password whose user must change it 403 (auth.ErrMustChange), without a token, and 501
+// without Options.Passwords.
 func (h *handler) passwordLogin(w http.ResponseWriter, r *http.Request, user, password, jkt string) (int, any, error) {
 	if h.passwords == nil {
 		return 0, nil, &clientError{msg: "this server checks no passwords", err: format.ErrUnsupported}
@@ -130,6 +131,8 @@ func (h *handler) passwordLogin(w http.ResponseWriter, r *http.Request, user, pa
 			Message: "too many failed logins: try again after Retry-After seconds"}}, nil
 	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message, when it has one
 		return 0, nil, &clientError{msg: h.passwords.RefusalMessage(err, "the user name or the password is wrong"), err: format.ErrUnauthenticated}
+	case errors.Is(err, auth.ErrMustChange): // the one 403 of a sign-in: the UI offers the change
+		return 0, nil, &clientError{msg: auth.MsgMustChange, err: format.ErrForbidden}
 	case err != nil:
 		return 0, nil, err
 	}

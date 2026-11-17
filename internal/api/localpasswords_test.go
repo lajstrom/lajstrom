@@ -44,6 +44,29 @@ func TestPasswordsOff(t *testing.T) {
 		auth.Principal{}, auth.Credential{}), http.StatusUnauthorized, codeUnauthenticated, "passwords are off on this server")
 }
 
+// TestLoginMustChange: a sign-in with the right password of a user that must change it is 403,
+// the one 403 of a sign-in, saying how, and makes no token; a wrong password is 401
+// (docs/spec/rbac.md §1, Change at first use; §10).
+func TestLoginMustChange(t *testing.T) {
+	f := loginFixture(t, Options{})
+	alice, err := f.st.GetUser(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice.MustChange = true
+	if err := f.st.UpdateUser(context.Background(), alice); err != nil {
+		t.Fatal(err)
+	}
+	key := dpoptest.NewKey(t)
+	wantError(t, f.signIn(`{"username": "alice", "password": "`+loginPassword+`"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
+		http.StatusForbidden, codeForbidden, auth.MsgMustChange)
+	wantError(t, f.signIn(`{"username": "alice", "password": "a wrong password"}`, loginProof(t, key), auth.Principal{}, auth.Credential{}),
+		http.StatusUnauthorized, codeUnauthenticated, "the user name or the password is wrong")
+	if evs := auditOf(t, f.st, auth.ActionTokenCreate); len(evs) != 0 {
+		t.Errorf("%d token.create rows, want none", len(evs))
+	}
+}
+
 // TestLoginLockoutMessage: while auth.lockout.duration is set, a refused sign-in with a password
 // says what locks a password and for how long, whatever the reason (docs/spec/rbac.md §1, §10).
 func TestLoginLockoutMessage(t *testing.T) {
