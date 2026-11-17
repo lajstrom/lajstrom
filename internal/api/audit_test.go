@@ -1,10 +1,14 @@
 package api
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +109,12 @@ func TestAuditAPIRefused(t *testing.T) {
 		{"/api/v1/audit?state=done", "state"},
 		{"/api/v1/audit?cursor=eA", "cursor"},
 		{"/api/v1/audit?limit=-1", "limit"},
+		{"/api/v1/audit?after=-1", "after"},
+		{"/api/v1/audit?after=x", "after"},
+		{"/api/v1/audit?after=1.5", "after"},
+		{"/api/v1/audit?after=0&limit=1001", "limit"},
+		{"/api/v1/audit?after=0&cursor=eA", "after: the feed has no cursor"},
+		{"/api/v1/audit?after=0&since=yesterday", "since"},
 	} {
 		t.Run(tt.target, func(t *testing.T) {
 			wantError(t, f.do(http.MethodGet, tt.target, "", admin), http.StatusBadRequest, codeInvalid, tt.msg)
@@ -133,4 +143,79 @@ func TestAuditAPIRefused(t *testing.T) {
 			wantStatus(t, f.doAs(http.MethodGet, "/api/v1/audit", "", tt.p, tt.c), tt.status)
 		})
 	}
+}
+
+// feedOf reads the feed at target and returns its events' "<id> <action>", checking that the
+// page has no next.
+func (f *fixture) feedOf(t *testing.T, target string) []string {
+	t.Helper()
+	var list AuditList
+	decodeJSON(t, f.do(http.MethodGet, target, "", admin), http.StatusOK, &list)
+	if list.Next != "" {
+		t.Errorf("%s: next %q, want none in the feed", target, list.Next)
+	}
+	out := []string{}
+	for _, ev := range list.Events {
+		out = append(out, fmt.Sprintf("%d %s", ev.ID, ev.Action))
+	}
+	return out
+}
+
+// TestAuditFeed reads the feed (#1278): the events above an id by id ascending whatever their
+// times, with the list's filters and limit, no next, an empty page at the end; the events as the
+// list answers them.
+func TestAuditFeed(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.addUsers(t, "alice")
+	alice := "user:" + f.uidOf(t, "alice")
+	t0 := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	appendAudit(t, f.st, t0.Add(time.Hour), alice, "raw/a", "push")
+	appendAudit(t, f.st, t0, "token:3", "raw/b", "push")
+	appendAudit(t, f.st, t0.Add(30*time.Minute), alice, "raw/a", "delete")
+	appendAudit(t, f.st, t0.Add(2*time.Hour), alice, "raw/b", "repo.create")
+	rows, err := f.st.ListAudit(t.Context(), index.AuditFilter{Feed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{}
+	for _, r := range rows {
+		ids[r.Action+" "+r.Repo] = r.ID
+	}
+	ev := func(keys ...string) []string {
+		out := []string{}
+		for _, k := range keys {
+			out = append(out, fmt.Sprintf("%d %s", ids[k], strings.Fields(k)[0]))
+		}
+		return out
+	}
+	push, other, del, create := "push raw/a", "push raw/b", "delete raw/a", "repo.create raw/b"
+	for _, tt := range []struct {
+		query string
+		want  []string
+	}{
+		{"after=0", ev(push, other, del, create)},
+		{fmt.Sprintf("after=%d", ids[push]), ev(other, del, create)},
+		{fmt.Sprintf("after=%d", ids[create]), ev()},
+		{"after=0&limit=2", ev(push, other)},
+		{fmt.Sprintf("after=%d&limit=1", ids[other]), ev(del)},
+		{"after=0&repo=raw/a", ev(push, del)},
+		{"after=0&principal=user:alice&action=push", ev(push)},
+		{"after=0&principal=" + url.QueryEscape(alice), ev(push, del, create)},
+		{"after=0&state=ok&since=" + url.QueryEscape(t0.Add(time.Minute).Format(time.RFC3339)) + "&until=" +
+			url.QueryEscape(t0.Add(2*time.Hour).Format(time.RFC3339)), ev(push, del)},
+		{"after=0&principal=user:dave", ev()},
+	} {
+		if got := f.feedOf(t, "/api/v1/audit?"+tt.query); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: %q, want %q", tt.query, got, tt.want)
+		}
+	}
+	var feed, list AuditList
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/audit?after=0", "", admin), http.StatusOK, &feed)
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/audit", "", admin), http.StatusOK, &list)
+	slices.SortFunc(list.Events, func(a, b AuditEntry) int { return cmp.Compare(a.ID, b.ID) })
+	want, err := json.Marshal(list.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON(t, "the feed's events, the list's by id", feed.Events, string(want))
 }

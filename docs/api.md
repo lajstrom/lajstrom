@@ -1685,7 +1685,29 @@ pages do not shift the pages after the first.
 then `ok`, `failed` with the `error` the client was answered, or `unknown` when its writer
 stopped in between. `principalKind` is `service` when the principal is a service account's
 `user:<uid>` ([auth.md](auth.md#service-accounts)). `repo`, `subject`, `digest`, `ip`, `details`,
-`principalName`, `principalKind` and `error` are left out when empty.
+`principalName`, `principalKind` and `error` are left out when empty. With `audit.log` (on by
+default), each row is also a log line of the same fields once its change commits
+([configuration.md](configuration.md#audit)).
+
+### Feed: `GET /api/v1/audit?after=<id>`
+
+The rows whose id is above `after`, by id ascending, for a collector that polls and keeps its
+place (#1278, [rbac.md](spec/rbac.md) §5): the reconciliation of the log lines. It takes the
+filters of the list, which all hold, and `limit` (100, at most 1000); it answers no `next`, and
+an empty `events` is the end for now. `after=0` starts at the oldest row kept. `after` that is
+not an integer of 0 or more, or with `cursor`, is `400`. The events are those of the list, in
+their state at the time: a `pending` row's outcome comes by asking again from an id below it.
+
+```sh
+# the rows above 4180, a thousand at most
+curl -fsS -u admin "$LAJSTROM/api/v1/audit?after=4180&limit=1000" | jq -c '.events[]'
+```
+
+An id is unique and never used again, a prune's deletions included, but by a database restored
+from a backup or a snapshot. On PostgreSQL and CockroachDB a row whose transaction commits after
+another's can show with a lower id after it: a collector resumes from the newest id it held 10
+minutes before and drops the ids it already has ([operations.md](operations.md#audit)). No route
+changes or deletes a row; a prune is the command line's ([rbac.md](spec/rbac.md) §5).
 
 ## Tokens
 
