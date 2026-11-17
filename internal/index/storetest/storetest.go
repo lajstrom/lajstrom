@@ -45,6 +45,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"UsersLockout", testUsersLockout},
 		{"UsersLockoutColumns", testUsersLockoutColumns},
 		{"UsersLockoutRace", testUsersLockoutRace},
+		{"UsersPasswordHistory", testUsersPasswordHistory},
 		{"AuditPrincipalName", testAuditPrincipalName},
 		{"Sessions", testSessions},
 		{"OpenSessions", testOpenSessions},

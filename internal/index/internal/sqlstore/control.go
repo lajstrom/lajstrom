@@ -185,17 +185,20 @@ func prefixed(p, cols string) string {
 	return strings.Join(parts, ", ")
 }
 
-// userCols are the columns of users that a snapshot carries, and userDests their destinations;
-// userReadCols and userReadDests add those of the lockout, which a snapshot leaves out
-// (docs/spec/index-schema.md, The lockout).
+// userCols are the columns of users that a snapshot carries, the history of the password and
+// its change at first use among them (docs/spec/index-schema.md, A password's history), and
+// userDests their destinations; userReadCols and userReadDests add those of the lockout, which a
+// snapshot leaves out (docs/spec/index-schema.md, The lockout).
 const (
-	userCols     = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision, last_seen_at"
+	userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, revision, last_seen_at," +
+		" must_change, password_history"
 	userReadCols = userCols + ", password_failures, locked_until"
 )
 
 func userDests(u *index.User) []any {
 	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
-		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision, nullTimeDest{&u.LastSeenAt}}
+		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}, textDest{&u.Owner}, &u.Revision, nullTimeDest{&u.LastSeenAt},
+		&u.MustChange, jsonDest[[]string]{&u.PasswordHistory}}
 }
 
 func userReadDests(u *index.User) []any {
@@ -227,28 +230,31 @@ func (c *conn) ListUsers(ctx context.Context) ([]index.User, error) {
 	return getAll(ctx, c, "users", userReadDests, "SELECT "+userReadCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")
 }
 
-// CreateUser inserts u, at revision 1, with a new uid when UID is empty.
+// CreateUser inserts u, at revision 1, with a new uid when UID is empty, and its MustChange and
+// PasswordHistory with its password.
 func (c *conn) CreateUser(ctx context.Context, u *index.User) error {
 	stamp(&u.CreatedAt, now())
 	if u.UID == "" {
 		u.UID = index.NewUID(u.CreatedAt)
 	}
 	return c.scanRow(ctx, "users "+u.Name,
-		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, revision",
+		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name, owner, must_change,"+
+			" password_history) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, revision",
 		[]any{u.UID, u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.EncodeTime(u.CreatedAt),
-			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), textArg(u.Owner)},
+			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), textArg(u.Owner), u.MustChange,
+			historyArg(u.PasswordHistory)},
 		&u.ID, &u.Revision)
 }
 
-// UpdateUser stores u by u.ID, moves the revision by one, and fills UID, CreatedAt and Revision
-// from the row.
+// UpdateUser stores u by u.ID, its password, MustChange and PasswordHistory in the one statement
+// (docs/spec/index-schema.md, A password's history), moves the revision by one, and fills UID,
+// CreatedAt and Revision from the row.
 func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 	return c.scanRow(ctx, fmt.Sprintf("users id %d", u.ID),
 		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?, owner = ?,"+
-			" revision = revision + 1 WHERE id = ? RETURNING uid, created_at, revision",
+			" must_change = ?, password_history = ?, revision = revision + 1 WHERE id = ? RETURNING uid, created_at, revision",
 		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName),
-			textArg(u.Owner), u.ID},
+			textArg(u.Owner), u.MustChange, historyArg(u.PasswordHistory), u.ID},
 		textDest{&u.UID}, timeDest{&u.CreatedAt}, &u.Revision)
 }
 

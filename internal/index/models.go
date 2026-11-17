@@ -78,6 +78,14 @@ type User struct {
 	// and ImportControlPlane leave them, and a snapshot does not carry them.
 	PasswordFailures int
 	LockedUntil      *time.Time
+	// MustChange says that the user's password must be changed before it is used for anything
+	// else, and PasswordHistory holds the argon2id hashes of its three passwords before the
+	// current one, PHC strings as PasswordHash, the latest first; nil when it has none
+	// (users.must_change and users.password_history; docs/spec/rbac.md §1, Local passwords;
+	// docs/spec/index-schema.md, A password's history; #1281). CreateUser and UpdateUser write
+	// both as they are, with the password, and a snapshot carries them.
+	MustChange      bool
+	PasswordHistory []string
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.

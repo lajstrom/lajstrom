@@ -103,6 +103,12 @@ type userRow struct {
 	// LastSeenAt is the user's last activity; absent without one, and in a document written
 	// before migration 0034, which the restore fills as that migration does.
 	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	// MustChange is true while the password must be changed, absent otherwise; PasswordHistory
+	// the argon2id hashes of the three passwords before the current one, the latest first,
+	// absent without any and in a document written before migration 0037, which the restore
+	// takes for none (docs/spec/index-schema.md, A password's history).
+	MustChange      bool     `json:"mustChange,omitempty"`
+	PasswordHistory []string `json:"passwordHistory,omitempty"`
 }
 
 type identityRow struct {
@@ -264,7 +270,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	for _, u := range cp.Users {
 		doc.Users = append(doc.Users, userRow{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
 			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner,
-			Revision: u.Revision, LastSeenAt: u.LastSeenAt})
+			Revision: u.Revision, LastSeenAt: u.LastSeenAt, MustChange: u.MustChange, PasswordHistory: u.PasswordHistory})
 	}
 	for _, i := range cp.Identities {
 		doc.Identities = append(doc.Identities, identityRow{ID: i.ID, User: i.UserID, Issuer: i.Issuer, Subject: i.Subject,
@@ -334,7 +340,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, u := range doc.Users {
 		cp.Users = append(cp.Users, index.User{ID: u.ID, UID: u.UID, Name: u.Name, PasswordHash: u.PasswordHash, Kind: u.Kind,
 			Disabled: u.Disabled, CreatedAt: u.CreatedAt, DeletedAt: u.DeletedAt, DeletedName: u.DeletedName, Owner: u.Owner,
-			Revision: u.Revision, LastSeenAt: u.LastSeenAt})
+			Revision: u.Revision, LastSeenAt: u.LastSeenAt, MustChange: u.MustChange, PasswordHistory: u.PasswordHistory})
 	}
 	for _, i := range doc.Identities {
 		cp.Identities = append(cp.Identities, index.Identity{ID: i.ID, UserID: i.User, Issuer: i.Issuer, Subject: i.Subject,

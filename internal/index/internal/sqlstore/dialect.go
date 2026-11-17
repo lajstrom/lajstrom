@@ -309,6 +309,16 @@ func attrsArg(m map[string]string) any {
 	return string(b)
 }
 
+// historyArg marshals the history of a password for its nullable json column,
+// users.password_history: none is NULL, an empty list too (docs/spec/index-schema.md, A
+// password's history).
+func historyArg(h []string) any {
+	if len(h) == 0 {
+		return nil
+	}
+	return scopesArg(h)
+}
+
 // scopesArg marshals token scopes for a nullable json column: nil is NULL.
 func scopesArg(s []string) any {
 	if s == nil {
