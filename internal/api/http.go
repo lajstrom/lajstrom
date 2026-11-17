@@ -234,6 +234,7 @@ const maxBody = 64 << 10
 //	POST   /api/v1/approvals/{id}/reject               reject one, or withdraw one's own
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/access-report[?scope=&unusedDays=]  who has what, one document in its canonical form (admin)
+//	POST   /api/v1/access-reviews                      record the review of a report, by its sha256: an access.review row (admin)
 //	GET    /api/v1/whoami                              the request's principal
 //	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
 //	GET    /api/v1/registries                          the registries, their capabilities, repos and health (admin)
@@ -379,6 +380,7 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/approvals/{id}/reject", h.rejectApproval},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/access-report", h.accessReport},
+		{"POST /api/v1/access-reviews", h.recordAccessReview},
 		{"GET /api/v1/whoami", h.whoami},
 		{"GET /api/v1/info", h.serverInfo},
 		{"GET /api/v1/search", h.search},

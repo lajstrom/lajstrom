@@ -1987,6 +1987,33 @@ paths:
         "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/access-reviews:
+    post:
+      tags: [access]
+      operationId: recordAccessReview
+      summary: Record that a person reviewed an access report, by its sha256 (admin).
+      description: >-
+        Writes the audit row access.review by the request's principal, in a transaction of its own:
+        subject sha256:<hex>, details {sha256, generatedAt, scope, note} with the origin and the
+        sign-in of a web UI's token. The admin role, checked before the body is read, with any
+        credential that reaches it (under auth.admin.requireMFA, a web UI's sign-in with a second
+        factor). Lajstrom keeps no report and does not compare the sha256 with one: the reviewer
+        keeps the document with the ticket. No changeReason and no second admin: a review changes
+        no access. Past reviews are GET /api/v1/audit?action=access.review, newest first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccessReviewRequest"}
+      responses:
+        "201":
+          description: The row written, as GET /api/v1/audit answers it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditEntry"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /api/v1/whoami:
     get:
       tags: [meta]
@@ -3207,6 +3234,26 @@ components:
           type: array
           items: {$ref: "#/components/schemas/AuditEntry"}
         next: {type: string}
+    AccessReviewRequest:
+      type: object
+      required: [sha256, generatedAt, note]
+      additionalProperties: false
+      properties:
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: The sha256 of the document's bytes as the reviewer got them, 64 lowercase hexadecimal digits, without sha256:.
+        generatedAt:
+          type: string
+          format: date-time
+          description: The generatedAt of the document; more than 60 seconds after the server's time is 400.
+        scope: {type: string, enum: [all, people, systems], default: all, description: The scope of the document.}
+        note:
+          type: string
+          minLength: 1
+          description: >-
+            1 to 4096 bytes (not characters) of UTF-8 without control characters but line feeds: what was found and
+            done, who acknowledged, the ticket.
     AccessFlags:
       type: array
       description: >-
