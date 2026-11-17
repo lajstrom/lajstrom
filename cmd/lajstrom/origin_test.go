@@ -29,7 +29,7 @@ func TestAuditedCommands(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"admin user list", "admin token list", "admin key export", "admin bootstrap",
-		"admin retention", "admin repo prefetch", "admin webhook test", "migrate", "serve"} {
+		"admin retention", "admin repo prefetch", "admin webhook test", "admin access-report", "migrate", "serve"} {
 		cmd, _, err := root.Find(strings.Fields(path))
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
