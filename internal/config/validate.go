@@ -982,10 +982,18 @@ func (a Auth) validate(p *problems, s Server) {
 		p.add("auth.login.idleTimeout", "must be 0 (off), or at least %s and less than auth.login.tokenLifetime (%s)",
 			MinLoginIdleTimeout, a.Login.TokenLifetime)
 	}
+	a.Lockout.validate(p)
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
 	a.Kubernetes.validate(p, s)
 	a.CI.validate(p, s)
+}
+
+// validate checks auth.lockout.duration: 0, or from MinLockoutDuration to MaxLockoutDuration.
+func (l Lockout) validate(p *problems) {
+	if d := l.Duration; d != 0 && (d < MinLockoutDuration || d > MaxLockoutDuration) {
+		p.add("auth.lockout.duration", "must be 0, which locks nothing, or from 5m to 24h; 30m for PCI DSS 8.3.4")
+	}
 }
 
 // validate checks auth.kubernetes (docs/spec/rbac.md §9): each cluster's unique name, its issuer

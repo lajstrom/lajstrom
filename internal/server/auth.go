@@ -184,7 +184,7 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 		s.refuseDPoP(w, r, "invalid_token", msgBound)
 		return
 	case errors.Is(err, auth.ErrBadCredentials): // the authenticator's message of a refused password, when it has one
-		s.writeRefusal(w, r, http.StatusUnauthorized, refusedMessage(err))
+		s.writeRefusal(w, r, http.StatusUnauthorized, s.refusedMessage(err))
 		return
 	case errors.As(err, &throttled): // a failed-login throttle: account or address
 		s.throttled(w, r, throttled, msgThrottled)
@@ -206,11 +206,16 @@ func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handle
 
 // refusedMessage is the message of the 401 of err, refused credentials: the authenticator's of a
 // refused password when it has one, which auth.Authenticator.RefusalMessage gives npm login and
-// POST /api/v1/login, else msgBadCredentials. It names the messages by the kind of err rather than
-// asking the authenticator, so that the analysis of what reaches an answer sees fixed text.
-func refusedMessage(err error) string {
-	if errors.Is(err, auth.ErrPasswordsOff) {
+// POST /api/v1/login: passwords are off, or, while the lockout is set, what locks a password;
+// else msgBadCredentials. It picks the message by the kind of err and does not hand err to the
+// authenticator, so that the analysis of what reaches an answer sees the server's text (gosec
+// G705 takes what another package returns for an error of the request for the request's).
+func (s *Server) refusedMessage(err error) string {
+	switch {
+	case errors.Is(err, auth.ErrPasswordsOff):
 		return auth.MsgPasswordsOff
+	case errors.Is(err, auth.ErrPasswordRefused):
+		return cmp.Or(s.opts.Authenticator.LockoutMessage(), msgBadCredentials)
 	}
 	return msgBadCredentials
 }

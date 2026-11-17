@@ -23,11 +23,15 @@ const MsgPasswordsOff = "passwords are off on this server: use a personal access
 // authentication chose one, and fallback, the caller's own, otherwise. The server's Basic
 // credentials and /v2/token, npm login and POST /api/v1/login answer it alike, the same whatever
 // the name and the reason (docs/spec/rbac.md §1, Local passwords): while passwords are off, every
-// password's says so (ErrPasswordsOff). The message is the authenticator's text, never a value of
+// password's says so (ErrPasswordsOff), and while the lockout is set, what locks a password
+// (ErrPasswordRefused, LockoutMessage). The message is the authenticator's text, never a value of
 // the request.
 func (a *Authenticator) RefusalMessage(err error, fallback string) string {
-	if errors.Is(err, ErrPasswordsOff) {
+	switch {
+	case errors.Is(err, ErrPasswordsOff):
 		return MsgPasswordsOff
+	case errors.Is(err, ErrPasswordRefused) && a.lockoutMsg != "":
+		return a.lockoutMsg
 	}
 	return fallback
 }

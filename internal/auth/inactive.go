@@ -231,9 +231,14 @@ func (a *Authenticator) admit(ctx context.Context, cred CredentialKind, u *index
 	return nil
 }
 
-// admitPassword is admit for a password of the user u, whose refusal counts as a failed login
-// of account and addr, as a disabled user's does; it returns the principal user:<uid>.
-func (a *Authenticator) admitPassword(ctx context.Context, u *index.User, account, addr string) (Principal, error) {
+// admitPassword is admit for a password of the user u, verified (checked) or remembered, whose
+// refusal counts as a failed login of account and addr, as a disabled user's does; first the
+// count of the lockout goes back to 0, unless a lock is in force (resetFailures). It returns the
+// principal user:<uid>.
+func (a *Authenticator) admitPassword(ctx context.Context, u *index.User, account, addr string, checked bool) (Principal, error) {
+	if err := a.resetFailures(ctx, u, checked, account, addr); err != nil {
+		return Principal{}, err
+	}
 	if err := a.admit(ctx, CredPassword, u); err != nil {
 		a.failed(ctx, account, addr)
 		return Principal{}, err

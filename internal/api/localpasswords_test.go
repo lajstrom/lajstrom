@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/dpop/dpoptest"
@@ -41,4 +42,18 @@ func TestPasswordsOff(t *testing.T) {
 	}
 	wantError(t, f.signIn(`{"username": "alice", "password": "`+loginPassword+`"}`, loginProof(t, dpoptest.NewKey(t)),
 		auth.Principal{}, auth.Credential{}), http.StatusUnauthorized, codeUnauthenticated, "passwords are off on this server")
+}
+
+// TestLoginLockoutMessage: while auth.lockout.duration is set, a refused sign-in with a password
+// says what locks a password and for how long, whatever the reason (docs/spec/rbac.md §1, §10).
+func TestLoginLockoutMessage(t *testing.T) {
+	f := loginFixture(t, Options{})
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, DPoP: loginVerifier(f.st),
+		Passwords: auth.NewAuthenticator(auth.Options{Index: f.st, Lockout: 30 * time.Minute})}))
+	key := dpoptest.NewKey(t)
+	for _, body := range []string{`{"username": "alice", "password": "wrong password"}`, `{"username": "nobody", "password": "a password"}`,
+		`{"username": "oidc-bob", "password": "a password"}`, `{"username": "Alice", "password": "a password"}`} {
+		wantError(t, f.signIn(body, loginProof(t, key), auth.Principal{}, auth.Credential{}), http.StatusUnauthorized, codeUnauthenticated,
+			"the user name or the password was refused: 10 wrong passwords in a row lock a password for 30m")
+	}
 }

@@ -216,7 +216,7 @@ func newServeCmd(a *app) *cobra.Command {
 			// auth.disableInactiveUsersAfter (rbac.md §1, #1283): users disables the inactive.
 			users := usersOf(c, st, a.log)
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users, Blocks: blocks,
-				PasswordsOff: !c.Auth.LocalPasswords})
+				PasswordsOff: !c.Auth.LocalPasswords, Lockout: c.Auth.Lockout.Duration})
 			warnInactiveUsers(ctx, users, a.log)
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}

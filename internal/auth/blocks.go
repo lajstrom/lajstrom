@@ -13,15 +13,15 @@ import (
 
 // ActionLoginBlock is the audit action of a throttle of failed logins that trips: the account
 // or the client address whose credentials are refused unchecked until the window closes
-// (docs/spec/rbac.md §5, #1284). A lockout (#1280) is meant to write it too, with a limit of its
-// own.
+// (docs/spec/rbac.md §5, #1284), and a lock of the lockout (#1280), the limit LimitLockout.
 const ActionLoginBlock = "login.block"
 
-// The limits of a login.block row: the throttle that tripped.
+// The limits of a login.block row: the throttle that tripped, or the lockout.
 const (
 	LimitAccount   = "account"
 	LimitAddress   = "address"
 	LimitBootstrap = "bootstrap"
+	LimitLockout   = "lockout"
 )
 
 // BlockRows is how many login.block rows a replica writes within BlockWindow, whatever the keys:
@@ -54,7 +54,7 @@ type Blocks struct {
 	suppressed int       // trips not written since the last row
 }
 
-// block is a throttle that tripped.
+// block is a throttle that tripped, or a lock of the lockout, which has no window.
 type block struct {
 	limit, credential, subject string
 	failures                   int
@@ -73,8 +73,25 @@ func (bs *Blocks) record(ctx context.Context, b block) {
 		return
 	}
 	r := RequestFrom(ctx)
+	ev := b.event(ctx, bs.now(), suppressed)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), blockWriteTimeout)
+	defer cancel()
+	if err := bs.Index.AppendAudit(wctx, &ev); err != nil {
+		bs.log().ErrorContext(ctx, "auth: the audit row of a blocked login not written", "limit", b.limit, "subject", b.subject,
+			"error", err.Error(), "requestId", r.ID)
+	}
+}
+
+// event is the login.block row of b at at, by anonymous, with the client address and the request
+// id of ctx (WithRequest) and the count of the trips held back before it, suppressed, when it is
+// not 0; without a window when b has none.
+func (b block) event(ctx context.Context, at time.Time, suppressed int) index.AuditEvent {
+	r := RequestFrom(ctx)
 	details := map[string]any{"limit": b.limit, "credential": b.credential, "failures": b.failures,
-		"window": b.window.String(), "until": b.until.UTC().Format(time.RFC3339)}
+		"until": b.until.UTC().Format(time.RFC3339)}
+	if b.window > 0 {
+		details["window"] = b.window.String()
+	}
 	if r.ID != "" {
 		details["requestId"] = r.ID
 	}
@@ -82,14 +99,8 @@ func (bs *Blocks) record(ctx context.Context, b block) {
 		details["suppressed"] = suppressed
 	}
 	raw, _ := json.Marshal(details) // strings and ints: never an error
-	ev := index.AuditEvent{At: bs.now(), Principal: Anonymous.String(), Action: ActionLoginBlock, Subject: b.subject,
+	return index.AuditEvent{At: at, Principal: Anonymous.String(), Action: ActionLoginBlock, Subject: b.subject,
 		IP: r.Address, Details: raw, State: index.AuditOK}
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), blockWriteTimeout)
-	defer cancel()
-	if err := bs.Index.AppendAudit(wctx, &ev); err != nil {
-		bs.log().ErrorContext(ctx, "auth: the audit row of a blocked login not written", "limit", b.limit, "subject", b.subject,
-			"error", err.Error(), "requestId", r.ID)
-	}
 }
 
 // take reports whether a row may be written now and how many trips were held back since the last

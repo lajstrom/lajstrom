@@ -507,6 +507,9 @@ type Auth struct {
 	// Local passwords; #1280); true by default. false refuses every password, on every route that
 	// takes one, and sets none: people log in through OIDC, which serve then requires.
 	LocalPasswords bool `yaml:"localPasswords"`
+	// Lockout locks a local user's password after wrong passwords in a row (docs/spec/rbac.md §1,
+	// Local passwords; #1280).
+	Lockout Lockout `yaml:"lockout"`
 	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
 	Bootstrap Bootstrap `yaml:"bootstrap"`
 	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
@@ -526,6 +529,22 @@ type Auth struct {
 	// CI is token exchange for CI (docs/spec/rbac.md §11, #937); off while it has no issuer.
 	CI CI `yaml:"ci"`
 }
+
+// Lockout configures the lockout of local passwords (docs/spec/rbac.md §1, Local passwords).
+type Lockout struct {
+	// Duration is how long 10 wrong passwords in a row lock a user's password, counted in the
+	// index across the replicas. Zero, the default, counts nothing and locks nothing; otherwise
+	// from MinLockoutDuration to MaxLockoutDuration. It does nothing while LocalPasswords is false.
+	Duration time.Duration `yaml:"duration"`
+}
+
+// MinLockoutDuration and MaxLockoutDuration bound auth.lockout.duration when it is not zero: a
+// shorter lock hardly slows a guess, and a longer one is an outage that whoever knows a user name
+// can cause. 30m is PCI DSS 8.3.4's.
+const (
+	MinLockoutDuration = 5 * time.Minute
+	MaxLockoutDuration = 24 * time.Hour
+)
 
 // Kubernetes configures Kubernetes service-account tokens as a credential of /v2/token
 // (docs/spec/rbac.md §9).

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -154,6 +155,19 @@ func TestLoginPasswordsOff(t *testing.T) {
 	}
 	if audit, _ := p.st.ListAudit(t.Context(), index.AuditFilter{Action: "token.create"}); len(audit) != 0 {
 		t.Errorf("%d tokens made", len(audit))
+	}
+}
+
+// TestLoginLockoutMessage: while auth.lockout.duration is set, a refused npm login says what
+// locks a password and for how long, whatever the reason (docs/spec/rbac.md §1).
+func TestLoginLockoutMessage(t *testing.T) {
+	p := newPipeline(t)
+	h := p.loginRoutesWith(t, readers{}, auth.Options{Lockout: 30 * time.Minute})
+	for _, name := range []string{"alice", "nobody", "carol"} {
+		rr := as(h, auth.Anonymous, http.MethodPut, "/npm/internal/-/user/org.couchdb.user:"+name, loginBody(name, "a wrong password"))
+		if rr.Code != http.StatusUnauthorized || rr.Body.String() != `{"error":"format: authentication required: the user name or the password was refused: 10 wrong passwords in a row lock a password for 30m"}`+"\n" {
+			t.Errorf("npm login of %s: %d %s, want 401 saying what locks a password", name, rr.Code, rr.Body)
+		}
 	}
 }
 

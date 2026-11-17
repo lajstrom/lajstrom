@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 )
@@ -21,6 +22,7 @@ func TestCheckLocalPasswords(t *testing.T) {
 		wantLog string
 	}{
 		{config.Auth{LocalPasswords: true}, false, ""},
+		{config.Auth{LocalPasswords: true, Lockout: config.Lockout{Duration: 30 * time.Minute}}, false, "the lockout is on"},
 		{config.Auth{LocalPasswords: true, OIDC: config.OIDC{Issuer: "https://idp.example.com"}}, false, ""},
 		{config.Auth{}, true, ""},
 		{config.Auth{OIDC: config.OIDC{Issuer: "https://idp.example.com"}}, false, "local passwords are off"},
