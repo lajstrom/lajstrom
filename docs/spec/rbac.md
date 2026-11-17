@@ -2,7 +2,8 @@
 
 - Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69);
   service accounts (§1) after the MVP (#1020); inactive users (§1) after the MVP (#1283); local
-  passwords turned off, and the lockout (§1), after the MVP (#1280). Owned by `internal/auth`.
+  passwords turned off, and the lockout (§1), after the MVP (#1280); the rules of a password, a
+  user's own change and its history (§1) after the MVP (#1281). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
@@ -235,7 +236,9 @@ certificate and a service-account token are verified by their issuer. Two settin
 (#1280, decided 2026-11-16, [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md)), both
 off by default: a server whose people log in through an IdP turns local passwords off, and one
 without an IdP locks an account out after failed passwords. The throttles above stay as they are
-with either.
+with either. Where local passwords stay, a password follows rules, its user changes it, at first
+use when an admin set it, and not to one of its last four (#1281, decided 2026-11-16, below);
+where they are off, the IdP's rules apply, and none of this.
 
 **Turning them off.** With `auth.localPasswords: false` (configuration.md; `true` by default), no
 password is a credential, an admin's included. A password in Basic credentials, on any route and
@@ -322,6 +325,64 @@ replica of a release before migration 0036: during a rolling update, a locked pa
 such a replica. A lock set before the setting was turned to `0` is not read while it is `0`, and a
 restore of a snapshot unlocks every user (index-schema.md, Snapshots of the control plane). The
 setting is `0`, or from `5m` to `24h`; it does nothing while `auth.localPasswords` is `false`.
+
+**The rules of a password.** A password is at most 1024 bytes of UTF-8, and at least
+`auth.passwords.minLength` characters (configuration.md; `8` by default, `12` for PCI DSS 8.3.6),
+counted as Unicode code points of the password as it was sent, which is not normalized. With
+`auth.passwords.requireLettersAndDigits` (`false` by default; `true` for PCI DSS 8.3.6), it holds
+at least one letter, a code point of Unicode's general category L, and one digit, of Nd: a
+passphrase in any script counts. It does not start with the prefix of a token
+([auth.md](../auth.md#local-users-and-passwords)). The rules are checked wherever a password is
+set: `POST /api/v1/users`, both forms of `POST /api/v1/users/<name>/password` (below),
+`POST /api/v1/bootstrap`, `lajstrom admin user create` and `set-password`. A password that breaks
+one is `400` (exit status 1 on the command line), naming the rule and never the password. A
+password set before keeps working: a hash cannot be checked, so a rule raised later counts at the
+next change, and an admin who wants every user to choose a password under it sets `mustChange`
+(below).
+
+**A user's own password.** A user changes its password with
+`POST /api/v1/users/<name>/password` and `{"currentPassword", "password"}` (http-routing.md §4).
+The current password in the body is the request's credential, checked as a Basic password is,
+with the throttles and the lockout: a wrong one is `401`, with the message of every refused
+password (the lockout, above), and a failure. The request needs no other credential, and its
+`Authorization` is ignored, so that a user whose password must change (below) can change it. It
+is the one route of users that is not the admin role's (§3); a user without a password has none
+to change (`401`, as a wrong password). The new password follows the rules above and is none of the
+user's **last four passwords**, the current one and the three before it (`users.password_history`,
+[index-schema.md](index-schema.md#a-passwords-history)),
+each compared by argon2id, about 70 ms in all; one of them is `400`, saying that the password was
+used before. The change is `204`, with a `user.password` row by the user (§5): the current hash
+goes into the history, the oldest beyond three leaves it, and `mustChange` is cleared. The user's
+tokens are not touched, as with an admin's new password.
+
+An admin's new password (`POST …/password` without `currentPassword`, `set-password`, a create) is
+not compared with the history, so that an admin does not learn which passwords a user had; the
+hash it replaces goes into the history all the same, so that the user's next change returns
+neither to it nor to the admin's.
+
+**Change at first use.** A user's `mustChange` (`users.must_change`) says that its password must
+be changed before it is used for anything else. With `auth.passwords.changeAtFirstUse`
+(configuration.md; `false` by default, `true` for PCI DSS 8.3.5), every password that is not the
+user's own change sets it: an admin's create and new password, through the API or on the command
+line, and the bootstrap's; without the setting, an admin's new password clears it. Whatever the
+setting, an admin sets or clears it with `PATCH /api/v1/users/<name>` and `{"mustChange": true}`
+or `false`, on a user with a password (`400` otherwise): to have every user choose a password
+under a rule raised later, or every 90 days (PCI DSS 8.3.9, for which there is no maximum age).
+The user's own change clears it.
+
+While it is set, the user's password authenticates its own change and nothing else. Once it has
+verified, every other request with it is `403`, on every route, `/v2/token`, `npm login` and
+`POST /api/v1/login` included, the body following the route as a `401`'s does, with a message
+that says that the password must be changed and how; a wrong password is `401` as always, so that
+only the holder of the password learns it. The password so mints no token. The user's tokens are no
+password and keep working. A web UI learns it from the `403` of `POST /api/v1/login`, which has no
+other cause, and offers the change; a package client shows the message. The users API answers
+`mustChange: true` (http-routing.md §4).
+
+**Upgrades.** Migration 0037 gives every user `mustChange` `false` and an empty history: the
+first change after it is compared with the current password only. A replica of a release before
+it knows no user's own change, takes a password whose `mustChange` is set, and writes no history:
+the settings are set once every replica runs a release that knows them.
 
 ## 2. Resources and actions
 
@@ -485,6 +546,10 @@ this spec, so that a review need not find it in the code:
   do not exist yet. A webhook's mask, like a binding's, need not name a repo that exists, so
   creating one through `/api/v1/webhooks` tells nothing. A webhook's events tell its receiver
   what `read` on the repo shows and the actor of each write (webhooks.md §3).
+- **A user's own password** (`POST /api/v1/users/<name>/password` with `currentPassword`, #1281)
+  takes no role: the current password in the body is the credential, and the request's
+  `Authorization` is ignored (§1, Local passwords). Every other route of users, the same route
+  without `currentPassword` included, is the admin role's.
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
@@ -647,6 +712,12 @@ account's `user:<uid>`, `ip` and `requestId` those of the failure, `credential` 
 in its details `lockedUntil`, the end of the lock it ended. An admin's new password that ends a
 lock writes it too, beside its `user.password` row. Unlocking a user that is not locked writes
 none.
+
+**A change of a password** (#1281) is `user.password`, as before: by the admin who sets it, or by
+the user itself for its own change (§1), the row's principal then its subject; its details have
+`mustChange: true` when the change left it set. An admin's `mustChange` through `PATCH` is
+`user.mustchange`, with the new value as `mustChange` in its details; a value the user has
+already writes none. A change that a rule or the history refuses writes no row.
 
 **A change of the configuration** is `config.change` (#1284), by `anonymous`, `source: config`,
 written by `serve` at its start when the configuration it runs with is not the last one recorded
@@ -1076,7 +1147,8 @@ bound to no key, and a bound token is never sent as a bearer.
 (§1): argon2id every time, the throttles of failed logins per account and per address, the
 lockout, a token in place of the password refused as a wrong password, every refusal `401`
 without its reason (its message, while the lockout is set, says what locks a password, §1); with
-`auth.localPasswords: false`, `401` saying that passwords are off.
+`auth.localPasswords: false`, `401` saying that passwords are off. A right password whose user
+must change it is `403`, and mints no token (§1, Change at first use).
 The token is named `login <time> <4 hex>`, and its `token.create` row has `createdBy`
 `password` and the source `api`, as npm's login has.
 
