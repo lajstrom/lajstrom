@@ -105,6 +105,17 @@ reader of the feed does about it. Three methods serve the feed and the prune:
 None needs a migration. A database keeps the space of the rows deleted for its own reuse:
 PostgreSQL's after a vacuum, SQLite's in its free pages, until a `VACUUM` that the operator runs.
 
+### The access report
+
+The access report (rbac.md §14, #1279) is one read of the Reader, `ReadAccess`, in one transaction,
+read-only, as `ExportControlPlane` reads ([One moment](#snapshots-of-the-control-plane)), so that
+the report is of one moment: the live users, with `owner`; the rows of `identity_groups` of the
+live users' identities whose `groups_expire_at` is after the time of the read; every row of
+`bindings`; the rows of `tokens` neither revoked nor expired at that time, the deploy tokens over a
+mask among them; every row of `ci_policies`; and the repos with `anonymous_read`; with the
+database's time of the read as `ReadAt`. One statement per table. The report stores nothing, its
+review is an audit row (rbac.md §5), and neither needs a migration.
+
 ### Pages of tokens and of open sessions
 
 The admin's list of every token and a repo's open publication sessions (http-routing.md §4,
