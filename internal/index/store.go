@@ -343,9 +343,9 @@ type Writer interface {
 	// CreateUser inserts u, at Revision 1; the name must be new. UID is made (NewUID) when it
 	// is empty.
 	CreateUser(ctx context.Context, u *User) error
-	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt, DeletedName and Owner of
-	// u by u.ID, moves Revision by one, and fills UID, CreatedAt and Revision from the row. A
-	// name another user has is ErrConflict.
+	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt, DeletedName, Owner,
+	// MustChange and PasswordHistory of u by u.ID, in one statement, moves Revision by one, and
+	// fills UID, CreatedAt and Revision from the row. A name another user has is ErrConflict.
 	UpdateUser(ctx context.Context, u *User) error
 	// TouchUser sets LastSeenAt of the user to seenAt when it is null or earlier, else changes
 	// nothing: it only moves forward, as TouchToken (#1283). It moves neither Revision nor

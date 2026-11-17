@@ -91,6 +91,10 @@ func filled(t *testing.T, st index.Store, m *keys.Master) secrets {
 	alice, err := st.GetUser(ctx, "alice")
 	must(t, err)
 	must(t, st.TouchUser(ctx, alice.ID, at)) // her last activity, users.last_seen_at (#1283)
+	// a password that must change and a history (#1281), which a snapshot carries: bob's, so that
+	// alice's password stays a credential after a restore
+	must(t, st.CreateUser(ctx, &index.User{Name: "bob", Kind: auth.KindLocal, PasswordHash: alice.PasswordHash, MustChange: true,
+		PasswordHistory: []string{alice.PasswordHash}}))
 	must(t, st.CreateToken(ctx, &index.Token{Kind: auth.TokenPAT, UserID: &alice.ID, Name: "oidc", Hash: strings.Repeat("0", 64),
 		DPoPJKT: "jkt", AuthTime: &at, AMR: []string{"pwd", "otp"}}))
 	must(t, st.CreateCIPolicy(ctx, &index.CIPolicy{Name: "app-publish", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
@@ -142,6 +146,9 @@ func TestDocumentRoundTrip(t *testing.T) {
 	b, _ := json.Marshal(got)
 	if !bytes.Equal(a, b) || binary != "v9.9.9" {
 		t.Errorf("decode(encode(cp)) differs from cp:\n%s\n%s", a, b)
+	}
+	if doc := gunzip(t, gz); !bytes.Contains(doc, []byte(`"mustChange":true,"passwordHistory":["$argon2id$`)) {
+		t.Errorf("the users of the document have no mustChange and passwordHistory: %s", doc)
 	}
 
 	none, err := st.ExportControlPlane(t.Context(), index.ExportOptions{})

@@ -309,8 +309,9 @@ func (c *conn) importRows(ctx context.Context, cp *index.ControlPlane) error {
 }
 
 // rowsOf returns the rows of cp in the order importRows inserts them. A column that cp's schema
-// may lack takes its default: a repo's kind hosted, a user's kind local, a token's repo_mask and
-// dpop_jkt NULL, an audit row's state ok, the revision of a repo, a user and a webhook 1.
+// may lack takes its default: a repo's kind hosted, a user's kind local, mustChange false and
+// history NULL, a token's repo_mask and dpop_jkt NULL, an audit row's state ok, the revision of a
+// repo, a user and a webhook 1.
 func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	var rows []insertRow
 	add := func(what, table, cols string, args ...any) {
@@ -328,7 +329,7 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	for _, u := range cp.Users {
 		add("users "+u.Name, "users", userCols, u.ID, u.UID, u.Name, textArg(u.PasswordHash), cmp.Or(u.Kind, "local"), u.Disabled,
 			c.d.EncodeTime(u.CreatedAt), c.d.encodeNullTime(u.DeletedAt), textArg(u.DeletedName), textArg(u.Owner), cmp.Or(u.Revision, 1),
-			c.d.encodeNullTime(u.LastSeenAt))
+			c.d.encodeNullTime(u.LastSeenAt), u.MustChange, historyArg(u.PasswordHistory))
 	}
 	for _, i := range cp.Identities {
 		add(fmt.Sprintf("identities id %d", i.ID), "identities", identityCols, i.ID, i.UserID, i.Issuer, i.Subject,
