@@ -32,6 +32,7 @@ type UserRequest struct {
 	Admin    bool   `json:"admin"`
 	Kind     string `json:"kind"`
 	Owner    string `json:"owner"`
+	Reason
 }
 
 // UserPatch is the body of PATCH /api/v1/users/{user}: the fields to change, at least one. Owner
@@ -42,6 +43,7 @@ type UserPatch struct {
 	Disabled   *bool   `json:"disabled"`
 	Owner      *string `json:"owner"`
 	MustChange *bool   `json:"mustChange"`
+	Reason
 }
 
 // PasswordRequest is the body of POST /api/v1/users/{user}/password: Password alone is an admin's
@@ -50,6 +52,7 @@ type UserPatch struct {
 type PasswordRequest struct {
 	Password        string  `json:"password"`
 	CurrentPassword *string `json:"currentPassword,omitempty"`
+	Reason
 }
 
 // Bounds of ?limit on the lists of the API.
@@ -142,16 +145,17 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	var (
-		u   *auth.User
-		err error
-	)
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	var u *auth.User
 	switch req.Kind {
 	case "", auth.KindLocal:
 		if req.Owner != "" {
 			return 0, nil, invalid("owner: only a service account has an owner (kind service)")
 		}
-		u, err = h.users.Create(r.Context(), req.Name, req.Password, req.Admin, auth.Origin(origin(r)))
+		u, err = h.users.Create(r.Context(), req.Name, req.Password, req.Admin, o)
 	case auth.KindService:
 		switch {
 		case req.Password != "":
@@ -159,7 +163,7 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 		case req.Admin:
 			return 0, nil, invalid("admin: a service account is bound with POST /api/v1/bindings, not made an admin here")
 		}
-		u, err = h.users.CreateService(r.Context(), req.Name, req.Owner, auth.Origin(origin(r)))
+		u, err = h.users.CreateService(r.Context(), req.Name, req.Owner, o)
 	default:
 		return 0, nil, invalid("kind: %q is not local or service; an oidc user is made by its first login", req.Kind)
 	}
@@ -211,11 +215,15 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	if patch.Name == nil && patch.Disabled == nil && patch.Owner == nil && patch.MustChange == nil {
 		return 0, nil, invalid("body: nothing to change; the fields are name, disabled, owner and mustChange")
 	}
+	o, err := h.changeOrigin(r, patch.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
 	if r, err = conditional(r, TableUsers, "user "+name); err != nil {
 		return 0, nil, err
 	}
 	u, err := h.users.Change(r.Context(), name, auth.UserChange{Disabled: patch.Disabled, Owner: patch.Owner, Name: patch.Name,
-		MustChange: patch.MustChange}, auth.Origin(origin(r)))
+		MustChange: patch.MustChange}, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -233,10 +241,14 @@ func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
 	if r, err = conditional(r, TableUsers, "user "+name); err != nil {
 		return 0, nil, err
 	}
-	if err := h.users.Delete(r.Context(), name, auth.Origin(origin(r))); err != nil {
+	if err := h.users.Delete(r.Context(), name, o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
@@ -244,7 +256,7 @@ func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 
 // unlockUser ends the lock of the lockout of a user and sets its count of wrong passwords to 0
 // (auth.Users.Unlock; docs/spec/rbac.md §1, Local passwords): 204, with a user.unlock audit row
-// when a lock was in force. It takes no body.
+// when a lock was in force. It takes no body: its reason is ?changeReason=.
 func (h *handler) unlockUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -253,7 +265,11 @@ func (h *handler) unlockUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := h.users.Unlock(r.Context(), name, auth.Origin(origin(r))); err != nil {
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.users.Unlock(r.Context(), name, o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
@@ -270,7 +286,7 @@ func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any,
 		return 0, nil, err
 	}
 	if req.CurrentPassword != nil {
-		return h.ownPassword(w, r, *req.CurrentPassword, req.Password)
+		return h.ownPassword(w, r, *req.CurrentPassword, req.Password, req.ChangeReason)
 	}
 	if h.authenticate != nil {
 		var ok bool
@@ -285,20 +301,25 @@ func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := h.users.SetPassword(r.Context(), name, req.Password, auth.Origin(origin(r))); err != nil {
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.users.SetPassword(r.Context(), name, req.Password, o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
 }
 
-// ownPassword is a user's own change of its password, to password, from current
+// ownPassword is a user's own change of its password, to password, from current, with reason when
+// the body has one, which it never needs (ownOrigin)
 // (auth.Authenticator.ChangeOwnPassword; docs/spec/rbac.md §1, A user's own password): the
 // current password is the request's credential, checked as Basic credentials are, with the
 // throttles and the lockout, and the request's Authorization is ignored. 204; a refused current
 // password, of whatever user, 401 with the message of every refused password; a throttled account
 // or address 429 with Retry-After; a new password that breaks a rule or is one of the last four
 // 400; passwords turned off 400 naming the setting; 501 on a server that checks no passwords.
-func (h *handler) ownPassword(w http.ResponseWriter, r *http.Request, current, password string) (int, any, error) {
+func (h *handler) ownPassword(w http.ResponseWriter, r *http.Request, current, password string, reason *string) (int, any, error) {
 	if h.passwords == nil {
 		return 0, nil, &clientError{msg: "this server checks no passwords", err: format.ErrUnsupported}
 	}
@@ -306,7 +327,11 @@ func (h *handler) ownPassword(w http.ResponseWriter, r *http.Request, current, p
 	if err != nil {
 		return 0, nil, err
 	}
-	err = h.passwords.ChangeOwnPassword(r.Context(), name, current, password, auth.Origin(origin(r)))
+	o, err := h.ownOrigin(r, reason)
+	if err != nil {
+		return 0, nil, err
+	}
+	err = h.passwords.ChangeOwnPassword(r.Context(), name, current, password, o)
 	var te *auth.ThrottledError
 	switch {
 	case errors.As(err, &te):

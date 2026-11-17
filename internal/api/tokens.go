@@ -28,12 +28,14 @@ type TokenPage struct {
 
 // TokenRequest is the body of POST /api/v1/users/{name}/tokens and of POST
 // /api/v1/repos/{format}/{repo}/deploy-tokens. ExpiresAt is RFC 3339; ExpiresIn a number of
-// days (30d) or a duration (12h); one of them at most.
+// days (30d) or a duration (12h); one of them at most. Reason is the reason of the change
+// (docs/spec/rbac.md §13), which a person's own token never needs.
 type TokenRequest struct {
 	Name      string   `json:"name"`
 	Scopes    []string `json:"scopes"`
 	ExpiresAt *string  `json:"expiresAt"`
 	ExpiresIn *string  `json:"expiresIn"`
+	Reason
 }
 
 // MaskTokenRequest is the body of POST /api/v1/deploy-tokens: the mask of the token, repoMask,
@@ -127,7 +129,11 @@ func (h *handler) createToken(w http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
-	t, secret, err := h.tokens.CreatePAT(r.Context(), name, req.Name, req.Scopes, exp, auth.Origin(origin(r)))
+	o, err := h.tokenOrigin(r, name, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	t, secret, err := h.tokens.CreatePAT(r.Context(), name, req.Name, req.Scopes, exp, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -142,7 +148,11 @@ func (h *handler) revokeToken(_ http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
-	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenPAT && t.User == name }, "user "+name)
+	o, err := h.tokenOrigin(r, name, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenPAT && t.User == name }, "user "+name, o)
 }
 
 // listDeployTokens answers the deploy tokens of a repo.
@@ -173,7 +183,11 @@ func (h *handler) createDeployToken(w http.ResponseWriter, r *http.Request) (int
 	if err != nil {
 		return 0, nil, err
 	}
-	t, secret, err := h.tokens.CreateDeploy(r.Context(), repo, req.Name, req.Scopes, exp, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	t, secret, err := h.tokens.CreateDeploy(r.Context(), repo, req.Name, req.Scopes, exp, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -188,7 +202,11 @@ func (h *handler) revokeDeployToken(_ http.ResponseWriter, r *http.Request) (int
 	if err != nil {
 		return 0, nil, err
 	}
-	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.Repo == repo }, "repo "+repo)
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.Repo == repo }, "repo "+repo, o)
 }
 
 // listMaskTokens answers the deploy tokens over a mask, of every mask or of ?repoMask= as it was
@@ -226,7 +244,11 @@ func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, 
 	if err != nil {
 		return 0, nil, err
 	}
-	t, secret, err := h.tokens.CreateMaskDeploy(r.Context(), req.RepoMask, req.Name, req.Scopes, exp, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	t, secret, err := h.tokens.CreateMaskDeploy(r.Context(), req.RepoMask, req.Name, req.Scopes, exp, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -241,7 +263,11 @@ func (h *handler) revokeMaskToken(_ http.ResponseWriter, r *http.Request) (int, 
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
-	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.RepoMask != "" }, "a mask")
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.RepoMask != "" }, "a mask", o)
 }
 
 // listAllTokens answers a page of every token, by id, of the kind, user, repo and mask the query
@@ -291,9 +317,10 @@ func (h *handler) allowDeployTokens(r *http.Request) (string, error) {
 	return f + "/" + name, nil
 }
 
-// revoke revokes the token of the path's {id} when owned reports that it belongs to owner:
-// 204; any other id is 404, so that the tokens of others are not told apart from none.
-func (h *handler) revoke(r *http.Request, owned func(*auth.Token) bool, owner string) (int, any, error) {
+// revoke revokes the token of the path's {id} when owned reports that it belongs to owner, with
+// the origin o: 204; any other id is 404, so that the tokens of others are not told apart from
+// none.
+func (h *handler) revoke(r *http.Request, owned func(*auth.Token) bool, owner string, o Origin) (int, any, error) {
 	raw := r.PathValue("id")
 	notFound := &clientError{msg: fmt.Sprintf("token %s of %s does not exist", raw, owner), err: index.ErrNotFound}
 	id, err := strconv.ParseInt(raw, 10, 64)
@@ -309,10 +336,27 @@ func (h *handler) revoke(r *http.Request, owned func(*auth.Token) bool, owner st
 	case !owned(t):
 		return 0, nil, notFound
 	}
-	if err := h.tokens.Revoke(r.Context(), id, auth.Origin(origin(r))); err != nil {
+	if err := h.tokens.Revoke(r.Context(), id, o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// tokenOrigin is the origin of a change of the personal access tokens of the user called name,
+// with the reason body (changeOrigin): one of a person's own tokens takes a reason and never needs
+// one (ownOrigin); another user's, a service account's among them, is a change of the control
+// plane (docs/spec/rbac.md §13).
+func (h *handler) tokenOrigin(r *http.Request, name string, body *string) (Origin, error) {
+	if p := auth.PrincipalFrom(r.Context()); p.Kind == auth.KindUser {
+		u, err := h.tokens.Index.GetUser(r.Context(), name)
+		switch {
+		case err == nil && u.UID == p.Name:
+			return h.ownOrigin(r, body)
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return Origin{}, err
+		}
+	}
+	return h.changeOrigin(r, body)
 }
 
 // tokenRequest decodes the TokenRequest of the body and its expiry.

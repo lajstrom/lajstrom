@@ -119,6 +119,26 @@ func TestAuditCIToken(t *testing.T) {
 	}
 }
 
+// TestAuditChangeReason: a write under the reason of a change that the caller stored
+// (auth.WithOrigin, a deny's through the API; docs/spec/rbac.md §13) has it in
+// details.changeReason of its audit row; a write without one has none.
+func TestAuditChangeReason(t *testing.T) {
+	e := newEnv(t)
+	pub, err := e.pipe.Upload(t.Context(), e.repo, upload("tool", "1.0.0", file{"tool.tgz", "bytes"}), alice)
+	must(t, err)
+	ctx := auth.WithOrigin(t.Context(), auth.Origin{Source: "api", ChangeReason: "CHG-7"})
+	_, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "tool", Reference: pub.Tag}, alice)
+	must(t, err)
+	want := map[string]map[string]any{"push": nil, "delete": {"changeReason": "CHG-7", "referrers": float64(0)}}
+	for _, ev := range e.rows(t).Audit {
+		var details map[string]any
+		if ev.Details != nil {
+			must(t, json.Unmarshal(ev.Details, &details))
+		}
+		same(t, "details of "+ev.Action, want[ev.Action], details)
+	}
+}
+
 // TestOriginRefused: a lajstrom.origin.* key that does not come from the fetcher is 400, on an
 // upload and on a push through the facade; Inspect reads it as any annotation.
 func TestOriginRefused(t *testing.T) {

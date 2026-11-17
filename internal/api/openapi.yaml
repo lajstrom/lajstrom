@@ -141,6 +141,7 @@ paths:
           in: query
           schema: {type: boolean}
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -725,8 +726,11 @@ paths:
       tags: [tokens]
       operationId: revokeDeployToken
       summary: Revoke a deploy token (manage); a revoked one again is 204.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Revoked.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -782,8 +786,11 @@ paths:
       tags: [tokens]
       operationId: revokeMaskToken
       summary: Revoke a deploy token over a mask (admin); a revoked one again is 204.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Revoked.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -922,6 +929,7 @@ paths:
       summary: Delete a webhook and its delivery log (manage).
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -938,12 +946,15 @@ paths:
       tags: [webhooks]
       operationId: rotateRepoWebhookSecret
       summary: Give the webhook a new secret (manage); the answer has it, once, and the old one signs nothing more.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "200":
           description: The new secret.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/WebhookSecret"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1046,8 +1057,11 @@ paths:
       tags: [policy]
       operationId: deletePolicyRule
       summary: Delete a rule, with the permission its creation needed; an audit row policy.rule.delete.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: "Deleted."}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
         "501": {$ref: "#/components/responses/Unavailable"}
@@ -1140,8 +1154,11 @@ paths:
       tags: [policy]
       operationId: undenyVersion
       summary: Delete the verdicts of source lajstrom:manual of the version's manifests, their referrers (manage).
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: "Deleted."}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1235,6 +1252,7 @@ paths:
       summary: Delete a webhook and its delivery log (admin).
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -1249,12 +1267,15 @@ paths:
       tags: [webhooks]
       operationId: rotateWebhookSecret
       summary: Give the webhook a new secret (admin); the answer has it, once, and the old one signs nothing more.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "200":
           description: The new secret.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/WebhookSecret"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1398,6 +1419,7 @@ paths:
         service account.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -1463,8 +1485,11 @@ paths:
         The lockout of auth.lockout.duration (docs/spec/rbac.md §1, Local passwords): the lock ends
         and the count of wrong passwords is 0. A user.unlock audit row, with the end of the lock in
         its lockedUntil, is written when a lock was in force, none otherwise. No body.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: "Unlocked, or not locked."}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1521,8 +1546,11 @@ paths:
       tags: [tokens]
       operationId: revokeToken
       summary: Revoke a personal access token; a revoked one again is 204.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Revoked.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1575,6 +1603,8 @@ paths:
       tags: [bindings]
       operationId: deleteBinding
       summary: Delete a binding (admin); not the last admin binding of an enabled user.
+      parameters:
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -1681,6 +1711,7 @@ paths:
       summary: Delete a CI trust policy of the API (admin), one that writes too; 409 for one of the configuration.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "204": {description: Deleted.}
         "400": {$ref: "#/components/responses/Invalid"}
@@ -1738,6 +1769,7 @@ paths:
         configuration.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/changeReason"
       responses:
         "200":
           description: The policy.
@@ -2039,6 +2071,13 @@ components:
         every change of the resource, and If-Match sends it back (docs/api.md, Revisions).
       schema: {type: string}
   parameters:
+    changeReason:
+      name: changeReason
+      in: query
+      description: >-
+        The reason of the change on a route without a body (docs/spec/rbac.md §13), as the
+        changeReason of a body; never both.
+      schema: {$ref: "#/components/schemas/ChangeReason"}
     dpopProof:
       name: DPoP
       in: header
@@ -2167,6 +2206,15 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
   schemas:
+    ChangeReason:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: >-
+        Why: a ticket or a sentence, the reference of the change's approval, 1 to 1024 bytes of
+        UTF-8 without control characters (docs/spec/rbac.md §13), kept in the change's audit row as
+        details.changeReason. Required with auth.requireReason, which GET /api/v1/info answers as
+        requireReason; a person's own credentials take one and never need it.
     Error:
       type: object
       required: [error]
@@ -2404,6 +2452,7 @@ components:
             - {$ref: "#/components/schemas/Group"}
             - {type: "null"}
           description: Required on a group, refused on another kind.
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     RepoPatch:
       type: object
       additionalProperties: false
@@ -2435,6 +2484,7 @@ components:
             holds, its dist-tags and deprecations written to its journal; 409 while a fetch runs
             or when a group of it has a hosted member. On a hosted repo it resumes a conversion
             that stopped half way, else changes nothing.
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     ReindexRequest:
       type: object
       additionalProperties: false
@@ -2731,6 +2781,7 @@ components:
           items: {type: string, enum: [read, write, attach]}
         expiresAt: {type: string, format: date-time}
         expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     MaskTokenRequest:
       type: object
       required: [repoMask, name, scopes]
@@ -2743,6 +2794,7 @@ components:
           items: {type: string, enum: [read, write, attach]}
         expiresAt: {type: string, format: date-time}
         expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     User:
       type: object
       required: [uid, name, kind, disabled, createdAt, lastSeenAt]
@@ -2778,6 +2830,7 @@ components:
         admin: {type: boolean}
         kind: {type: string, enum: [local, service], default: local}
         owner: {type: string, description: "A service account's owner: user:<name> or user:<uid> of a user that is not a service account, or group:<name>."}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     BootstrapRequest:
       type: object
       required: [token, name, password]
@@ -2813,6 +2866,7 @@ components:
         disabled: {type: boolean}
         owner: {type: string, description: "A service account's new owner, as in UserRequest; 400 for a user of another kind."}
         mustChange: {type: boolean, description: "true: the user's password must be changed before it is used for anything else; false clears it. Whatever auth.passwords.changeAtFirstUse is; 400 for a user without a password (docs/spec/rbac.md §1, Change at first use)."}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     PasswordRequest:
       type: object
       required: [password]
@@ -2821,6 +2875,7 @@ components:
       properties:
         password: {$ref: "#/components/schemas/Password"}
         currentPassword: {type: string, description: "The user's current password, the credential of its own change."}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     Password:
       type: string
       minLength: 8
@@ -2838,6 +2893,7 @@ components:
         PUT, when present, is the path's.
       required: [name, issuer, claims, grants]
       properties:
+        changeReason: {$ref: "#/components/schemas/ChangeReason", description: "In a body only: the reason of the change."}
         name: {type: string, description: "Lowercase letters and digits with single hyphens, at most 63 bytes."}
         issuer: {type: string, description: The name of an issuer of auth.ci.issuers.}
         claims:
@@ -2879,6 +2935,7 @@ components:
       additionalProperties: false
       properties:
         expiresAt: {type: string, format: date-time, description: "At most 180 days ahead; by default 180 days ahead."}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     CIGrant:
       type: object
       required: [role, mask]
@@ -2918,6 +2975,7 @@ components:
         principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern, never with the admin role (§9). A ci: principal has no bindings (§11)."}
         role: {type: string, enum: [reader, attacher, writer, maintainer, admin]}
         repoMask: {type: string}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     AuditEntry:
       type: object
       required: [id, at, principal, action, state]
@@ -3134,6 +3192,7 @@ components:
         effect: {type: string, enum: [deny, allow], description: "deny when absent."}
         reason: {type: string, minLength: 1, maxLength: 512}
         expiresAt: {type: [string, "null"], format: date-time}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     Verdict:
       description: A verdict the index holds (docs/spec/policy.md §2).
       type: object
@@ -3187,6 +3246,7 @@ components:
       properties:
         reason: {type: string, minLength: 1, maxLength: 512}
         validUntil: {type: [string, "null"], format: date-time}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     YankRequest:
       description: The optional body of a yank.
       type: object
@@ -3735,6 +3795,7 @@ components:
               ci.policy.approved, ci.policy.expired, ci.policy.deleted]
         active: {type: boolean}
         description: {type: string, maxLength: 256}
+        changeReason: {$ref: "#/components/schemas/ChangeReason"}
     WebhookSecret:
       type: object
       required: [secret]
