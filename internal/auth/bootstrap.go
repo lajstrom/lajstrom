@@ -68,6 +68,10 @@ type Bootstrap struct {
 	// have a password that is no credential, so no token is made valid, the exchange is closed,
 	// and Arm says how to make the first admin through the IdP instead.
 	PasswordsOff bool
+	// AdminMFA is auth.admin.requireMFA, the admin mode (docs/spec/rbac.md §6, §12): the first
+	// admin would be a local user, who never signs in through OIDC and so never uses the role,
+	// so the bootstrap is closed as with PasswordsOff.
+	AdminMFA bool
 
 	once     sync.Once
 	failures *throttle
@@ -79,7 +83,8 @@ type Bootstrap struct {
 // token of the file, once it is used or expired, is not made valid again: the file needs a new
 // one. Nothing of a token is ever logged. When an admin exists Arm does nothing but warn while
 // the file of tokenFile exists, without reading it. While local passwords are off (PasswordsOff)
-// it makes no token either, and warns how to make the first admin through the IdP. Errors are
+// or the admin mode is on (AdminMFA) it makes no token either, and warns how to make the first
+// admin through the IdP. Errors are
 // failures of the index, a file that cannot be read, and a token that ReadBootstrapToken refuses.
 func (b *Bootstrap) Arm(ctx context.Context, tokenFile string) error {
 	admin, err := anyAdmin(ctx, b.Index)
@@ -93,8 +98,8 @@ func (b *Bootstrap) Arm(ctx context.Context, tokenFile string) error {
 		}
 		return nil
 	}
-	if b.PasswordsOff {
-		b.log().WarnContext(ctx, "no admin yet, and local passwords are off (auth.localPasswords: false): no bootstrap token is made valid. "+
+	if why := b.closedBy(); why != "" {
+		b.log().WarnContext(ctx, "no admin yet, and "+why+": no bootstrap token is made valid. "+
 			"Log in through the IdP once, then, with the database, run "+
 			"lajstrom admin binding create --principal user:<name> --role admin --mask '*/*'")
 		return nil
@@ -162,10 +167,22 @@ func (b *Bootstrap) arm(ctx context.Context, tokenFile, secret string) (done boo
 	return true, nil
 }
 
-// Open reports whether the exchange is open: local passwords are on and no enabled user has an
-// admin binding.
+// closedBy names the setting that keeps the bootstrap closed whatever the admins (PasswordsOff,
+// AdminMFA), for a person; "" when none does.
+func (b *Bootstrap) closedBy() string {
+	switch {
+	case b.PasswordsOff:
+		return "local passwords are off (auth.localPasswords: false)"
+	case b.AdminMFA:
+		return "the admin mode is on (auth.admin.requireMFA: true)"
+	}
+	return ""
+}
+
+// Open reports whether the exchange is open: local passwords are on, the admin mode is off, and
+// no enabled user has an admin binding.
 func (b *Bootstrap) Open(ctx context.Context) (bool, error) {
-	if b.PasswordsOff {
+	if b.closedBy() != "" {
 		return false, nil
 	}
 	admin, err := anyAdmin(ctx, b.Index)
@@ -198,7 +215,8 @@ func ReadBootstrapToken(path string) (string, error) {
 // bootstrap token secret, and marks the token used, in one transaction: the token makes one
 // admin, on any replica. The audit event is user.create with o's source. In this order:
 //
-//   - local passwords off (PasswordsOff): ErrBootstrapClosed, whatever the token;
+//   - local passwords off (PasswordsOff), or the admin mode on (AdminMFA): ErrBootstrapClosed,
+//     whatever the token;
 //   - a client address with BootstrapFailures wrong tokens in its window: a *ThrottledError;
 //     a context without an address is never throttled;
 //   - an enabled user with an admin binding: ErrBootstrapClosed, whatever the token;
@@ -208,7 +226,7 @@ func ReadBootstrapToken(path string) (string, error) {
 //   - then the name and the password are checked (ErrInvalid), and a name that exists is
 //     index.ErrConflict, the token left valid.
 func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string, o Origin) (*User, error) {
-	if b.PasswordsOff {
+	if b.closedBy() != "" {
 		return nil, ErrBootstrapClosed
 	}
 	addr := throttleAddress(ctx)

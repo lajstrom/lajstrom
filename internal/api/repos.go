@@ -841,11 +841,11 @@ func samePolicy(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(va, vb)
 }
 
-// record builds the audit event of a change of row, with details and the origin, and appends
-// it on w, in the transaction of the change, when there is no audit.Writer. The caller passes
-// the event to writeAudit after the commit.
+// record builds the audit event of a change of row, with details, the sign-in of a web UI's
+// token (auth.AddSignIn) and the origin, and appends it on w, in the transaction of the change,
+// when there is no audit.Writer. The caller passes the event to writeAudit after the commit.
 func (s *Repos) record(ctx context.Context, w index.Writer, action string, row *index.Repo, o Origin, details map[string]any) (index.AuditEvent, error) {
-	raw, err := json.Marshal(o.AddTo(details))
+	raw, err := json.Marshal(o.AddTo(auth.AddSignIn(ctx, details)))
 	if err != nil {
 		return index.AuditEvent{}, fmt.Errorf("api: audit details of %s: %w", action, err)
 	}
