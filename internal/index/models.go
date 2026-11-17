@@ -114,6 +114,9 @@ type Token struct {
 	// none.
 	AuthTime *time.Time
 	AMR      []string
+	// ACR is the acr of that ID token, at most 256 bytes (docs/spec/rbac.md §10, §12, 0038); ""
+	// for every other token, for a login whose ID token had none, and before 0038.
+	ACR string
 }
 
 // Identity is a row of identities (control plane): an OIDC identity, the iss and sub of an ID
@@ -176,10 +179,12 @@ type OIDCLogin struct {
 	// the UI's PKCE verifier, the hash of the code its callback handed the UI, and the thumbprint
 	// of the DPoP key the code is redeemed with (0028).
 	ReturnTo, CodeChallenge, Handoff, DPoPJKT string
-	// AuthTime and AMR are the auth_time and the amr of the ID token of a web UI's login, kept by
-	// its callback for the token that redeems its code (0033); nil when it had none.
+	// AuthTime, AMR and ACR are the auth_time, the amr and the acr of the ID token of a web UI's
+	// login, kept by its callback for the token that redeems its code (0033, ACR 0038); nil or ""
+	// when it had none.
 	AuthTime             *time.Time
 	AMR                  []string
+	ACR                  string
 	Status               string
 	UserID               *int64
 	PolledAt             *time.Time

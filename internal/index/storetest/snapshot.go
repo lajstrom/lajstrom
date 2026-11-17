@@ -73,7 +73,7 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 		{Kind: "deploy", RepoMask: "npm/*", Name: "mask", Hash: "hash-mask", Scopes: []string{"read"}},
 		{Kind: "pat", UserID: &robot.ID, Name: "ci", Hash: "hash-robot", Scopes: []string{"read"}},
 		{Kind: "pat", UserID: &alice.ID, Name: "login", Hash: "hash-bound", ExpiresAt: ptr(at(9000)), DPoPJKT: "jkt-of-the-browser",
-			AuthTime: ptr(at(-60)), AMR: []string{"pwd", "mfa"}},
+			AuthTime: ptr(at(-60)), AMR: []string{"pwd", "mfa"}, ACR: "phr"},
 	} {
 		must(t, s.CreateToken(ctx, &tok))
 	}

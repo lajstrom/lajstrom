@@ -96,7 +96,7 @@ func filled(t *testing.T, st index.Store, m *keys.Master) secrets {
 	must(t, st.CreateUser(ctx, &index.User{Name: "bob", Kind: auth.KindLocal, PasswordHash: alice.PasswordHash, MustChange: true,
 		PasswordHistory: []string{alice.PasswordHash}}))
 	must(t, st.CreateToken(ctx, &index.Token{Kind: auth.TokenPAT, UserID: &alice.ID, Name: "oidc", Hash: strings.Repeat("0", 64),
-		DPoPJKT: "jkt", AuthTime: &at, AMR: []string{"pwd", "otp"}}))
+		DPoPJKT: "jkt", AuthTime: &at, AMR: []string{"pwd", "otp"}, ACR: "gold"}))
 	must(t, st.CreateCIPolicy(ctx, &index.CIPolicy{Name: "app-publish", Issuer: "github", Claims: map[string][]string{"repository_id": {"1"}},
 		Grants: []index.CIGrant{{Role: "writer", Mask: "apt/debs"}}, State: index.CIPolicyPending, ExpiresAt: &at,
 		RenewalExpiresAt: &at, CreatedBy: "user:alice", UpdatedBy: "user:bob", ApprovedBy: "user:carol", ApprovedAt: &at}))

@@ -140,10 +140,11 @@ type tokenRow struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
 	DPoPJKT    string     `json:"dpopJkt,omitempty"` // a web UI's token's
-	// AuthTime and AMR are those of the OIDC login of a web UI's token; absent for the others,
-	// and in a document written before migration 0033.
+	// AuthTime, AMR and ACR are those of the OIDC login of a web UI's token; absent for the
+	// others, and in a document written before migrations 0033 and 0038.
 	AuthTime *time.Time `json:"authTime,omitempty"`
 	AMR      []string   `json:"amr,omitempty"`
+	ACR      string     `json:"acr,omitempty"`
 }
 
 type bindingRow struct {
@@ -282,7 +283,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 	for _, t := range cp.Tokens {
 		doc.Tokens = append(doc.Tokens, tokenRow{ID: t.ID, Kind: t.Kind, User: t.UserID, Repo: t.RepoID, RepoMask: t.RepoMask,
 			Name: t.Name, Hash: t.Hash, Scopes: t.Scopes, ExpiresAt: t.ExpiresAt, LastUsedAt: t.LastUsedAt, CreatedAt: t.CreatedAt,
-			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR})
+			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR, ACR: t.ACR})
 	}
 	for _, b := range cp.Bindings {
 		doc.Bindings = append(doc.Bindings, bindingRow{ID: b.ID, Principal: b.Principal, Role: b.Role, RepoMask: b.RepoMask,
@@ -352,7 +353,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 	for _, t := range doc.Tokens {
 		cp.Tokens = append(cp.Tokens, index.Token{ID: t.ID, Kind: t.Kind, UserID: t.User, RepoID: t.Repo, RepoMask: t.RepoMask,
 			Name: t.Name, Hash: t.Hash, Scopes: t.Scopes, ExpiresAt: t.ExpiresAt, LastUsedAt: t.LastUsedAt, CreatedAt: t.CreatedAt,
-			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR})
+			RevokedAt: t.RevokedAt, DPoPJKT: t.DPoPJKT, AuthTime: t.AuthTime, AMR: t.AMR, ACR: t.ACR})
 	}
 	for _, b := range doc.Bindings {
 		cp.Bindings = append(cp.Bindings, index.Binding{ID: b.ID, Principal: b.Principal, Role: b.Role, RepoMask: b.RepoMask,

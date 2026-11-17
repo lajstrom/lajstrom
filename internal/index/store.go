@@ -526,8 +526,8 @@ type Writer interface {
 	// CreateOIDCLogin inserts l and fills ID, and CreatedAt when zero; a state, device code,
 	// user code or handoff that another row has wraps ErrConflict.
 	CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
-	// UpdateOIDCLogin stores Status, UserID, PolledAt, Handoff, AuthTime and AMR of l while the
-	// row's status is from; a row whose status is not from wraps ErrConflict and nothing changes, so that a
+	// UpdateOIDCLogin stores Status, UserID, PolledAt, Handoff, AuthTime, AMR and ACR of l while
+	// the row's status is from; a row whose status is not from wraps ErrConflict and nothing changes, so that a
 	// state, an approval, a device code and a handoff are each used once.
 	UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
 	// ExpireOIDCLogins deletes the rows whose ExpiresAt is before before, and returns how many.
