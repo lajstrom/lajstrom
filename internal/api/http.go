@@ -452,10 +452,12 @@ func (h *handler) readable(r *http.Request, repos []Repo) ([]Repo, error) {
 	return kept, nil
 }
 
-// denied reports whether err is a denial of allow rather than a failure to decide.
+// denied reports whether err is a denial of allow rather than a failure to decide: a sign-in
+// asked for more (auth.StepUpError) among them.
 func denied(err error) bool {
+	var stepUp *auth.StepUpError
 	return errors.Is(err, format.ErrUnauthenticated) || errors.Is(err, format.ErrForbidden) ||
-		errors.Is(err, index.ErrNotFound)
+		errors.Is(err, index.ErrNotFound) || errors.As(err, &stepUp)
 }
 
 // createRepo creates the repo of the CreateRequest in the body: 201 with the resource and its
@@ -601,10 +603,25 @@ func (h *handler) limit(r *http.Request, a auth.Action, formatName, repo string)
 }
 
 // authorize asks format.Authorize with deps, and answers a principal denied on the system
-// with format.ErrForbidden.
+// with format.ErrForbidden. Under the admin mode (docs/spec/rbac.md §12), a principal denied
+// on the system whose admin binding the mode leaves out for the request's credential gets
+// auth.AdminMFARefusal instead: a web UI's sign-in through OIDC without a second factor the 401
+// that asks for more, any other credential a 403 naming auth.admin.requireMFA and its kind.
 func (h *handler) authorize(r *http.Request, deps format.Deps, a auth.Action, formatName, repo string) error {
-	err := format.Authorize(r.Context(), deps, a, index.Repo{Format: formatName, Name: repo})
-	if formatName == auth.System && repo == auth.System && errors.Is(err, index.ErrNotFound) {
+	ctx := r.Context()
+	err := format.Authorize(ctx, deps, a, index.Repo{Format: formatName, Name: repo})
+	if formatName != auth.System || repo != auth.System || !denied(err) {
+		return err
+	}
+	if am, ok := deps.Auth.(auth.AdminMode); ok {
+		switch left, aerr := am.AdminLeftOut(ctx, auth.PrincipalFrom(ctx)); {
+		case aerr != nil:
+			return aerr
+		case left:
+			return serviceError(auth.AdminMFARefusal(auth.CredentialFrom(ctx), time.Now()))
+		}
+	}
+	if errors.Is(err, index.ErrNotFound) {
 		return fmt.Errorf("%w: %s on the system", format.ErrForbidden, a)
 	}
 	return err
