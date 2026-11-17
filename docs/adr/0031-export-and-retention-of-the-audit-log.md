@@ -54,9 +54,10 @@ left open:
    a collector resumes from the id it held 10 minutes before and drops the ids it has.
 6. **The prune** is a command against the database only, so that no credential of the API can
    erase the trail of its own changes. `--before` takes a time or an age in days.
-7. **Its floor**: a cut-off less than 365 days old is refused without `--force`, which goes down
-   to 90 days and no further. The rows that reindex reads to repair a referrers index (a
-   referrer's `push`) and a row still `pending` are never deleted.
+7. **Its floor**: a cut-off less than 365 days old is refused without `--force`, which goes down to
+   90 days and no further, both counted on the database's clock, and nothing is written while this
+   host's is more than 60 seconds off it (decided on #1356). The rows that reindex reads to repair a
+   referrers index (a referrer's `push`) and a row still `pending` are never deleted.
 8. **Its row**, `audit.prune`, is written as a registry write's: `pending` before the first batch,
    then `ok` or `failed` with the count deleted, so that a prune that stops shows. It deletes in
    batches of 10,000 rows, each a transaction, up to the last id it counted.
