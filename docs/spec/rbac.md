@@ -841,23 +841,27 @@ that holds one `pending` reads its outcome by asking again from an id below it.
 **A prune** (#1278). Rows are deleted only by `lajstrom admin audit prune --before <cut-off>`,
 against the database (§6): no route of the API deletes or changes one, so that no credential of the
 admin role can erase the trail of what it did. The cut-off is an RFC 3339 time or an age in days,
-`400d`, as `snapshot create --audit` takes one. A cut-off less than 365 days before now is refused,
-exit status `2` before anything is written, unless `--force`, which takes one down to 90 days and
-no further: PCI DSS 10.5.1 asks for 12 months, the last three immediately available, and the
-operator may keep the year in the log store instead. The command deletes the rows whose `at` is
-before the cut-off, but never a row still `pending`, nor a `push` whose subject is a digest: a
-referrer's, which reindex reads to repair a subject's referrers index (#628). It first counts what
-it would delete, the number of rows and the first and the last of their ids and times, and deletes
-only up to that last id, so that no row inserted while it runs is taken. `--dry-run` prints the
-count and writes nothing. Its row is `audit.prune`, by `anonymous` with `source: cli` and the
-origin of every row of the command line (§6), `subject` `audit`, written as a registry write's:
-`pending` before the first deletion, in a transaction of its own, with `details` `{"before",
-"rows", "firstId", "lastId", "firstAt", "lastAt", "force"}`; then `ok` with `deleted`, the rows it
-deleted, or `failed` with `deleted` and the error. It deletes in batches of 10,000 rows, the oldest
-ids first, each in a transaction of its own, so that no lock is held long and `serve` writes on.
-One that stops leaves what it deleted deleted, its row `pending` (`unknown` after a reindex, as a
-registry write's), and the rest to a next run. It does not reach into the registry: a snapshot made
-before keeps the rows of its window, and its restore brings them back.
+`400d`, as `snapshot create --audit` takes one. The age, the cut-off and its floors are counted on
+the database's clock (`DatabaseTime`), not this host's, and, as every command that writes against
+the database, it writes nothing while the two are more than 60 seconds apart
+([operations.md](../operations.md#clocks)): a host whose clock is months off deletes nothing. A
+cut-off less than 365 days before the database's now is refused, exit status `2` before anything is
+written, unless `--force`, which takes one down to 90 days and no further: PCI DSS 10.5.1 asks for
+12 months, the last three immediately available, and the operator may keep the year in the log store
+instead. The command deletes the rows whose `at` is before the cut-off, but never a row still
+`pending`, nor a `push` whose subject is a digest: a referrer's, which reindex reads to repair a
+subject's referrers index (#628). It first counts what it would delete, the number of rows and the
+first and the last of their ids and times, and deletes only up to that last id, so that no row
+inserted while it runs is taken. `--dry-run` prints the count and writes nothing. Its row is
+`audit.prune`, by `anonymous` with `source: cli` and the origin of every row of the command line
+(§6), `subject` `audit`, written as a registry write's: `pending` before the first deletion, in a
+transaction of its own, with `details` `{"before", "rows", "firstId", "lastId", "firstAt", "lastAt",
+"force"}`; then `ok` with `deleted`, the rows it deleted, or `failed` with `deleted` and the error.
+It deletes in batches of 10,000 rows, the oldest ids first, each in a transaction of its own, so
+that no lock is held long and `serve` writes on. One that stops leaves what it deleted deleted, its
+row `pending` (`unknown` after a reindex, as a registry write's), and the rest to a next run. It
+does not reach into the registry: a snapshot made before keeps the rows of its window, and its
+restore brings them back.
 
 ## 6. Bootstrap
 
