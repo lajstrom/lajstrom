@@ -303,8 +303,9 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 // withUsers opens the index database of the configuration, runs fn with the users service over
 // it, which disables the service accounts of an owner it disables when
 // auth.serviceAccounts.onOwnerDisabled is disable and marks the users inactive beyond
-// auth.disableInactiveUsersAfter, sets no password while auth.localPasswords is false and shows
-// the locks of auth.lockout.duration, and closes the database.
+// auth.disableInactiveUsersAfter, sets no password while auth.localPasswords is false, checks the
+// rules of auth.passwords and with its changeAtFirstUse sets mustChange, and shows the locks of
+// auth.lockout.duration, and closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
@@ -312,7 +313,8 @@ func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.User
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
 	return fn(ctx, &auth.Users{Index: st, Log: a.log, DisableWithOwner: a.cfg.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
-		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter, PasswordsOff: !a.cfg.Auth.LocalPasswords, Lockout: lockoutOf(a.cfg.Auth)})
+		InactiveAfter: a.cfg.Auth.DisableInactiveUsersAfter, PasswordsOff: !a.cfg.Auth.LocalPasswords, Lockout: lockoutOf(a.cfg.Auth),
+		PasswordPolicy: passwordPolicyOf(a.cfg.Auth)})
 }
 
 // errNoPassword is the error when no source gives a password.

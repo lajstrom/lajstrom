@@ -510,6 +510,9 @@ type Auth struct {
 	// Lockout locks a local user's password after wrong passwords in a row (docs/spec/rbac.md §1,
 	// Local passwords; #1280).
 	Lockout Lockout `yaml:"lockout"`
+	// Passwords are the rules of a local user's password and its change at first use
+	// (docs/spec/rbac.md §1, Local passwords; #1281).
+	Passwords Passwords `yaml:"passwords"`
 	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
 	Bootstrap Bootstrap `yaml:"bootstrap"`
 	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
@@ -537,6 +540,30 @@ type Lockout struct {
 	// from MinLockoutDuration to MaxLockoutDuration. It does nothing while LocalPasswords is false.
 	Duration time.Duration `yaml:"duration"`
 }
+
+// Passwords configures the rules of a local user's password and its change at first use
+// (docs/spec/rbac.md §1, Local passwords; #1281). The rules count when a password is set: a
+// password set before keeps working until it is changed. None of it does anything while
+// LocalPasswords is false.
+type Passwords struct {
+	// MinLength is the fewest characters of a password, counted as Unicode code points;
+	// DefaultMinPasswordLength by default, from it to MaxMinPasswordLength. 12 for PCI DSS 8.3.6.
+	MinLength int `yaml:"minLength"`
+	// RequireLettersAndDigits requires a letter (Unicode category L) and a digit (Nd) of any
+	// script in a password; false by default, true for PCI DSS 8.3.6.
+	RequireLettersAndDigits bool `yaml:"requireLettersAndDigits"`
+	// ChangeAtFirstUse makes every password that is not the user's own change, an admin's create
+	// or new password and the bootstrap's, one the user must change before anything else; false by
+	// default, true for PCI DSS 8.3.5.
+	ChangeAtFirstUse bool `yaml:"changeAtFirstUse"`
+}
+
+// DefaultMinPasswordLength and MaxMinPasswordLength bound auth.passwords.minLength: 8 is the
+// length a password always had, and 128 more than any rule asks.
+const (
+	DefaultMinPasswordLength = 8
+	MaxMinPasswordLength     = 128
+)
 
 // MinLockoutDuration and MaxLockoutDuration bound auth.lockout.duration when it is not zero: a
 // shorter lock hardly slows a guess, and a longer one is an outage that whoever knows a user name
@@ -883,6 +910,7 @@ func Default() *Config {
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth: Auth{LocalPasswords: true, Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime},
+			Passwords:       Passwords{MinLength: DefaultMinPasswordLength},
 			ServiceAccounts: ServiceAccounts{MaxTokenTTL: DefaultServiceTokenTTL, OnOwnerDisabled: OwnerFlag},
 			Login:           Login{TokenLifetime: DefaultLoginTokenLifetime},
 			CI:              CI{TokenLifetime: DefaultCITokenLifetime, APIWriteApproval: CIApprovalSecondAdmin}},

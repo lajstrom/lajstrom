@@ -41,6 +41,9 @@ const (
 	ActionUserOwner    = "user.owner"
 	// ActionUserUnlock ends a lock of the lockout (docs/spec/rbac.md §1, Local passwords).
 	ActionUserUnlock = "user.unlock"
+	// ActionUserMustChange is an admin's mustChange, set or cleared (docs/spec/rbac.md §1,
+	// Change at first use).
+	ActionUserMustChange = "user.mustchange"
 )
 
 // User is a user as the CLI prints it and the users API (#47) answers it. It never carries the
@@ -81,6 +84,9 @@ type UserChange struct {
 	// Owner is a service account's new owner, as for CreateService (ownerOf).
 	Owner *string
 	Name  *string
+	// MustChange sets or clears the user's mustChange (docs/spec/rbac.md §1, Change at first
+	// use), whatever auth.passwords.changeAtFirstUse is; only a user with a password has one.
+	MustChange *bool
 }
 
 // Origin says where a change comes from, for its audit event; the principal is
@@ -153,11 +159,16 @@ type Users struct {
 	// a user whose lock is in force is answered with its LockedUntil. Unlock and SetPassword end a
 	// lock whatever it is.
 	Lockout time.Duration
+	// PasswordPolicy is auth.passwords (docs/spec/rbac.md §1, Local passwords): Create and
+	// SetPassword check its rules, and with its ChangeAtFirstUse set the user's mustChange. The
+	// zero value is the default.
+	PasswordPolicy PasswordPolicy
 }
 
-// Create checks name and password and creates the local user, with a new uid, and one
-// user.create audit event, whose details say whether it is an admin; while local passwords are
-// off it creates none (CheckPasswordSet). With admin, the binding
+// Create checks name and password, against the rules of PasswordPolicy, and creates the local
+// user, with a new uid, and one user.create audit event, whose details say whether it is an
+// admin and, with mustChange true, that its password must be changed: with ChangeAtFirstUse;
+// while local passwords are off it creates none (CheckPasswordSet). With admin, the binding
 // (user:<uid>, admin, */*) is created in the same transaction: the bootstrap of
 // docs/spec/rbac.md §6.
 func (s *Users) Create(ctx context.Context, name, password string, admin bool, o Origin) (*User, error) {
@@ -173,11 +184,15 @@ func (s *Users) create(ctx context.Context, name, password string, admin bool, o
 	if err := CheckName(name); err != nil {
 		return nil, err
 	}
-	hash, err := HashPassword(password)
+	hash, err := s.hashNew(password)
 	if err != nil {
 		return nil, err
 	}
-	row := index.User{Name: name, PasswordHash: hash, Kind: KindLocal, CreatedAt: s.now()}
+	row := index.User{Name: name, PasswordHash: hash, Kind: KindLocal, CreatedAt: s.now(), MustChange: s.PasswordPolicy.ChangeAtFirstUse}
+	details := map[string]any{"admin": admin}
+	if row.MustChange {
+		details["mustChange"] = true
+	}
 	var ev index.AuditEvent
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
 		if before != nil {
@@ -194,7 +209,7 @@ func (s *Users) create(ctx context.Context, name, password string, admin bool, o
 				return err
 			}
 		}
-		ev, err = s.record(ctx, w, ActionUserCreate, &row, o, map[string]any{"admin": admin})
+		ev, err = s.record(ctx, w, ActionUserCreate, &row, o, details)
 		return err
 	})
 	if err != nil {
@@ -337,16 +352,17 @@ func (s *Users) List(ctx context.Context, kind string) ([]User, error) {
 	return users, nil
 }
 
-// SetPassword checks password and makes it the user's, with one user.password audit event. The
-// old password stops working at the next request (the Authenticator compares the stored hash).
-// It ends a lock of the lockout too, with a user.unlock event when one was in force: the admin
-// who sets it has checked who asks (docs/spec/rbac.md §1). While local passwords are off it sets
-// none (CheckPasswordSet).
+// SetPassword checks password, against the rules of PasswordPolicy, and makes it the user's: an
+// admin's new password, with one user.password audit event, whose details have mustChange true
+// when it is set. The old password stops working at the next request (the Authenticator compares
+// the stored hash); its hash goes to the head of the user's history, cut to PasswordHistoryLen,
+// and the new one is not compared with the history, so that an admin does not learn which
+// passwords the user had (docs/spec/rbac.md §1, A user's own password). The user's mustChange is
+// set with ChangeAtFirstUse, and cleared without it. It ends a lock of the lockout too, with a
+// user.unlock event when one was in force: the admin who sets it has checked who asks
+// (docs/spec/rbac.md §1). While local passwords are off it sets none (CheckPasswordSet).
 func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin) error {
-	if err := s.CheckPasswordSet(); err != nil {
-		return err
-	}
-	hash, err := HashPassword(password)
+	hash, err := s.hashNew(password)
 	if err != nil {
 		return err
 	}
@@ -354,7 +370,8 @@ func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin
 		if u.Kind == KindService {
 			return false, invalidf("password: user %s is a service account, which has no password: it authenticates with its tokens", name)
 		}
-		u.PasswordHash = hash
+		u.PasswordHistory = withHistory(u.PasswordHistory, u.PasswordHash)
+		u.PasswordHash, u.MustChange = hash, s.PasswordPolicy.ChangeAtFirstUse
 		return true, nil
 	})
 }
@@ -428,7 +445,8 @@ func (s *Users) Rename(ctx context.Context, name, to string, o Origin) error {
 // Delete deletes the user called name (docs/spec/rbac.md §1), with one user.delete audit event:
 // in one transaction it revokes the user's live tokens, deletes its bindings, disables it and
 // marks it deleted, its name becoming ~<uid> so that the name is free, the row kept so that its
-// uid resolves to who it was. The last enabled user with an admin binding is not deleted, and
+// uid resolves to who it was; the history of its password is emptied
+// (docs/spec/index-schema.md, A password's history). The last enabled user with an admin binding is not deleted, and
 // neither is the owner of a live service account (index.ErrConflict). A deletion is not undone.
 // The condition of ctx (index.WithCondition) is checked on the row the transaction read.
 func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
@@ -461,6 +479,7 @@ func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
 			}
 		}
 		u.Disabled, u.DeletedAt, u.DeletedName, u.Name = true, &now, u.Name, "~"+u.UID
+		u.PasswordHistory = nil
 		if err := w.UpdateUser(ctx, u); err != nil {
 			return err
 		}
@@ -490,12 +509,13 @@ func (s *Users) Enable(ctx context.Context, name string, o Origin) error {
 }
 
 // Change applies ch to the user called name in one transaction, Disabled first, then a service
-// account's Owner, then Name, and returns the user as it is then: the PATCH of
+// account's Owner, then Name, then MustChange, and returns the user as it is then: the PATCH of
 // /api/v1/users/{user}. Each change is an audit event of its own, user.disable or user.enable,
-// under the old name, then user.owner, then user.rename, and a value the user has already is
-// none. A disabling that leaves no enabled user with an admin binding (a service account is not
-// such a user: anyAdmin) and a name another live user has are index.ErrConflict, an owner of a
-// user that is not a service account is ErrInvalid, and nothing changes. A disabling with
+// under the old name, then user.owner, then user.rename, then user.mustchange with the new value
+// as mustChange in its details, and a value the user has already is none. A disabling that leaves
+// no enabled user with an admin binding (a service account is not such a user: anyAdmin) and a
+// name another live user has are index.ErrConflict, an owner of a user that is not a service
+// account and a mustChange of a user without a password are ErrInvalid, and nothing changes. A disabling with
 // DisableWithOwner disables the enabled service accounts the user owns too, each with a
 // user.disable event after the user's (disableOwned). The condition of ctx (index.WithCondition)
 // is checked on the row the transaction read.
@@ -575,10 +595,10 @@ type userEvent struct {
 	details map[string]any
 }
 
-// applyChange applies ch to row, Disabled first, then Owner, then Name, and returns the event of
-// each change, in order; a value row has already is none. A name that breaks its rule, an owner
-// that ownerOf refuses on r, and an owner of a user that is not a service account wrap
-// ErrInvalid.
+// applyChange applies ch to row, Disabled first, then Owner, then Name, then MustChange, and
+// returns the event of each change, in order; a value row has already is none. A name that breaks
+// its rule, an owner that ownerOf refuses on r, an owner of a user that is not a service account
+// and a mustChange of a user without a password wrap ErrInvalid.
 func applyChange(ctx context.Context, r index.Reader, row *index.User, ch UserChange) ([]userEvent, error) {
 	var changes []userEvent
 	if ch.Disabled != nil && *ch.Disabled != row.Disabled {
@@ -610,6 +630,15 @@ func applyChange(ctx context.Context, r index.Reader, row *index.User, ch UserCh
 		from := row.Name
 		row.Name = *ch.Name
 		changes = append(changes, userEvent{ActionUserRename, *row, map[string]any{"from": from}})
+	}
+	if ch.MustChange != nil {
+		if row.PasswordHash == "" {
+			return nil, invalidf("mustChange: user %s has no password, and only a password can be made to change", row.Name)
+		}
+		if *ch.MustChange != row.MustChange {
+			row.MustChange = *ch.MustChange
+			changes = append(changes, userEvent{ActionUserMustChange, *row, map[string]any{"mustChange": row.MustChange}})
+		}
 	}
 	return changes, nil
 }
@@ -681,11 +710,7 @@ func (s *Users) updated(ctx context.Context, w index.Writer, name, action string
 			return nil, err
 		}
 	}
-	details := map[string]any{}
-	if action == ActionUserRename {
-		details["from"] = name
-	}
-	ev, err := s.record(ctx, w, action, row, o, details)
+	ev, err := s.record(ctx, w, action, row, o, updateDetails(action, name, row))
 	if err == nil && action == ActionUserPassword {
 		return s.unlockedBy(ctx, w, row, o, ev)
 	}
@@ -694,6 +719,20 @@ func (s *Users) updated(ctx context.Context, w index.Writer, name, action string
 	}
 	owned, err := s.disableOwned(ctx, w, row, o)
 	return append([]index.AuditEvent{ev}, owned...), err
+}
+
+// updateDetails are the details of the event of action, which update made to row, the user
+// called name before it: a rename's from, the name before, and a new password's mustChange when
+// it left it set (docs/spec/rbac.md §5).
+func updateDetails(action, name string, row *index.User) map[string]any {
+	details := map[string]any{}
+	switch {
+	case action == ActionUserRename:
+		details["from"] = name
+	case action == ActionUserPassword && row.MustChange:
+		details["mustChange"] = true
+	}
+	return details
 }
 
 // unlockedBy ends the lock of row on w, whose new password the event ev records, and returns ev,

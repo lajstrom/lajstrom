@@ -62,7 +62,7 @@ func TestLoadDefaults(t *testing.T) {
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
-				Auth: Auth{LocalPasswords: true, Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
+				Auth: Auth{LocalPasswords: true, Passwords: Passwords{MinLength: 8}, Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour},
 					ServiceAccounts: ServiceAccounts{MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"},
 					Login:           Login{TokenLifetime: 12 * time.Hour},
@@ -179,6 +179,27 @@ func TestLoadLockout(t *testing.T) {
 			t.Errorf("Load(%q): %v", file, err)
 		} else if c.Auth.Lockout.Duration != want {
 			t.Errorf("Load(%q): lockout.duration %v, want %v", file, c.Auth.Lockout.Duration, want)
+		}
+	}
+}
+
+// TestLoadPasswords: auth.passwords has a minimum of 8 characters, no letters and digits and no
+// change at first use by default; a file sets each, and a key it leaves out keeps its default
+// (#1281).
+func TestLoadPasswords(t *testing.T) {
+	for file, want := range map[string]Passwords{
+		minimal: {MinLength: 8},
+		minimal + "auth: {passwords: {minLength: 12, requireLettersAndDigits: true, changeAtFirstUse: true}}\n": {MinLength: 12,
+			RequireLettersAndDigits: true, ChangeAtFirstUse: true},
+		minimal + "auth: {passwords: {requireLettersAndDigits: true}}\n": {MinLength: 8, RequireLettersAndDigits: true},
+		minimal + "auth: {passwords: {minLength: 128}}\n":                {MinLength: 128},
+		minimal + "auth: {passwords: {changeAtFirstUse: true}}\n":        {MinLength: 8, ChangeAtFirstUse: true},
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.Passwords != want {
+			t.Errorf("Load(%q): passwords %+v, want %+v", file, c.Auth.Passwords, want)
 		}
 	}
 }
@@ -393,6 +414,11 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"auth.lockout.duration: must be 0, which locks nothing, or from 5m to 24h"}},
 		{name: "lockout over a day", file: minimal + "auth: {lockout: {duration: 25h}}\n", want: []string{"auth.lockout.duration: must be 0"}},
 		{name: "negative lockout", file: minimal + "auth: {lockout: {duration: -30m}}\n", want: []string{"auth.lockout.duration: must be 0"}},
+		{name: "password minimum under 8", file: minimal + "auth: {passwords: {minLength: 7}}\n",
+			want: []string{"auth.passwords.minLength: must be from 8 to 128 characters; 12 for PCI DSS 8.3.6"}},
+		{name: "password minimum 0", file: minimal + "auth: {passwords: {minLength: 0}}\n", want: []string{"auth.passwords.minLength: must be from 8"}},
+		{name: "password minimum over 128", file: minimal + "auth: {passwords: {minLength: 129}}\n",
+			want: []string{"auth.passwords.minLength: must be from 8"}},
 		{name: "negative service token ttl", file: minimal + "auth: {serviceAccounts: {maxTokenTTL: -1h}}\n",
 			want: []string{"auth.serviceAccounts.maxTokenTTL: must not be negative; 0 bounds nothing"}},
 		{name: "unknown onOwnerDisabled", file: minimal + "auth: {serviceAccounts: {onOwnerDisabled: delete}}\n",
