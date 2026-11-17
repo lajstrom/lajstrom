@@ -91,6 +91,7 @@ func (c *conn) exportControlPlane(ctx context.Context, opts index.ExportOptions)
 			return err
 		},
 		func() (err error) {
+			// userCols, without the columns of the lockout: a restore unlocks every user.
 			cp.Users, err = getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users ORDER BY id")
 			return err
 		},
