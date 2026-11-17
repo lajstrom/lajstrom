@@ -70,15 +70,8 @@ func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o O
 	name := ""
 	var ev index.AuditEvent
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
-		row.Principal = p.String() // a group need not have members (docs/spec/rbac.md §3)
-		if p.Kind == KindUser {
-			u, err := LookupUser(ctx, w, p)
-			if errors.Is(err, index.ErrNotFound) {
-				return invalidf("principal: user %s does not exist", p.Name)
-			} else if err != nil {
-				return err
-			}
-			row.Principal, name = UserPrincipal(u).String(), u.Name
+		if row.Principal, name, err = boundPrincipal(ctx, w, p); err != nil {
+			return err
 		}
 		if err = w.CreateBinding(ctx, &row); err != nil {
 			return err
@@ -126,6 +119,24 @@ func (s *Bindings) List(ctx context.Context, principal string) ([]Binding, error
 		list[i] = bindingResource(&rows[i], name)
 	}
 	return list, nil
+}
+
+// boundPrincipal returns p as a binding keeps it, and its name for a user: user:<uid> of the live
+// user of user:<name> or user:<uid>, read on r, ErrInvalid naming the field when there is none;
+// any other principal as it is, which need not exist: a group need not have members
+// (docs/spec/rbac.md §3, §8), nor a cert: or k8s: principal a bundle or a cluster (§9).
+func boundPrincipal(ctx context.Context, r index.Reader, p Principal) (principal, name string, err error) {
+	if p.Kind != KindUser {
+		return p.String(), "", nil
+	}
+	u, err := LookupUser(ctx, r, p)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return "", "", invalidf("principal: user %s does not exist", p.Name)
+	case err != nil:
+		return "", "", err
+	}
+	return UserPrincipal(u).String(), u.Name, nil
 }
 
 // principalName returns the name of the user of principal user:<uid>, the name it had for a user
