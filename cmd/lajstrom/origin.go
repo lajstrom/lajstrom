@@ -23,7 +23,7 @@ const (
 	envActor  = "LAJSTROM_ACTOR"
 	envReason = "LAJSTROM_REASON"
 	maxActor  = 128
-	maxReason = 1024
+	maxReason = auth.MaxChangeReason
 )
 
 // auditedCommands are the commands that write audit rows against the database, by their path

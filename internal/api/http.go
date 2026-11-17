@@ -132,6 +132,9 @@ type Options struct {
 	DPoP Proofs
 	// Registries is what GET /api/v1/registries answers of the registries; nil answers none.
 	Registries RegistryReporter
+	// RequireReason is auth.requireReason (docs/spec/rbac.md §13): a change of the control plane
+	// without changeReason is 400. False takes a reason when one is given.
+	RequireReason bool
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -231,7 +234,7 @@ func New(o Options) http.Handler {
 		webhooks: o.Webhooks, passwords: o.Passwords, loginLifetime: o.LoginLifetime, loginIdle: o.LoginIdle, handoffs: o.Handoffs, proofs: o.DPoP,
 		registries: o.Registries, providers: o.Providers, maxManifest: o.MaxManifestSize,
 		rules: o.Rules, verdicter: o.Verdicter, policyKey: o.PolicyKey,
-		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate}
+		locate: o.Locate, ci: o.CIPolicies, authenticate: o.Authenticate, requireReason: o.RequireReason}
 	if h.loginLifetime <= 0 {
 		h.loginLifetime = DefaultLoginLifetime
 	}
@@ -395,8 +398,10 @@ type handler struct {
 	policyKey PolicyKey
 	locate    denylist.Locate
 	// ci is Options.CIPolicies.
-	ci  *ci.Service
-	log *slog.Logger
+	ci *ci.Service
+	// requireReason is Options.RequireReason.
+	requireReason bool
+	log           *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
@@ -472,7 +477,11 @@ func (h *handler) createRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	repo, err := h.repos.Create(r.Context(), req, origin(r))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	repo, err := h.repos.Create(r.Context(), req, o)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -539,7 +548,11 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 			return 0, nil, err
 		}
 	}
-	repo, err := h.repos.Update(r.Context(), f, name, req, origin(r))
+	o, err := h.changeOrigin(r, body.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	repo, err := h.repos.Update(r.Context(), f, name, req, o)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -562,7 +575,11 @@ func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := h.repos.Delete(r.Context(), f, name, force, origin(r)); err != nil {
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.repos.Delete(r.Context(), f, name, force, o); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
@@ -627,8 +644,8 @@ func (h *handler) authorize(r *http.Request, deps format.Deps, a auth.Action, fo
 	return err
 }
 
-// patchBody is the body of PATCH: the fields of an UpdateRequest, and those that cannot
-// change, refused by name rather than as unknown fields.
+// patchBody is the body of PATCH: the fields of an UpdateRequest, those that cannot change,
+// refused by name rather than as unknown fields, and the reason of the change.
 type patchBody struct {
 	AnonymousRead *bool           `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
@@ -638,6 +655,7 @@ type patchBody struct {
 	Name          json.RawMessage `json:"name"`
 	Registry      json.RawMessage `json:"registry"`
 	Kind          json.RawMessage `json:"kind"`
+	Reason
 }
 
 // request returns the UpdateRequest of b, or an error naming a field that cannot change.

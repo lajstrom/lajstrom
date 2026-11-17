@@ -71,6 +71,7 @@ type webhookBody struct {
 	Events      *[]string `json:"events"`
 	Active      *bool     `json:"active"`
 	Description *string   `json:"description"`
+	Reason
 }
 
 // WebhookOf is the resource of h, for the API and the CLI.
@@ -174,8 +175,12 @@ func (h *handler) createWebhook(w http.ResponseWriter, r *http.Request) (int, an
 	case scope.mask == "":
 		mask = *body.Mask
 	}
+	o, err := h.changeOrigin(r, body.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
 	wh, secret, err := h.webhooks.Create(r.Context(), webhook.Request{Mask: mask, URL: body.URL, Events: body.Events,
-		Active: body.Active, Description: body.Description}, auth.Origin(origin(r)))
+		Active: body.Active, Description: body.Description}, o)
 	if err != nil {
 		return 0, nil, webhookError(0, err)
 	}
@@ -215,10 +220,14 @@ func (h *handler) updateWebhook(w http.ResponseWriter, r *http.Request) (int, an
 			req.Mask = " " // set but empty: still a change of the mask
 		}
 	}
+	o, err := h.changeOrigin(r, body.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
 	if r, err = conditional(r, TableWebhooks, fmt.Sprintf("webhook %d", wh.ID)); err != nil {
 		return 0, nil, err
 	}
-	updated, err := h.webhooks.Update(r.Context(), wh.ID, req, auth.Origin(origin(r)))
+	updated, err := h.webhooks.Update(r.Context(), wh.ID, req, o)
 	if err != nil {
 		return 0, nil, webhookError(wh.ID, err)
 	}
@@ -233,22 +242,31 @@ func (h *handler) deleteWebhook(_ http.ResponseWriter, r *http.Request) (int, an
 	if err != nil {
 		return 0, nil, err
 	}
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
 	if r, err = conditional(r, TableWebhooks, fmt.Sprintf("webhook %d", wh.ID)); err != nil {
 		return 0, nil, err
 	}
-	if err := h.webhooks.Delete(r.Context(), wh.ID, auth.Origin(origin(r))); err != nil {
+	if err := h.webhooks.Delete(r.Context(), wh.ID, o); err != nil {
 		return 0, nil, webhookError(wh.ID, err)
 	}
 	return http.StatusNoContent, nil, nil
 }
 
-// rotateWebhookSecret gives the webhook a new secret and answers it, once.
+// rotateWebhookSecret gives the webhook a new secret and answers it, once. It takes no body: its
+// reason is ?changeReason=.
 func (h *handler) rotateWebhookSecret(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	_, wh, err := h.webhookOf(r)
 	if err != nil {
 		return 0, nil, err
 	}
-	secret, err := h.webhooks.Rotate(r.Context(), wh.ID, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	secret, err := h.webhooks.Rotate(r.Context(), wh.ID, o)
 	if err != nil {
 		return 0, nil, webhookError(wh.ID, err)
 	}

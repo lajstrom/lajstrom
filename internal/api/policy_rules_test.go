@@ -50,15 +50,20 @@ func (k *testPolicyKey) PEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: k.der})
 }
 
-// fakeVerdicter records the verdicts a deny attaches and writes their rows as ingest would.
+// fakeVerdicter records the verdicts a deny attaches and writes their rows as ingest would, and
+// the reason of the change each was attached under (auth.OriginFrom), when it has one.
 type fakeVerdicter struct {
 	st       index.Store
 	attached []attest.Verdict
+	reasons  []string
 }
 
 func (v *fakeVerdicter) AttachVerdict(ctx context.Context, repo index.Repo, path string, subject digest.Digest, verdict attest.Verdict,
 	_ ingest.VerdictSigner, _ auth.Principal) (digest.Digest, error) {
 	v.attached = append(v.attached, verdict)
+	if reason := auth.OriginFrom(ctx).ChangeReason; reason != "" {
+		v.reasons = append(v.reasons, reason)
+	}
 	ref := digest.FromString(fmt.Sprintf("verdict %d of %s", len(v.attached), subject))
 	err := v.st.ReplaceOCIVerdicts(ctx, repo.ID, ref, []index.Verdict{{Path: path, Subject: subject, Verdict: verdict.Verdict,
 		Reason: verdict.Reason, Source: verdict.Source, Scope: verdict.Scope, ValidUntil: verdict.ValidUntil, SignedBy: "lajstrom"}})

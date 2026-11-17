@@ -69,6 +69,9 @@ type RuleRequest struct {
 	Effect    string     `json:"effect"`
 	Reason    string     `json:"reason"`
 	ExpiresAt *time.Time `json:"expiresAt"`
+	// ChangeReason is the reason of the change (docs/spec/rbac.md §13), not the rule's, Reason,
+	// which clients see.
+	ChangeReason *string `json:"changeReason,omitempty"`
 }
 
 func (s *Rules) now() time.Time {
@@ -254,7 +257,11 @@ func (h *handler) createRule(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err := h.mayRule(r, req.RepoMask); err != nil {
 		return 0, nil, err
 	}
-	rule, err := h.rules.Create(r.Context(), req, auth.PrincipalFrom(r.Context()).String(), origin(r))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	rule, err := h.rules.Create(r.Context(), req, auth.PrincipalFrom(r.Context()).String(), o)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -272,11 +279,18 @@ func (h *handler) deleteRule(_ http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, &clientError{msg: fmt.Sprintf("no policy rule %q", r.PathValue("id")), err: index.ErrNotFound}
 	}
-	err = h.rules.Delete(r.Context(), id, auth.PrincipalFrom(r.Context()).String(), origin(r), func(mask string) error {
+	// The reason of ?changeReason= is checked now, and needed (auth.requireReason) once may has
+	// checked the role on the rule's mask, before the delete.
+	o, err := h.reasonOrigin(r, nil, false)
+	if err != nil {
+		return 0, nil, err
+	}
+	err = h.rules.Delete(r.Context(), id, auth.PrincipalFrom(r.Context()).String(), o, func(mask string) error {
 		if err := h.mayRule(r, mask); err != nil {
 			return &clientError{msg: fmt.Sprintf("no policy rule %d", id), err: index.ErrNotFound}
 		}
-		return nil
+		_, err := h.changeOrigin(r, nil)
+		return err
 	})
 	if errors.Is(err, index.ErrNotFound) {
 		return 0, nil, &clientError{msg: fmt.Sprintf("no policy rule %d", id), err: index.ErrNotFound}

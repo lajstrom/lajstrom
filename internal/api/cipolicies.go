@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/ci"
 	"github.com/lajstrom/lajstrom/internal/format"
 )
@@ -63,11 +62,15 @@ func (h *handler) createCIPolicy(w http.ResponseWriter, r *http.Request) (int, a
 	if err != nil {
 		return 0, nil, err
 	}
-	var req ci.Policy
+	var req ciPolicyBody
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	p, err := s.Create(r.Context(), req, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	p, err := s.Create(r.Context(), req.Policy, o)
 	if err != nil {
 		return 0, nil, serviceError(err)
 	}
@@ -84,11 +87,15 @@ func (h *handler) replaceCIPolicy(w http.ResponseWriter, r *http.Request) (int, 
 	if err != nil {
 		return 0, nil, err
 	}
-	var req ci.Policy
+	var req ciPolicyBody
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	p, err := s.Update(r.Context(), r.PathValue("name"), req, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	p, err := s.Update(r.Context(), r.PathValue("name"), req.Policy, o)
 	return answerCIPolicy(w, p, err)
 }
 
@@ -96,6 +103,14 @@ func (h *handler) replaceCIPolicy(w http.ResponseWriter, r *http.Request) (int, 
 // the expiry asked, 180 days ahead when it is absent.
 type CIPolicyRenewal struct {
 	ExpiresAt *time.Time `json:"expiresAt"`
+	Reason
+}
+
+// ciPolicyBody is the body of POST /api/v1/ci/policies and of PUT …/{name}: the policy, and the
+// reason of the change (docs/spec/rbac.md §13).
+type ciPolicyBody struct {
+	ci.Policy
+	Reason
 }
 
 // renewCIPolicy renews the CI trust policy of the path, one of the API that grants write: 200
@@ -109,19 +124,27 @@ func (h *handler) renewCIPolicy(w http.ResponseWriter, r *http.Request) (int, an
 	if err := decodeOptionalBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
-	p, err := s.Renew(r.Context(), r.PathValue("name"), req.ExpiresAt, auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, req.ChangeReason)
+	if err != nil {
+		return 0, nil, err
+	}
+	p, err := s.Renew(r.Context(), r.PathValue("name"), req.ExpiresAt, o)
 	return answerCIPolicy(w, p, err)
 }
 
 // approveCIPolicy approves what waits on the CI trust policy of the path: 200 with it and its
-// ETag. It takes no body, and If-Match with the ETag of the revision approved: without one, or
-// with *, it is 400.
+// ETag. It takes no body, its reason being ?changeReason=, and If-Match with the ETag of the
+// revision approved: without one, or with *, it is 400.
 func (h *handler) approveCIPolicy(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	s, r, err := h.conditionalCIPolicy(r)
 	if err != nil {
 		return 0, nil, err
 	}
-	p, err := s.Approve(r.Context(), r.PathValue("name"), auth.Origin(origin(r)))
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	p, err := s.Approve(r.Context(), r.PathValue("name"), o)
 	return answerCIPolicy(w, p, err)
 }
 
@@ -132,7 +155,11 @@ func (h *handler) deleteCIPolicy(_ http.ResponseWriter, r *http.Request) (int, a
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := s.Delete(r.Context(), r.PathValue("name"), auth.Origin(origin(r))); err != nil {
+	o, err := h.changeOrigin(r, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := s.Delete(r.Context(), r.PathValue("name"), o); err != nil {
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
