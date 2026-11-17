@@ -164,6 +164,25 @@ func TestLoadDisableInactiveUsersAfter(t *testing.T) {
 	}
 }
 
+// TestLoadLockout: auth.lockout.duration is 0 by default, which locks nothing, and a file sets it
+// from 5m to 24h (#1280).
+func TestLoadLockout(t *testing.T) {
+	for file, want := range map[string]time.Duration{
+		minimal: 0,
+		minimal + "auth: {lockout: {duration: 30m}}\n": 30 * time.Minute,
+		minimal + "auth: {lockout: {duration: 5m}}\n":  5 * time.Minute,
+		minimal + "auth: {lockout: {duration: 24h}}\n": 24 * time.Hour,
+		minimal + "auth: {lockout: {duration: 0s}}\n":  0,
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.Lockout.Duration != want {
+			t.Errorf("Load(%q): lockout.duration %v, want %v", file, c.Auth.Lockout.Duration, want)
+		}
+	}
+}
+
 // TestLoadUploadSessions: server.uploadSessions is 256 and 1024 by default, a key the file
 // sets replaces its default, and 0 turns a bound off (#246).
 func TestLoadUploadSessions(t *testing.T) {
@@ -370,6 +389,10 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"auth.disableInactiveUsersAfter: must be 0, which disables nobody, or at least 24h"}},
 		{name: "negative inactive users", file: minimal + "auth: {disableInactiveUsersAfter: -2160h}\n",
 			want: []string{"auth.disableInactiveUsersAfter: must be 0"}},
+		{name: "lockout under 5m", file: minimal + "auth: {lockout: {duration: 4m}}\n",
+			want: []string{"auth.lockout.duration: must be 0, which locks nothing, or from 5m to 24h"}},
+		{name: "lockout over a day", file: minimal + "auth: {lockout: {duration: 25h}}\n", want: []string{"auth.lockout.duration: must be 0"}},
+		{name: "negative lockout", file: minimal + "auth: {lockout: {duration: -30m}}\n", want: []string{"auth.lockout.duration: must be 0"}},
 		{name: "negative service token ttl", file: minimal + "auth: {serviceAccounts: {maxTokenTTL: -1h}}\n",
 			want: []string{"auth.serviceAccounts.maxTokenTTL: must not be negative; 0 bounds nothing"}},
 		{name: "unknown onOwnerDisabled", file: minimal + "auth: {serviceAccounts: {onOwnerDisabled: delete}}\n",
