@@ -76,11 +76,23 @@ type Token struct {
 	// DPoPJKT is the JWK SHA-256 thumbprint of the DPoP key that the token of a web UI's sign-in
 	// is bound to (docs/spec/rbac.md §10); absent for every other token.
 	DPoPJKT string `json:"dpopJkt,omitempty"`
+	// SignIn is the sign-in at the IdP of the token of a web UI's sign-in through OIDC
+	// (docs/spec/rbac.md §10): when and how the person authenticated, so that a UI knows what it
+	// meets before it asks; absent for every other token.
+	SignIn *TokenSignIn `json:"signIn,omitempty"`
 	// BeyondMaxTTL marks a live token beyond the bound of the configuration of its kind when it
 	// is answered (Tokens.beyond, docs/spec/rbac.md §1): created before the bound was set or
 	// lowered, it is to be replaced. Worked out from the configuration of the replica that
 	// answers, stored nowhere; absent otherwise.
 	BeyondMaxTTL bool `json:"beyondMaxTTL,omitempty"`
+}
+
+// TokenSignIn is a token's sign-in as the views of a token answer it: the auth_time, the amr and
+// the acr of the ID token of its OIDC login, each when the token kept it.
+type TokenSignIn struct {
+	AuthTime *time.Time `json:"authTime,omitempty"`
+	AMR      []string   `json:"amr,omitempty"`
+	ACR      string     `json:"acr,omitempty"`
 }
 
 // CreatedToken is the answer of a creation, the one time the secret is shown: the token and its
@@ -192,9 +204,12 @@ func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []stri
 			return nil, tokenOwner{}, err
 		}
 		row := &index.Token{UserID: &u.ID, DPoPJKT: b.jkt}
-		if b.signIn != nil {
-			at := b.signIn.At.UTC()
-			row.AuthTime, row.AMR = &at, slices.Clone(b.signIn.AMR)
+		if in := b.signIn; in != nil {
+			row.AMR, row.ACR = slices.Clone(in.AMR), in.ACR
+			if !in.At.IsZero() {
+				at := in.At.UTC()
+				row.AuthTime = &at
+			}
 		}
 		return row, tokenOwner{user: u.Name, uid: u.UID, service: u.Kind == KindService}, nil
 	})
@@ -396,7 +411,13 @@ func createDetails(ctx context.Context, row *index.Token, l lifetime) map[string
 		details["dpopJkt"] = row.DPoPJKT
 	}
 	if row.AuthTime != nil {
-		details["authTime"], details["amr"] = row.AuthTime.Format(time.RFC3339), row.AMR
+		details["authTime"] = row.AuthTime.Format(time.RFC3339)
+	}
+	if len(row.AMR) > 0 {
+		details["amr"] = row.AMR
+	}
+	if row.ACR != "" {
+		details["acr"] = row.ACR
 	}
 	return details
 }
@@ -970,8 +991,20 @@ func tokenResource(t *index.Token, own tokenOwner) Token {
 	return Token{
 		ID: t.ID, Kind: t.Kind, User: own.user, Repo: own.repo, RepoMask: own.mask, Name: t.Name, Scopes: scopes,
 		ExpiresAt: utc(t.ExpiresAt), LastUsedAt: utc(t.LastUsedAt), CreatedAt: t.CreatedAt.UTC(), RevokedAt: utc(t.RevokedAt),
-		HashPrefix: t.Hash[:min(HashPrefixLen, len(t.Hash))], DPoPJKT: t.DPoPJKT,
+		HashPrefix: t.Hash[:min(HashPrefixLen, len(t.Hash))], DPoPJKT: t.DPoPJKT, SignIn: tokenSignIn(t),
 	}
+}
+
+// keptSignIn reports whether t kept a sign-in at the IdP: any of auth_time, amr and acr
+// (docs/spec/rbac.md §10).
+func keptSignIn(t *index.Token) bool { return t.AuthTime != nil || len(t.AMR) > 0 || t.ACR != "" }
+
+// tokenSignIn is the sign-in that t kept, as its views answer it; nil when it kept none.
+func tokenSignIn(t *index.Token) *TokenSignIn {
+	if !keptSignIn(t) {
+		return nil
+	}
+	return &TokenSignIn{AuthTime: utc(t.AuthTime), AMR: slices.Clone(t.AMR), ACR: t.ACR}
 }
 
 // utc returns a copy of t in UTC, or nil.

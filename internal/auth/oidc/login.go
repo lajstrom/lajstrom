@@ -216,7 +216,7 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row.ReturnTo != "" {
-		row.AuthTime, row.AMR = id.AuthTime, id.AMR
+		row.AuthTime, row.AMR, row.ACR = id.AuthTime, id.AMR, id.ACR
 		h.handOff(w, r, row, u)
 		return
 	}
@@ -282,7 +282,7 @@ func (h *handler) approve(w http.ResponseWriter, r *http.Request, id int64, u *i
 }
 
 // handOff ends the login row of a web UI for u (docs/spec/rbac.md §10): a new code, whose hash
-// the row keeps with the user and the auth_time and amr the caller put on it, approved once, and
+// the row keeps with the user and the auth_time, amr and acr the caller put on it, approved once, and
 // 302 to the row's return_to with the code in the fragment. The redirect has no body, so that
 // the code is in the Location alone.
 func (h *handler) handOff(w http.ResponseWriter, r *http.Request, row *index.OIDCLogin, u *index.User) {

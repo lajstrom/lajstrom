@@ -155,10 +155,22 @@ func (a *Authenticator) AuthenticateDPoP(ctx context.Context, secret, jkt string
 	}
 	a.touch(ctx, t)
 	cred := patCredential(t)
-	if t.AuthTime != nil {
-		cred.SignIn = &SignIn{At: *t.AuthTime, AMR: slices.Clone(t.AMR)}
-	}
+	cred.SignIn = signInOf(t)
 	return UserPrincipal(u), cred, nil
+}
+
+// signInOf is the sign-in at the IdP that the web UI's token t kept from the ID token of its
+// OIDC login (docs/spec/rbac.md §10): nil when it kept none of auth_time, amr and acr, the token
+// of a password among them.
+func signInOf(t *index.Token) *SignIn {
+	if !keptSignIn(t) {
+		return nil
+	}
+	in := &SignIn{AMR: slices.Clone(t.AMR), ACR: t.ACR}
+	if t.AuthTime != nil {
+		in.At = *t.AuthTime
+	}
+	return in
 }
 
 // bearerPAT returns the personal access token whose secret is secret, of the token's shape, and

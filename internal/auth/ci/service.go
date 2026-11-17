@@ -294,11 +294,7 @@ func (s *Service) changed(ctx context.Context, w index.Writer, action, typ strin
 		details["previous"] = map[string]any{"issuer": previous.Issuer, "claims": previous.Claims, "grants": previous.Grants,
 			"state": previous.State}
 	}
-	if cred := auth.CredentialFrom(ctx); cred.SignIn != nil {
-		details["signIn"] = map[string]any{"token": cred.TokenID, "authTime": cred.SignIn.At.UTC().Format(time.RFC3339),
-			"amr": cred.SignIn.AMR}
-	}
-	raw, err := json.Marshal(o.AddTo(details))
+	raw, err := json.Marshal(o.AddTo(auth.AddSignIn(ctx, details)))
 	if err != nil {
 		return fmt.Errorf("ci: audit details of %s: %w", action, err)
 	}

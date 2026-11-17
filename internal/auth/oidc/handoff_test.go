@@ -192,14 +192,15 @@ func TestUIHandoffWrongKey(t *testing.T) {
 }
 
 // TestUIStepUp checks a web UI's login with prompt=login (docs/spec/rbac.md §10): the IdP is asked
-// to authenticate again, the callback keeps the ID token's auth_time and amr on the login, and
-// the token of its code keeps them, so that a request with it and its DPoP proof carries the
-// sign-in; a login whose ID token has no auth_time gives a token without one.
+// to authenticate again, the callback keeps the ID token's auth_time, amr and acr on the login,
+// and the token of its code keeps them, so that a request with it and its DPoP proof carries the
+// sign-in; the token's view answers it. A login whose ID token has no auth_time keeps its amr and
+// acr, a sign-in never fresh, and one with none of the three gives a token without a sign-in.
 func TestUIStepUp(t *testing.T) {
 	f := newLoginFixture(t)
 	ctx := context.Background()
 	at := f.now.Load().Add(-time.Minute)
-	f.p.id.AuthTime, f.p.id.AMR = &at, []string{"pwd", "otp"}
+	f.p.id.AuthTime, f.p.id.AMR, f.p.id.ACR = &at, []string{"pwd", "otp"}, "gold"
 	verifier := NewSecret()
 	state, cookie := f.start(uiQuery(uiOrigin+"/ui/", verifier) + "&prompt=login")
 	if !f.p.stepUp {
@@ -208,44 +209,72 @@ func TestUIStepUp(t *testing.T) {
 	rr := f.callback(state, cookie)
 	code, _ := strings.CutPrefix(rr.Header().Get("Location"), uiOrigin+"/ui/#code=")
 	row, err := f.st.GetOIDCLoginByHandoff(ctx, Hash(code))
-	if err != nil || row.AuthTime == nil || !row.AuthTime.Equal(at) || !slices.Equal(row.AMR, []string{"pwd", "otp"}) {
+	if err != nil || row.AuthTime == nil || !row.AuthTime.Equal(at) || !slices.Equal(row.AMR, []string{"pwd", "otp"}) || row.ACR != "gold" {
 		t.Fatalf("the login row: %+v, %v", row, err)
 	}
 	tok, secret, err := f.handoffs(time.Hour).Redeem(ctx, code, verifier, testJKT, auth.Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkStepUpToken(t, f, tok, at)
 	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
-	if err != nil || cred.SignIn == nil || !cred.SignIn.At.Equal(at) || !slices.Equal(cred.SignIn.AMR, []string{"pwd", "otp"}) {
+	if err != nil || cred.SignIn == nil || !cred.SignIn.At.Equal(at) || !slices.Equal(cred.SignIn.AMR, []string{"pwd", "otp"}) ||
+		cred.SignIn.ACR != "gold" {
 		t.Fatalf("the token's credential: %+v, %v", cred, err)
 	}
 	if err := auth.FreshSignIn(cred, *f.now.Load()); err != nil {
 		t.Errorf("a sign-in a minute old with pwd and otp: %v", err)
 	}
-	evs, _ := f.st.ListAudit(ctx, index.AuditFilter{Action: auth.ActionTokenCreate})
-	if len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"amr":["pwd","otp"]`) ||
-		!strings.Contains(string(evs[0].Details), `"authTime":"`+at.Format(time.RFC3339)+`"`) {
-		t.Errorf("the token.create row of %d: %+v", tok.ID, evs)
-	}
 	checkNoSignIn(t, f, verifier)
 }
 
-// checkNoSignIn checks that a login of the fixture f without prompt asks no step-up, and that,
-// its ID token without auth_time, its token carries no sign-in.
+// checkStepUpToken checks the token tok of TestUIStepUp, of a sign-in at at with pwd, otp and
+// gold: its view, and its token.create row.
+func checkStepUpToken(t *testing.T, f *loginFixture, tok *auth.Token, at time.Time) {
+	t.Helper()
+	if in := tok.SignIn; in == nil || in.AuthTime == nil || !in.AuthTime.Equal(at) || in.ACR != "gold" {
+		t.Errorf("the token's view: %+v", tok)
+	}
+	evs, _ := f.st.ListAudit(context.Background(), index.AuditFilter{Action: auth.ActionTokenCreate})
+	if len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"amr":["pwd","otp"]`) ||
+		!strings.Contains(string(evs[0].Details), `"authTime":"`+at.Format(time.RFC3339)+`"`) ||
+		!strings.Contains(string(evs[0].Details), `"acr":"gold"`) {
+		t.Errorf("the token.create row of %d: %+v", tok.ID, evs)
+	}
+}
+
+// checkNoSignIn checks that a login of the fixture f without prompt asks no step-up; that, its
+// ID token without auth_time, its token keeps amr and acr, a sign-in that is never fresh; and
+// that, its ID token with none of the three, its token carries no sign-in.
 func checkNoSignIn(t *testing.T, f *loginFixture, verifier string) {
 	t.Helper()
-	f.p.id.AuthTime, f.p.id.AMR = nil, nil
-	code := f.handOff(uiOrigin+"/ui/", verifier)
-	_, secret, err := f.handoffs(time.Hour).Redeem(context.Background(), code, verifier, testJKT, auth.Origin{})
+	ctx := context.Background()
+	f.p.id.AuthTime, f.p.id.AMR, f.p.id.ACR = nil, []string{"mfa"}, "gold"
+	tok, secret, err := f.handoffs(time.Hour).Redeem(ctx, f.handOff(uiOrigin+"/ui/", verifier), verifier, testJKT, auth.Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f.p.stepUp {
 		t.Error("a login without prompt asked the IdP for a step-up")
 	}
-	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(context.Background(), secret, testJKT)
+	if in := tok.SignIn; in == nil || in.AuthTime != nil || in.ACR != "gold" {
+		t.Errorf("the view of a token without auth_time: %+v", tok.SignIn)
+	}
+	_, cred, err := auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
+	switch {
+	case err != nil || cred.SignIn == nil || !cred.SignIn.At.IsZero() || cred.SignIn.ACR != "gold" || !slices.Equal(cred.SignIn.AMR, []string{"mfa"}):
+		t.Errorf("a login without auth_time: %+v, %v; want its amr and acr", cred, err)
+	case !errors.Is(auth.FreshSignIn(cred, *f.now.Load()), auth.ErrScope):
+		t.Errorf("a sign-in without auth_time is fresh")
+	}
+	f.p.id.AMR, f.p.id.ACR = nil, ""
+	_, secret, err = f.handoffs(time.Hour).Redeem(ctx, f.handOff(uiOrigin+"/ui/", verifier), verifier, testJKT, auth.Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cred, err = auth.NewAuthenticator(auth.Options{Index: f.st}).AuthenticateDPoP(ctx, secret, testJKT)
 	if err != nil || cred.SignIn != nil {
-		t.Errorf("a login without auth_time: %+v, %v; want no sign-in", cred, err)
+		t.Errorf("a login without auth_time, amr and acr: %+v, %v; want no sign-in", cred, err)
 	}
 }
 
