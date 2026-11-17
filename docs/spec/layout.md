@@ -1013,6 +1013,11 @@ type Reader interface {
     GetBootstrapToken(ctx context.Context) (*BootstrapToken, error) // used and expired too; the caller checks
     GetConfigState(ctx context.Context) (*ConfigState, error)       // last recorded (rbac.md §5); none: ErrNotFound
     ListBindings(ctx context.Context, principal string) ([]Binding, error)
+    // the requests that wait for a second admin (rbac.md §13, index-schema.md, Approvals):
+    // ListApprovals by id, newest first, below before (0: from the newest), of state ("": any),
+    // at most limit
+    GetApproval(ctx context.Context, id int64) (*Approval, error)
+    ListApprovals(ctx context.Context, state string, before int64, limit int) ([]Approval, error)
     // AuthVersion: the counter of auth_version, which every write of bindings and repos
     // increments in its transaction (rbac.md §3); an evaluator reads it before its snapshot
     AuthVersion(ctx context.Context) (int64, error)
@@ -1168,6 +1173,15 @@ type Writer interface {
     PutConfigState(ctx context.Context, c *ConfigState, old string) error
     CreateBinding(ctx context.Context, b *Binding) error
     DeleteBinding(ctx context.Context, id int64) error
+    // approvals (#1285). CreateApproval fills ID and inserts a pending request; one of the same
+    // Kind and Subject pending wraps ErrConflict. DecideApproval stores State (approved or
+    // rejected), DecidedBy, DecidedAt, DecisionReason and Result while the row is pending, else
+    // changes nothing and wraps ErrConflict, so that of two decisions one is made; its caller
+    // makes the change in the same transaction. ExpireApprovals marks expired the pending rows
+    // whose ExpiresAt is not after at, DecidedBy anonymous, and returns them for their rows
+    CreateApproval(ctx context.Context, a *Approval) error
+    DecideApproval(ctx context.Context, a *Approval) error
+    ExpireApprovals(ctx context.Context, at time.Time) ([]Approval, error)
     // OIDC: CreateIdentity fills ID and CreatedAt when zero; (Issuer, Subject) taken wraps
     // ErrConflict. SetIdentityGroups makes the identity_groups rows of the identity exactly
     // names, stores loginAt and groupsExpireAt, and increments auth_version
@@ -1318,7 +1332,7 @@ type Writer interface {
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent,
-// Webhook, WebhookDelivery;
+// Webhook, WebhookDelivery, Approval;
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,

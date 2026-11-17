@@ -43,6 +43,7 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`, `v` the timestamped version of a maven SNAPSHOT build; apt `<source>:<version>` of a source upload, #79; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "refused", "committing"}`, `refused` the files a checksum file disagreed with, by name, with the reason; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck", "enc"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, whether a chunk failed since, and on an encrypted repo `enc`, `{"key", "nonce", "stored", "hmac", "bodies"}`: the session's data key sealed with the master key (the row's `key` as the additional data), its nonce, the sha256 state of the ciphertext, the HMAC of the ciphertext so far while one request only carried bytes, and how many requests carried bytes (http-routing.md §2.1)), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven, an apt source package; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json, `state` text (`ok`, `pending`, `failed`, `unknown`; [below](#the-audit-row-of-a-registry-write)), `error` text null (why a failed row failed, its first 1024 bytes) | rows are never deleted, and only the row of a registry write changes, its state and details, once (below); retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name`; rows written before 0016 are `ok` |
 | `ci_policies` | `id`, `name` text, `issuer` text (the name of an issuer of `auth.ci.issuers`), `claims` json (each claim to its list of values), `grants` json (a list of `{role, mask}`), `state` text (`active`, `pending`, `expired`), `expires_at` ts null (a policy that grants write), `renewal_expires_at` ts null (the expiry of a renewal that waits for an approval), `created_by` text (the principal that made it), `created_at` ts, `updated_by` text (the principal of its latest create, change or renewal), `updated_at` ts, `approved_by` text null and `approved_at` ts null (its latest approval), `revision` bigint (1 on insert) | the CI trust policies made through the API (rbac.md §11, #937; 0033); unique `name`. `name` and `created_by` never change. Every update moves `revision` by one, and is made only at the revision the change read (a compare-and-set): of two changes of one revision, and of the replicas that mark one expiry, one writes. The policies of the configuration are not in it |
+| `approvals` | `id`, `kind` text (`binding`, `deploy-token`), `subject` text (what the change makes: a binding's `<principal> <role> <mask>`, a deploy token's name), `change` json (a binding's `{principal, role, repoMask}`; a deploy token's `{name, repoMask, scopes, expiresAt, hash, createdBy, signIn}`), `change_reason` text null, `state` text (`pending`, `approved`, `rejected`, `expired`), `requested_by` text (`user:<uid>`), `requested_at` ts, `expires_at` ts, `decided_by` text null (`user:<uid>`, or `anonymous` for an expiry), `decided_at` ts null, `decision_reason` text null, `result` text null (what the approval made: `binding:<id>`, `token:<id>`) | the requests that wait for a second admin (rbac.md §13, #1285; 0039); [below](#approvals) |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings`, every insert, update or delete of `repos` and of `ci_policies`, and every replacement of an identity's `identity_groups`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings, of the repos' `anonymous_read` and of the identities' groups when it moved (rbac.md §3) |
 | `config_state` | `id` int (always 1), `fingerprint` text (`sha256:<hex>`), `config` json (each key of the configuration that counts to its value), `release` text (the version of the `serve` that recorded it), `host` text (its host name), `recorded_at` ts | at most one row (#1284; 0035): the configuration last recorded by a `config.change` row (rbac.md §5), which holds no secret. A `serve` reads it at start (`GetConfigState`) and, when its own configuration differs, replaces it by its fingerprint only, `PutConfigState` with the fingerprint read (`""` inserts when there is no row), in the transaction that appends the row, so that of replicas that start together one records a change. Migration `0035_config_state.sql` only creates the table, empty: a replica of the release before neither reads nor writes it |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
@@ -169,6 +170,23 @@ first change after it compares the new password with the current one only. Expan
 the release before neither reads nor writes them, so that during a rolling update or a rollback a
 password whose `must_change` is set works there, and a password set there leaves both as they
 were.
+
+### Approvals
+
+`approvals` (#1285, migration `0039_approvals.sql`) holds the requests of rbac.md §13: a change
+of the control plane that waits for a second admin, kept as the change, which its approval makes.
+Nothing that reads `bindings` or `tokens` reads it, so a request grants nothing whatever reads
+those. A deploy token's `change` keeps the sha256 of its secret as `hash`, as `tokens.hash` does,
+and its approval inserts the `tokens` row with it. Unique `approvals_pending` on `(kind, subject)
+WHERE state = 'pending'`: the same change pending twice is a conflict. Index `approvals_expires`
+on `(expires_at) WHERE state = 'pending'`, which the look for expired requests reads.
+
+`state` changes once, from `pending`, in a statement that changes it only while it is `pending`
+(`DecideApproval`, `ExpireApprovals`), so that of an approval, a rejection and the replicas that
+mark an expiry one decides; an approval makes its change and appends its rows in that
+transaction. Rows are never deleted. They are not in a snapshot (below). The migration only
+creates the table, empty: a replica of the release before neither reads nor writes it, and makes
+every change at once.
 
 ## Proxy and group repos
 
@@ -769,6 +787,7 @@ uses and which does not have it.
 | `repos`, `group_members`, `users` (the deleted ones too, with `owner`, `last_seen_at`, `must_change` and `password_history`, without `password_failures` and `locked_until`: a restore unlocks every user), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937) | every row, with its id |
 | `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
 | `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
+| `approvals` | no: a request waits 7 days at most, and the audit rows hold every request and decision (rbac.md §5); a restore drops the requests that wait, which are made again |
 | `config_state` | no: it is the configuration of the servers that ran on the database, not one to restore; a forced restore empties it, and the next start records its configuration with `initial` (rbac.md §5) |
 | `sessions` | no: their clients start them again, as after a restore of a backup |
 | `webhook_deliveries` | no: the outbox and the delivery log of the events before the snapshot. A restore sends none of them, the pending ones included, where a restore of a backup sends those again |
@@ -859,8 +878,9 @@ policy and `index_cache.expires_at` (#101), `0031_blob_map.sql` the table `blob_
 the column `users.last_seen_at`, filled (#1283), `0035_config_state.sql` the table
 `config_state` (#1284), `0036_users_lockout.sql` the columns `users.password_failures` and
 `users.locked_until` (#1280), `0037_users_password_history.sql` the columns
-`users.must_change` and `users.password_history` (#1281), and `0038_tokens_acr.sql` the columns
-`tokens.acr` and `oidc_logins.acr` (#1276); the others are named with their tables
+`users.must_change` and `users.password_history` (#1281), `0038_tokens_acr.sql` the columns
+`tokens.acr` and `oidc_logins.acr` (#1276), and `0039_approvals.sql` the table `approvals`
+(#1285); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -963,7 +983,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0038, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0039, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
