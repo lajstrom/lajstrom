@@ -56,6 +56,10 @@ type Options struct {
 	// Lockout is auth.lockout.duration (auth.Users.Lockout), when Users is nil: a locked user is
 	// answered with lockedUntil while it is not 0.
 	Lockout time.Duration
+	// PasswordPolicy is auth.passwords (auth.Users.PasswordPolicy), when Users is nil: the rules
+	// of every password POST /api/v1/users and POST …/password set, and with changeAtFirstUse the
+	// mustChange they set.
+	PasswordPolicy auth.PasswordPolicy
 	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
 	// formats, the audit writer, the clock and the logger of Repos.
 	Bindings *auth.Bindings
@@ -241,7 +245,7 @@ func New(o Options) http.Handler {
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log,
 			DisableWithOwner: o.ServiceDisableWithOwner, InactiveAfter: o.InactiveUsersAfter, PasswordsOff: o.PasswordsOff,
-			Lockout: o.Lockout}
+			Lockout: o.Lockout, PasswordPolicy: o.PasswordPolicy}
 	}
 	if h.bindings == nil {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}

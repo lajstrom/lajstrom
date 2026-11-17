@@ -145,7 +145,7 @@ func TestUsersCreateRefused(t *testing.T) {
 		{"admin name taken", "admin", "other-password", true, index.ErrConflict, "user admin already exists"},
 		{"invalid name", "Bob", "bob-password", true, ErrInvalid, `name: "Bob" must be lowercase`},
 		{"reserved name", "deploy", "deploy-password", false, ErrInvalid, `name: "deploy" is reserved`},
-		{"short password", "bob", "short", false, ErrInvalid, "password: must be at least 8 bytes"},
+		{"short password", "bob", "short", false, ErrInvalid, "password: must be at least 8 characters"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := users.Create(context.Background(), tt.user, tt.password, tt.admin, cli)

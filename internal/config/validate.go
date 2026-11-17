@@ -983,6 +983,7 @@ func (a Auth) validate(p *problems, s Server) {
 			MinLoginIdleTimeout, a.Login.TokenLifetime)
 	}
 	a.Lockout.validate(p)
+	a.Passwords.validate(p)
 	a.OIDC.validate(p, s)
 	a.ClientCertificates.validate(p, s)
 	a.Kubernetes.validate(p, s)
@@ -993,6 +994,14 @@ func (a Auth) validate(p *problems, s Server) {
 func (l Lockout) validate(p *problems) {
 	if d := l.Duration; d != 0 && (d < MinLockoutDuration || d > MaxLockoutDuration) {
 		p.add("auth.lockout.duration", "must be 0, which locks nothing, or from 5m to 24h; 30m for PCI DSS 8.3.4")
+	}
+}
+
+// validate checks auth.passwords.minLength: from DefaultMinPasswordLength to MaxMinPasswordLength.
+func (pw Passwords) validate(p *problems) {
+	if n := pw.MinLength; n < DefaultMinPasswordLength || n > MaxMinPasswordLength {
+		p.add("auth.passwords.minLength", "must be from %d to %d characters; 12 for PCI DSS 8.3.6", DefaultMinPasswordLength,
+			MaxMinPasswordLength)
 	}
 }
 

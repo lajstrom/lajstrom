@@ -84,6 +84,41 @@ func TestAdminUserPasswordsOff(t *testing.T) {
 	}
 }
 
+// TestAdminUserPasswordRules: admin user create and set-password check the rules of
+// auth.passwords, exit status 1 naming the rule, and with changeAtFirstUse set mustChange on the
+// user (docs/spec/rbac.md §1, Local passwords; #1281).
+func TestAdminUserPasswordRules(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeAuthConfig(t, dir, "auth:\n  passwords:\n    minLength: 12\n    requireLettersAndDigits: true\n    changeAtFirstUse: true\n")
+	st := openIndex(t, dir) // migrated
+	refused := func(password, rule string, args ...string) {
+		t.Helper()
+		_, _, err := runIn(t, nil, strings.NewReader(password), append(args, "--password-stdin", "--config", cfg)...)
+		if err == nil || !strings.Contains(err.Error(), rule) || exitStatus(err) != 1 {
+			t.Errorf("%s with %q: %v (exit %d), want exit 1 naming %s", strings.Join(args, " "), password, err, exitStatus(err), rule)
+		}
+	}
+	refused("short-pw-1", "auth.passwords.minLength", "admin", "user", "create", "--name", "alice")
+	refused("no digits at all", "auth.passwords.requireLettersAndDigits", "admin", "user", "create", "--name", "alice")
+	if _, _, err := runIn(t, nil, strings.NewReader("a first password 1"), "admin", "user", "create", "--name", "alice", "--password-stdin",
+		"--config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	refused("short-pw-2", "auth.passwords.minLength", "admin", "user", "set-password", "alice")
+	alice, err := st.GetUser(t.Context(), "alice")
+	if err != nil || !alice.MustChange || alice.PasswordHistory != nil {
+		t.Fatalf("alice = %+v, %v; want mustChange and no history", alice, err)
+	}
+	if _, _, err := runIn(t, nil, strings.NewReader("a second password 2"), "admin", "user", "set-password", "alice", "--password-stdin",
+		"--config", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := st.GetUser(t.Context(), "alice"); err != nil || !after.MustChange || len(after.PasswordHistory) != 1 ||
+		after.PasswordHistory[0] != alice.PasswordHash {
+		t.Errorf("alice after set-password = %+v, %v; want mustChange and her first hash in the history", after, err)
+	}
+}
+
 // TestAdminUserUnlock: with auth.lockout.duration set, admin user list marks a locked user's
 // DISABLED (locked until <time>), and admin user unlock ends the lock, with a user.unlock row
 // from the cli; a user that does not exist fails (docs/spec/rbac.md §1, Local passwords).

@@ -123,7 +123,7 @@ func TestAdminUser(t *testing.T) {
 		{args: []string{"admin", "user", "set-password", "nobody"}, wantErr: "user nobody does not exist"},
 		{args: []string{"admin", "user", "create", "--name", "Bob"}, wantErr: `name: "Bob" must be lowercase`},
 		{stdin: "short", args: append([]string{"admin", "user", "create", "--name", "bob"}, stdin...),
-			wantErr: "password: must be at least 8 bytes"},
+			wantErr: "password: must be at least 8 characters"},
 		{args: []string{"admin", "user", "create"}, wantErr: `required flag(s) "name" not set`},
 		{env: map[string]string{removedEnv: "admin-password"}, stdin: "bob-password", args: append([]string{"admin", "user", "create", "--name", "bob"}, stdin...),
 			wantErr: "LAJSTROM_ADMIN_PASSWORD is not read any more: pass the password on standard input with --password-stdin"},
@@ -241,7 +241,7 @@ func TestAdminUserPasswordStdin(t *testing.T) {
 		{name: "without a newline", in: strings.NewReader("no-newline-at-all"), stored: "no-newline-at-all"},
 		{name: "inner newlines kept", in: strings.NewReader("two\nlines!\n"), stored: "two\nlines!"},
 		{name: "too long", in: strings.NewReader(strings.Repeat("x", auth.MaxPasswordLen+1) + "\n"), wantErr: "at most 1024 bytes"},
-		{name: "empty", in: strings.NewReader("\n"), wantErr: "at least 8 bytes"},
+		{name: "empty", in: strings.NewReader("\n"), wantErr: "at least 8 characters"},
 		{name: "read fails", in: iotestErrReader{}, wantErr: "read the password from standard input: broken pipe"},
 	}
 	for i, tt := range tests {
@@ -288,7 +288,7 @@ func TestAdminUserPasswordFile(t *testing.T) {
 		{name: "with a newline", args: []string{"--password-file", write("file-password\n")}, stored: "file-password"},
 		{name: "without CR LF, spaces kept", args: []string{"--password-file", write(" pass word \r\n")}, stored: " pass word "},
 		{name: "without a newline", args: []string{"--password-file", write("Zx81aB2cD3eF4gH5iJ6kL7mN8oP9qR0s")}, stored: "Zx81aB2cD3eF4gH5iJ6kL7mN8oP9qR0s"},
-		{name: "too short", args: []string{"--password-file", write("short\n")}, wantErr: "at least 8 bytes"},
+		{name: "too short", args: []string{"--password-file", write("short\n")}, wantErr: "at least 8 characters"},
 		{name: "too long", args: []string{"--password-file", write(strings.Repeat("x", auth.MaxPasswordLen+1))}, wantErr: "at most 1024 bytes"},
 		{name: "missing file", args: []string{"--password-file", missing}, wantErr: "--password-file: open " + missing},
 		{name: "and standard input", args: []string{"--password-file", write("file-password"), "--password-stdin"}, wantErr: "none of the others can be"},
