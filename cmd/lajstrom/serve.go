@@ -211,6 +211,7 @@ func newServeCmd(a *app) *cobra.Command {
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			warnBeyondMaxTTL(ctx, c.Auth, st, a.log)
 			warnAdminMFA(ctx, c.Auth, st, a.log)
+			warnApprovers(ctx, c.Auth, st, a.log)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
@@ -238,7 +239,7 @@ func newServeCmd(a *app) *cobra.Command {
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins),
 				OIDC: edge.login != nil, PasswordsOff: !c.Auth.LocalPasswords, AdminMFA: c.Auth.Admin.RequireMFA,
-				RequireReason: c.Auth.RequireReason}
+				RequireReason: c.Auth.RequireReason, Approval: c.Auth.Approval}
 			ciPolicies := newCIPolicies(c, st)
 			// the authentication that the server leaves to POST /api/v1/users/{user}/password, whose
 			// body decides whether it takes one (docs/spec/rbac.md §1, A user's own password)
@@ -258,9 +259,12 @@ func newServeCmd(a *app) *cobra.Command {
 				Registries: registryReport{cfgs: c.Registries, providers: providers, health: health, replica: rep.row.ID},
 				Providers:  providers, MaxManifestSize: c.Server.MaxManifestSize,
 				Rules: newRules(c, st, a.log), Verdicter: pipe, PolicyKey: apiPolicyKey(pkey), Locate: locateIn(lookupIn(plugins)),
-				CIPolicies: ciPolicies, RequireReason: c.Auth.RequireReason})
+				CIPolicies: ciPolicies, RequireReason: c.Auth.RequireReason, SecondAdmin: c.Auth.Approval == config.ApprovalSecondAdmin})
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
 			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
+			// the expiry of the requests for a second admin, on each replica, whatever auth.approval says: the requests made
+			// under second-admin still expire under none (docs/spec/rbac.md §13)
+			runs.wg.Go(func() { (&auth.Approvals{Index: st, Log: a.log}).RunExpiry(ctx, a.log) })
 			srv, err = server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,

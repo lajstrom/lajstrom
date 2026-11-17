@@ -62,7 +62,7 @@ func TestLoadDefaults(t *testing.T) {
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
-				Auth: Auth{LocalPasswords: true, Passwords: Passwords{MinLength: 8}, Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
+				Auth: Auth{LocalPasswords: true, Approval: ApprovalNone, Passwords: Passwords{MinLength: 8}, Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour},
 					ServiceAccounts: ServiceAccounts{MaxTokenTTL: 8760 * time.Hour, OnOwnerDisabled: "flag"},
 					Login:           Login{TokenLifetime: 12 * time.Hour},
@@ -123,6 +123,23 @@ func TestLoadServiceAccounts(t *testing.T) {
 			t.Errorf("Load(%q): %v", file, err)
 		} else if c.Auth.ServiceAccounts != want {
 			t.Errorf("Load(%q): serviceAccounts %+v, want %+v", file, c.Auth.ServiceAccounts, want)
+		}
+	}
+}
+
+// TestLoadApproval: auth.approval is none and auth.requireReason false by default; a file sets
+// second-admin and true (docs/spec/rbac.md §13, #1285).
+func TestLoadApproval(t *testing.T) {
+	for file, want := range map[string]Auth{
+		minimal: {Approval: ApprovalNone},
+		minimal + "auth: {approval: second-admin, requireReason: true}\n": {Approval: ApprovalSecondAdmin, RequireReason: true},
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.Approval != want.Approval || c.Auth.RequireReason != want.RequireReason {
+			t.Errorf("Load(%q): approval %q, requireReason %v; want %q, %v", file, c.Auth.Approval, c.Auth.RequireReason, want.Approval,
+				want.RequireReason)
 		}
 	}
 }
@@ -423,6 +440,8 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"auth.serviceAccounts.maxTokenTTL: must not be negative; 0 bounds nothing"}},
 		{name: "unknown onOwnerDisabled", file: minimal + "auth: {serviceAccounts: {onOwnerDisabled: delete}}\n",
 			want: []string{`auth.serviceAccounts.onOwnerDisabled: "delete" is not flag or disable`}},
+		{name: "unknown approval", file: minimal + "auth: {approval: two-admins}\n",
+			want: []string{`auth.approval: "two-admins" is not none or second-admin`}},
 		{name: "login token lifetime beyond a day", file: minimal + "auth: {login: {tokenLifetime: 25h}}\n",
 			want: []string{"auth.login.tokenLifetime: must be positive and at most 24h"}},
 		{name: "zero login token lifetime", file: minimal + "auth: {login: {tokenLifetime: 0s}}\n",
