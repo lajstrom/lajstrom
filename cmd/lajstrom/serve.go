@@ -216,9 +216,11 @@ func newServeCmd(a *app) *cobra.Command {
 			// auth.login.idleTimeout (docs/spec/rbac.md §10, #1277): the authenticator refuses an idle
 			// sign-in, the server revokes it with its audit row, /api/v1/info answers the bound.
 			// auth.disableInactiveUsersAfter (rbac.md §1, #1283): users disables the inactive.
+			// auth.oidc.mfa (rbac.md §10, #1276): what a second factor of a web UI's sign-in is.
 			users := usersOf(c, st, a.log)
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log, IdleTimeout: c.Auth.Login.IdleTimeout, Users: users, Blocks: blocks,
-				PasswordsOff: !c.Auth.LocalPasswords, Lockout: lockoutOf(c.Auth)})
+				PasswordsOff: !c.Auth.LocalPasswords, Lockout: lockoutOf(c.Auth),
+				MFA: auth.MFA{AMR: c.Auth.OIDC.MFA.AMR, ACR: c.Auth.OIDC.MFA.ACR}})
 			warnInactiveUsers(ctx, users, a.log)
 			// The proofs of a web UI's token (docs/spec/rbac.md §10), used once through the index.
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}

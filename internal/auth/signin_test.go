@@ -8,17 +8,52 @@ import (
 	"time"
 )
 
-// TestSecondFactor: amr shows a second factor with mfa, or with methods of two kinds of factor
-// (RFC 8176); one kind, however many methods, or methods that are no factor, show none.
+// TestSecondFactor: with auth.oidc.mfa empty, amr shows a second factor with mfa, or with
+// methods of two kinds of factor (RFC 8176); one kind, however many methods, or methods that are
+// no factor, show none. With a list set, that list holds and the rule of two kinds no longer
+// counts; with both set, both hold.
 func TestSecondFactor(t *testing.T) {
 	for amr, want := range map[string]bool{
 		"mfa": true, "pwd otp": true, "hwk pin": true, "hwk fpt": true, "face swk": true, "pwd mfa": true,
 		"": false, "pwd": false, "otp": false, "hwk": false, "otp sms": false, "pwd pin kba": false, "hwk user": false,
 		"pwd mca rba": false, "MFA": false,
 	} {
-		if got := SecondFactor(strings.Fields(amr)); got != want {
+		if got := (MFA{}).SecondFactor(strings.Fields(amr), "gold"); got != want {
 			t.Errorf("SecondFactor(%q) = %v, want %v", amr, got, want)
 		}
+	}
+	hw := MFA{AMR: []string{"hwk", "swk"}}
+	gold := MFA{ACR: []string{"gold", "platinum"}}
+	both := MFA{AMR: []string{"hwk"}, ACR: []string{"gold"}}
+	for _, tc := range []struct {
+		name string
+		m    MFA
+		amr  string
+		acr  string
+		want bool
+	}{
+		{"one of amr", hw, "pwd swk", "", true},
+		{"none of amr", hw, "pwd otp", "gold", false},
+		{"mfa is not in the list", hw, "mfa", "", false},
+		{"no amr", hw, "", "", false},
+		{"one of acr", gold, "pwd", "platinum", true},
+		{"another acr", gold, "pwd otp", "silver", false},
+		{"no acr", gold, "mfa", "", false},
+		{"acr compared whole", gold, "", "Gold", false},
+		{"both hold", both, "hwk", "gold", true},
+		{"amr only", both, "hwk", "silver", false},
+		{"acr only", both, "otp", "gold", false},
+	} {
+		if got := tc.m.SecondFactor(strings.Fields(tc.amr), tc.acr); got != tc.want {
+			t.Errorf("%s: %+v.SecondFactor(%q, %q) = %v, want %v", tc.name, tc.m, tc.amr, tc.acr, got, tc.want)
+		}
+	}
+	var none *SignIn
+	if none.SecondFactor() {
+		t.Error("no sign-in shows a second factor")
+	}
+	if in := (&SignIn{ACR: "gold", MFA: gold}); !in.SecondFactor() {
+		t.Error("a sign-in without auth_time shows the second factor of its acr")
 	}
 }
 
@@ -33,13 +68,17 @@ func TestFreshSignIn(t *testing.T) {
 		cred Credential
 		why  string
 	}{
-		"fresh with mfa":          {signed(time.Minute, "mfa"), ""},
-		"at the window's end":     {signed(10*time.Minute, "pwd", "otp"), ""},
-		"a minute ahead":          {signed(-time.Minute, "mfa"), ""},
-		"stale":                   {signed(10*time.Minute+time.Second, "mfa"), "authenticated at the identity provider 10m1s ago"},
-		"far ahead":               {signed(-2*time.Minute, "mfa"), "ahead of this server's clock"},
-		"a password only":         {signed(time.Minute, "pwd"), "this sign-in's amr (pwd) shows none"},
-		"no amr":                  {signed(time.Minute), "this sign-in's amr (none) shows none"},
+		"fresh with mfa":      {signed(time.Minute, "mfa"), ""},
+		"at the window's end": {signed(10*time.Minute, "pwd", "otp"), ""},
+		"a minute ahead":      {signed(-time.Minute, "mfa"), ""},
+		"stale":               {signed(10*time.Minute+time.Second, "mfa"), "authenticated at the identity provider 10m1s ago"},
+		"far ahead":           {signed(-2*time.Minute, "mfa"), "ahead of this server's clock"},
+		"a password only":     {signed(time.Minute, "pwd"), "this sign-in's amr (pwd) shows no second factor"},
+		"no amr":              {signed(time.Minute), "this sign-in's amr (none) shows no second factor"},
+		"acr of auth.oidc.mfa": {Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-time.Minute), AMR: []string{"pwd"}, ACR: "gold",
+			MFA: MFA{ACR: []string{"gold"}}}}, ""},
+		"another acr": {Credential{Kind: CredPAT, SignIn: &SignIn{At: now.Add(-time.Minute), AMR: []string{"mfa"}, ACR: "silver",
+			MFA: MFA{ACR: []string{"gold"}}}}, "this sign-in's amr (mfa) and acr (silver) meet no condition of auth.oidc.mfa"},
 		"no auth_time":            {Credential{Kind: CredPAT, SignIn: &SignIn{AMR: []string{"mfa"}, ACR: "gold"}}, "ID token had no auth_time"},
 		"a password sign-in":      {Credential{Kind: CredPAT}, "credential is a personal access token, or a web UI's token of a password"},
 		"a password":              {Credential{Kind: CredPassword}, "credential is a password"},

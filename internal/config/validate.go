@@ -1114,4 +1114,16 @@ func (o OIDC) validate(p *problems, s Server) {
 	if o.TokenLifetime <= 0 || o.TokenLifetime > MaxOIDCTokenLifetime {
 		p.add("auth.oidc.tokenLifetime", "must be positive and at most 8760h (a year)")
 	}
+	mfaValues(p, "auth.oidc.mfa.amr", o.MFA.AMR, MaxMFAAMRValue)
+	mfaValues(p, "auth.oidc.mfa.acr", o.MFA.ACR, MaxMFAACRValue)
+}
+
+// mfaValues checks the values of the list key of auth.oidc.mfa: each not empty and at most max
+// bytes, the longest that a sign-in keeps, so that each can match one (docs/spec/rbac.md §10).
+func mfaValues(p *problems, key string, values []string, maxLen int) {
+	for i, v := range values {
+		if v == "" || len(v) > maxLen {
+			p.add(fmt.Sprintf("%s[%d]", key, i), "must be 1 to %d bytes", maxLen)
+		}
+	}
 }

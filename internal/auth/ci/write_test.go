@@ -252,7 +252,7 @@ func TestWritePolicyRefusals(t *testing.T) {
 		"a token of the person":    {auth.WithCredential(auth.WithPrincipal(context.Background(), alice), auth.Credential{Kind: auth.CredPAT}), writePolicy("p"), auth.ErrScope, "credential is a personal access token"},
 		"the command line":         {context.Background(), writePolicy("p"), auth.ErrScope, "credential is none"},
 		"a stale sign-in":          {signedIn(alice, time.Hour, "mfa"), writePolicy("p"), auth.ErrScope, "1h0m0s ago"},
-		"one factor":               {signedIn(alice, time.Minute, "pwd"), writePolicy("p"), auth.ErrScope, "amr (pwd) shows none"},
+		"one factor":               {signedIn(alice, time.Minute, "pwd"), writePolicy("p"), auth.ErrScope, "amr (pwd) shows no second factor"},
 		"outside apiWriteRepos":    {fresh, outside, auth.ErrScope, "grants[0]: writer on raw/app is outside auth.ci.apiWriteRepos, oci/*, pypi/app"},
 		"an expiry beyond 180d":    {fresh, far, auth.ErrInvalid, "at most 180 days ahead"},
 		"an expiry that is past":   {fresh, past, auth.ErrInvalid, "must be in the future"},
