@@ -7,7 +7,8 @@
   sign-in in place of a password (§12), after the MVP (#1276, #1323); the approval of privileged
   changes and a reason with every change (§13), after the MVP (#1285); the export and the prune
   of the audit log (§5), after the MVP (#1278); the access report and its review (§14), after the
-  MVP (#1279). Owned by `internal/auth`.
+  MVP (#1279); the rewrap of the master key's values (§5, §6), after the MVP (#1288). Owned by
+  `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
@@ -15,6 +16,7 @@
   [ADR 0030](../adr/0030-approval-of-privileged-changes.md),
   [ADR 0031](../adr/0031-export-and-retention-of-the-audit-log.md),
   [ADR 0032](../adr/0032-access-report-and-its-review.md),
+  [ADR 0034](../adr/0034-replacing-the-master-key.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -776,13 +778,13 @@ on the database:
 - **No secret.** A key that names where a secret is counts by that name only, the path or the
   variable, never by the secret nor by a hash of it, which would let a weak password be guessed
   offline: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
-  `keys.masterKeyEnv`, `keys.masterKeyFile`, `registries[].auth.passwordEnv`,
-  `upstreams[].auth.passwordEnv`, `upstreams[].auth.passwordFile` and
-  `upstreams[].auth.tokenFile`. A key that names a file of public material counts by its path and
-  the sha256 of the content the start read, so that a CA added to a bundle's file is a change:
-  `server.tls.certFile`, the `caFile` of `auth.clientCertificates.bundles[]`,
-  `auth.kubernetes.clusters[]` and `auth.ci.issuers[]`, `attachments.trust[].publicKeyFile` and
-  `attachments.keyless.trustedRoot`.
+  `keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir` (its path, never the files in it
+  nor what they hold), `registries[].auth.passwordEnv`, `upstreams[].auth.passwordEnv`,
+  `upstreams[].auth.passwordFile` and `upstreams[].auth.tokenFile`. A key that names a file of
+  public material counts by its path and the sha256 of the content the start read, so that a CA
+  added to a bundle's file is a change: `server.tls.certFile`, the `caFile` of
+  `auth.clientCertificates.bundles[]`, `auth.kubernetes.clusters[]` and `auth.ci.issuers[]`,
+  `attachments.trust[].publicKeyFile` and `attachments.keyless.trustedRoot`.
 - **Keys.** An item of a list of named items is written with its name,
   `auth.clientCertificates.bundles[corp].caFile`; a list of values or a map is one value,
   `server.trustedProxies`, `auth.ci.policies[deploy].claims`. The **fingerprint** is
@@ -873,6 +875,23 @@ row `pending` (`unknown` after a reindex, as a registry write's), and the rest t
 does not reach into the registry: a snapshot made before keeps the rows of its window, and its
 restore brings them back.
 
+**A rewrap of the master key's values** (#1288) is `key.rewrap`, by `anonymous` with `source: cli`
+and the origin of every row of the command line (§6), no `repo`, `subject` `master:<id>`, the id of
+the key it names to seal (`--to`;
+[index-schema.md](index-schema.md#the-master-key-and-its-replacement)), written as a registry
+write's: `pending` in the transaction of its switch of the sealing key, with `details`
+`{"from", "to", "under", "lost", "sessions"}`: `from` the id that the sealing key had before (`""`
+without one, `to` itself when it had it already), `to`, `under` the values of `keys` and of
+`webhooks` that the check found under each other key, by id (`{"<id>": {"keys", "webhooks"}}`),
+`lost` those under no key it holds (`{"keys", "webhooks"}`, with `--allow-lost`), and `sessions` the
+open upload sessions under each other key, by id; then `ok` with `resealed` `{"keys", "webhooks"}`,
+what it sealed again, and `sessions` as it found them at its end, or `failed` with `resealed`,
+`left` (the values still under another key, by id, as `under`) and the error. A run that sets
+nothing and finds nothing under another key writes its row `ok` at once, with zero counts. No row,
+no line and no answer of the command holds a key or a value, sealed or not: a key by its id only, a
+value by its row. `lajstrom admin key rotate` and `drop` keep their rows, `key.rotate` and
+`key.drop`.
+
 ## 6. Bootstrap
 
 No admin password is read from the environment or the configuration (#440). The first admin
@@ -929,10 +948,9 @@ the server writes for the credential they send, and those that write no row do n
 `lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
 the change comes from `LAJSTROM_REASON` there. With `auth.requireReason` (§13), the commands of
 `lajstrom admin user`, `binding`, `token`, `repo`, `webhook`, `ci-policy` and `policy rule` that
-change the control plane, and `admin audit prune` (§5), exit with status `2` without a reason,
-before anything is written. No
-command waits for a second admin: the command line makes its change at once, whatever
-`auth.approval` says (§13).
+change the control plane, `admin audit prune` (§5) and `admin key rewrap` (§5), exit with status
+`2` without a reason, before anything is written. No command waits for a second admin: the
+command line makes its change at once, whatever `auth.approval` says (§13).
 
 The bindings of other users are made with
 `lajstrom admin binding create|list|delete` from the command line (#45), which needs the database

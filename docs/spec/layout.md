@@ -62,7 +62,8 @@ internal/auth/ci/             token exchange for CI (rbac.md §11): the trust po
                               the CI token as a credential
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020),
-                              the keys of encrypted repos and their data keys (ADR 0009)
+                              the keys of encrypted repos and their data keys (ADR 0009),
+                              the master keys, the one the index names to seal, the rewrap (#1288)
 internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign, Decrypt over net/http, SigV4 of aws-sdk-go-v2
 internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign, asymmetricDecrypt
                               over net/http
@@ -253,8 +254,10 @@ type Encryption interface {
     Wrap(ctx context.Context, repo index.Repo, opts blobcrypt.Private) (jwe, fingerprint string, err error)
     // Unwrap opens jwe with the repo's key of fingerprint, active or retired.
     Unwrap(ctx context.Context, repo index.Repo, fingerprint, jwe string) (blobcrypt.Private, error)
-    // Seal and Open keep the data key of a facade upload in its row, sealed with the master key.
-    Seal(aad string, key []byte) []byte
+    // Seal and Open keep the data key of a facade upload in its row, sealed with the master key
+    // the index names; Open tries every key the process holds, that one first. Seal fails with
+    // keys.ErrNoSealingKey while the process does not hold it (index-schema.md, #1288).
+    Seal(aad string, key []byte) ([]byte, error)
     Open(aad string, sealed []byte) ([]byte, error)
 }
 // Decryption returns what ServeBlob needs to decrypt the file f of the version at the package
@@ -1031,6 +1034,13 @@ type Reader interface {
     ListIdentityGroups(ctx context.Context) ([]IdentityGroup, error)
     GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
     ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
+    // ListSealed (#1288, index-schema.md, The master key and its replacement): the values that
+    // the master keys seal in table (SealedKeys: keys.private_enc; SealedWebhooks:
+    // webhooks.secret_enc) of the rows whose id is above afterID, by id, at most limit
+    ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]Sealed, error)
+    // GetSealingKey: the row of sealing_key, the master key that every process seals with
+    // (#1288); none: ErrNotFound
+    GetSealingKey(ctx context.Context) (*SealingKey, error)
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
     GetSessionByID(ctx context.Context, id int64) (*Session, error)
     // ListOpenSessions: the repo's open publication sessions that expire after at, by id, above
@@ -1203,6 +1213,14 @@ type Writer interface {
     SetIdentityGroups(ctx context.Context, id int64, names []string, loginAt, groupsExpireAt time.Time) error
     CreateKey(ctx context.Context, k *Key) error
     RetireKey(ctx context.Context, id int64, at time.Time) error
+    // Reseal writes sealed as the value of the row id of table (ListSealed) where the row still
+    // holds old, a compare-and-set, and answers whether it did (#1288)
+    Reseal(ctx context.Context, table string, id int64, old, sealed []byte) (bool, error)
+    // PutSealingKey makes k the sealing key while the row names the key id old ("": no row,
+    // inserted if absent); another id there wraps ErrConflict, so that of replicas that start
+    // together one records its key, and of two rewraps one switches (#1288). SetAt is the
+    // database's time; a rewrap's caller appends key.rewrap in the transaction
+    PutSealingKey(ctx context.Context, k *SealingKey, old string) error
     UpsertSession(ctx context.Context, s *Session) error // a second open session of a key: ErrConflict
     // TouchSession moves the expiry of an open, unexpired session and returns it, holding the
     // row until the transaction ends: a change of its files starts with it.
@@ -1348,7 +1366,7 @@ type Writer interface {
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent,
-// Webhook, WebhookDelivery, Approval;
+// Webhook, WebhookDelivery, Approval, SealingKey (KeyID, Source, Host, AuditID, SetAt; #1288);
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
@@ -1359,10 +1377,12 @@ type Writer interface {
 // (Rows, FirstID, LastID, FirstAt, LastAt), Access (ReadAt, Users, IdentityGroups, Bindings,
 // Tokens, TokenRepos, CIPolicies, AnonymousRepos: the access report's read, #1279),
 // VersionFilter (Without, the attachment kinds of ?without=; Unmet *Requirement, of ?unmet=),
-// Requirement (PredicateType, SignedBy []string: one of policy.requireAttachments, #1287) and
-// Attested (VersionID, PredicateType, SignedBy: a row of ListAttested). Ids are int64, timestamps
-// UTC, nullable columns are pointers, but nullable text, which is "" (Version.OCIRepo:
-// versions.oci_repo, "" for NULL).
+// Requirement (PredicateType, SignedBy []string: one of policy.requireAttachments, #1287),
+// Attested (VersionID, PredicateType, SignedBy: a row of ListAttested) and Sealed (Table, ID, AAD,
+// Value: a value of ListSealed, AAD its additional data, #1288); Replica has MasterKeys
+// []string, the ids of the master keys its process holds, nil for none or a release before 0040
+// (#1288). Ids are int64, timestamps UTC, nullable columns are pointers, but nullable text, which
+// is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
@@ -1624,6 +1644,7 @@ type ControlPlane struct {                  // every row with its id; no secret 
     Bindings       []Binding
     Keys           []Key
     Webhooks       []Webhook                // SecretEnc as the table has it; not their deliveries
+    SealingKey     *SealingKey              // nil: none, or a snapshot before 0040 (#1288)
     WithAudit      bool                     // the ExportOptions of the read
     AuditSince     time.Time
     Audit          []AuditEvent
@@ -2545,6 +2566,7 @@ auth:
     tokenLifetime: 24h                      # the personal access token of a login; its groups count as long
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts the apt keys and the bearer-token key at rest
+  masterKeyDir: ""                          # a key per file; the index names which seals (#1288)
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
@@ -2582,5 +2604,5 @@ The shape is a sketch: later keys and sections (`upstreams`, `ingest`, `reconcil
 
 Precedence: defaults < file < the nine `LAJSTROM_*` variables of configuration.md's Env column.
 Secrets never go into the file: `passwordEnv` and `masterKeyEnv` name environment variables,
-and `keys.masterKeyFile`, `upstreams[].auth.passwordFile` and `tokenFile` and
-`auth.bootstrap.tokenFile` name files.
+`keys.masterKeyFile`, `upstreams[].auth.passwordFile` and `tokenFile` and `auth.bootstrap.tokenFile`
+name files, and `keys.masterKeyDir` a directory of them.

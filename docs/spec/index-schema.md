@@ -39,13 +39,14 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | `identities` | `id`, `user_id` → users, `issuer` text, `subject` text, `created_at` ts, `login_at` ts, `groups_expire_at` ts null | an OIDC identity, the `iss` and `sub` of its ID token, and the user it maps to (rbac.md §8; 0021). Unique `identities_subject` on `(issuer, subject)`; index `identities_user` on `(user_id)`. A login sets `login_at` and `groups_expire_at`, the end of the `auth.oidc.tokenLifetime` of that login; a login that finds the row's user deleted deletes the row and makes a new user and row |
 | `identity_groups` | `identity_id` → identities (`ON DELETE CASCADE`), `name` text | the groups of an identity's latest login (rbac.md §8; 0021); primary key `(identity_id, name)`. Each login replaces the identity's rows, in the transaction that moves `auth_version` |
 | `bindings` | `id`, `principal` text (`user:<uid>` or `group:<name>`, rbac.md §8), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | unique `(principal, role, repo_mask)`: the same binding twice is `409`; rbac.md |
-| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`, `enc`, `policy`: the server's policy key of [policy.md](policy.md) §5, #101), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt and rpm signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data; for a key held in a KMS ([ADR 0020](../adr/0020-repo-signing-keys-in-a-cloud-kms.md)), `public` the OpenPGP key Lajstrom built around the KMS public key, and `private_enc` the same seal of its canonical key URI (`awskms:///arn:…:key/<id>`, `gcpkms://…/cryptoKeyVersions/<n>`) instead of the private key packets, which never leave the KMS; a `policy` row: `public` the PKIX DER of the ECDSA P-256 public key, `fingerprint` its hex sha256, `private_enc` the same seal of its PKCS #8 DER, or of its KMS key URI. An `enc` row is the key of an encrypted repo ([manifest-profile.md](manifest-profile.md) §11; ADR 0009): `public` the DER SubjectPublicKeyInfo of an RSA key, `fingerprint` the uppercase hex sha256 of `public`, the `kid` of its JWE recipients, `private_enc` the same seal of its PKCS #8 private key, or of the key URI of an RSA decryption key in a KMS. It is made on the repo's first encrypted write, from `policy.encryption.key`; a retired `enc` key keeps decrypting, with no grace: the wrappings of the blobs name it until a rotation wraps them again |
+| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`, `enc`, `policy`: the server's policy key of [policy.md](policy.md) §5, #101), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt and rpm signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data; for a key held in a KMS ([ADR 0020](../adr/0020-repo-signing-keys-in-a-cloud-kms.md)), `public` the OpenPGP key Lajstrom built around the KMS public key, and `private_enc` the same seal of its canonical key URI (`awskms:///arn:…:key/<id>`, `gcpkms://…/cryptoKeyVersions/<n>`) instead of the private key packets, which never leave the KMS; a `policy` row: `public` the PKIX DER of the ECDSA P-256 public key, `fingerprint` its hex sha256, `private_enc` the same seal of its PKCS #8 DER, or of its KMS key URI. An `enc` row is the key of an encrypted repo ([manifest-profile.md](manifest-profile.md) §11; ADR 0009): `public` the DER SubjectPublicKeyInfo of an RSA key, `fingerprint` the uppercase hex sha256 of `public`, the `kid` of its JWE recipients, `private_enc` the same seal of its PKCS #8 private key, or of the key URI of an RSA decryption key in a KMS. It is made on the repo's first encrypted write, from `policy.encryption.key`; a retired `enc` key keeps decrypting, with no grace: the wrappings of the blobs name it until a rotation wraps them again. `lajstrom admin key rewrap` seals `private_enc` again under a new master key, every row, retired or not ([The master key and its replacement](#the-master-key-and-its-replacement), #1288) |
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`, `v` the timestamped version of a maven SNAPSHOT build; apt `<source>:<version>` of a source upload, #79; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "refused", "committing"}`, `refused` the files a checksum file disagreed with, by name, with the reason; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck", "enc"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, whether a chunk failed since, and on an encrypted repo `enc`, `{"key", "nonce", "stored", "hmac", "bodies"}`: the session's data key sealed with the master key (the row's `key` as the additional data), its nonce, the sha256 state of the ciphertext, the HMAC of the ciphertext so far while one request only carried bytes, and how many requests carried bytes (http-routing.md §2.1)), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven, an apt source package; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json, `state` text (`ok`, `pending`, `failed`, `unknown`; [below](#the-audit-row-of-a-registry-write)), `error` text null (why a failed row failed, its first 1024 bytes) | rows are deleted only by a prune of the command line, the oldest ([The audit feed and its prune](#the-audit-feed-and-its-prune)), and only the row of a registry write or of a prune changes, its state and details, once (below). Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name`; rows written before 0016 are `ok` |
 | `ci_policies` | `id`, `name` text, `issuer` text (the name of an issuer of `auth.ci.issuers`), `claims` json (each claim to its list of values), `grants` json (a list of `{role, mask}`), `state` text (`active`, `pending`, `expired`), `expires_at` ts null (a policy that grants write), `renewal_expires_at` ts null (the expiry of a renewal that waits for an approval), `created_by` text (the principal that made it), `created_at` ts, `updated_by` text (the principal of its latest create, change or renewal), `updated_at` ts, `approved_by` text null and `approved_at` ts null (its latest approval), `revision` bigint (1 on insert) | the CI trust policies made through the API (rbac.md §11, #937; 0033); unique `name`. `name` and `created_by` never change. Every update moves `revision` by one, and is made only at the revision the change read (a compare-and-set): of two changes of one revision, and of the replicas that mark one expiry, one writes. The policies of the configuration are not in it |
 | `approvals` | `id`, `kind` text (`binding`, `deploy-token`), `subject` text (what the change makes: a binding's `<principal> <role> <mask>`, a deploy token's name), `change` json (a binding's `{principal, role, repoMask}`; a deploy token's `{name, repoMask, scopes, expiresAt, hash, createdBy, signIn}`), `change_reason` text null, `state` text (`pending`, `approved`, `rejected`, `expired`), `requested_by` text (`user:<uid>`), `requested_at` ts, `expires_at` ts, `decided_by` text null (`user:<uid>`, or `anonymous` for an expiry), `decided_at` ts null, `decision_reason` text null, `result` text null (what the approval made: `binding:<id>`, `token:<id>`) | the requests that wait for a second admin (rbac.md §13, #1285; 0039); [below](#approvals) |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings`, every insert, update or delete of `repos` and of `ci_policies`, and every replacement of an identity's `identity_groups`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings, of the repos' `anonymous_read` and of the identities' groups when it moved (rbac.md §3) |
 | `config_state` | `id` int (always 1), `fingerprint` text (`sha256:<hex>`), `config` json (each key of the configuration that counts to its value), `release` text (the version of the `serve` that recorded it), `host` text (its host name), `recorded_at` ts | at most one row (#1284; 0035): the configuration last recorded by a `config.change` row (rbac.md §5), which holds no secret. A `serve` reads it at start (`GetConfigState`) and, when its own configuration differs, replaces it by its fingerprint only, `PutConfigState` with the fingerprint read (`""` inserts when there is no row), in the transaction that appends the row, so that of replicas that start together one records a change. Migration `0035_config_state.sql` only creates the table, empty: a replica of the release before neither reads nor writes it |
+| `sealing_key` | `id` int (always 1), `key_id` text (the id of a master key, 16 hexadecimal digits), `source` text (`start`: the first start of a process that held one key; `rewrap`: the switch of a rewrap), `host` text (the host name of the process that set it), `audit_id` bigint null (the `key.rewrap` row of the switch, which says who ran it and why; no reference, as a prune may delete that row), `set_at` ts (the database's time) | at most one row (#1288; 0040): the master key that every process seals with ([The master key and its replacement](#the-master-key-and-its-replacement)). Inserted if absent by the first start of a process that holds one key, and changed by `lajstrom admin key rewrap`, by compare-and-set on the id it read (`PutSealingKey`); read by every process that holds keys at its start, and by `serve` at every beat. It holds an id, never a key nor where a key comes from. It is in a snapshot, so that a restore brings back the key that sealed then |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
 
 ### The audit row of a registry write
@@ -225,6 +226,203 @@ transaction. Rows are never deleted. They are not in a snapshot (below). The mig
 creates the table, empty: a replica of the release before neither reads nor writes it, and makes
 every change at once.
 
+### The master key and its replacement
+
+The master keys (`keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir`;
+[operations.md](../operations.md#the-master-key)) seal these values of the index, and nothing
+else of it, each `nonce ‖ AES-256-GCM(value)` with a random 12-byte nonce and additional data that
+binds it to its row (#1288, [ADR 0034](../adr/0034-replacing-the-master-key.md)):
+
+| Column | What it seals | Additional data | Sealed again by a rewrap |
+| --- | --- | --- | --- |
+| `keys.private_enc` | every row of every kind, retired or not: a `gpg` key's private key packets, a `jwt` or `policy` key's PKCS #8 DER, an `enc` key's PKCS #8 DER of its RSA key, or the key URI of a key held in a KMS (ADR 0020) | the row's `fingerprint` | yes |
+| `webhooks.secret_enc` | a webhook's secret (webhooks.md §5) | `webhook:<uid>` | yes |
+| `sessions.files` `enc.key` | the data key of an open upload of the facade to an encrypted repo (http-routing.md §2.1) | the row's `key` | no: the session ends, an hour after its last request at the latest |
+
+Outside the index, a sealed snapshot of the control plane is sealed with a key derived from the
+sealing key (manifest-profile.md §9), and every backup of the database holds the values above as
+they were sealed. Passwords and token secrets are hashes, and the files of an encrypted repo are
+wrapped for the repo's `enc` key, whose private key is a `keys` row: none of them is sealed with a
+master key.
+
+- **The held keys.** A process that reads the master keys (`serve`, `lajstrom reindex`, the
+  `lajstrom admin` commands that read them) holds every key of every source its configuration
+  names: the variable of `keys.masterKeyEnv` or the file of `keys.masterKeyFile`, and each key file
+  of `keys.masterKeyDir` ([configuration.md](../configuration.md#keys)). It reads them once, at its
+  start: a key added to a source, or removed from it, counts from the next start. A key in two
+  sources is held once; more than 8 keys, or a configured source without a key, is an error of the
+  configuration, which names the source and never a key. The configuration gives no key a role:
+  the index names the one that seals (below), and a value opens with any held key, that one first,
+  then the others by id. A process with no source configured holds no key, reads no row of
+  `sealing_key`, and runs without a master key as configuration.md says.
+- **No row says which key sealed it.** The sealed format and the additional data stay as they
+  are: AES-GCM authenticates, so a value that the sealing key does not open is tried with each
+  other held key, one more open of a few hundred bytes each, and a key that is not the value's
+  fails as a changed value fails.
+- **A key's id** is the hex of the first 8 bytes of HKDF-SHA256 of its 32 bytes, no salt, the info
+  `lajstrom master key id v1`: a name to tell keys apart by, which shows nothing of the key. A
+  guess of a key can be tested against it as against any sealed value of the database, and a key
+  of 32 random bytes (`openssl rand -hex 32`) is not guessed. `serve` logs the ids at start
+  (`master keys`, each id with its source, the variable's name or the file's path, and `sealing`)
+  and writes the ids it holds in its `replicas` row, at `StartReplica`. The sealing row and a
+  rewrap's audit row name keys by id (rbac.md §5).
+- **The sealing key** is the row of `sealing_key` ([Control plane](#control-plane)): the id of
+  the key that seals, and when and by what it was set. A process seals with the key it names, and
+  with no other:
+  - *At the start*, after the migrations and before it writes its `replicas` row, seals anything or
+    listens, a process reads the row. A row that names a held key makes that key the sealing key. A
+    row that names a key the process does not hold stops it: `serve` refuses to start, and a command
+    exits with status `1` before it writes, each with the line
+    `the index seals with master key <id>, which this process does not hold` and the ids it holds.
+    The held keys change only at a start, so `serve` does not stay up, not ready, waiting for a key
+    it cannot get: an orchestrator that starts it again starts it with what its sources hold then.
+  - *Without a row*, at the first start of a release with 0040 or on a new database: a process
+    that holds one key opens with it the value of the first `keys` row by id, if there is one, and
+    stops as under another master key when it does not open it (operations.md, The master key).
+    It then inserts the key's id, `source` `start`, where there is no row (`PutSealingKey` with
+    `""`), and reads the row again: of processes that start together one inserts it, and one that
+    holds another key stops as above. A process that holds several keys inserts nothing, and stops
+    as above with `no master key seals yet: name one with lajstrom admin key rewrap --to <id>` and
+    the ids it holds: which of them seals is the operator's choice, not the order of the files.
+  - *At each beat* of its `replicas` row, every 30 seconds ([Coordination](#coordination)),
+    `serve` reads the row again. A new id of a key it holds seals from then on, logged at info. A
+    new id of a key it does not hold fails closed, from that beat on:
+    - the replica seals nothing, with no key, the one it sealed with before included. A request
+      that would seal (a repo's first signing or encryption key, a webhook made or its secret
+      rotated, an upload of the facade that opens its session on an encrypted repo) is answered
+      `503` with `Retry-After: 30` (on `/v2` and the API with the code `UNAVAILABLE`); work in the
+      background that would seal fails as on an error of the database, and is tried again later.
+      What only opens goes on, with every held key;
+    - `/-/readyz` answers `503 this replica does not hold the master key that seals: <id>`, so
+      that the edge takes the replica out, and the log has an error that names the id at every
+      beat;
+    - it does not exit, and `/-/healthz` stays `200`. A beat that reads the id of a key it holds
+      ends it (a rewrap `--to` such a key), and so does a start whose sources hold the key.
+  - *A command* reads the row once, at its start, as above. `lajstrom admin key rewrap`, which
+    sets it, and `lajstrom admin snapshot restore`, which writes the row of its snapshot
+    ([below](#snapshots-of-the-control-plane)), neither stop on it nor insert it. A command that
+    started before a rewrap's switch may seal under the key before it, until it ends.
+- **The rewrap.** `lajstrom admin key rewrap --to <id>`, with `--dry-run`, `--allow-lost`,
+  `--actor` and `--reason`, runs against the database only, and takes no key in a flag, an
+  argument or standard input: `<id>` is the id of a key that the command holds.
+  1. **What it refuses.** Exit status `2` before anything is written: no `--to` (but with
+     `--dry-run`); an id that is not 16 lowercase hexadecimal digits; no reason under
+     `auth.requireReason` (rbac.md §6). Exit status `1` before anything is written: this host's
+     clock more than 60 seconds off the database's, as for every command against the database
+     ([operations.md](../operations.md#clocks)); an `<id>` that the command does not hold; a
+     `replicas` row with a heartbeat younger than 2 minutes whose `master_keys` does not hold
+     `<id>`, NULL (a release before 0040) included, named by its host, pid and version.
+  2. **A check first.** It reads every value of `keys.private_enc` and `webhooks.secret_enc`, by
+     table and by id, a page at a time (`ListSealed`), and opens each with the held keys, `<id>`
+     first: it counts the values under each key, by id, and those under none. A value under no
+     held key stops the run, exit status `1` before anything is written, naming its row (`keys` by
+     id, kind and fingerprint, a webhook by id): a key that no source holds sealed it, an old key
+     not added back or another installation's. With `--allow-lost` such values are counted as
+     lost, each named in the output, and left as they are: the way out when their key is lost
+     (operations.md, The master key), after which the keys among them are rotated or dropped.
+  3. **The switch.** In one transaction it appends its row, `key.rewrap`, `pending`, with what the
+     check found (rbac.md §5), and sets the sealing row to `<id>`, `source` `rewrap`, with that
+     audit row's id, where the row still names the id it read, or is still absent (`PutSealingKey`,
+     a compare-and-set; another id: exit status `1`, nothing written). A row that names `<id>`
+     already is left as it is. One transaction, so that no switch is made without its record and no
+     record says `pending` of a switch that was not made, and so that the sealing row leads to who
+     ran it and why.
+  4. **The wait.** It waits until a minute after the sealing row's `set_at`, on the database's
+     clock (`DatabaseTime`): every replica reads the row at its next beat, within 30 seconds, and
+     the other 30 cover a beat that runs late. From then on the live replicas seal with `<id>`. A
+     run again, whose row was set long before, does not wait.
+  5. **Batches.** It seals again with `<id>`, a new nonce and the same additional data every value
+     under another held key, 100 rows at a time, each batch a transaction of its own, and writes
+     each value only where the row still holds the value it read (`Reseal`, a compare-and-set). A
+     row changed since (a webhook's secret rotated, a key dropped) is read again after the last
+     batch.
+  6. **Its end.** It counts again, as the check did: a value that a late replica, or a command
+     started before the switch, sealed under another key after its batch is found there. Its row
+     is then `ok` when every value that a held key opens is under `<id>`, exit status `0`, with
+     what it sealed again, the values lost (`--allow-lost`) and the upload sessions still open
+     under another key; `failed` otherwise, exit status `1`, with what is left under each key. A
+     run again seals what is left.
+
+  With `--dry-run` it writes nothing and prints: the sealing row (its id, `source` and `set_at`);
+  the ids this command holds, each with its source; each live replica with its host, version and
+  the ids it holds; for each column, the values under each key id, and those under none by row;
+  the open upload sessions under each key id and when the last of them expires; and, with `--to`,
+  what a run would refuse. Exit status `0`.
+- **Idempotent.** A value under `<id>` is left as it is. A run that stops (killed, the database
+  lost) leaves the switch made, what it sealed again sealed, its row `pending` (`unknown` after a
+  reindex, as a registry write's), and the rest to a run again with the same `--to`, which only
+  seals again: it starts from its check, finds the switch made, and waits what is left of the
+  minute. A run that sets nothing and finds nothing under another key writes its row `ok` at once,
+  with zero counts: the record that, then, no value of the index was under another key. Two runs
+  at once with the same `--to` seal each value once; of two that read one row and name two ids,
+  one switches and the other exits `1`.
+- **The rollout** is two changes of the sources and one command, and no request fails at any
+  step, after a leak too:
+  1. **The new key is added** to the sources of every process, beside the old one: a file of the
+     directory of `keys.masterKeyDir`. A process holds it from its next start: a rolling update of
+     `serve`, or its pods started again by whatever starts them, and the next run of each Job and
+     CronJob of `lajstrom admin` and `lajstrom reindex`. The old key still seals. Each replica
+     writes the ids it holds in its `replicas` row at its start, and `--dry-run` lists them: every
+     live replica is seen to hold the new key before anything depends on it.
+  2. **`lajstrom admin key rewrap --to <new id>`**, which refuses while a live replica does not
+     hold the new key, switches, waits a minute and seals every value again.
+  3. **The old key is removed** from the sources once a rewrap run again with the same `--to`,
+     after every command started before the switch has ended, exits `0` with nothing under another
+     key, and no upload session under the old key is open (`--dry-run`). Nothing needs to start
+     again: a process that still holds the old key holds a key that no value is under.
+
+  A process that starts at any step, for any reason (a rollout, a node drained, a crash), holds
+  what its sources hold then, and the row tells it which key seals: before the switch the old key,
+  which every source still holds; after it the new key, which every source has held since step 1;
+  after step 3 the new key alone, under which every value is. After a leak the steps are the same,
+  and the old key seals until the switch, minutes after every replica holds the new key.
+
+  In Kubernetes the directory is a volume mounted whole, never with `subPath`, whose file is never
+  updated:
+  - *A Secrets Store CSI volume* (Vault, AWS Secrets Manager, …): one object of the store per
+    key, named in the `SecretProviderClass`, a file each. Step 1 adds the new key to the store and
+    its object to the class; the driver writes every object of the class when a pod mounts the
+    volume, so the rolling update starts every replica with both keys. Step 3 removes the object
+    from the class and the old key from the store.
+  - *A Kubernetes Secret volume*: one data key of the Secret per master key, a file each. Step 1
+    adds the new key to the Secret, and the rolling update starts every replica with both keys;
+    step 3 removes the old one from the Secret.
+- **Snapshots and backups** are not sealed again: a snapshot's tag never moves, and a backup is
+  what it was. A restore of one brings back the values under the keys of its time, and the sealing
+  row of its time. So the old key is archived, apart from the store, the database and its backups,
+  as long as a backup or a sealed snapshot made under it is kept, and is added back to the sources
+  for a restore, which a rewrap follows. While a restored database's sealing row names a key that
+  no process holds, every `serve` refuses to start and every command exits `1`, naming it, until
+  the key is added to the sources, or until a rewrap `--to` a key they hold (with `--allow-lost`
+  when the old key is lost) names another.
+- **Not sealed again**: the open upload sessions, which end and whose next sessions are sealed
+  with the sealing key (a chunk that writes its row back would race with a rewrap).
+- **No key and no secret** is in a log line, an error, a row or the output of a command: an error
+  names the variable, the file or the directory, the format, the row and the ids, never a key nor
+  a value, sealed or not. A value opened to be sealed again is held for its batch only, and
+  cleared.
+- **The methods.** `ListSealed(table, afterID, limit)`, of the Reader, answers the values of `keys`
+  (`SealedKeys`) or `webhooks` (`SealedWebhooks`) whose id is above `afterID`, by id, at most
+  `limit`, each with its additional data; `Reseal(table, id, old, sealed)`, of the Writer, writes
+  `sealed` where the row still holds `old`, in the caller's transaction, and answers whether it did.
+  `GetSealingKey`, of the Reader, answers the sealing row (none: `ErrNotFound`);
+  `PutSealingKey(k, old)`, of the Writer, writes it where the row names `old` (`""`: where there is
+  no row), in the caller's transaction, and wraps `ErrConflict` otherwise.
+- **Migration `0040_master_keys.sql`** only creates the table `sealing_key`, empty, and adds
+  `replicas.master_keys`, nullable. A process of the release before neither reads nor writes
+  them: it seals with its one master key whatever the row says, and its replica's NULL counts as
+  holding no key, so that a rewrap refuses while it runs. Keep one key in the sources until every
+  process runs a release with 0040; the first of them to start records it.
+- **A KMS later** (the second step decided on #1288; ADR 0034, What B needs of A) adds a source of
+  held keys, not a mechanism: a KMS key of ADR 0020's key URIs, whose data keys, 32 bytes that
+  Lajstrom makes and keeps in the index wrapped by it, join the held keys once unwrapped. A data
+  key's id is the id above of its 32 bytes, so that the ids of every source compare: the sealing
+  row names an id and never a source, and a rewrap's guard compares ids only, so that during a
+  move one replica may hold a key from a file and another the same key from the KMS. A move onto
+  the KMS, off it or to a new data key is the rollout above; a rotation of the KMS key wraps the
+  data key again, keeps its id and seals no value. That source, its table and its migration are a
+  contract of their own.
+
 ## Proxy and group repos
 
 The tables and columns of the kinds `proxy` and `group` ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
@@ -284,7 +482,7 @@ need them. Migration `0024_webhooks.sql` creates them; it only adds.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `webhooks` | `id`, `uid` text (a UUID v7, `NewUID`), `mask` text (a repo mask of rbac.md §3), `url` text, `events` json null (the types of webhooks.md §1; NULL: every type), `secret_enc` blob (nonce ‖ AES-256-GCM(secret) with the master key, `uid` as additional data), `active` bool, `description` text, `created_by` text (the principal that created it), `created_at` ts, `updated_at` ts, `revision` bigint ([Revisions](#revisions)) | unique `uid`. `mask`, `uid` and `created_by` never change. No reference to `repos`: a webhook outlives its repo, as a binding does |
+| `webhooks` | `id`, `uid` text (a UUID v7, `NewUID`), `mask` text (a repo mask of rbac.md §3), `url` text, `events` json null (the types of webhooks.md §1; NULL: every type), `secret_enc` blob (nonce ‖ AES-256-GCM(secret) with the master key, `uid` as additional data, `webhook:<uid>`; sealed again by a rewrap, [The master key and its replacement](#the-master-key-and-its-replacement)), `active` bool, `description` text, `created_by` text (the principal that created it), `created_at` ts, `updated_at` ts, `revision` bigint ([Revisions](#revisions)) | unique `uid`. `mask`, `uid` and `created_by` never change. No reference to `repos`: a webhook outlives its repo, as a binding does |
 | `webhook_deliveries` | `id`, `webhook_id` → webhooks (`ON DELETE CASCADE`), `event_id` text (the CloudEvents `id`, a UUID v7), `event_type` text, `payload` blob (the exact body sent), `state` text (`pending`, `delivered`, `failed`), `attempts` int, `next_at` ts, `claimed_by` text null (the replica's id), `claimed_at` ts null, `last_at` ts null, `last_status` int null, `last_error` text null (its first 1024 bytes), `created_at` ts, `delivered_at` ts null | the outbox and the delivery log. Index `webhook_deliveries_due` on `(next_at) WHERE state = 'pending'`, `webhook_deliveries_hook` on `(webhook_id, id)`, `webhook_deliveries_created` on `(created_at)` |
 
 A `webhook_deliveries` row is written in the transaction that writes its event's audit row `ok`
@@ -330,7 +528,7 @@ and none needs a backup: a backup of the database holds them, and after a restor
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
-| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752) |
+| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts, `master_keys` json null (the ids of the master keys the process holds, a list; NULL: none, or a release before 0040, which its `version` tells; [The master key and its replacement](#the-master-key-and-its-replacement), #1288) | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752), `0040_master_keys.sql` (#1288) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 | `oidc_logins` | `id`, `kind` text (`code`, a login of the authorization code flow; `device`, a device request), `state` text null (sha256 of the state, hex), `binding` text null (sha256 of the browser's cookie), `nonce` text null, `verifier` text null (the PKCE verifier), `device_id` → oidc_logins null (`ON DELETE CASCADE`; the device request a code login approves), `device_code` text null (sha256 of the device code), `user_code` text null, `status` text (`pending`; a code login `used`; a device request, and a code login with `return_to` once its callback verified, `approved`, `denied`, `redeemed`), `user_id` → users null (the user a device request, or a code login with `return_to`, is approved for), `polled_at` ts null (a device request's latest poll), `return_to` text null, `code_challenge` text null (the S256 challenge of the web UI's PKCE verifier), `handoff` text null (sha256 of the code the callback hands to the web UI), `dpop_jkt` text null (the JWK SHA-256 thumbprint of the web UI's DPoP key, base64url, which the code is redeemed with), `auth_time` ts null, `amr` json null and `acr` text null (those of the ID token of a code login with `return_to`, kept by its callback for the token of its code), `created_at` ts, `expires_at` ts | the flows of rbac.md §8 and §10 across replicas (0021; `return_to`, `code_challenge`, `handoff` and `dpop_jkt`, 0028; `auth_time` and `amr`, 0033; `acr`, 0038): unique `oidc_logins_state` on `(state)`, `oidc_logins_device_code` on `(device_code)`, `oidc_logins_user_code` on `(user_code)` and `oidc_logins_handoff` on `(handoff)`, each where not null; index `oidc_logins_expires` on `(expires_at)`. Migration `0028_web_ui_sign_in.sql` only adds the columns and the index: a replica of the release before finishes a web UI's login as its own, on the token page. A change of `status` is a compare-and-set on the status it read, so that a state, an approval, a device code and a handoff are each used once. A row lives 10 minutes; the start of a login deletes the rows that expired an hour ago or more. Written by the OIDC routes only; never backed up, never rebuilt |
 | `dpop_proofs` | `jti` text (sha256 hex of a DPoP proof's key thumbprint, a space, and its `jti`), `expires_at` ts (the proof's `iat` and 5 minutes) | the DPoP proofs used (rbac.md §10, http-routing.md §4), so that a proof is used once on any replica (0028): primary key `jti`; index `dpop_proofs_expires` on `(expires_at)`. A proof whose row has not expired is refused; one whose row has expired takes the row over (its `iat` is out of the window by then, so only a proof of the same key and `jti` made later). Each replica deletes the expired rows at most once a minute, at a check. Written by the check of a proof only; never backed up, never rebuilt |
@@ -834,7 +1032,7 @@ uses and which does not have it.
 
 | Table | In a snapshot |
 | --- | --- |
-| `repos`, `group_members`, `users` (the deleted ones too, with `owner`, `last_seen_at`, `must_change` and `password_history`, without `password_failures` and `locked_until`: a restore unlocks every user), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937) | every row, with its id |
+| `repos`, `group_members`, `users` (the deleted ones too, with `owner`, `last_seen_at`, `must_change` and `password_history`, without `password_failures` and `locked_until`: a restore unlocks every user), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937), `sealing_key` (#1288) | every row, with its id |
 | `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
 | `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
 | `approvals` | no: a request waits 7 days at most, and the audit rows hold every request and decision (rbac.md §5); a restore drops the requests that wait, which are made again |
@@ -855,7 +1053,12 @@ migration, unless this table says why not.
   `users.password_hash` (argon2id), `tokens.hash` (sha256 of the secret), `keys.private_enc` and
   `webhooks.secret_enc` (encrypted with the master key; a webhook's with its `uid`, which comes
   back with it, as the additional data). `bootstrap_token` is not carried. The master key, the
-  registry passwords, the DSN and the OIDC client secret are never in the database.
+  registry passwords, the DSN and the OIDC client secret are never in the database. A snapshot
+  holds them sealed under the keys of the moment it was made, and the row of `sealing_key` that
+  names the key that sealed then: one made before a rewrap brings back values under the key
+  before it, and a row that names it, so that every process stops until that key is held again
+  or a rewrap names another, and a rewrap seals them again
+  ([The master key and its replacement](#the-master-key-and-its-replacement)).
 - **One moment.** `ExportControlPlane` reads every table in one transaction, `SERIALIZABLE, READ
   ONLY, DEFERRABLE` on Postgres and YugabyteDB, and returns before anything talks to the registry:
   no transaction is held across a request to it. Every token's user and repo, every key's repo and
@@ -865,12 +1068,12 @@ migration, unless this table says why not.
 - **Into an empty database.** `ImportControlPlane` writes into a database whose tables of the
   first two rows above are empty, all of them; a table that has a row makes it fail with
   `ErrNotEmpty`, naming the tables, and change nothing. A `serve` started on the database once is
-  enough to fill two: it makes the configured repos and the bearer-token key. Forced, it empties
-  every table but `schema_migrations`, `auth_version` and `replicas` first, in its transaction:
-  the derived rows of the repos go with them, and reindex writes them again. `lajstrom admin
-  snapshot restore` also refuses while a `replicas` row has a heartbeat younger than 2 minutes: a
-  replica serving on the database would keep its snapshot of the bindings and write beside the
-  restore.
+  enough to fill three: it makes the configured repos, the bearer-token key and the row of
+  `sealing_key`. Forced, it empties every table but `schema_migrations`, `auth_version` and
+  `replicas` first, in its transaction: the derived rows of the repos go with them, and reindex
+  writes them again. `lajstrom admin snapshot restore` also refuses while a `replicas` row has a
+  heartbeat younger than 2 minutes: a replica serving on the database would keep its snapshot of
+  the bindings and write beside the restore.
 - **One transaction.** The rows are inserted with their ids in one transaction, every table in the
   order of its references, and the restore's own audit row (`snapshot.restore`) comes last in it.
   On Postgres the sequence of each table's id is moved past the greatest id restored, and never
@@ -929,8 +1132,9 @@ the column `users.last_seen_at`, filled (#1283), `0035_config_state.sql` the tab
 `config_state` (#1284), `0036_users_lockout.sql` the columns `users.password_failures` and
 `users.locked_until` (#1280), `0037_users_password_history.sql` the columns
 `users.must_change` and `users.password_history` (#1281), `0038_tokens_acr.sql` the columns
-`tokens.acr` and `oidc_logins.acr` (#1276), and `0039_approvals.sql` the table `approvals`
-(#1285); the others are named with their tables
+`tokens.acr` and `oidc_logins.acr` (#1276), `0039_approvals.sql` the table `approvals`
+(#1285), and `0040_master_keys.sql` the table `sealing_key` and the column `replicas.master_keys`
+(#1288); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -1033,7 +1237,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0039, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0040, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).

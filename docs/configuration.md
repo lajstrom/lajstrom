@@ -51,12 +51,13 @@ The `--log-level` and `--log-format` flags override `log.level` and `log.format`
 
 ## Secrets
 
-Secrets never go into the file. Keys ending in `Env` name the environment variable that holds
-the secret: `registries[].auth.passwordEnv` and `keys.masterKeyEnv`. The master key can also come
-from a file of its own, `keys.masterKeyFile`, for a secret mounted as a file. A `password` key in
-the file is rejected. Lajstrom never logs a secret or puts one in an error message, nor records
-one, or a hash of one, in the audit row of a
-[change of the configuration](#changes-of-the-configuration).
+Secrets never go into the file. Keys ending in `Env` name the environment variable that holds the
+secret: `registries[].auth.passwordEnv` and `keys.masterKeyEnv`. The master key can also come from
+a file of its own, `keys.masterKeyFile`, for a secret mounted as a file, and the master keys from a
+directory with a file each, `keys.masterKeyDir`, for a Kubernetes Secret or a CSI volume mounted
+whole. A `password` key in the file is rejected. Lajstrom never logs a secret or puts one in an
+error message, nor records one, or a hash of one, in the audit row of a [change of the
+configuration](#changes-of-the-configuration).
 
 ## What `serve` needs
 
@@ -111,14 +112,14 @@ each key that changed with the value before and after:
 
 Every key counts, with its default when the file leaves it out, but `database.*`, `log.*`,
 `server.listen`, `server.metricsListen` and `repos`, whose repos have rows of their own
-(`repo.create`). A key that names a secret counts by the path or the variable it names, never by
-the secret: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
-`keys.masterKeyEnv`, `keys.masterKeyFile`, `registries[].auth.passwordEnv`, and the
-`passwordEnv`, `passwordFile` and `tokenFile` of `upstreams[].auth`. A file of certificates or
-public keys counts by its content too, as the `caFile` above: a new CA in the same file is a
-change. A new release that adds a key or changes a default is a change at its first start. The
-commands of `lajstrom admin` read the configuration and record nothing of it: their own rows say
-what they did.
+(`repo.create`). A key that names a secret counts by the path or the variable it names, never by the
+secret: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
+`keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir` (its path, never the files in it),
+`registries[].auth.passwordEnv`, and the `passwordEnv`, `passwordFile` and `tokenFile` of
+`upstreams[].auth`. A file of certificates or public keys counts by its content too, as the `caFile`
+above: a new CA in the same file is a change. A new release that adds a key or changes a default is
+a change at its first start. The commands of `lajstrom admin` read the configuration and record
+nothing of it: their own rows say what they did.
 
 ## Reference
 
@@ -556,13 +557,15 @@ encrypted with the master key ([ADR 0010](adr/0010-bearer-token-signing-key.md),
 | --- | --- | --- | --- | --- |
 | `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts the signing keys at rest: 64 hexadecimal characters (32 bytes), e.g. from `openssl rand -hex 32`. It has two readers: the apt signing keys of the repos and the key that signs the bearer tokens of `/v2`. Example: `LAJSTROM_MASTER_KEY`. See below for what happens without it. |
 | `keys.masterKeyFile` | file path | empty | `LAJSTROM_MASTER_KEY_FILE` | File that holds the master key instead of the variable, in the same encoding; spaces and line breaks around the key are ignored, so `openssl rand -hex 32 > file` works. For a Compose secret or a Kubernetes Secret mounted as a file, e.g. `/run/secrets/lajstrom-master-key`. Setting it while the variable of `keys.masterKeyEnv` is set (and not empty) is a configuration error of every command. The file should be `0400` or `0600`: a mode that lets the group or others read or write it is used, with a warning at start. An addition to the shape in [layout.md](spec/layout.md) §6. |
+| `keys.masterKeyDir` | directory path | empty | none | Directory of master keys, one per file, each in the encoding of `keys.masterKeyFile`, for a Kubernetes Secret or a Secrets Store CSI volume mounted whole, never with `subPath` (whose file is never updated), e.g. `/run/secrets/lajstrom-master-keys`. At each start a process reads every entry whose name does not start with a dot and that is a regular file or a symbolic link to one, as such a volume makes each key a link through `..data`; an entry whose name starts with a dot is ignored, `..data` and the volume's timestamped directory among them; any other entry (a directory, a link to a directory or to nothing) is a configuration error that names it. The names of the files are the operator's. Its keys join the one of `keys.masterKeyEnv` or `keys.masterKeyFile`: a process holds every key of every source, at most 8, a key in two sources once, and opens a value with any of them; the index names the one that seals, and `lajstrom admin key rewrap --to <id>` changes it ([index-schema.md](spec/index-schema.md#the-master-key-and-its-replacement), #1288). A directory with no key, or a file that is not a key, is an error that names the directory or the file, never a value; a file that the group or others may read or write is used, with a warning. |
 | `keys.algorithm` | `ed25519` or `rsa4096` | `ed25519` | none | Algorithm of the signing keys made from now on (each apt repo gets one on its first signed request, or with `lajstrom admin key`). `ed25519` is an OpenPGP EdDSA key, which apt verifies since 2.0 (Debian 11, Ubuntu 20.04); `rsa4096` is for older clients. Keys made before keep their algorithm; rotate a repo's key to change it. |
 | `keys.retireGrace` | duration (`720h`, `168h`) | `720h` | none | How long a key retired by a rotation keeps signing `InRelease` and `Release.gpg` beside the new key and stays in the repo's `key.asc`. Clients that pinned the old `key.asc` keep verifying until it ends; fetch `key.asc` again on every client before then ([operations.md](operations.md#rotation)). `0s` drops a retired key at once, for a key that must not be trusted any more. Must not be negative. It does not apply to the bearer-token key, whose retired key verifies for the token lifetime and the clock skew, 21 minutes. |
 | `keys.kms` | key URI | empty | none | A key in AWS KMS or GCP Cloud KMS that becomes the apt and rpm signing key of the repos whose key is made from now on, instead of a key Lajstrom makes: a repo's first key, and `lajstrom admin key rotate` without `--kms` or `--local` ([ADR 0020](adr/0020-repo-signing-keys-in-a-cloud-kms.md)). The private key never leaves the KMS: Lajstrom keeps the OpenPGP public key it builds around the KMS's public key and, sealed with the master key, the key's name, and sends the KMS the digest of each signature. `awskms:///` followed by a key id, a key ARN, `alias/<name>` or an alias ARN, e.g. `awskms:///alias/lajstrom-apt` (an alias is resolved to its key when a repo's key is made from it); or `gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>`, which must name a version. The key signs with SHA-256: an AWS key of usage `SIGN_VERIFY` and spec `RSA_2048`, `RSA_3072`, `RSA_4096` (recommended: every apt and dnf verifies it) or `ECC_NIST_P256`; a GCP version of `RSA_SIGN_PKCS1_2048_SHA256`, `RSA_SIGN_PKCS1_3072_SHA256`, `RSA_SIGN_PKCS1_4096_SHA256` or `EC_SIGN_P256_SHA256`, enabled. Another key, Ed25519 included, is refused when a repo's key is made from it, with an error naming its spec. `keys.algorithm` does not apply to it. Keys made before keep theirs; rotate a repo to move it onto the KMS key. The master key is still required for signing. Credentials: AWS's default chain, as for `registries[].ecr`, the region of the ARN or else `AWS_REGION`, the endpoint of `AWS_ENDPOINT_URL_KMS`, else `AWS_ENDPOINT_URL`, else the region's; GCP's metadata server, as for `upstreams[].auth.gcp`. A value of neither form is a configuration error. [operations.md](operations.md#keys-in-a-kms) has the permissions, the failures and the runbook. |
 | `keys.tokenAlgorithm` | `ES256` or `EdDSA` | `ES256` | none | Algorithm of the bearer-token signing keys made from now on: `ES256` is ECDSA on P-256, `EdDSA` is Ed25519. A key keeps its algorithm; `lajstrom admin key rotate --token` makes a key of the new one ([operations.md](operations.md#the-bearer-token-key)). The token lifetime (20 minutes) and the clock skew tolerated between replicas (60 seconds) are fixed ([rbac.md](spec/rbac.md) §4). |
 
 The master key is read once, when `serve` or `admin key` starts, from the file of
-`keys.masterKeyFile` when it is set, otherwise from the variable `keys.masterKeyEnv` names:
+`keys.masterKeyFile` when it is set, otherwise from the variable `keys.masterKeyEnv` names, and
+with them the keys of `keys.masterKeyDir`:
 
 - **Set and valid**: apt repos are signed (`InRelease`, `Release.gpg`, `key.asc`), each with its
   own key, made on first use and stored encrypted with the master key, or held in the KMS of
@@ -571,13 +574,21 @@ The master key is read once, when `serve` or `admin key` starts, from the file o
   every replica.
 - **Set but empty, or not 64 hexadecimal characters**: `serve` and `admin key` stop with an
   error that names the variable or the file and the format, never the value. So does a file
-  that is missing or cannot be read: a configured file is never taken for "no master key".
-- **Neither `keys.masterKeyFile` nor `keys.masterKeyEnv`, or the variable not set**: signing is off, `keys.kms` or not. `serve` logs a warning
-  for every apt repo, whose `InRelease`, `Release.gpg` and `key.asc` are `404`; clients use
-  `[trusted=yes]`. When the index already holds apt signing keys, `serve` stops instead: only
-  the master key decrypts them, and their clients pinned them. Bearer tokens are signed with an
-  ephemeral key in memory, with a warning: they do not survive a restart and are not shared
-  between replicas. `admin key` always needs it.
+  that is missing or cannot be read, or a directory without a key: a configured file or directory
+  is never taken for "no master key".
+- **With several keys** (`keys.masterKeyDir`, alone or beside the file or the variable), each read
+  in the same way: a value opens with any of them, and only the key the index names seals.
+  `serve` logs the id of each key with its source, and which seals, at start. A process that does
+  not hold the key the index names stops, and so does one that holds several on a database that
+  names none yet, until `lajstrom admin key rewrap --to <id>` names one
+  ([index-schema.md](spec/index-schema.md#the-master-key-and-its-replacement)).
+- **Neither `keys.masterKeyFile`, `keys.masterKeyEnv` nor `keys.masterKeyDir`, or the variable
+  not set**: signing is off, `keys.kms` or not. `serve` logs a warning for every apt repo, whose
+  `InRelease`, `Release.gpg` and `key.asc` are `404`; clients use `[trusted=yes]`. When the index
+  already holds apt signing keys, `serve` stops instead: only the master key decrypts them, and
+  their clients pinned them. Bearer tokens are signed with an ephemeral key in memory, with a
+  warning: they do not survive a restart and are not shared between replicas. `admin key` always
+  needs it.
 
 [operations.md](operations.md#keys-and-apt-signing) has the procedures: generating and storing
 the master key, distributing `key.asc`, rotating a key, the bearer-token key.

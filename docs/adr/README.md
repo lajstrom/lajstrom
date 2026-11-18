@@ -80,3 +80,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0031](0031-export-and-retention-of-the-audit-log.md) | Export and retention of the audit log: a line per row, an ascending feed, a prune | proposed |
 | [0032](0032-access-report-and-its-review.md) | The access report and its review: who has what in one document, a review as an audit row | proposed |
 | [0033](0033-required-attachments-of-a-version.md) | Required attachments: a repo serves a version only with the verified attachments it names | proposed |
+| [0034](0034-replacing-the-master-key.md) | Replacing the master key: the keys a process holds, the one the index names to seal | proposed |
