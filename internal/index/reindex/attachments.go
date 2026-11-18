@@ -11,6 +11,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -132,7 +133,11 @@ func (s *scan) versionAttachments(ctx context.Context, rr provider.Repository, c
 	if s.dbErr(s.w.index.TouchAttachments(ctx, touch, s.w.now())) {
 		return
 	}
-	if _, err := s.w.index.SweepAttachments(ctx, v.ID, s.start); s.dbErr(err) {
+	err = s.attachmentsTx(ctx, func(w index.Writer) (bool, error) {
+		n, err := w.SweepAttachments(ctx, v.ID, s.start)
+		return n > 0, err
+	})
+	if s.dbErr(err) {
 		return
 	}
 	s.mu.Lock()
@@ -198,12 +203,34 @@ func (s *scan) referrerAttachments(ctx context.Context, rr provider.Repository, 
 	for i := range rows {
 		rows[i].IndexedAt = at
 	}
-	if err := s.w.index.ReplaceAttachments(ctx, v.ID, src.desc.Digest, rows); errors.Is(err, index.ErrNotFound) {
+	err = s.attachmentsTx(ctx, func(w index.Writer) (bool, error) {
+		return true, w.ReplaceAttachments(ctx, v.ID, src.desc.Digest, rows)
+	})
+	if errors.Is(err, index.ErrNotFound) {
 		return 0, true // the version went meanwhile, its rows with it
 	} else if s.dbErr(err) {
 		return 0, false
 	}
 	return len(rows), true
+}
+
+// attachmentsTx runs write, a change of a version's attachment rows that reports whether it
+// changed any. On a repo with required attachments it runs in a transaction that also invalidates
+// the repo's documents when it did, so that the next render decides on the rows (docs/spec/
+// policy.md §11, index-schema.md, Attachments); elsewhere as it is, and the end of the scan
+// invalidates them.
+func (s *scan) attachmentsTx(ctx context.Context, write func(w index.Writer) (bool, error)) error {
+	if len(policy.RequireAttachments(s.repo)) == 0 {
+		_, err := write(s.w.index)
+		return err
+	}
+	return s.w.index.Tx(ctx, func(w index.Writer) error {
+		changed, err := write(w)
+		if err != nil || !changed {
+			return err
+		}
+		return w.InvalidateIndexCache(ctx, s.repo.ID, "")
+	})
 }
 
 // attachmentIDs returns the ids of rows.

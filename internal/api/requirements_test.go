@@ -128,3 +128,37 @@ func TestRequireAttachmentsBootstrap(t *testing.T) {
 		t.Errorf("Bootstrap of a name the trust lacks: %v", err)
 	}
 }
+
+// TestRequireAttachmentsInvalidate: a change of a repo's requirements invalidates its documents
+// in the transaction of the change; a change of another key of its policy does not (docs/spec/
+// policy.md §11).
+func TestRequireAttachmentsInvalidate(t *testing.T) {
+	ctx := t.Context()
+	s := &Repos{Index: newStore(t), Formats: oneOf("raw"), Registries: oneOf("local"), Trust: requirementsTrust(t)}
+	_, err := s.Create(ctx, CreateRequest{Format: "raw", Name: "prod", Registry: "local"}, Origin{})
+	must(t, err)
+	row, err := s.Index.GetRepo(ctx, "raw", "prod")
+	must(t, err)
+	gen := func() int64 {
+		t.Helper()
+		g, err := s.Index.IndexCacheGeneration(ctx, row.ID)
+		must(t, err)
+		return g
+	}
+	for _, tt := range []struct {
+		policy string
+		moves  bool
+	}{
+		{`{"requireAttachments": [{"predicateType": "https://spdx.dev/Document", "signedBy": ["release"]}]}`, true},
+		{`{"maxFileSize": 1024}`, false},
+		{`{"requireAttachments": [{"predicateType": "https://spdx.dev/Document", "signedBy": ["release", "ci"]}]}`, true},
+		{`{"requireAttachments": null}`, true},
+	} {
+		before := gen()
+		_, err := s.Update(ctx, "raw", "prod", UpdateRequest{Policy: json.RawMessage(tt.policy)}, Origin{})
+		must(t, err)
+		if moved := gen() > before; moved != tt.moves {
+			t.Errorf("%s: the documents invalidated %v, want %v", tt.policy, moved, tt.moves)
+		}
+	}
+}

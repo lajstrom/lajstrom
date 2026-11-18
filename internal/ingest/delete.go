@@ -1142,7 +1142,8 @@ func (d *deletion) record(ctx context.Context) error {
 
 // recordRows deletes on w the rows of what the delete took: a version's, a journal entry's, a
 // referrer's attachments, when it was one of a version (#89), and its verdicts (#101); and the
-// manifest's row of blob_map, when it is a stored manifest of an encrypted repo (#114).
+// manifest's row of blob_map, when it is a stored manifest of an encrypted repo (#114). On a repo
+// with required attachments, a referrer's rows that go invalidate its documents (#1287).
 func (d *deletion) recordRows(ctx context.Context, w index.Writer) error {
 	var err error
 	switch {
@@ -1152,8 +1153,11 @@ func (d *deletion) recordRows(ctx context.Context, w index.Writer) error {
 		err = d.deleteEntry(ctx, w)
 	case !d.journal && d.repo.Format != ociFormat:
 		err = d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, func() error {
-			_, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest)
-			return err
+			n, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest)
+			if err != nil || n == 0 {
+				return err
+			}
+			return attachmentsChanged(ctx, w, d.repo)
 		})
 	case !d.journal:
 		err = d.p.deleteVerdicts(ctx, w, d.repo, d.target.Digest, d.principal, nil)
