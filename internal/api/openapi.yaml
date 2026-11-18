@@ -299,6 +299,24 @@ paths:
             items: {type: string, enum: [signature, sbom, scan, provenance, attestation, other]}
           style: form
           explode: true
+        - name: unmet
+          in: query
+          description: >-
+            With signedBy, keeps the variants that the requirement {predicateType: unmet, signedBy}
+            would refuse (#1287): those without an attachment verified of this predicate type, or of
+            one that continues it after a "/", signed by one of the names; a name the server's trust
+            does not have meets nothing. Whatever the repo's policy says. Once; with without, a
+            variant meets both.
+          schema: {type: string, format: uri, maxLength: 256}
+        - name: signedBy
+          in: query
+          description: A name of the requirement of unmet, once per name; required with unmet, refused without it.
+          schema:
+            type: array
+            maxItems: 16
+            items: {type: string}
+          style: form
+          explode: true
       responses:
         "200":
           description: The page; the cursor holds the place of its last version.
@@ -2586,6 +2604,32 @@ components:
                 Which versions a deploy may add: release versions, or the builds of SNAPSHOT
                 versions, each deploy one more build under its own tag. The other kind is 400; a
                 change applies to the deploys after it.
+        requireAttachments:
+          type: array
+          minItems: 1
+          maxItems: 16
+          description: >-
+            A hosted repo of a format other than oci, not encrypted at rest, only (#1287): a version
+            is served only once its manifest has, for each requirement, an attachment verified of
+            its predicate type, or of one that continues it after a "/", signed by one of its names.
+            Every version of the repo, those pushed before too; no allow rule lets one through.
+          items: {$ref: "#/components/schemas/Requirement"}
+    Requirement:
+      type: object
+      description: >-
+        One required attachment of a repo. A signature counts as the predicate type
+        https://sigstore.dev/cosign/sign/v1. A name the server's trust lacks, lajstrom, a name trusted
+        for no predicate type the requirement matches, and the predicate type of verdicts are 400.
+      additionalProperties: false
+      required: [predicateType, signedBy]
+      properties:
+        predicateType: {type: string, format: uri, maxLength: 256, examples: ["https://spdx.dev/Document"]}
+        signedBy:
+          type: array
+          minItems: 1
+          maxItems: 16
+          description: Names of attachments.trust or attachments.keyless.identities; any one suffices.
+          items: {type: string}
     PolicyPatch:
       type: object
       description: >-
@@ -2609,6 +2653,12 @@ components:
             sessionTimeout: {type: [string, "null"]}
             maxSessionFiles: {type: [integer, "null"], minimum: 1, maximum: 999}
             versionPolicy: {type: [string, "null"], enum: [release, snapshot, null]}
+        requireAttachments:
+          type: [array, "null"]
+          minItems: 1
+          maxItems: 16
+          description: Replaces the list whole; null removes it.
+          items: {$ref: "#/components/schemas/Requirement"}
     RepoList:
       type: object
       required: [repos]
