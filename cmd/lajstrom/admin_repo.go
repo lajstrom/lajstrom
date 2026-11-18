@@ -141,6 +141,9 @@ func (a *app) withRepos(ctx context.Context, caps capabilities, fn func(context.
 	defer func() { err = errors.Join(err, st.Close()) }()
 	repos := newRepos(a.cfg, st, a.log, caps)
 	repos.Encryption = masterConfigured(a.cfg, a.lookupEnv)
+	if repos.Trust, err = configTrust(a.cfg); err != nil {
+		return err
+	}
 	return fn(ctx, repos)
 }
 
