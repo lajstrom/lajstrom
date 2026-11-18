@@ -16,12 +16,14 @@ var ErrDenied = policy.ErrDenied
 // time as the quarantine's clock. A refusal is returned as the *policy.DeniedError itself, so
 // that its message is the client's, after its audit row policy.refuse (surface upload, or fetch
 // for the proxy's). Inspect, the path of reindex, decides nothing: the registry has the manifest.
+// The repo's required attachments are left out (docs/spec/policy.md §6.3): a version has none
+// before it exists.
 func (p *Pipeline) decide(ctx context.Context, pub *publish) error {
 	if p.policy == nil || pub.readOnly {
 		return nil
 	}
 	a := pub.parsed.Annotations
-	s := policy.Subject{Repo: pub.repo, Name: a.Name, Version: a.Version, Variant: a.Variant, Digest: pub.digest}
+	s := policy.Subject{Repo: pub.repo, Name: a.Name, Version: a.Version, Variant: a.Variant, Digest: pub.digest, NoRequirements: true}
 	surface := policy.SurfaceUpload
 	if pub.origin != nil {
 		s.Published, surface = pub.origin.Published, policy.SurfaceFetch

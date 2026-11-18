@@ -53,6 +53,9 @@ type Subject struct {
 	// version's created_at, an upstream entry's publish time; zero for none. The Decider takes
 	// the earlier policy_seen row when the repo has one.
 	Published time.Time
+	// NoRequirements leaves the repo's requirements out of the decision (policy.md §3, step 2): an
+	// upload, a push, a referrer, a read of /v2 by a token that may push or attach.
+	NoRequirements bool
 }
 
 // String is "<name> <version>[ <variant>]", the subject of an audit row.
@@ -84,6 +87,9 @@ type Verdict struct {
 	Lifts time.Time
 	// Until is when the decision may change by the clock alone; zero for never.
 	Until time.Time
+	// Requirement is the requirement of the repo not met that decided (policy.md §11); nil when
+	// none did.
+	Requirement *index.Requirement
 }
 
 // Allowed reports whether the decision lets the artifact through.
@@ -142,6 +148,9 @@ type Options struct {
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
+	// Trust is the trust of attachments: a signer of a requirement that it does not have meets
+	// nothing (policy.md §11); nil has none.
+	Trust *attest.Trust
 }
 
 // Decider takes the decisions of docs/spec/policy.md §3 over the rules, which it keeps while
@@ -170,7 +179,9 @@ func New(o Options) *Decider {
 func (d *Decider) Now() time.Time { return d.o.Now() }
 
 // Decide decides s: the rules, the groups of its repo when a rule's mask may name one, the
-// verdicts of its digest and, for a quarantine, the repo's policy_seen row, read from the index.
+// verdicts of its digest, on a repo with requirements the verified attachments of the version of
+// its digest (unless s leaves them out) and, for a quarantine, the repo's policy_seen row, read
+// from the index.
 func (d *Decider) Decide(ctx context.Context, s Subject) (Verdict, error) {
 	if d == nil {
 		return Verdict{Effect: EffectAllow}, nil
@@ -204,8 +215,36 @@ func (d *Decider) decide(ctx context.Context, r index.Reader, s Subject) (Verdic
 		}
 	}
 	e := evaluation{now: d.o.Now(), subject: s, rules: rules, groups: groups, verdicts: verdicts, order: d.order(s.Repo.Format)}
+	if !s.NoRequirements {
+		e.reqs = requirementsOf(s.Repo, d.o.Trust)
+	}
+	if len(e.reqs.list) > 0 {
+		if e.attested, err = attestedOf(ctx, r, s.Repo, s.Digest); err != nil {
+			return Verdict{}, err
+		}
+	}
 	e.seen = func() (time.Time, bool) { return seen(ctx, r, s) }
 	return e.decide(), nil
+}
+
+// attestedOf returns the verified attachments of the version of repo whose manifest is d
+// (index.Reader.ListAttested); none for a digest that is no version's.
+func attestedOf(ctx context.Context, r index.Reader, repo index.Repo, d digest.Digest) ([]index.Attested, error) {
+	if d == "" {
+		return nil, nil
+	}
+	v, err := r.GetVersionByDigest(ctx, repo.ID, d)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("policy: the version of %s: %w", d, err)
+	}
+	attested, err := r.ListAttested(ctx, repo.ID, []int64{v.ID})
+	if err != nil {
+		return nil, fmt.Errorf("policy: the verified attachments of %s: %w", d, err)
+	}
+	return attested, nil
 }
 
 // Rules returns every rule, read again through r when policy_state.generation moved.
@@ -282,6 +321,10 @@ type evaluation struct {
 	groups   []string // the groups of the subject's repo, <format>/<name>
 	verdicts []index.Verdict
 	order    VersionOrder
+	// reqs are the requirements of the subject's repo, none when the subject leaves them out, and
+	// attested the verified attachments of its manifest.
+	reqs     requirements
+	attested []index.Attested
 	// seen returns the policy_seen row of the subject, asked only for a quarantine.
 	seen func() (time.Time, bool)
 }
@@ -335,12 +378,16 @@ func (e *evaluation) collect() found {
 	return f
 }
 
-// decide is docs/spec/policy.md §3.
+// decide is docs/spec/policy.md §3: a deny verdict, then a requirement not met, before any rule.
 func (e *evaluation) decide() Verdict {
 	f := e.collect()
-	switch {
-	case f.deny != nil:
+	if f.deny != nil {
 		return Verdict{Effect: EffectDeny, Reason: f.deny.Reason, Attestation: f.deny.Referrer, Source: f.deny.Source, Until: f.until}
+	}
+	if r := e.reqs.unmet(e.attested); r != nil {
+		return Verdict{Effect: EffectDeny, Reason: requirementReason(*r), Requirement: r, Until: f.until}
+	}
+	switch {
 	case f.allowRule != nil:
 		return Verdict{Effect: EffectAllow, Rule: f.allowRule.ID, Until: f.until}
 	case f.denyRule != nil:
@@ -349,7 +396,7 @@ func (e *evaluation) decide() Verdict {
 	return e.quarantined(&f)
 }
 
-// quarantined is step 4 of the decision: a quarantine verdict, or the repo's quarantine, unless an
+// quarantined is step 5 of the decision: a quarantine verdict, or the repo's quarantine, unless an
 // allow verdict releases it.
 func (e *evaluation) quarantined(f *found) Verdict {
 	lifts := e.quarantineEnd()
@@ -496,6 +543,9 @@ func (d *Decider) Refuse(ctx context.Context, surface string, err *DeniedError, 
 	if v.Attestation != "" {
 		details["verdict"], details["source"] = v.Attestation.String(), v.Source
 	}
+	if v.Requirement != nil {
+		details["requirement"] = v.Requirement
+	}
 	ev := index.AuditEvent{At: d.o.Now(), Principal: principal.String(), Action: ActionRefuse, Repo: s.Repo.Format + "/" + s.Repo.Name,
 		Subject: s.String(), Digest: s.Digest}
 	if d.o.Origin != nil {
@@ -505,7 +555,7 @@ func (d *Decider) Refuse(ctx context.Context, surface string, err *DeniedError, 
 			details["requestId"] = id
 		}
 	}
-	ev.Details, _ = json.Marshal(details) // strings and integers always marshal
+	ev.Details, _ = json.Marshal(details) // strings, integers and a requirement always marshal
 	var werr error
 	if d.o.Audit != nil {
 		werr = d.o.Audit.Write(ctx, ev)

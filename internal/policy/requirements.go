@@ -138,3 +138,47 @@ func encryptedAtRest(repo index.Repo) bool {
 	}
 	return len(repo.Policy) > 0 && json.Unmarshal(repo.Policy, &p) == nil && p.Encryption.Mode == "at-rest"
 }
+
+// requirements are the requirements of a decision, with the names among theirs that the trust
+// has: a name it lacks meets nothing.
+type requirements struct {
+	list    []index.Requirement
+	trusted map[string]bool
+}
+
+// requirementsOf returns the requirements of repo and the names of theirs that trust has; none
+// for a subject that leaves them out.
+func requirementsOf(repo index.Repo, trust *attest.Trust) requirements {
+	reqs := requirements{list: RequireAttachments(repo)}
+	for _, r := range reqs.list {
+		for _, name := range r.SignedBy {
+			if _, ok := trust.PredicateTypes(name); ok {
+				if reqs.trusted == nil {
+					reqs.trusted = map[string]bool{}
+				}
+				reqs.trusted[name] = true
+			}
+		}
+	}
+	return reqs
+}
+
+// unmet returns the first requirement that attested, the verified attachments of the subject's
+// manifest, does not meet, nil when it meets them all: an attachment meets a requirement when
+// its predicate type is the requirement's or continues it after a "/", and its signer is one of
+// the requirement's names that the trust has.
+func (reqs requirements) unmet(attested []index.Attested) *index.Requirement {
+	for _, r := range reqs.list {
+		if !slices.ContainsFunc(attested, func(a index.Attested) bool {
+			return reqs.trusted[a.SignedBy] && slices.Contains(r.SignedBy, a.SignedBy) && profile.IsType(a.PredicateType, r.PredicateType)
+		}) {
+			return &r
+		}
+	}
+	return nil
+}
+
+// requirementReason is the reason of a refusal for the requirement r (policy.md §3, step 2).
+func requirementReason(r index.Requirement) string {
+	return fmt.Sprintf("requires an attachment %s signed by %s", r.PredicateType, strings.Join(r.SignedBy, " or "))
+}

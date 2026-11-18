@@ -170,7 +170,7 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			decider := policy.New(policy.Options{Index: st, Order: versionOrder(lookupIn(servedPlugins(c.Server.ExternalURL, nil))),
-				Origin: requestOrigin, Log: a.log})
+				Origin: requestOrigin, Log: a.log, Trust: trust})
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout, Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize,
 				Webhooks: newOutbox(c), Policy: decider, Encryption: asEncryption(encryption)})
