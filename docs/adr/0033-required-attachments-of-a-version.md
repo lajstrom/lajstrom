@@ -69,7 +69,9 @@ proposed for what the decision left open:
 8. **Who and how**: `manage` on the repo, as every key of its policy, through `PATCH` of the repo,
    `lajstrom admin repo create --policy` and the configuration's `repos`, audited as
    `repo.update`; a refusal is `policy.refuse` with `requirement`; `GET …/versions?unmet=` lists
-   what a requirement would leave out, before it is set and after.
+   what a requirement would leave out, before it is set and after. Whoever may set a requirement
+   may lift it: `manage` on a production repo goes only to those who may turn the requirement
+   off, and its `repo.update` rows show each time it was (decided on #1287).
 
 ## Consequences
 
