@@ -35,6 +35,9 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"BootstrapTokenRace", testBootstrapTokenRace},
 		{"ConfigState", testConfigState},
 		{"ConfigStateRace", testConfigStateRace},
+		{"Sealed", testSealed},
+		{"SealingKey", testSealingKey},
+		{"SealingKeyRace", testSealingKeyRace},
 		{"Bindings", testBindings},
 		{"AuthVersion", testAuthVersion},
 		{"Keys", testKeys},
@@ -152,6 +155,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"SnapshotNotEmpty", testSnapshotNotEmpty},
 		{"SnapshotRefused", testSnapshotRefused},
 		{"SnapshotLastSeenBefore0034", testSnapshotLastSeenBefore0034},
+		{"SnapshotNoSealingKey", testSnapshotNoSealingKey},
 		{"AuditObserveImport", testAuditObserveImport},
 	}
 	for _, tt := range multi {

@@ -21,7 +21,7 @@ var _ index.Snapshotter = (*Store)(nil)
 // SnapshotTables are the tables ImportControlPlane writes, in the order of their references; each
 // must be empty unless the import is forced.
 var SnapshotTables = []string{"repos", "group_members", "users", "identities", "identity_groups", "tokens", "bindings", "keys",
-	"webhooks", "policy_rules", "ci_policies", "audit"}
+	"webhooks", "policy_rules", "ci_policies", "sealing_key", "audit"}
 
 // ForcedTables are the tables a forced import empties, every row that refers to another before
 // it: every table but KeptTables. A test of each engine lists the tables of the schema and fails
@@ -31,7 +31,7 @@ var ForcedTables = []string{
 	"webhook_deliveries", "webhooks", "policy_rules", "policy_seen", "bootstrap_token", "journal_state", "journal", "verdicts",
 	"attachments", "files", "versions",
 	"packages", "blob_map", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
-	"reindex_runs", "prune_sightings", "dpop_proofs", "ci_policies", "approvals", "config_state", "repos", "users",
+	"reindex_runs", "prune_sightings", "dpop_proofs", "ci_policies", "approvals", "config_state", "sealing_key", "repos", "users",
 }
 
 // KeptTables are the tables a forced import leaves: the schema's version, the counter it
@@ -127,6 +127,14 @@ func (c *conn) exportControlPlane(ctx context.Context, opts index.ExportOptions)
 		},
 		func() (err error) {
 			cp.CIPolicies, err = c.ListCIPolicies(ctx)
+			return err
+		},
+		func() error {
+			k, err := c.GetSealingKey(ctx)
+			if errors.Is(err, index.ErrNotFound) {
+				return nil
+			}
+			cp.SealingKey = k
 			return err
 		},
 		func() error { return c.exportAudit(ctx, cp, opts) },
@@ -311,7 +319,7 @@ func (c *conn) importRows(ctx context.Context, cp *index.ControlPlane) error {
 // rowsOf returns the rows of cp in the order importRows inserts them. A column that cp's schema
 // may lack takes its default: a repo's kind hosted, a user's kind local, mustChange false and
 // history NULL, a token's repo_mask and dpop_jkt NULL, an audit row's state ok, the revision of a
-// repo, a user and a webhook 1.
+// repo, a user and a webhook 1. A cp without a sealing key (before 0040) writes no row of it.
 func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 	var rows []insertRow
 	add := func(what, table, cols string, args ...any) {
@@ -365,6 +373,10 @@ func (c *conn) rowsOf(cp *index.ControlPlane) []insertRow {
 			cmp.Or(p.State, index.CIPolicyActive), c.d.encodeNullTime(p.ExpiresAt), c.d.encodeNullTime(p.RenewalExpiresAt),
 			p.CreatedBy, c.d.EncodeTime(p.CreatedAt), cmp.Or(p.UpdatedBy, p.CreatedBy), c.d.EncodeTime(cmp.Or(p.UpdatedAt, p.CreatedAt)),
 			textArg(p.ApprovedBy), c.d.encodeNullTime(p.ApprovedAt), cmp.Or(p.Revision, 1))
+	}
+	if k := cp.SealingKey; k != nil {
+		add("sealing_key "+k.KeyID, "sealing_key", "id, "+sealingKeyCols, 1, k.KeyID, k.Source, k.Host, idArg(k.AuditID),
+			c.d.EncodeTime(k.SetAt))
 	}
 	for _, e := range cp.Audit {
 		add(fmt.Sprintf("audit id %d", e.ID), "audit", auditCols, e.ID, c.d.EncodeTime(e.At), e.Principal, textArg(e.PrincipalName),

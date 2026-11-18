@@ -28,7 +28,7 @@ func snapshotter(t *testing.T, s index.Store) index.Snapshotter {
 // proxy and a group repo with its members; a live user, a deleted one and an OIDC one with its
 // identity and groups; a PAT, a deploy token, a revoked one and a deploy token over a mask;
 // bindings; a repo's key and a retired server key; a webhook of some types and an inactive one of
-// every type; audit rows. Besides, rows a snapshot leaves out: a session, derived rows (an
+// every type; the sealing key of a rewrap; audit rows. Besides, rows a snapshot leaves out: a session, derived rows (an
 // attachment among them), a webhook delivery, a bootstrap token.
 func fullControlPlane(t *testing.T, s index.Store) fixture {
 	t.Helper()
@@ -113,6 +113,8 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 		ev.At = at(100 * (i + 1))
 		must(t, s.AppendAudit(ctx, &ev))
 	}
+	must(t, s.PutSealingKey(ctx, &index.SealingKey{KeyID: "0123456789abcdef", Source: index.SealingRewrap, Host: "admin-1",
+		AuditID: ptr(int64(2))}, ""))
 	must(t, s.PutBootstrapToken(ctx, &index.BootstrapToken{Hash: "bootstrap", Replica: "host 1", ExpiresAt: at(86400)}, ""))
 	return f
 }
@@ -158,6 +160,7 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 		"ci_policies": len(cp.CIPolicies), "audit": len(cp.Audit)}
 	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
 		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "ci_policies": 2, "audit": 3}, counts)
+	checkSealingKey(t, cp)
 
 	dst := open(t)
 	v0, err := dst.AuthVersion(ctx)
@@ -176,6 +179,15 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	}
 
 	checkImported(t, dst, cp, f)
+}
+
+// checkSealingKey checks the sealing key of cp, a snapshot of a fullControlPlane: the row of
+// the rewrap (#1288).
+func checkSealingKey(t *testing.T, cp *index.ControlPlane) {
+	t.Helper()
+	if k := cp.SealingKey; k == nil || k.KeyID != "0123456789abcdef" || k.Source != index.SealingRewrap || k.SetAt.IsZero() {
+		t.Errorf("the sealing key exported: %+v, want the row of the rewrap", k)
+	}
 }
 
 // checkServiceAccount checks the service account of fullControlPlane in dst: its kind, and its
@@ -329,6 +341,9 @@ func testSnapshotNotEmpty(t *testing.T, open func(*testing.T) index.Store) {
 		}},
 		{"webhooks", func(s index.Store) { newWebhook(t, s, "raw/*") }},
 		{"ci_policies", func(s index.Store) { newCIPolicy(t, s, "early") }},
+		{"sealing_key", func(s index.Store) {
+			must(t, s.PutSealingKey(ctx, &index.SealingKey{KeyID: "fedcba9876543210", Source: index.SealingStart, Host: "serve-1"}, ""))
+		}},
 		{"audit", func(s index.Store) {
 			must(t, s.AppendAudit(ctx, &index.AuditEvent{Principal: "anonymous", Action: "reindex"}))
 		}},
