@@ -407,7 +407,7 @@ func (h *handler) packageOf(r *http.Request, repo *index.Repo) (*index.Package, 
 // without an attachment of any of them.
 func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int,
 	without ...string) ([]VersionEntry, error) {
-	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, without...)
+	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, index.VersionFilter{Without: without})
 	if err != nil {
 		return nil, fmt.Errorf("api: versions of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}

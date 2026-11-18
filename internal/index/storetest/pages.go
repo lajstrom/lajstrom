@@ -121,7 +121,7 @@ func testVersionPages(t *testing.T, s index.Store) {
 	}
 	page := func(after *index.VersionKey, limit int) []index.Version {
 		t.Helper()
-		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit)
+		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit, index.VersionFilter{})
 		must(t, err)
 		return list
 	}
@@ -229,7 +229,7 @@ func testVersionPagesWithout(t *testing.T, s index.Store) {
 	put("4.0", "", at(40))
 	rowsOf := func(after *index.VersionKey, limit int, without ...string) []string {
 		t.Helper()
-		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit, without...)
+		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit, index.VersionFilter{Without: without})
 		must(t, err)
 		out := []string{}
 		for _, v := range list {
@@ -246,4 +246,66 @@ func testVersionPagesWithout(t *testing.T, s index.Store) {
 	// 2.0 without an SBOM is its variant b alone, at 25: its key is b's.
 	same(t, "the next page without sbom", []string{"2.0/b"}, rowsOf(&index.VersionKey{CreatedAt: at(30), Version: "3.0"}, 2, index.AttachmentSBOM))
 	same(t, "after 2.0 without sbom", []string{}, rowsOf(&index.VersionKey{CreatedAt: at(25), Version: "2.0"}, 2, index.AttachmentSBOM))
+}
+
+// testVersionPagesUnmet: ListVersionPage with a requirement keeps the rows that have no
+// attachment verified of its predicate type, or of one that continues it after a "/", signed by
+// one of its names (#1287, ?unmet=; docs/spec/policy.md §11): a signature counts as cosign's
+// predicate type, an untrusted row or another signer meets nothing, nor does a type that only
+// starts like it; with kinds too, a row meets both; the cursor pages the filtered list.
+func testVersionPagesUnmet(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	pkg := newPackage(t, s, repo.ID, "tool")
+	const spdx, sign = "https://spdx.dev/Document", "https://sigstore.dev/cosign/sign/v1"
+	put := func(version, variant string, created int, kind, predicateType, signedBy string) {
+		t.Helper()
+		v := index.Version{PackageID: pkg.ID, Version: version, Variant: variant, Tag: version + "_" + variant,
+			Digest: dg(version + variant), ArtifactType: "application/vnd.lajstrom.raw.v1", CreatedAt: at(created)}
+		must(t, s.UpsertVersion(ctx, &v))
+		if kind == "" {
+			return
+		}
+		a := attachment(version+variant, version+variant+" layer", 1, 1)
+		a.Kind, a.PredicateType, a.SignedBy = kind, predicateType, signedBy
+		if signedBy == "" {
+			a.Verification, a.Reason = index.AttachmentUntrusted, "no trusted key verifies its signature"
+		}
+		must(t, s.ReplaceAttachments(ctx, v.ID, a.Digest, []index.Attachment{a}))
+	}
+	put("1.0", "", 10, index.AttachmentSBOM, spdx, "release")
+	put("2.0", "a", 20, index.AttachmentSBOM, spdx, "other")
+	put("2.0", "b", 25, index.AttachmentSBOM, spdx, "")
+	put("3.0", "", 30, index.AttachmentAttestation, spdx+"X", "release")
+	put("4.0", "", 40, index.AttachmentSBOM, "https://cyclonedx.org/bom/v1.6", "release")
+	put("5.0", "", 50, index.AttachmentSignature, "", "release")
+	put("6.0", "", 60, "", "", "")
+	rowsOf := func(after *index.VersionKey, limit int, f index.VersionFilter) []string {
+		t.Helper()
+		list, err := s.ListVersionPage(ctx, pkg.ID, after, limit, f)
+		must(t, err)
+		out := []string{}
+		for _, v := range list {
+			out = append(out, v.Version+"/"+v.Variant)
+		}
+		return out
+	}
+	unmet := func(predicateType string, names ...string) index.VersionFilter {
+		return index.VersionFilter{Unmet: &index.Requirement{PredicateType: predicateType, SignedBy: names}}
+	}
+	all := []string{"6.0/", "5.0/", "4.0/", "3.0/", "2.0/a", "2.0/b", "1.0/"}
+	same(t, "an spdx of release", []string{"6.0/", "5.0/", "4.0/", "3.0/", "2.0/a", "2.0/b"}, rowsOf(nil, 10, unmet(spdx, "release")))
+	same(t, "an spdx of release or other", []string{"6.0/", "5.0/", "4.0/", "3.0/", "2.0/b"}, rowsOf(nil, 10, unmet(spdx, "release", "other")))
+	same(t, "a signature of release", []string{"6.0/", "4.0/", "3.0/", "2.0/a", "2.0/b", "1.0/"}, rowsOf(nil, 10, unmet(sign, "release")))
+	same(t, "a cyclonedx bom of release, any version", []string{"6.0/", "5.0/", "3.0/", "2.0/a", "2.0/b", "1.0/"},
+		rowsOf(nil, 10, unmet("https://cyclonedx.org/bom", "release")))
+	same(t, "a cyclonedx bom of another version", all, rowsOf(nil, 10, unmet("https://cyclonedx.org/bom/v1.5", "release")))
+	same(t, "a type with the characters of a pattern", all, rowsOf(nil, 10, unmet("https://spdx.dev/Doc%", "release")))
+	same(t, "a requirement without a name", all, rowsOf(nil, 10, unmet(spdx)))
+	same(t, "without an sbom and a signature of release", []string{"6.0/", "3.0/"},
+		rowsOf(nil, 10, index.VersionFilter{Without: []string{index.AttachmentSBOM}, Unmet: unmet(sign, "release").Unmet}))
+	same(t, "the first page", []string{"6.0/", "5.0/"}, rowsOf(nil, 2, unmet(spdx, "release")))
+	same(t, "the next page", []string{"4.0/", "3.0/"}, rowsOf(&index.VersionKey{CreatedAt: at(50), Version: "5.0"}, 2, unmet(spdx, "release")))
+	// 2.0 that misses an spdx of release or other is its variant b alone, at 25: its key is b's.
+	same(t, "the last page", []string{"2.0/b"}, rowsOf(&index.VersionKey{CreatedAt: at(30), Version: "3.0"}, 2, unmet(spdx, "release", "other")))
 }

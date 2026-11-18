@@ -141,6 +141,48 @@ func digests(rows []index.Attachment) []digest.Digest {
 	return out
 }
 
+// testAttested: ListAttested answers each predicate type and signer of the rows verified of a
+// repo's versions once, a signature's as cosign's predicate type, in version, type and signer
+// order; of the ids given, those of the repo only; none for no id (#1287, docs/spec/index-schema.md,
+// Attachments).
+func testAttested(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	const spdx, slsa, sign = "https://spdx.dev/Document", "https://slsa.dev/provenance/v1", "https://sigstore.dev/cosign/sign/v1"
+	repo := newRepo(t, s, "raw", "scratch")
+	pkg := newPackage(t, s, repo.ID, "tool")
+	v1, v2, bare := newVersion(t, s, pkg.ID, "1.0.0"), newVersion(t, s, pkg.ID, "2.0.0"), newVersion(t, s, pkg.ID, "3.0.0")
+	other := newVersion(t, s, newPackage(t, s, newRepo(t, s, "raw", "other").ID, "tool").ID, "1.0.0")
+	row := func(d, layer, kind, predicateType, signedBy string) index.Attachment {
+		a := attachment(d, layer, 1, 1)
+		a.Kind, a.PredicateType, a.SignedBy = kind, predicateType, signedBy
+		if signedBy == "" {
+			a.Verification, a.Reason = index.AttachmentUnsigned, "it carries no signature"
+		}
+		return a
+	}
+	must(t, s.ReplaceAttachments(ctx, v1.ID, dg("sbom"), []index.Attachment{row("sbom", "a", index.AttachmentSBOM, spdx, "release"),
+		row("sbom", "b", index.AttachmentSBOM, spdx, "")}))
+	must(t, s.ReplaceAttachments(ctx, v1.ID, dg("sbom 2"), []index.Attachment{row("sbom 2", "a", index.AttachmentSBOM, spdx, "release")}))
+	must(t, s.ReplaceAttachments(ctx, v1.ID, dg("sig"), []index.Attachment{row("sig", "s", index.AttachmentSignature, "", "ci")}))
+	must(t, s.ReplaceAttachments(ctx, v2.ID, dg("prov"), []index.Attachment{row("prov", "p", index.AttachmentProvenance, slsa, "ci")}))
+	must(t, s.ReplaceAttachments(ctx, other.ID, dg("sbom"), []index.Attachment{row("sbom", "a", index.AttachmentSBOM, spdx, "release")}))
+
+	wantV1 := []index.Attested{{VersionID: v1.ID, PredicateType: sign, SignedBy: "ci"}, {VersionID: v1.ID, PredicateType: spdx, SignedBy: "release"}}
+	wantV2 := []index.Attested{{VersionID: v2.ID, PredicateType: slsa, SignedBy: "ci"}}
+	got, err := s.ListAttested(ctx, repo.ID, nil)
+	must(t, err)
+	same(t, "the repo's", append(slices.Clone(wantV1), wantV2...), got)
+	got, err = s.ListAttested(ctx, repo.ID, []int64{v2.ID, bare.ID, other.ID})
+	must(t, err)
+	same(t, "of versions, another repo's among them", wantV2, got)
+	got, err = s.ListAttested(ctx, repo.ID, []int64{})
+	must(t, err)
+	same(t, "of no version", []index.Attested{}, got)
+	got, err = s.ListAttested(ctx, other.ID+1<<40, nil)
+	must(t, err)
+	same(t, "of a repo without versions", []index.Attested{}, got)
+}
+
 // testVersionFacts: the files of each version are counted and their sizes added up, its
 // attachments counted by kind, a kind no binary knows yet as it is; an id without rows has the
 // zero facts; the answer follows the ids, across statements too; a referrer's delete and a
