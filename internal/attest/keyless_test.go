@@ -256,3 +256,35 @@ func TestNewTrustKeyless(t *testing.T) {
 		t.Error("a trust with a trusted root hashes as one without")
 	}
 }
+
+// TestPredicateTypes: the predicate types a key or a keyless identity is trusted for, sorted and
+// each once, nil for every one; a name the trust lacks, and any name of a nil trust, is not ok
+// (docs/spec/policy.md §11, #1287).
+func TestPredicateTypes(t *testing.T) {
+	sg := attesttest.NewSigstore(t)
+	trust, err := attest.NewTrust([]attest.Entry{attesttest.NewKey(t).Entry(t, "release", slsa, cyclonedx, slsa),
+		attesttest.NewKey(t).Entry(t, "any")}, attest.WithKeyless(attest.Keyless{TrustedRoot: sg.TrustedRoot(t),
+		Identities: []attest.Identity{{Name: "ci", Issuer: github, Subject: "ci@example.com", PredicateTypes: []string{slsa}},
+			{Name: "everything", Issuer: github, Subject: "x@example.com"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		trust *attest.Trust
+		name  string
+		want  []string
+		ok    bool
+	}{
+		{trust, "release", []string{cyclonedx, slsa}, true},
+		{trust, "any", nil, true},
+		{trust, "ci", []string{slsa}, true},
+		{trust, "everything", nil, true},
+		{trust, "nobody", nil, false},
+		{nil, "release", nil, false},
+	} {
+		got, ok := tt.trust.PredicateTypes(tt.name)
+		if ok != tt.ok || strings.Join(got, " ") != strings.Join(tt.want, " ") || (got == nil) != (tt.want == nil) {
+			t.Errorf("PredicateTypes(%q) = %v, %t; want %v, %t", tt.name, got, ok, tt.want, tt.ok)
+		}
+	}
+}

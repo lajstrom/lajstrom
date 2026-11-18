@@ -18,10 +18,10 @@ func PredicateTool(predicateType string, predicate json.RawMessage) (tool, versi
 	switch {
 	case predicateType == PredicateCosignVuln:
 		return vulnTool(predicate)
-	case isType(predicateType, PredicateCycloneDX):
+	case IsType(predicateType, PredicateCycloneDX):
 		tool, version = cycloneDXTool(predicate)
 		return tool, version, ""
-	case isType(predicateType, PredicateSPDX):
+	case IsType(predicateType, PredicateSPDX):
 		tool, version = spdxTool(predicate)
 		return tool, version, ""
 	}

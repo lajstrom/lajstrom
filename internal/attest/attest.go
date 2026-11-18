@@ -27,6 +27,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -190,6 +191,36 @@ func (t *Trust) Hash() string {
 		return emptyHash
 	}
 	return t.hash
+}
+
+// PredicateTypes returns the predicate types the key or the keyless identity name is trusted
+// for, in byte order, nil when it is trusted for every one; ok is false when the trust has no
+// such name (docs/spec/policy.md §11, #1287). A nil trust has none.
+func (t *Trust) PredicateTypes(name string) (types []string, ok bool) {
+	if t == nil {
+		return nil, false
+	}
+	for _, k := range t.keys {
+		if k.name == name {
+			return sortedTypes(k.types), true
+		}
+	}
+	if t.keyless != nil {
+		for _, id := range t.keyless.identities {
+			if id.name == name {
+				return sortedTypes(id.types), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// sortedTypes returns the predicate types of set in byte order, nil for nil (every one).
+func sortedTypes(set map[string]bool) []string {
+	if set == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(set))
 }
 
 // emptyHash is the hash of a trust without entries.

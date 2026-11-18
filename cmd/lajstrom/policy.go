@@ -73,7 +73,7 @@ func policyTrust(ctx context.Context, st index.Reader) ([]attest.Entry, error) {
 	case err != nil:
 		return nil, err
 	}
-	return []attest.Entry{{Name: "lajstrom", PublicKey: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: k.Public}),
+	return []attest.Entry{{Name: policy.PolicyKeySigner, PublicKey: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: k.Public}),
 		PredicateTypes: []string{policy.PredicateType}}}, nil
 }
 

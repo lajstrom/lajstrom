@@ -103,7 +103,7 @@ func PredicateKind(p string) string {
 		return ReferrerSignature
 	case p == PredicateCosignVuln:
 		return ReferrerScan
-	case isType(p, PredicateSPDX), isType(p, PredicateCycloneDX):
+	case IsType(p, PredicateSPDX), IsType(p, PredicateCycloneDX):
 		return ReferrerSBOM
 	case strings.HasPrefix(p, predicateSLSA):
 		return ReferrerProvenance
@@ -111,8 +111,8 @@ func PredicateKind(p string) string {
 	return ReferrerAttestation
 }
 
-// isType reports whether the predicate type p is base or one of its versions, base/<version>.
-func isType(p, base string) bool {
+// IsType reports whether the predicate type p is base or one of its versions, base/<version>.
+func IsType(p, base string) bool {
 	return p == base || strings.HasPrefix(p, base+"/")
 }
 
@@ -121,7 +121,7 @@ func isType(p, base string) bool {
 // vulnerabilities (a combined document, #89).
 func StatementKind(p string, predicate json.RawMessage) string {
 	kind := PredicateKind(p)
-	if kind != ReferrerSBOM || !isType(p, PredicateCycloneDX) || len(predicate) == 0 {
+	if kind != ReferrerSBOM || !IsType(p, PredicateCycloneDX) || len(predicate) == 0 {
 		return kind
 	}
 	var bom struct {
