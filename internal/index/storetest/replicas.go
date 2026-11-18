@@ -25,8 +25,8 @@ func testDatabaseTime(t *testing.T, s index.Store) {
 	}
 }
 
-// testReplicas checks the rows of replicas: a start fills the times, the row keeps Process and Flock, and
-// a heartbeat moves HeartbeatAt; a second replica with a fresh heartbeat beside it is either refused, naming the
+// testReplicas checks the rows of replicas: a start fills the times, the row keeps Process, Flock and
+// MasterKeys (none: NULL, read as nil, #1288), and a heartbeat moves HeartbeatAt; a second replica with a fresh heartbeat beside it is either refused, naming the
 // live one, on an engine that serves one replica (SQLite), or kept beside it (Postgres; the
 // engine tests say which); a start deletes the rows whose heartbeat is stale, and their
 // heartbeats are ErrNotFound; a stop deletes the row; an id twice is ErrConflict.
@@ -38,7 +38,8 @@ func testReplicas(t *testing.T, s index.Store) {
 		must(t, err)
 		return replicaIDs(rows)
 	}
-	a := index.Replica{ID: "a", Host: "host-a", PID: 7, Process: "boot=b pid:[1] start=2", Flock: "64769:1234", Version: "v0.1.0", StartedAt: at(0)}
+	a := index.Replica{ID: "a", Host: "host-a", PID: 7, Process: "boot=b pid:[1] start=2", Flock: "64769:1234", Version: "v0.1.0", StartedAt: at(0),
+		MasterKeys: []string{"0123456789abcdef", "fedcba9876543210"}}
 	must(t, s.StartReplica(ctx, &a, at(-120)))
 	if !a.HeartbeatAt.Equal(at(0)) {
 		t.Errorf("HeartbeatAt after the start = %v, want StartedAt %v", a.HeartbeatAt, at(0))
@@ -62,9 +63,14 @@ func testReplicas(t *testing.T, s index.Store) {
 		same(t, "replicas after a second start", []string{"a", "b"}, list())
 	}
 
-	c := index.Replica{ID: "c", Host: "host-c", PID: 9, Version: "v0.1.0", StartedAt: at(200)}
+	c := index.Replica{ID: "c", Host: "host-c", PID: 9, Version: "v0.1.0", StartedAt: at(200), MasterKeys: []string{}}
 	must(t, s.StartReplica(ctx, &c, at(200-120)))
 	same(t, "replicas after a start that found the others stale", []string{"c"}, list())
+	rows, err = s.ListReplicas(ctx)
+	must(t, err)
+	if rows[0].MasterKeys != nil {
+		t.Errorf("MasterKeys of a replica that holds no key = %q, want nil", rows[0].MasterKeys)
+	}
 	wantErr(t, "a heartbeat of a replica whose row a start deleted", s.HeartbeatReplica(ctx, a.ID, at(210)), index.ErrNotFound)
 	wantErr(t, "the same id again", s.StartReplica(ctx, &index.Replica{ID: "c", Host: "h", StartedAt: at(210)}, at(90)),
 		index.ErrConflict)

@@ -132,13 +132,23 @@ func gunzip(t *testing.T, b []byte) []byte {
 }
 
 // TestDocumentRoundTrip: a control plane encoded and decoded is the same, every row with its id,
-// and a document of a newer version is refused.
+// the sealing key's included (#1288), and a document of a newer version is refused; a database
+// without a sealing key writes no sealingKey.
 func TestDocumentRoundTrip(t *testing.T) {
 	st, m := newStore(t), master(t, testMasterHex)
+	empty, err := st.ExportControlPlane(t.Context(), index.ExportOptions{})
+	must(t, err)
+	gz, err := encode(empty, "")
+	must(t, err)
+	if doc := gunzip(t, gz); bytes.Contains(doc, []byte(`sealingKey`)) {
+		t.Errorf("a snapshot of a database without a sealing key has the key sealingKey: %s", doc)
+	}
 	filled(t, st, m)
+	must(t, st.PutSealingKey(t.Context(), &index.SealingKey{KeyID: "0123456789abcdef", Source: index.SealingRewrap, Host: "admin-1",
+		AuditID: new(int64(4))}, ""))
 	cp, err := st.ExportControlPlane(t.Context(), index.ExportOptions{WithAudit: true, AuditSince: time.Unix(1, 0).UTC()})
 	must(t, err)
-	gz, err := encode(cp, "v9.9.9")
+	gz, err = encode(cp, "v9.9.9")
 	must(t, err)
 	got, binary, err := decode(gz)
 	must(t, err)
@@ -149,6 +159,10 @@ func TestDocumentRoundTrip(t *testing.T) {
 	}
 	if doc := gunzip(t, gz); !bytes.Contains(doc, []byte(`"mustChange":true,"passwordHistory":["$argon2id$`)) {
 		t.Errorf("the users of the document have no mustChange and passwordHistory: %s", doc)
+	}
+	sealing := []byte(`"sealingKey":{"keyId":"0123456789abcdef","source":"rewrap","host":"admin-1","auditId":4,"setAt":"`)
+	if doc := gunzip(t, gz); !bytes.Contains(doc, sealing) {
+		t.Errorf("the document has no sealingKey of the row: %s", doc)
 	}
 
 	none, err := st.ExportControlPlane(t.Context(), index.ExportOptions{})

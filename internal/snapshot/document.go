@@ -43,8 +43,36 @@ type document struct {
 	PolicyRules []policyRuleRow `json:"policyRules"`
 	// CIPolicies is absent from a document written before migration 0033: no policy of the API.
 	CIPolicies []ciPolicyRow `json:"ciPolicies"`
+	// SealingKey is the row of sealing_key, the id of the master key that sealed then (#1288),
+	// never a key; absent when the database had none, and before migration 0040.
+	SealingKey *sealingKeyRow `json:"sealingKey,omitempty"`
 	// Audit is nil when the snapshot was made without audit rows, and absent then.
 	Audit *[]auditRow `json:"audit,omitempty"`
+}
+
+// sealingKeyRow is the row of sealing_key (#1288).
+type sealingKeyRow struct {
+	KeyID   string    `json:"keyId"`
+	Source  string    `json:"source"`
+	Host    string    `json:"host"`
+	AuditID *int64    `json:"auditId,omitempty"`
+	SetAt   time.Time `json:"setAt"`
+}
+
+// sealingKeyRowOf is the sealingKey of the document of k; nil for none.
+func sealingKeyRowOf(k *index.SealingKey) *sealingKeyRow {
+	if k == nil {
+		return nil
+	}
+	return &sealingKeyRow{KeyID: k.KeyID, Source: k.Source, Host: k.Host, AuditID: k.AuditID, SetAt: k.SetAt}
+}
+
+// row is the row of sealing_key of r; nil for none.
+func (r *sealingKeyRow) row() *index.SealingKey {
+	if r == nil {
+		return nil
+	}
+	return &index.SealingKey{KeyID: r.KeyID, Source: r.Source, Host: r.Host, AuditID: r.AuditID, SetAt: r.SetAt}
 }
 
 // ciPolicyRow is a row of ci_policies; claims and grants are the JSON of their columns.
@@ -307,6 +335,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 			State: p.State, ExpiresAt: p.ExpiresAt, RenewalExpiresAt: p.RenewalExpiresAt, CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
+	doc.SealingKey = sealingKeyRowOf(cp.SealingKey)
 	if cp.WithAudit {
 		rows := make([]auditRow, 0, len(cp.Audit))
 		for _, e := range cp.Audit {
@@ -377,6 +406,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 			State: p.State, ExpiresAt: p.ExpiresAt, RenewalExpiresAt: p.RenewalExpiresAt, CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
+	cp.SealingKey = doc.SealingKey.row()
 	if doc.Audit != nil {
 		cp.WithAudit, cp.Audit = true, []index.AuditEvent{}
 		for _, e := range *doc.Audit {

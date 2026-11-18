@@ -130,6 +130,15 @@ type Reader interface {
 	// ListKeys returns the keys of a repo, retired ones included; repoID nil selects the
 	// server keys.
 	ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
+	// ListSealed (#1288, docs/spec/index-schema.md, The master key and its replacement): the
+	// values that the master keys seal in table (SealedKeys: keys.private_enc; SealedWebhooks:
+	// webhooks.secret_enc; SealedSessions: the data keys of the open uploads of the facade) of
+	// the rows whose id is above afterID, by id, at most limit, each with its additional data.
+	// Another table is an error.
+	ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]Sealed, error)
+	// GetSealingKey returns the row of sealing_key, the master key that every process seals
+	// with (#1288); an error wrapping ErrNotFound when there is none.
+	GetSealingKey(ctx context.Context) (*SealingKey, error)
 
 	// GetSession returns the open publication session with key in a repo.
 	GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
@@ -457,6 +466,17 @@ type Writer interface {
 	CreateKey(ctx context.Context, k *Key) error
 	// RetireKey sets RetiredAt of the key.
 	RetireKey(ctx context.Context, id int64, at time.Time) error
+	// Reseal writes sealed as the value of the row id of table (ListSealed) where the row still
+	// holds old, a compare-and-set, and answers whether it did (#1288): a row changed or deleted
+	// since it was read is left as it is. It changes nothing else of the row. SealedSessions is
+	// an error: an upload in flight is not sealed again.
+	Reseal(ctx context.Context, table string, id int64, old, sealed []byte) (bool, error)
+	// PutSealingKey makes k the sealing key while the row names the key id old ("": no row,
+	// inserted if absent); another id there, or a row where old is "", wraps ErrConflict and
+	// changes nothing, so that of replicas that start together one records its key, and of two
+	// rewraps one switches (#1288). It sets k.SetAt to the database's time. A rewrap's caller
+	// appends key.rewrap in the same transaction.
+	PutSealingKey(ctx context.Context, k *SealingKey, old string) error
 
 	// UpsertSession inserts s when s.ID is 0 and otherwise stores State, Files and ExpiresAt
 	// of row s.ID; it sets UpdatedAt. A key has one open session in a repo: inserting a second

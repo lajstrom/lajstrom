@@ -217,6 +217,46 @@ type ConfigState struct {
 	RecordedAt time.Time
 }
 
+// The sources of a SealingKey: what set it (docs/spec/index-schema.md, The master key and its
+// replacement, #1288).
+const (
+	SealingStart  = "start"  // the first start of a process that held one key
+	SealingRewrap = "rewrap" // the switch of lajstrom admin key rewrap
+)
+
+// SealingKey is the row of sealing_key (control plane, #1288): the master key that every process
+// seals with, named by its id, never a key nor where a key comes from.
+type SealingKey struct {
+	KeyID  string // the id of a master key, 16 hexadecimal digits
+	Source string // SealingStart or SealingRewrap
+	Host   string // the host name of the process that set it
+	// AuditID is the key.rewrap row of the switch; nil for a start. No reference: a prune may
+	// delete that row.
+	AuditID *int64
+	// SetAt is the database's time, which PutSealingKey sets.
+	SetAt time.Time
+}
+
+// The tables of ListSealed and Reseal: the columns that the master keys seal (#1288).
+const (
+	SealedKeys     = "keys"     // keys.private_enc, the fingerprint as its additional data
+	SealedWebhooks = "webhooks" // webhooks.secret_enc, webhook:<uid> as its additional data
+	// SealedSessions is the data key of each open upload of the facade, sessions.files enc.key,
+	// the row's key as its additional data (nil for an upload to a repo that does not encrypt):
+	// ListSealed only, for the counts of a rewrap. Reseal refuses it, as an upload in flight is
+	// not sealed again.
+	SealedSessions = "sessions"
+)
+
+// Sealed is a value that the master keys seal, of ListSealed (#1288): its row by Table and ID,
+// AAD its additional data, Value the sealed bytes as the row holds them.
+type Sealed struct {
+	Table string
+	ID    int64
+	AAD   string
+	Value []byte
+}
+
 // Binding is a row of bindings (control plane): a role on a repo mask (docs/spec/rbac.md §3).
 type Binding struct {
 	ID        int64
@@ -293,6 +333,9 @@ type Replica struct {
 	Version     string // the binary's version
 	StartedAt   time.Time
 	HeartbeatAt time.Time // stale 2 minutes after the last beat
+	// MasterKeys are the ids of the master keys its process holds (#1288); nil for none, or a
+	// release before 0040.
+	MasterKeys []string
 }
 
 // Sighting is a row of prune_sightings (operational state): the registry answered 404
