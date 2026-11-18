@@ -144,8 +144,9 @@ func (e *Encryption) Unwrap(ctx context.Context, repo index.Repo, fingerprint, j
 	return p, nil
 }
 
-// Seal encrypts the data key of a facade upload with the master key, aad as the additional data.
-func (e *Encryption) Seal(aad string, key []byte) []byte { return e.master.Seal(aad, key) }
+// Seal encrypts the data key of a facade upload with the master key the index names, aad as the
+// additional data; while this process does not hold it, a *SealingError (ErrNoSealingKey).
+func (e *Encryption) Seal(aad string, key []byte) ([]byte, error) { return e.master.Seal(aad, key) }
 
 // Open decrypts what Seal returned for aad.
 func (e *Encryption) Open(aad string, sealed []byte) ([]byte, error) {
@@ -224,8 +225,12 @@ func (e *Encryption) newKey(ctx context.Context, repo index.Repo, source string)
 	if err != nil {
 		return nil, err
 	}
+	sealed, err := e.master.seal(fp, priv)
+	if err != nil {
+		return nil, fmt.Errorf("keys: the encryption key for %s: %w", repoName(repo), err)
+	}
 	id := repo.ID
-	return &index.Key{RepoID: &id, Kind: KindEnc, Public: der, PrivateEnc: e.master.seal(fp, priv), Fingerprint: fp,
+	return &index.Key{RepoID: &id, Kind: KindEnc, Public: der, PrivateEnc: sealed, Fingerprint: fp,
 		CreatedAt: e.now().UTC().Truncate(time.Microsecond)}, nil
 }
 

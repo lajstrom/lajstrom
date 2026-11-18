@@ -373,7 +373,7 @@ func TestKMSRowSealed(t *testing.T) {
 	other, _, err := e.svc.newKey(ctx, e.repo, Local)
 	must(t, err)
 	moved := row
-	moved.PrivateEnc = e.svc.master.seal(other.Fingerprint, []byte("awskms:///arn:aws:kms:eu-west-1:999999999999:key/theirs"))
+	moved.PrivateEnc = mustSeal(t, e.svc.master, other.Fingerprint, []byte("awskms:///arn:aws:kms:eu-west-1:999999999999:key/theirs"))
 	if _, err := e.svc.decrypt(ctx, moved); err == nil || !strings.Contains(err.Error(), "does not decrypt") {
 		t.Errorf("a KMS row with another row's seal: %v", err)
 	}

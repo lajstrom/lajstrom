@@ -316,7 +316,7 @@ func TestTokenRowsTampered(t *testing.T) {
 	other, _, err := tk.generate()
 	must(t, err)
 	seal := func(k index.Key, plain []byte) index.Key {
-		k.PrivateEnc = tk.master.seal(k.Fingerprint, plain)
+		k.PrivateEnc = mustSeal(t, tk.master, k.Fingerprint, plain)
 		return k
 	}
 	pkcs8 := func(priv any) []byte {

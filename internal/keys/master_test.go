@@ -26,6 +26,26 @@ func master(t testing.TB, hex string) *Master {
 	return m
 }
 
+// mustSeal returns m.seal(aad, plain), which must not fail.
+func mustSeal(t testing.TB, m *Master, aad string, plain []byte) []byte {
+	t.Helper()
+	sealed, err := m.seal(aad, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+// mustSealSnapshot returns m.SealSnapshot(plain, ad), which must not fail.
+func mustSealSnapshot(t testing.TB, m *Master, plain, ad []byte) []byte {
+	t.Helper()
+	sealed, err := m.SealSnapshot(plain, ad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
 func TestParseMaster(t *testing.T) {
 	for _, tt := range []struct {
 		name, in string
@@ -131,11 +151,11 @@ func TestMasterRedacted(t *testing.T) {
 func TestSealOpen(t *testing.T) {
 	m := master(t, testMasterHex)
 	plain := []byte("private key packets")
-	sealed := m.seal("FP1", plain)
+	sealed := mustSeal(t, m, "FP1", plain)
 	if bytes.Contains(sealed, plain) {
 		t.Error("the ciphertext contains the plaintext")
 	}
-	if again := m.seal("FP1", plain); bytes.Equal(again, sealed) {
+	if again := mustSeal(t, m, "FP1", plain); bytes.Equal(again, sealed) {
 		t.Error("two seals of the same key are the same bytes: the nonce is not fresh")
 	}
 	got, err := m.open("FP1", sealed)
@@ -174,7 +194,7 @@ func TestMasterSealOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := []byte("s3cr3t-webhook-key")
-	sealed := m.Seal("webhook:1", secret)
+	sealed := mustSeal(t, m, "webhook:1", secret)
 	if got, err := m.Open("webhook:1", sealed); err != nil || string(got) != string(secret) {
 		t.Fatalf("Open = %q, %v", got, err)
 	}
@@ -196,8 +216,8 @@ func TestMasterSealOpen(t *testing.T) {
 func TestSealSnapshot(t *testing.T) {
 	m := master(t, testMasterHex)
 	plain, ad := []byte("the gzip'd document"), []byte("application/vnd.lajstrom.snapshot.control-plane.v1.sealed")
-	sealed := m.SealSnapshot(plain, ad)
-	if bytes.Contains(sealed, plain) || bytes.Equal(m.SealSnapshot(plain, ad), sealed) {
+	sealed := mustSealSnapshot(t, m, plain, ad)
+	if bytes.Contains(sealed, plain) || bytes.Equal(mustSealSnapshot(t, m, plain, ad), sealed) {
 		t.Error("the sealed snapshot contains the plaintext, or the nonce is not fresh")
 	}
 	got, err := m.OpenSnapshot(sealed, ad)
@@ -225,7 +245,7 @@ func TestSealSnapshot(t *testing.T) {
 	if _, err := m.open(string(ad), sealed); err == nil {
 		t.Error("a sealed snapshot opens with the key of the private keys")
 	}
-	if _, err := m.OpenSnapshot(m.seal(string(ad), plain), ad); err == nil {
+	if _, err := m.OpenSnapshot(mustSeal(t, m, string(ad), plain), ad); err == nil {
 		t.Error("a sealed private key opens with the snapshot key")
 	}
 }

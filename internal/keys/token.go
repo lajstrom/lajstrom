@@ -380,7 +380,9 @@ func (t *Tokens) generate() (*index.Key, *TokenKey, error) {
 	}
 	defer clear(der)
 	row := key.Key
-	row.PrivateEnc = t.master.seal(row.Fingerprint, der)
+	if row.PrivateEnc, err = t.master.seal(row.Fingerprint, der); err != nil {
+		return nil, nil, fmt.Errorf("keys: the token key: %w", err)
+	}
 	row.CreatedAt = t.now().UTC()
 	key.Key = row
 	return &row, key, nil

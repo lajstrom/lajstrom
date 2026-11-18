@@ -27,9 +27,11 @@ type Encryption interface {
 	// Unwrap opens jwe with the repo's key of fingerprint, active or retired. What it opened is
 	// cached for a while in memory.
 	Unwrap(ctx context.Context, repo index.Repo, fingerprint, jwe string) (blobcrypt.Private, error)
-	// Seal encrypts the data key of a facade upload for its row with the master key, aad the
-	// row's key; Open decrypts it.
-	Seal(aad string, key []byte) []byte
+	// Seal encrypts the data key of a facade upload for its row with the master key the index
+	// names, aad the row's key; Open decrypts it with any master key the process holds, that one
+	// first. Seal fails with keys.ErrNoSealingKey while the process does not hold it
+	// (index-schema.md, The master key and its replacement, #1288), a 503 with Retry-After.
+	Seal(aad string, key []byte) ([]byte, error)
 	Open(aad string, sealed []byte) ([]byte, error)
 }
 

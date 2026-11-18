@@ -557,9 +557,12 @@ func (s *Service) generate(repo index.Repo) (*index.Key, *openpgp.Entity, error)
 	}
 	defer clear(priv.Bytes())
 	fp := fingerprint(e)
+	sealed, err := s.master.seal(fp, priv.Bytes())
+	if err != nil {
+		return nil, nil, fmt.Errorf("keys: the key for %s: %w", repoName(repo), err)
+	}
 	id := repo.ID
-	return &index.Key{RepoID: &id, Kind: KindGPG, Public: pub.Bytes(), PrivateEnc: s.master.seal(fp, priv.Bytes()),
-		Fingerprint: fp, CreatedAt: created}, e, nil
+	return &index.Key{RepoID: &id, Kind: KindGPG, Public: pub.Bytes(), PrivateEnc: sealed, Fingerprint: fp, CreatedAt: created}, e, nil
 }
 
 // decrypt returns the key of row k with its private key opened by the master key, checked to

@@ -597,17 +597,17 @@ func TestDecryptFails(t *testing.T) {
 	plain, err := e.svc.master.open(b.Fingerprint, b.PrivateEnc)
 	must(t, err)
 	swapped := row
-	swapped.PrivateEnc = e.svc.master.seal(row.Fingerprint, plain)
+	swapped.PrivateEnc = mustSeal(t, e.svc.master, row.Fingerprint, plain)
 	if _, err := e.svc.decrypt(t.Context(), swapped); err == nil || !strings.Contains(err.Error(), "holds the key "+b.Fingerprint) {
 		t.Errorf("decrypt of a row with the private key of another: %v", err)
 	}
 	garbage := row
-	garbage.PrivateEnc = e.svc.master.seal(row.Fingerprint, []byte("not a key"))
+	garbage.PrivateEnc = mustSeal(t, e.svc.master, row.Fingerprint, []byte("not a key"))
 	if _, err := e.svc.decrypt(t.Context(), garbage); err == nil {
 		t.Error("decrypt of a row whose private key is no OpenPGP packet succeeded")
 	}
 	public := row
-	public.PrivateEnc = e.svc.master.seal(row.Fingerprint, row.Public)
+	public.PrivateEnc = mustSeal(t, e.svc.master, row.Fingerprint, row.Public)
 	if _, err := e.svc.decrypt(t.Context(), public); err == nil || !strings.Contains(err.Error(), "no usable private key") {
 		t.Errorf("decrypt of a row whose private key is the public key: %v", err)
 	}

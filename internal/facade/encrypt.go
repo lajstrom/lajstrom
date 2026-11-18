@@ -71,10 +71,15 @@ func mapped(t *target) bool {
 }
 
 // newEncState returns the encryption of the new upload session id: a new data key, sealed, and
-// nonce.
-func (h *handler) newEncState(id string) *encState {
+// nonce. A replica that does not hold the master key that seals fails (keys.ErrNoSealingKey, 503
+// UNAVAILABLE with Retry-After), and opens no session.
+func (h *handler) newEncState(id string) (*encState, error) {
 	opts := blobcrypt.NewPrivate()
-	return &encState{Key: h.o.Encryption.Seal(uploadKind+id, opts.Key), Nonce: opts.Nonce()}
+	key, err := h.o.Encryption.Seal(uploadKind+id, opts.Key)
+	if err != nil {
+		return nil, fmt.Errorf("facade: upload session %s: %w", id, err)
+	}
+	return &encState{Key: key, Nonce: opts.Nonce()}, nil
 }
 
 // private returns the options of the session id: its data key opened with the master key.
@@ -516,7 +521,12 @@ func (h *handler) monolithicEncrypted(w http.ResponseWriter, r *http.Request, t 
 		h.cancelBackend(ctx, rr, u)
 		return err
 	}
-	st := uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset, Enc: h.newEncState(id)}
+	enc, err := h.newEncState(id)
+	if err != nil {
+		h.cancelBackend(ctx, rr, u)
+		return err
+	}
+	st := uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset, Enc: enc}
 	if err := h.finishEncrypted(ctx, t, id, rr, u, &st, d, d.Algorithm().Hash(), body, size); err != nil {
 		h.cancelBackend(ctx, rr, u)
 		return finishError(err, body)
