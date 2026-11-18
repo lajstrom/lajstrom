@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/blobcrypt"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -203,6 +205,31 @@ func TestEncryptedWithoutKeys(t *testing.T) {
 	rr := e.do(e.h, http.MethodPost, "/v2/raw/assets/dist/app.txt/blobs/uploads/", nil, principalHeader, "alice")
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("POST without the keys = %d %s, want 500", rr.Code, rr.Body)
+	}
+}
+
+// TestEncryptedFailsClosed: a replica that does not hold the master key the index names opens no
+// upload session on an encrypted repo, chunked or in one request: 503 UNAVAILABLE with
+// Retry-After: 30 (docs/spec/index-schema.md, The master key and its replacement, #1288).
+func TestEncryptedFailsClosed(t *testing.T) {
+	e := newEnv(t, envOptions{encrypted: true})
+	m, err := keys.HoldMasters([]keys.MasterSource{{Source: "test", Text: strings.Repeat("0123456789abcdef", 4)}})
+	must(t, err)
+	m.SealWith("fedcba9876543210") // a key this replica does not hold
+	e.enc, err = keys.NewEncryption(keys.EncryptionOptions{Index: e.idx, Master: m, Log: slog.New(slog.DiscardHandler)})
+	must(t, err)
+	e.h = e.replica()
+	mono := []byte(plaintextMarker)
+	for what, target := range map[string]string{
+		"a session":   "/v2/raw/assets/dist/app.txt/blobs/uploads/",
+		"one request": "/v2/raw/assets/dist/app.txt/blobs/uploads/?digest=" + digest.FromBytes(mono).String(),
+	} {
+		rr := e.do(e.h, http.MethodPost, target, bytes.NewReader(mono), principalHeader, "alice")
+		wantStatus(t, what, rr, http.StatusServiceUnavailable)
+		wantHeader(t, what, rr, "Retry-After", "30")
+		if !strings.Contains(rr.Body.String(), `"code":"UNAVAILABLE"`) || strings.Contains(rr.Body.String(), "fedcba") {
+			t.Errorf("%s: %s, want UNAVAILABLE without the cause", what, rr.Body)
+		}
 	}
 }
 

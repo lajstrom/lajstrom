@@ -224,3 +224,32 @@ func TestWebhookNoMasterKey(t *testing.T) {
 	wantError(t, f.do("POST", "/api/v1/repos/raw/open/webhooks", hookBody, carol), 501, codeUnavailable, "keys.masterKeyEnv")
 	wantStatus(t, f.do("GET", "/api/v1/repos/raw/open/webhooks", "", carol), 200)
 }
+
+// TestWebhookFailsClosed: a replica that does not hold the master key the index names makes no
+// webhook and rotates no secret: 503 UNAVAILABLE with Retry-After: 30, the cause not in the
+// answer; the list still answers (docs/spec/index-schema.md, The master key and its replacement,
+// #1288).
+func TestWebhookFailsClosed(t *testing.T) {
+	m, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &webhook.Service{Deliverer: webhook.NewDeliverer(webhook.Options{}), Master: m, Formats: oneOf("raw"),
+		Replica: "replica-test", Source: "https://art.example.com"}
+	f := newFixture(t, Options{Auth: fakeAuth{grants: webhookGrants}, Webhooks: svc})
+	svc.Index = f.st
+	f.create(t, "raw", "open")
+	created := f.postWebhook(t, "/api/v1/repos/raw/open/webhooks", hookBody, carol)
+	m.SealWith("fedcba9876543210") // a key this replica does not hold
+	for what, target := range map[string]string{
+		"a webhook made":     "/api/v1/repos/raw/open/webhooks",
+		"its secret rotated": fmt.Sprintf("/api/v1/repos/raw/open/webhooks/%d/secret", created.ID),
+	} {
+		rr := f.do("POST", target, hookBody, carol)
+		wantError(t, rr, 503, codeUnavailable)
+		if rr.Header().Get("Retry-After") != "30" || strings.Contains(rr.Body.String(), "fedcba") {
+			t.Errorf("%s: Retry-After %q, %s; want 30, without the cause", what, rr.Header().Get("Retry-After"), rr.Body)
+		}
+	}
+	wantStatus(t, f.do("GET", "/api/v1/repos/raw/open/webhooks", "", carol), 200)
+}

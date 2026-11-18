@@ -139,7 +139,8 @@ func TestEncryptionLocalKey(t *testing.T) {
 	if _, err := e.Unwrap(ctx, repo, strings.Repeat("0", 64), jwe1); err == nil {
 		t.Error("Unwrap with a key the repo does not have: no error")
 	}
-	sealed := e.Seal("blob-upload:1", p1.Key)
+	sealed, err := e.Seal("blob-upload:1", p1.Key)
+	must(t, err)
 	if got, err := e.Open("blob-upload:1", sealed); err != nil || !bytes.Equal(got, p1.Key) {
 		t.Errorf("Open(Seal) = %x, %v", got, err)
 	}

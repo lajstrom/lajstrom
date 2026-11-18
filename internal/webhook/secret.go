@@ -48,7 +48,7 @@ func Seal(m *keys.Master, uid string, key []byte) ([]byte, error) {
 	if m == nil {
 		return nil, ErrNoMasterKey
 	}
-	return m.Seal(secretAAD(uid), key), nil
+	return m.Seal(secretAAD(uid), key)
 }
 
 // Open returns the key of the webhook h, sealed with the master key.

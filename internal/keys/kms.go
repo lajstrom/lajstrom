@@ -279,9 +279,12 @@ func (s *Service) generateKMS(ctx context.Context, repo index.Repo, uri string) 
 		return nil, nil, fmt.Errorf("keys: serialize the key of %s in %s: %w", repoName(repo), canonical, err)
 	}
 	fp := fingerprint(e)
+	sealed, err := s.master.seal(fp, []byte(canonical.String()))
+	if err != nil {
+		return nil, nil, fmt.Errorf("keys: the key of %s in %s: %w", repoName(repo), canonical, err)
+	}
 	id := repo.ID
-	row := &index.Key{RepoID: &id, Kind: KindGPG, Public: public.Bytes(), PrivateEnc: s.master.seal(fp, []byte(canonical.String())),
-		Fingerprint: fp, CreatedAt: created}
+	row := &index.Key{RepoID: &id, Kind: KindGPG, Public: public.Bytes(), PrivateEnc: sealed, Fingerprint: fp, CreatedAt: created}
 	return row, &Entity{Key: *row, OpenPGP: e, kms: signer}, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -226,13 +227,17 @@ var clientCodes = map[string]bool{
 }
 
 // unavailable names what takes no request now when err is a 503 of it: "registry" for
-// provider.ErrUnavailable, "index" for index.ErrUnavailable, "" for anything else.
+// provider.ErrUnavailable, "index" for index.ErrUnavailable, "master key" for
+// keys.ErrNoSealingKey (a replica that does not hold the master key that seals, #1288), "" for
+// anything else.
 func unavailable(err error) string {
 	switch {
 	case errors.Is(err, provider.ErrUnavailable):
 		return "registry"
 	case errors.Is(err, index.ErrUnavailable):
 		return "index"
+	case errors.Is(err, keys.ErrNoSealingKey):
+		return "master key"
 	}
 	return ""
 }
