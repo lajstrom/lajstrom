@@ -715,6 +715,34 @@ type VersionKey struct {
 	Version   string
 }
 
+// VersionFilter is what Reader.ListVersionPage keeps of a package's rows; the zero value keeps
+// every row. Each field that is set is one more condition on a row.
+type VersionFilter struct {
+	// Without are kinds of attachments (Attachment*), ?without= of the versions list (#89): a
+	// row counts only when it has no attachment of any of them.
+	Without []string
+	// Unmet is a requirement, ?unmet= of the versions list (#1287): a row counts only when it does
+	// not meet it, as docs/spec/policy.md §11 matches an attachment (Requirement).
+	Unmet *Requirement
+}
+
+// Requirement is one of a repo's policy.requireAttachments (docs/spec/policy.md §11, #1287): a
+// version's manifest meets it when it has an attachment verified, whose predicate type is
+// PredicateType or continues it after a "/" (a signature's is attest.PredicateCosignSign), signed
+// by one of SignedBy, the names of the attachments' trust.
+type Requirement struct {
+	PredicateType string   `json:"predicateType"`
+	SignedBy      []string `json:"signedBy"`
+}
+
+// Attested is a row of Reader.ListAttested: a predicate type that a version has an attachment
+// verified of, and the name of the trust entry that signed it.
+type Attested struct {
+	VersionID     int64
+	PredicateType string // a signature's is attest.PredicateCosignSign
+	SignedBy      string
+}
+
 // TokenFilter is what Reader.ListTokenPage keeps: each field but Limit narrows when it is set.
 type TokenFilter struct {
 	Kind     string // pat or deploy

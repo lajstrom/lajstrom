@@ -648,7 +648,7 @@ func testVersionOCIRepo(t *testing.T, s index.Store) {
 	list, err := s.ListVersions(ctx, pkg.ID)
 	must(t, err)
 	same(t, "ListVersions", []index.Version{split, here}, list)
-	page, err := s.ListVersionPage(ctx, pkg.ID, nil, 10)
+	page, err := s.ListVersionPage(ctx, pkg.ID, nil, 10, index.VersionFilter{})
 	must(t, err)
 	same(t, "ListVersionPage", []index.Version{here, split}, page)
 	unseen, err := s.ListUnseenVersions(ctx, repo.ID, at(10))

@@ -1,6 +1,7 @@
 package sqlstore
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -44,6 +45,42 @@ func (c *conn) ListAttachments(ctx context.Context, versionIDs []int64) ([]index
 		all = append(all, rows...)
 	}
 	slices.SortStableFunc(all, compareAttachments)
+	return all, nil
+}
+
+// ListAttested returns each distinct (version, predicate type, signer) of a row verified of the
+// repo's versions, or of the versions ids among them when ids is not nil, in the order of the
+// three, the text by bytes whatever the database's collation; a signature's predicate type is
+// cosign's (attestedType). One statement over the unique index of attachments; the ids go in
+// statements of at most touchBatch.
+func (c *conn) ListAttested(ctx context.Context, repoID int64, versionIDs []int64) ([]index.Attested, error) {
+	query := "SELECT DISTINCT a.version_id, " + attestedType + ", a.signed_by FROM attachments a" +
+		" JOIN versions v ON v.id = a.version_id JOIN packages p ON p.id = v.package_id WHERE p.repo_id = ? AND a.verification = ?"
+	dests := func(a *index.Attested) []any { return []any{&a.VersionID, &a.PredicateType, textDest{&a.SignedBy}} }
+	what := fmt.Sprintf("the verified attachments of repo %d", repoID)
+	all := []index.Attested{}
+	if versionIDs == nil {
+		rows, err := getAll(ctx, c, what, dests, query, repoID, index.AttachmentVerified)
+		if err != nil {
+			return nil, err
+		}
+		all = rows
+	}
+	for chunk := range slices.Chunk(versionIDs, touchBatch) {
+		args := []any{repoID, index.AttachmentVerified}
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		rows, err := getAll(ctx, c, what, dests, query+" AND a.version_id IN ("+strings.Repeat(", ?", len(chunk))[2:]+")", args...)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+	}
+	slices.SortFunc(all, func(a, b index.Attested) int {
+		return cmp.Or(cmp.Compare(a.VersionID, b.VersionID), strings.Compare(a.PredicateType, b.PredicateType),
+			strings.Compare(a.SignedBy, b.SignedBy))
+	})
 	return all, nil
 }
 

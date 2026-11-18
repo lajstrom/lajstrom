@@ -15,6 +15,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
 // Derived tables: packages, versions, files, index_cache, oci_repos.
@@ -193,43 +194,69 @@ func (c *conn) ListVersions(ctx context.Context, packageID int64) ([]index.Versi
 // first by their key: the earliest created_at of a version's rows, then the version, both in
 // the column's order (bytes; SQLite's timestamps are text of a fixed width). The database groups
 // the package's rows by version, over the unique index (package_id, version, variant), keeps
-// the page's versions and answers their rows only. With without, a row counts only when no
-// attachment of it has one of those kinds (NOT EXISTS over the unique index of attachments,
-// whose first column is version_id), in the page and in the answer alike.
-func (c *conn) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int, without ...string) ([]index.Version, error) {
+// the page's versions and answers their rows only. A row counts only when f keeps it (keptBy),
+// in the page and in the answer alike.
+func (c *conn) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int, f index.VersionFilter) ([]index.Version, error) {
 	if limit < 1 {
 		return []index.Version{}, nil
 	}
-	lacks, kinds := "", []any{}
-	if len(without) > 0 {
-		lacks = " AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.version_id = %s.id AND a.kind IN (?" +
-			strings.Repeat(", ?", len(without)-1) + "))"
-		for _, k := range without {
-			kinds = append(kinds, k)
-		}
-	}
-	having, args := "", append([]any{packageID}, kinds...)
+	kept, keptArgs := keptBy(f)
+	having, args := "", append([]any{packageID}, keptArgs...)
 	if after != nil {
 		at := c.d.EncodeTime(after.CreatedAt)
 		having = " HAVING MIN(created_at) < ? OR (MIN(created_at) = ? AND version < ?)"
 		args = append(args, at, at, after.Version)
 	}
-	args = append(append(args, limit, packageID), kinds...)
+	args = append(append(args, limit, packageID), keptArgs...)
 	return getAll(ctx, c, fmt.Sprintf("a page of the versions of package %d", packageID), versionDests,
-		"WITH page AS (SELECT version, MIN(created_at) AS first_at FROM versions WHERE package_id = ?"+lacksOf(lacks, "versions")+
+		"WITH page AS (SELECT version, MIN(created_at) AS first_at FROM versions WHERE package_id = ?"+keptOn(kept, "versions")+
 			" GROUP BY version"+having+" ORDER BY first_at DESC, version DESC LIMIT ?)"+
-			" SELECT "+versionColsV+" FROM page JOIN versions v ON v.package_id = ? AND v.version = page.version"+lacksOf(lacks, "v")+
+			" SELECT "+versionColsV+" FROM page JOIN versions v ON v.package_id = ? AND v.version = page.version"+keptOn(kept, "v")+
 			" ORDER BY page.first_at DESC, page.version DESC, v.variant",
 		args...)
 }
 
-// lacksOf is the condition lacks of ListVersionPage on the rows of versions called table; ""
-// without one.
-func lacksOf(lacks, table string) string {
-	if lacks == "" {
+// attestedType is the predicate type of the attachment a as a requirement reads it: a
+// signature's is cosign's (docs/spec/policy.md §11); both literals are constants of Lajstrom's.
+var attestedType = fmt.Sprintf("CASE WHEN a.kind = '%s' THEN '%s' ELSE a.predicate_type END", index.AttachmentSignature,
+	profile.PredicateCosignSign)
+
+// keptBy is the condition of the rows of versions that f keeps, with %[1]s for the table's name,
+// and its arguments; "" when f keeps every row. Without is NOT EXISTS an attachment of one of
+// its kinds, Unmet NOT EXISTS an attachment verified whose predicate type is the requirement's or
+// continues it after a "/", signed by one of its names; both over the unique index of
+// attachments, whose first column is version_id. An Unmet without a name is no condition: nothing
+// meets it.
+func keptBy(f index.VersionFilter) (string, []any) {
+	var cond string
+	var args []any
+	if len(f.Without) > 0 {
+		cond = " AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.version_id = %[1]s.id AND a.kind IN (?" +
+			strings.Repeat(", ?", len(f.Without)-1) + "))"
+		for _, k := range f.Without {
+			args = append(args, k)
+		}
+	}
+	if u := f.Unmet; u != nil && len(u.SignedBy) > 0 {
+		prefix := u.PredicateType + "/"
+		cond += " AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.version_id = %[1]s.id AND a.verification = ?" +
+			" AND a.signed_by IN (?" + strings.Repeat(", ?", len(u.SignedBy)-1) + ")" +
+			" AND (" + attestedType + " = ? OR substr(" + attestedType + ", 1, ?) = ?))"
+		args = append(args, index.AttachmentVerified)
+		for _, name := range u.SignedBy {
+			args = append(args, name)
+		}
+		args = append(args, u.PredicateType, utf8.RuneCountInString(prefix), prefix)
+	}
+	return cond, args
+}
+
+// keptOn is the condition kept of keptBy on the rows of versions called table; "" without one.
+func keptOn(kept, table string) string {
+	if kept == "" {
 		return ""
 	}
-	return fmt.Sprintf(lacks, table)
+	return fmt.Sprintf(kept, table)
 }
 
 // ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore, with

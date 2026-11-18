@@ -240,10 +240,12 @@ type Reader interface {
 	// ListVersionPage returns the rows of the first limit versions of a package whose
 	// VersionKey comes after after (nil = from the newest) in the order newest first, every
 	// variant of each: a version's rows are together, ordered by Variant. None when limit is
-	// below 1 (docs/spec/index-schema.md, Pages of packages and versions). With without, kinds
-	// of attachments (Attachment*), only the rows that have no attachment of any of them count,
-	// for the versions and their keys alike (#89, ?without= of the versions list).
-	ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, without ...string) ([]Version, error)
+	// below 1 (docs/spec/index-schema.md, Pages of packages and versions). Only the rows that f
+	// keeps count, for the versions and their keys alike: with f.Without, kinds of attachments
+	// (Attachment*), the rows that have no attachment of any of them (#89, ?without= of the
+	// versions list); with f.Unmet, the rows that have no attachment verified that meets it
+	// (#1287, ?unmet=), every row when it names no signer.
+	ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, f VersionFilter) ([]Version, error)
 	// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore,
 	// with their packages, ordered by package name and version id: the sweep of reindex.
 	ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
@@ -286,6 +288,11 @@ type Reader interface {
 	// ListAttachments returns the attachments of the versions ids, newest first: CreatedAt
 	// descending, those without one after the others, then by Digest and Layer.
 	ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
+	// ListAttested returns each distinct (VersionID, PredicateType, SignedBy) of an attachment
+	// verified of the versions of the repo, or of those of versionIDs among them when it is not
+	// nil, ordered by them; a signature's PredicateType is attest.PredicateCosignSign (#1287,
+	// docs/spec/index-schema.md, Attachments). What a repo's requirements read.
+	ListAttested(ctx context.Context, repoID int64, versionIDs []int64) ([]Attested, error)
 
 	// RepoStats returns the counts of the derived tables of each repo of repoIDs that has a
 	// package, in no order; a repo without a package has none (docs/spec/index-schema.md, A

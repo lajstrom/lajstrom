@@ -209,8 +209,8 @@ func (r *reader) ListVersions(ctx context.Context, packageID int64) ([]index.Ver
 	return r.keep(ctx, vs)
 }
 
-func (r *reader) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int, without ...string) ([]index.Version, error) {
-	vs, err := r.Reader.ListVersionPage(ctx, packageID, after, limit, without...)
+func (r *reader) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int, f index.VersionFilter) ([]index.Version, error) {
+	vs, err := r.Reader.ListVersionPage(ctx, packageID, after, limit, f)
 	if err != nil {
 		return nil, err
 	}
