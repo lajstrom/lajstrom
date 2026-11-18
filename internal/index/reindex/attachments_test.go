@@ -240,6 +240,50 @@ func TestAttachmentsKeylessRelabel(t *testing.T) {
 	}
 }
 
+// TestAttachmentsInvalidate: on a repo with required attachments, a run that writes a version's
+// attachment rows, and one that sweeps them, invalidates the repo's documents in the
+// transaction of the rows, besides the end of the scan, which invalidates them on every repo
+// (docs/spec/policy.md §11, index-schema.md, Attachments).
+func TestAttachmentsInvalidate(t *testing.T) {
+	ctx := t.Context()
+	for _, requires := range []bool{false, true} {
+		e := newEnv(t)
+		scanner := attesttest.NewKey(t)
+		e.attaching(t, scanner.Entry(t, "scanner"))
+		if requires {
+			e.repo.Policy = json.RawMessage(`{"requireAttachments": [{"predicateType": "https://cyclonedx.org/bom", "signedBy": ["scanner"]}]}`)
+			must(t, e.st.UpdateRepo(ctx, &e.repo))
+		}
+		gen := func() int64 {
+			t.Helper()
+			g, err := e.st.IndexCacheGeneration(ctx, e.repo.ID)
+			must(t, err)
+			return g
+		}
+		pub := e.publish(t, "hello", "hello")
+		sbom := e.attach(t, pub, "", attesttest.BundleMediaType,
+			attesttest.Bundle(t, attesttest.Statement(pub.Digest, cyclonedx, `{"bomFormat":"CycloneDX"}`), scanner), cyclonedx, false)
+		before := gen()
+		e.run(t, reindex.Request{})
+		if rows := e.attachmentRows(t)["hello:"+pub.Tag]; len(rows) != 1 {
+			t.Fatalf("the run wrote %d rows, want the SBOM's", len(rows))
+		}
+		written := gen()
+		e.deleteManifest(t, pub.RepoPath, sbom)
+		e.clock.later(time.Second)
+		e.run(t, reindex.Request{})
+		swept := gen()
+		want := int64(1) // the end of the scan
+		if requires {
+			want = 2
+		}
+		if written-before != want || swept-written != want {
+			t.Errorf("requirements %v: the generation moved by %d for the rows written and by %d for the sweep, want %d each",
+				requires, written-before, swept-written, want)
+		}
+	}
+}
+
 // TestAttachmentsSplit: of a package at two forms of its OCI name (ADR 0017), the run lists the
 // referrers of the version at the other form (versions.oci_repo, #642) in that form's OCI
 // repository, with its manifests under cosign's legacy tags there, and those of the version at
