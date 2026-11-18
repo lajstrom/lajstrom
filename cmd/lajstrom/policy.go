@@ -109,18 +109,29 @@ func configTrust(c *config.Config) (*attest.Trust, error) {
 	return attachmentTrust(c.Attachments, slog.New(slog.DiscardHandler))
 }
 
-// warnRequirements warns, once per repo, of the requirements of its policy that name a signer
+// startRequirements warns, once per repo, of the requirements of its policy that name a signer
 // trust does not have (docs/spec/policy.md §11): such a requirement refuses every version of the
-// repo until the trust has the name again or the requirement changes.
-func warnRequirements(ctx context.Context, st index.Store, trust *attest.Trust, log *slog.Logger) {
+// repo until the trust has the name again or the requirement changes. And it invalidates the
+// documents of every repo with requirements: a name dropped from the trust meets nothing from
+// this start on, while a document rendered before may list a version that only its attachment
+// let through. A failure is logged, and the documents stay until their next invalidation.
+func startRequirements(ctx context.Context, st index.Store, trust *attest.Trust, log *slog.Logger) {
 	repos, err := st.ListRepos(ctx, "")
 	if err != nil {
 		log.WarnContext(ctx, "the required attachments of the repos not checked against the trust", "error", err.Error())
 		return
 	}
 	for _, r := range repos {
+		reqs := policy.RequireAttachments(r)
+		if len(reqs) == 0 {
+			continue
+		}
+		if err := st.InvalidateIndexCache(ctx, r.ID, ""); err != nil {
+			log.WarnContext(ctx, "the documents of a repo with required attachments not invalidated at start", "repo", r.Format+"/"+r.Name,
+				"error", err.Error())
+		}
 		var missing []string
-		for _, req := range policy.RequireAttachments(r) {
+		for _, req := range reqs {
 			for _, name := range req.SignedBy {
 				if _, ok := trust.PredicateTypes(name); !ok && !slices.Contains(missing, name) {
 					missing = append(missing, name)

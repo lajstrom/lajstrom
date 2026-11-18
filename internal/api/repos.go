@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 	"github.com/lajstrom/lajstrom/internal/webhook"
@@ -349,20 +350,16 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 
 // change applies req to row on w and returns the fields that changed, with their new values,
 // having written them: the repos row; a group's members, which change with it; and, for a
-// proxy whose upstream is renamed, the drop of its cache of the old one. Nothing changed writes
-// nothing.
+// proxy whose upstream is renamed, the drop of its cache of the old one; a change of the required
+// attachments, the repo's documents (docs/spec/policy.md §11). Nothing changed writes nothing.
 func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req UpdateRequest) (map[string]any, error) {
+	required := policy.RequireAttachments(*row)
 	changed, err := applyUpdate(row, req)
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := changed["policy"]; ok {
-		if err := s.checkAtRest(row.Policy); err != nil {
-			return nil, err
-		}
-		if err := s.checkRequirements(*row); err != nil {
-			return nil, err
-		}
+	if err := s.checkChangedPolicy(*row, changed); err != nil {
+		return nil, err
 	}
 	renamed := false
 	if req.Upstream != nil {
@@ -392,7 +389,32 @@ func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req
 			return nil, err
 		}
 	}
+	if err := requirementsChanged(ctx, w, *row, required); err != nil {
+		return nil, err
+	}
 	return changed, nil
+}
+
+// checkChangedPolicy checks the policy of row, as an update leaves it, when the update changed
+// it: encryption at rest needs the master key, and the requirements the trust's names.
+func (s *Repos) checkChangedPolicy(row index.Repo, changed map[string]any) error {
+	if _, ok := changed["policy"]; !ok {
+		return nil
+	}
+	if err := s.checkAtRest(row.Policy); err != nil {
+		return err
+	}
+	return s.checkRequirements(row)
+}
+
+// requirementsChanged invalidates, on w, the documents of row, and its groups', when its required
+// attachments are no longer before, those it had: they change what the documents list
+// (docs/spec/policy.md §11).
+func requirementsChanged(ctx context.Context, w index.Writer, row index.Repo, before []index.Requirement) error {
+	if reflect.DeepEqual(before, policy.RequireAttachments(row)) {
+		return nil
+	}
+	return w.InvalidateIndexCache(ctx, row.ID, "")
 }
 
 // applyUpdate changes row as req says and returns the fields that changed, with their new

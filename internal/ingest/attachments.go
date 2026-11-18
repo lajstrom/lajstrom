@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/policy"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -161,6 +162,8 @@ func readLayer(ctx context.Context, rr provider.Repository, desc ocispec.Descrip
 // manifest replace those it had, and for a legacy tag those of the version under the tag
 // (Store.ReplaceAttachments). Best effort: a failure is logged and counted, and the push stays a
 // success; the next reindex of the repo writes the rows (docs/spec/index-schema.md, Attachments).
+// On a repo with required attachments the rows invalidate the repo's documents in their
+// transaction (attachmentsChanged).
 func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) {
 	if repo.Format == ociFormat {
 		p.indexOCIVerdicts(ctx, repo, r, principal)
@@ -169,10 +172,13 @@ func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Refe
 	rows, v, err := p.attachmentsOf(ctx, repo, r)
 	switch {
 	case err != nil || v == nil:
-	case slices.ContainsFunc(rows, func(a index.Attachment) bool { return a.Verdict != nil }):
+	case slices.ContainsFunc(rows, func(a index.Attachment) bool { return a.Verdict != nil }) || requiresAttachments(repo):
 		// A verdict's audit row and event go in the transaction of its rows (verdictsWritten).
 		err = p.index.Tx(ctx, func(w index.Writer) error {
 			if err := w.ReplaceAttachments(ctx, v.ID, r.Desc.Digest, rows); err != nil {
+				return err
+			}
+			if err := attachmentsChanged(ctx, w, repo); err != nil {
 				return err
 			}
 			return p.verdictsWritten(ctx, w, repo, v, rows, principal)
@@ -192,6 +198,22 @@ func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Refe
 	for _, a := range rows {
 		metrics.AttachmentsIndexed.WithLabelValues(a.Kind, a.Verification).Inc()
 	}
+}
+
+// requiresAttachments reports whether repo's policy has requirements (docs/spec/policy.md §11).
+func requiresAttachments(repo index.Repo) bool { return len(policy.RequireAttachments(repo)) > 0 }
+
+// attachmentsChanged invalidates, on w, the documents of repo, and its groups', when it requires
+// attachments: the write or the delete of a version's attachment rows may let a version through,
+// or keep it out, from the next render on (docs/spec/policy.md §11, index-schema.md, Attachments).
+func attachmentsChanged(ctx context.Context, w index.Writer, repo index.Repo) error {
+	if !requiresAttachments(repo) {
+		return nil
+	}
+	if err := w.InvalidateIndexCache(ctx, repo.ID, ""); err != nil {
+		return fmt.Errorf("ingest: the documents of %s/%s after its attachments changed: %w", repo.Format, repo.Name, err)
+	}
+	return nil
 }
 
 // attachmentsOf returns the version whose manifest is r's subject, of the package whose versions
