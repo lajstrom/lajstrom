@@ -213,6 +213,7 @@ func newServeCmd(a *app) *cobra.Command {
 			warnBeyondMaxTTL(ctx, c.Auth, st, a.log)
 			warnAdminMFA(ctx, c.Auth, st, a.log)
 			warnApprovers(ctx, c.Auth, st, a.log)
+			warnRequirements(ctx, st, trust, a.log)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
@@ -231,6 +232,7 @@ func newServeCmd(a *app) *cobra.Command {
 			proofs := &dpop.Verifier{ExternalURL: c.Server.ExternalURL, Replays: st, Log: a.log}
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			repos.Encryption = encryption != nil
+			repos.Trust = trust
 			edge, err := edgeInputs(c, st, tokens, a.log)
 			if err != nil {
 				return err
@@ -319,6 +321,9 @@ func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Stor
 	}
 	repos := newRepos(c, st, a.log, nil)
 	repos.Encryption = encryption != nil
+	if repos.Trust, err = configTrust(c); err != nil {
+		return nil, err
+	}
 	created, err := repos.Bootstrap(ctx, c.Repos)
 	if err != nil {
 		return nil, err

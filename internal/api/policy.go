@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -31,6 +33,7 @@ const (
 	keyVersionPolicy   = "versionPolicy"
 	keyEnforcePull     = policy.KeyEnforcePull // docs/spec/policy.md §9
 	keyQuarantine      = policy.KeyQuarantine
+	keyRequirements    = policy.KeyRequireAttachments // docs/spec/policy.md §11
 	keyEncryption      = "encryption"
 	keyMode            = "mode"
 	keyKey             = "key"
@@ -50,9 +53,10 @@ const (
 // policyKeys are the keys of a policy, and mavenKeys those of policy.maven, as the messages
 // list them.
 var (
-	policyKeys     = []string{keyMaxFileSize, keyBlobRedirect, keyEncryption, keyMaven, keyEnforcePull, keyQuarantine}
-	mavenKeys      = []string{keyMaxSessionFiles, keySessionTimeout, keyVersionPolicy}
-	encryptionKeys = []string{keyKey, keyMode, keyRecipients}
+	policyKeys      = []string{keyMaxFileSize, keyBlobRedirect, keyEncryption, keyMaven, keyEnforcePull, keyQuarantine, keyRequirements}
+	mavenKeys       = []string{keyMaxSessionFiles, keySessionTimeout, keyVersionPolicy}
+	encryptionKeys  = []string{keyKey, keyMode, keyRecipients}
+	requirementKeys = []string{"predicateType", "signedBy"}
 )
 
 // policyObject is a policy decoded as JSON with numbers kept as written (json.Number), so that a
@@ -169,6 +173,8 @@ func checkPolicyKeys(formatName string, obj policyObject) error {
 			err = checkQuarantine(v)
 		case keyEncryption:
 			err = checkEncryption(formatName, v)
+		case keyRequirements:
+			err = checkRequirementsShape(v)
 		default:
 			err = unknownKey("policy."+k, policyKeys)
 		}
@@ -325,6 +331,64 @@ func atRest(p json.RawMessage) bool {
 		Encryption *format.EncryptionPolicy `json:"encryption"`
 	}
 	return len(p) > 0 && json.Unmarshal(p, &pol) == nil && pol.Encryption != nil && pol.Encryption.AtRest()
+}
+
+// checkRequirementsShape checks the form of policy.requireAttachments: a list of objects whose
+// keys are predicateType, a string, and signedBy, a list of strings. What they say is checked
+// against the repo and the attachments' trust when the policy is the repo's
+// (Repos.checkRequirements, policy.CheckRequirements).
+func checkRequirementsShape(v any) error {
+	list, ok := v.([]any)
+	if !ok {
+		return invalid(`policy.requireAttachments: must be a list of {"predicateType", "signedBy"}`)
+	}
+	for i, item := range list {
+		field := fmt.Sprintf("policy.requireAttachments[%d]", i)
+		obj, ok := item.(policyObject)
+		if !ok {
+			return invalid(`%s: must be a JSON object {"predicateType", "signedBy"}`, field)
+		}
+		for _, k := range slices.Sorted(maps.Keys(obj)) {
+			switch names, isList := obj[k].([]any); k {
+			case "predicateType":
+				if _, ok := obj[k].(string); !ok {
+					return invalid("%s.predicateType: must be a string, an absolute URI", field)
+				}
+			case "signedBy":
+				if !isList || slices.ContainsFunc(names, func(n any) bool { _, ok := n.(string); return !ok }) {
+					return invalid("%s.signedBy: must be a list of names of attachments.trust or attachments.keyless.identities", field)
+				}
+			default:
+				return unknownKey(field+"."+k, requirementKeys)
+			}
+		}
+	}
+	return nil
+}
+
+// checkRequirements checks the requirements of the policy of row, the repo as a change leaves it,
+// when it has the key: against the repo and s.Trust (policy.CheckRequirements), the error naming
+// the key path.
+func (s *Repos) checkRequirements(row index.Repo) error {
+	var keys map[string]json.RawMessage
+	if len(row.Policy) == 0 || json.Unmarshal(row.Policy, &keys) != nil {
+		return nil
+	}
+	raw, ok := keys[keyRequirements]
+	if !ok {
+		return nil
+	}
+	var reqs []index.Requirement
+	if err := json.Unmarshal(raw, &reqs); err != nil { // checkRequirementsShape took it
+		return invalid("policy.requireAttachments: %s", err.Error())
+	}
+	var re *policy.RuleError
+	if err := policy.CheckRequirements(reqs, row, s.Trust); errors.As(err, &re) {
+		return invalid("policy.%s: %s", re.Field, re.Problem)
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 // unknownKey is the error of a key a policy does not have.

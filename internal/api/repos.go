@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -197,6 +198,10 @@ type Repos struct {
 	// Now is the clock of createdAt and of the audit events; nil means time.Now. The index sets
 	// updatedAt of an update itself.
 	Now func() time.Time
+	// Trust is the trust of attachments, whose keys and keyless identities the requirements of a
+	// policy name (policy.requireAttachments, docs/spec/policy.md §11); nil has none, and a policy
+	// with requirements is refused.
+	Trust *attest.Trust
 	// Encryption says that the server has the master key: without it a policy whose
 	// encryption.mode is at-rest is refused, since no repo key could be made (ADR 0009).
 	Encryption bool
@@ -353,6 +358,9 @@ func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req
 	}
 	if _, ok := changed["policy"]; ok {
 		if err := s.checkAtRest(row.Policy); err != nil {
+			return nil, err
+		}
+		if err := s.checkRequirements(*row); err != nil {
 			return nil, err
 		}
 	}
@@ -634,6 +642,9 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, *proxy.GroupSettings, err
 		return index.Repo{}, nil, err
 	}
 	if err := s.checkAtRest(policy); err != nil {
+		return index.Repo{}, nil, err
+	}
+	if err := s.checkRequirements(index.Repo{Format: req.Format, Name: req.Name, Kind: kind, Policy: policy}); err != nil {
 		return index.Repo{}, nil, err
 	}
 	now := s.now()
