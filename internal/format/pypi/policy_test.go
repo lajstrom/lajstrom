@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -18,8 +19,11 @@ import (
 )
 
 // withPolicy rebuilds the pipeline and the routes of e with a Decider over its index.
-func (e *env) withPolicy() *policy.Decider {
-	d := policy.New(policy.Options{Index: e.st})
+func (e *env) withPolicy() *policy.Decider { return e.withPolicyTrust(nil) }
+
+// withPolicyTrust is withPolicy with trust, the trust of attachments, in the Decider.
+func (e *env) withPolicyTrust(trust *attest.Trust) *policy.Decider {
+	d := policy.New(policy.Options{Index: e.st, Trust: trust})
 	log := slog.New(slog.DiscardHandler)
 	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": e.prov}, Index: e.st, Log: log, Policy: d,
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
