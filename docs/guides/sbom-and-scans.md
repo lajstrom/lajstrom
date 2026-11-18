@@ -9,13 +9,15 @@ Lajstrom does not scan and does not sign. A job of yours makes the SBOM and the 
 them with its key, and pushes them; Lajstrom checks the signature against the keys you configured
 and labels the attachment. A label never blocks a push. A signed verdict that refuses a version
 is the policy layer of [#101](https://github.com/lajstrom/lajstrom/issues/101)
-([policy.md](../policy.md)); refusing a version for lacking a verified attachment is not built.
+([policy.md](../policy.md)); a repo can also refuse to serve a version until it has a verified
+attachment of the kinds it requires (§8, [#1287](https://github.com/lajstrom/lajstrom/issues/1287)).
 
 This page uses cosign v3.1.4 with a key pair. Its steps were run on 2026-11-14 against Lajstrom
 of the #89 stack on Zot 2.1.23, on a raw file: the attestations, the signature,
 `cosign verify-attestation` through Lajstrom, the list, the reindex after a change of the trust
 and the delete. The keyless section (§4) was not run against a public Sigstore: its
 verification is tested with sigstore-go's own public-good test bundle and an in-memory Sigstore.
+The required attachments of §8 (#1287) were not run with clients; their tests check what §8 says.
 What is not there yet is at the end.
 
 ## 1. Trust the key that signs
@@ -171,6 +173,10 @@ lajstrom reindex --repo pypi/internal --json | jq '.repos[0].attachments'
 Reindex also adds attachments pushed straight to the registry, past Lajstrom, and drops those
 deleted there. It asks the registry for the referrers of each version, one request per version.
 
+A repo that requires attachments (§8) stops counting a name removed from the trust at the next
+start of each replica, before any reindex. A key replaced under the same name counts for what the
+old key verified until the reindex: give a new key a new name.
+
 ## 6. Deleting
 
 `DELETE /v2/<ociRepository>/manifests/<referrer digest>` deletes one attachment, with `delete` on
@@ -228,6 +234,44 @@ run attached nothing; `?without=sbom&without=scan` was empty after it; and the s
   `oras attach --annotation lajstrom.attachment.input=<the SBOM's digest>` does keep it, but such a
   report is `unsigned`.
 
+## 8. Require an SBOM before a version is served
+
+The labels say what a version has; a repo's `policy.requireAttachments` makes them a condition of
+serving it ([policy.md](../policy.md) §7, #1287). On a repo that requires an SPDX document signed
+by the release pipeline, a version without one is left out of the indexes and its download is
+`403`, whatever an `allow` rule says, until the rows of its attachment are written:
+
+```sh
+curl -s -u admin -X PATCH "$LAJSTROM/api/v1/repos/pypi/prod" -H 'Content-Type: application/json' \
+  -d '{"policy": {"requireAttachments": [{"predicateType": "https://spdx.dev/Document", "signedBy": ["release"]}]}}'
+```
+
+`release` is a name of `attachments.trust` or `attachments.keyless.identities` trusted for that
+type (§1, §4); only an attachment `verified` by it counts. `https://cyclonedx.org/bom` takes every
+CycloneDX version (`…/bom/v1.6`), and a requirement of `https://sigstore.dev/cosign/sign/v1` is
+met by a signature, `cosign sign`'s. Before you set it, `GET …/versions?unmet=<type>&signedBy=<name>`
+lists the versions it would hide: it holds for the versions pushed before it too.
+
+So the pipeline that publishes attaches before consumers pull:
+
+```sh
+twine upload --repository-url "$LAJSTROM/pypi/prod/" dist/*        # served to nobody yet
+ref=$(curl -s -u "$USER:$TOKEN" "$LAJSTROM/api/v1/repos/pypi/prod/packages/app/versions/1.4.0" |
+  jq -r '"\(.ociRepository)@\(.variants[0].digest)"')
+cosign attest --key cosign.key --type spdxjson --predicate app.spdx.json \
+  --tlog-upload=false --use-signing-config=false -y "$HOST/$ref"
+# served from here on
+```
+
+Each variant needs its own: attach to every wheel of a version. The upload is never refused for
+the requirement, and the version shows up once the attachment's rows are written. A job that
+installs what it has just published attaches first. The nightly job of §7 attaches too, but a
+version waits for it until it runs: on a repo with a requirement, attach in the release pipeline.
+
+On a repo with `enforcePull`, `/v2` refuses such a version to a token asked with `pull` only. The
+token of `cosign attest`, `cosign sign` and `oras attach` asks for `pull,push`, and a deploy token
+with `attach` gets it as `attach`: they still read the manifest they attach to.
+
 ## Not there yet
 
 - **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
@@ -235,5 +279,3 @@ run attached nothing; `?without=sbom&without=scan` was empty after it; and the s
   scan; a scan of an older vulnerability database still counts as one.
 - **Pruning old reports**: a job of yours, through the same `DELETE`; `lajstrom admin retention`
   deletes versions only.
-- **Refusing to serve a version without a verified attachment**: the policy of #101 refuses a
-  version a signed verdict denies ([policy.md](../policy.md)), not one that lacks an attachment.
