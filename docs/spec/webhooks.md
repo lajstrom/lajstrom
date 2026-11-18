@@ -1,7 +1,7 @@
 # Spec: webhooks and events
 
-- Status: normative (2026-11-14), issue #77. Owned by `internal/webhook`. Changes need an issue
-  labelled `contract`.
+- Status: normative (2026-11-14), issue #77; the secret sealed again under a new master key (§5),
+  #1288. Owned by `internal/webhook`. Changes need an issue labelled `contract`.
 - Related: [http-routing.md](http-routing.md) §4 (the routes), [rbac.md](rbac.md) §2, §3, §5
   (who may, the audit rows), [index-schema.md](index-schema.md#webhooks) (the tables),
   [guarantees.md](guarantees.md) INV-43 and INV-44.
@@ -198,12 +198,14 @@ A webhook is `{id, mask, url, events, active, description}` and its secret.
 - **`active`**: an inactive webhook gets no new event, and its pending rows wait until it is
   active again, or until `webhooks.retention`.
 - **`description`**: at most 256 bytes.
-- **The secret** is made by Lajstrom, shown once in the answer that creates it or rotates it,
-  and stored encrypted with the master key (AES-256-GCM, the webhook's uid as additional data, as
-  `keys.private_enc`). It is never logged, never in an audit row, a list or an error. A rotation
-  counts for every attempt after its commit, the retries of earlier events included. Without a
-  master key (`keys.masterKeyEnv`, `keys.masterKeyFile`) a webhook is neither created nor rotated
-  (`501 UNAVAILABLE`).
+- **The secret** is made by Lajstrom, shown once in the answer that creates it or rotates it, and
+  stored encrypted with the master key (AES-256-GCM, the webhook's uid as additional data, as
+  `keys.private_enc`). It is never logged, never in an audit row, a list or an error.
+  `lajstrom admin key rewrap` seals it again under the master key the index names, and a worker
+  opens it with any key its replica holds (index-schema.md, The master key and its replacement,
+  #1288). A rotation counts for every attempt after its commit, the retries of earlier events
+  included. Without a master key (`keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir`) a
+  webhook is neither created nor rotated (`501 UNAVAILABLE`).
 - **A test** sends a `webhook.ping` to the webhook at once, active or not, from the replica of
   the request, under the rules of §4 but for the retries: one attempt, whose row is in the
   delivery log, and whose outcome is the answer.

@@ -11,7 +11,9 @@
   5, on 2026-11-15, #1152; the terraform profile, sections 1 to 5, on 2026-11-15, #66, ADR
   0023; encrypted repos, section 11 and sections 5 and 6, on 2026-11-15, #114, ADR 0009's
   Amendment; the label read by a repo's required attachments, section 6.3, on 2026-11-18, #1287,
-  ADR 0033). Changes need an issue labelled `contract` and, if the wire format changes, an ADR.
+  ADR 0033; a snapshot sealed with the key the index names, read with any key held, and its
+  `sealingKey`, section 9, on 2026-11-18, #1288, ADR 0034). Changes need an issue labelled
+  `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
   [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
@@ -904,6 +906,7 @@ digest, after the read, so that a snapshot never holds its own row.
 | `webhooks` | `[{"id", "uid", "mask", "url", "events", "secretEnc", "active", "description", "createdBy", "createdAt", "updatedAt", "revision"}]`: `events` absent for every type; `secretEnc` base64, the ciphertext of the table (index-schema.md, Webhooks). Not their deliveries |
 | `policyRules` | `[{"id", "repoMask", "name", "version", "variant", "effect", "reason", "createdBy", "createdAt", "expiresAt"}]` (#101); absent in a snapshot of a database before 0030 |
 | `ciPolicies` | `[{"id", "name", "issuer", "claims", "grants", "state", "expiresAt", "renewalExpiresAt", "createdBy", "createdAt", "updatedBy", "updatedAt", "approvedBy", "approvedAt", "revision"}]`: the CI trust policies made through the API (index-schema.md, `ci_policies`), `expiresAt`, `renewalExpiresAt`, `approvedBy` and `approvedAt` absent when the row has none; absent from a snapshot of before migration 0033 |
+| `sealingKey` | `{"keyId", "source", "host", "auditId", "setAt"}`: the row of `sealing_key`, the id of the master key that sealed when the snapshot was made (index-schema.md, The master key and its replacement, #1288), never a key; absent when the database had none, and before migration 0040 |
 | `audit` | `[{"id", "at", "principal", "principalName", "action", "repo", "subject", "digest", "ip", "details", "state", "error"}]`; absent when the snapshot was made without audit rows, `[]` when its window held none |
 
 Each object is a row of its table with its id; its keys are the columns, camelCase, a json column
@@ -914,14 +917,17 @@ by `identity` and `name`. There is no plaintext secret in the document, since th
 passwords as argon2id hashes, token secrets as sha256, private keys and webhook secrets encrypted
 with the master key. The master key itself is never in it.
 
-**Sealed.** By default the layer is sealed: `nonce ‖ AES-256-GCM(gzip(document))`, a random
-12-byte nonce, the key HKDF-SHA256 of the master key's 32 bytes with no salt and the info
-`lajstrom snapshot v1`, 32 bytes, so that the cipher of `keys.private_enc` is not used for
-anything else, and the layer's media type as the additional data. A snapshot holds password
-hashes, user names, OIDC subjects and the audit trail, and a registry often has more readers than
-the database. A sealed snapshot is read only with the master key of its writer. The writer makes
-the unsealed form, `…control-plane.v1.json+gzip`, when the operator asks for it, and refuses a
-sealed one without a master key.
+**Sealed.** By default the layer is sealed: `nonce ‖ AES-256-GCM(gzip(document))`, a random 12-byte
+nonce, the key HKDF-SHA256 of the 32 bytes of the master key that the index names to seal
+(index-schema.md, The master key and its replacement, #1288) with no salt and the info
+`lajstrom snapshot v1`, 32 bytes, so that the cipher of `keys.private_enc` is not used for anything
+else, and the layer's media type as the additional data. A snapshot holds password hashes, user
+names, OIDC subjects and the audit trail, and a registry often has more readers than the database. A
+sealed snapshot is read only with the master key it was sealed under, which must be one of the keys
+the restore holds: the restore tries each, the sealing key of the database first when it has one. A
+rewrap seals no snapshot again: keep the key a snapshot was sealed with as long as the snapshot. The
+writer makes the unsealed form, `…control-plane.v1.json+gzip`, when the operator asks for it, and
+refuses a sealed one without a master key.
 
 **Versions: written in the newest form, read in every form.** A field added to the document with
 a column that an expand migration adds (index-schema.md, Upgrades) keeps the version: an older
