@@ -1217,7 +1217,7 @@ longer than `reconcile.graceAge` is outside them
   does not fetch it (ADR 0008); OCI pulls are refused only on a repo with `enforcePull`. A version
   that misses an attachment its repo requires is left out and its download refused the same way
   until the rows of that attachment commit, and its upload is not refused; no `allow` rule lets it
-  through (policy.md §11; decided on #1287, being built).
+  through (policy.md §11, #1287).
 - **Scope.** Every frontend, the proxy fetch, `/v2` as ADR 0008 says ([policy.md](policy.md) §6).
 - **Assumes.** As INV-27 for the invalidation of rendered indexes when a rule or a verdict
   changes; a document rendered under a decision that expires is rendered again after it
@@ -1225,10 +1225,17 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** `policy.Decider`, asked in `format.CachedDocument` (through `policy.View`'s
   Reader), in `format.ServeBlob` (`format.CheckVersion`), in `ingest.decide` before the tag
   claim, at step 3 of the proxy core and in the facade under `enforcePull`; `policy.Invalidate`
-  in the transaction of every change of a rule or a verdict.
+  in the transaction of every change of a rule or a verdict. A repo's requirements are step 2 of
+  the decision, on the rows `verified` of the version (`index.Reader.ListAttested`), left out of an
+  upload, a push and a producer's read of `/v2` (`Subject.NoRequirements`); the transaction that
+  writes or deletes a version's attachment rows (ingest, reindex), or changes the requirements,
+  invalidates the repo's documents, and serve invalidates them at start.
 - **Tests.** `TestDecideRules`, `TestDecideVerdicts`, `TestDecideQuarantine` and `TestViewReader`
   (policy); `TestPolicyDeny` (pypi: the index, the `403`, the upload); `TestPolicyVerdict` (deb);
-  `TestPolicyPull` and `TestPolicyPush` (facade); `TestQuarantine` and `TestProxyRule` (proxy).
+  `TestPolicyPull` and `TestPolicyPush` (facade); `TestQuarantine` and `TestProxyRule` (proxy);
+  for the requirements, `TestDecideRequirements`, `TestDecideRequirementOrder` and
+  `TestViewRequirements` (policy), `TestPolicyRequirements` (pypi), `TestPolicyPullRequirements`
+  (facade), `TestRequirementsInvalidate` (ingest) and `TestAttachmentsInvalidate` (reindex).
 - **When violated.** A client installs a version the operator denied.
 - **Status.** `holds`.
 

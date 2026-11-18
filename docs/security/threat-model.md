@@ -16,7 +16,9 @@
   C-12, from rbac.md §11 and the code of the #937 stack; C-5 and C-9 again for the decisions of
   2026-11-16 (policies through the API, an audit row per refusal), C-5 and C-12 for the policies of
   the API that write (a fresh sign-in with a second factor, a second admin, an expiry). The other
-  rows were not checked again.
+  rows were not checked again. Updated on 2026-11-18 for required attachments (#1287,
+  [ADR 0033](../adr/0033-required-attachments-of-a-version.md)): the row X-5, from policy.md §11
+  and the code of the #1287 stack.
   Review it again when a surface changes: a new endpoint, a new credential, a proxy of another
   format (pypi #67, maven #68), OIDC.
 - Scope: the server of this repository. This means the OCI facade `/v2` and its token
@@ -86,7 +88,7 @@ The table summarises; the IDs point to §3.
 | --- | --- | --- | --- | --- | --- | --- |
 | A. `oras push` through `/v2` | T-3, T-5, A-1 | P-1, P-9, M-1, M-3, F-5 | A-3 | R-1, R-2, P-5 | M-2, U-3, U-4, T-7 | T-1, P-7, T-9 |
 | B. `mvn deploy`, twine, raw and apt `PUT` | A-1, A-5 | F-1, F-2, F-5, U-5 | A-4 | R-4 | F-4, U-5, U-6 | R-4 |
-| C. reads: apt, pip, maven, raw, npm, `/v2` | T-3 | P-2 | none (reads are not audited, rbac.md §5) | R-1, R-2, P-5, B-1 | U-6 | none |
+| C. reads: apt, pip, maven, raw, npm, `/v2` | T-3 | P-2, X-5 | none (reads are not audited, rbac.md §5) | R-1, R-2, P-5, B-1 | U-6 | none |
 | D. proxy repo: a miss fetched from the upstream; a group | O-3 | O-3, O-4, O-5, F-4 | none (a fetch is the `proxy.fetch` row of the reader whose miss caused it, rbac.md §7) | O-1, O-6, O-8, O-9 | O-7, O-10, F-4 | O-2, O-5, O-9 |
 | Token flow `/v2/token` | T-2, T-3, T-5 | none | none (tokens are not audited, rbac.md §5) | T-9 | T-7, A-1 | T-1, T-6, T-8 |
 | Management API `/api/v1` | A-1, B-2, B-5, B-6 | B-2 | A-4, A-10 | R-5, A-10 | A-1 | B-2, T-8 |
@@ -162,6 +164,7 @@ The table summarises; the IDs point to §3.
 | X-2 | **Two pushes of referrers of one subject lose one**, on a registry without the referrers API, where the provider rewrites the `sha256-<hex>` index. | The referrers lock of the subject in the index ([index-schema.md](../spec/index-schema.md), Coordination); tested across two replicas over Postgres. | mitigated |
 | X-3 | **An `oci` repo takes any referrer.** | By design ([http-routing.md](../spec/http-routing.md) §2): no subject check, the registry's. | accepted |
 | X-4 | **Reading the referrers of a repo one may not read.** | `facade.referrers` authorises `read` before it parses the digest. A subject without referrers is an empty index, never `404`. | mitigated |
+| X-5 | **A version served without the attachment its repo requires** (#1287, PCI DSS 6.3.2, CC6.8): an unsigned or untrusted SBOM, one signed by a key that left the trust, another variant's or another digest's attachment, an `allow` rule, a document rendered before the requirement or the attachment, or a requirement whose signer is a typo. | A repo's `policy.requireAttachments` is step 2 of the decision, after a `deny` verdict and before every rule (`policy.evaluation.decide`); only the index's rows `verified` of the version's own manifest count (`index.Reader.ListAttested`), signed by a name of the requirement that the replica's trust has at the decision, so a name dropped from the configuration counts no more from the next start; the predicate type matches whole path segments (`profile.IsType`). The rows of an attachment, their delete and a change of the requirements invalidate the repo's documents in their transaction, and serve invalidates them at start. A requirement is checked against the trust when it is written (`policy.CheckRequirements`, `400`), and serve warns of a signer the trust lacks. What is left: a token that grants `push` or `attach` reads such a version through `/v2` under `enforcePull` (decided on #1287: producers sign what they read); a key replaced under the same name counts for what the old key verified until the next reindex; `manage` on the repo turns the requirement off, each time a `repo.update` row. Tests: `TestDecideRequirements`, `TestDecideRequirementOrder`, `TestViewRequirements`, `TestCheckRequirements`, `TestPolicyRequirements` (pypi), `TestPolicyPullRequirements` (facade), `TestRequirementsInvalidate` (ingest). | mitigated; the producers' reads and `manage` accepted (ADR 0033) |
 
 ### Proxy and group repos: the upstream ([ADR 0013](../adr/0013-proxy-and-group-repos.md))
 
