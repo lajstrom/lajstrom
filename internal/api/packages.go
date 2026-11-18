@@ -15,6 +15,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/policy"
 )
 
 // PackageEntry is a package as the API answers it (docs/api.md, List packages): its row and
@@ -338,8 +339,8 @@ func orEmpty(m map[string]string) map[string]string {
 // listVersions answers GET /api/v1/repos/{format}/{repo}/packages/{name}/versions: a page of the
 // package's versions, newest first (versionKey), ?limit of them after the version of ?cursor.
 // Each ?without=<kind> keeps the variants without an attachment of that kind (#89); a kind that
-// is none of attachmentKinds is 400. It needs read; a repo or a package that does not exist is
-// 404.
+// is none of attachmentKinds is 400. ?unmet=&signedBy= keeps the variants a requirement would
+// refuse (unmetOf, #1287). It needs read; a repo or a package that does not exist is 404.
 func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
@@ -357,11 +358,14 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 		}
 		from = &index.VersionKey{CreatedAt: k.At, Version: k.Version}
 	}
-	without := r.URL.Query()["without"]
-	for _, k := range without {
+	filter := index.VersionFilter{Without: r.URL.Query()["without"]}
+	for _, k := range filter.Without {
 		if !slices.Contains(attachmentKinds, k) {
 			return 0, nil, invalid("without: %q is not one of %v", k, attachmentKinds)
 		}
+	}
+	if filter.Unmet, err = h.unmetOf(r); err != nil {
+		return 0, nil, err
 	}
 	ctx := r.Context()
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
@@ -372,7 +376,7 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, err
 	}
-	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg, from, limit+1, without...)
+	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg, from, limit+1, filter)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -385,6 +389,40 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 		list.Versions = append(list.Versions, v)
 	}
 	return http.StatusOK, list, nil
+}
+
+// unmetOf returns the requirement of ?unmet=<predicateType>&signedBy=<name> (docs/spec/
+// http-routing.md §4, policy.md §11), nil without either: its names those of the attachments'
+// trust (h.repos.Trust) among signedBy, so that a name the replica's trust does not have meets
+// nothing, as in a decision. unmet without signedBy, signedBy without unmet, unmet twice, a
+// predicate type that is not an absolute URI of at most 256 bytes (policy.CheckPredicateType) and
+// more than policy.MaxSigners names are 400. Whatever the repo's policy says: what a requirement
+// would leave out before it is set, and what it leaves out after.
+func (h *handler) unmetOf(r *http.Request) (*index.Requirement, error) {
+	q := r.URL.Query()
+	unmet, signers := q["unmet"], q["signedBy"]
+	switch {
+	case len(unmet) == 0 && len(signers) == 0:
+		return nil, nil
+	case len(unmet) == 0:
+		return nil, invalid("signedBy: needs unmet, the predicate type of the requirement")
+	case len(unmet) > 1:
+		return nil, invalid("unmet: given %d times; one requirement per request", len(unmet))
+	case len(signers) == 0:
+		return nil, invalid("unmet: needs signedBy, a name of the requirement, given once per name")
+	case len(signers) > policy.MaxSigners:
+		return nil, invalid("signedBy: %d names, more than %d", len(signers), policy.MaxSigners)
+	}
+	if err := policy.CheckPredicateType(unmet[0]); err != nil {
+		return nil, invalid("unmet: %s", err.Error())
+	}
+	req := &index.Requirement{PredicateType: unmet[0], SignedBy: []string{}}
+	for _, name := range signers {
+		if _, ok := h.repos.Trust.PredicateTypes(name); ok {
+			req.SignedBy = append(req.SignedBy, name)
+		}
+	}
+	return req, nil
 }
 
 // packageOf returns the package of the path's {name} in repo: index.ErrNotFound naming it when
@@ -403,11 +441,10 @@ func (h *handler) packageOf(r *http.Request, repo *index.Repo) (*index.Package, 
 
 // listedVersions returns limit versions of pkg after the key from (nil: from the newest), newest
 // first, with their variants and their facts, and pointers: one statement of the index for the
-// facts of the page's variants, not one per row. With without, attachment kinds, the variants
-// without an attachment of any of them.
+// facts of the page's variants, not one per row; the variants that f keeps (index.VersionFilter).
 func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int,
-	without ...string) ([]VersionEntry, error) {
-	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, index.VersionFilter{Without: without})
+	f index.VersionFilter) ([]VersionEntry, error) {
+	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, f)
 	if err != nil {
 		return nil, fmt.Errorf("api: versions of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}

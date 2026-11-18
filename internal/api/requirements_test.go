@@ -162,3 +162,69 @@ func TestRequireAttachmentsInvalidate(t *testing.T) {
 		}
 	}
 }
+
+// TestListVersionsUnmet (#1287, http-routing.md §4): ?unmet=<predicateType>&signedBy=<name> keeps
+// the variants that have no attachment verified of the type, or of a longer version of it, signed
+// by one of the names the trust has, whatever the repo's policy says; with ?without=, a variant
+// meets both; the refusals of what is no requirement.
+func TestListVersionsUnmet(t *testing.T) {
+	f := newFixture(t, Options{})
+	trust, err := attest.NewTrust([]attest.Entry{attesttest.NewKey(t).Entry(t, "scanner"), attesttest.NewKey(t).Entry(t, "other")})
+	must(t, err)
+	f.repos.Trust = trust
+	repo := f.create(t, "pypi", "libs")
+	publishDetailed(t, f.st, repo.ID)
+	attachDetailed(t, f.st, repo.ID) // the wheel: a CycloneDX SBOM verified, of scanner; the sdist: an unsigned SPDX
+	target := "/api/v1/repos/pypi/libs/packages/requests/versions"
+	variants := func(query string) string {
+		t.Helper()
+		var got struct {
+			Versions []struct {
+				Version  string `json:"version"`
+				Variants []struct {
+					Variant string `json:"variant"`
+				} `json:"variants"`
+			} `json:"versions"`
+		}
+		decodeJSON(t, f.do(http.MethodGet, target+query, "", admin), http.StatusOK, &got)
+		var out []string
+		for _, v := range got.Versions {
+			for _, va := range v.Variants {
+				out = append(out, v.Version+"/"+va.Variant)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	const both = "1.0/py3-none-any 1.0/sdist"
+	cases := []struct{ query, want string }{
+		{"?unmet=https://cyclonedx.org/bom&signedBy=scanner", "1.0/sdist"},
+		{"?unmet=https://cyclonedx.org&signedBy=scanner", "1.0/sdist"},
+		{"?unmet=https://cyclonedx.org/bom/v1.6&signedBy=scanner", both},
+		{"?unmet=https://cyclonedx.org/bom&signedBy=other", both},
+		{"?unmet=https://cyclonedx.org/bom&signedBy=gone&signedBy=scanner", "1.0/sdist"},
+		{"?unmet=https://cyclonedx.org/bom&signedBy=gone", both},
+		{"?unmet=https://cyclonedx.org/bom&signedBy=scanner&without=scan", "1.0/sdist"},
+		{"?unmet=https://cyclonedx.org/bom&signedBy=scanner&without=sbom", ""},
+	}
+	for _, tt := range cases {
+		if got := variants(tt.query); got != tt.want {
+			t.Errorf("versions%s: %q, want %q", tt.query, got, tt.want)
+		}
+	}
+	// A trust that dropped scanner: its attachment meets nothing.
+	f.repos.Trust = nil
+	if got := variants(cases[0].query); got != both {
+		t.Errorf("versions%s without scanner in the trust: %q, want both", cases[0].query, got)
+	}
+	names := strings.Repeat("&signedBy=a", 17)
+	for _, tt := range []struct{ query, want string }{
+		{"?unmet=https://cyclonedx.org/bom", "unmet: needs signedBy"},
+		{"?signedBy=scanner", "signedBy: needs unmet"},
+		{"?unmet=https://cyclonedx.org/bom&unmet=https://spdx.dev/Document&signedBy=scanner", "unmet: given 2 times"},
+		{"?unmet=cyclonedx&signedBy=scanner", `unmet: "cyclonedx" is not an absolute URI`},
+		{"?unmet=https://e.com/" + strings.Repeat("a", 243) + "&signedBy=scanner", "unmet: is longer than 256 bytes"},
+		{"?unmet=https://cyclonedx.org/bom" + names, "signedBy: 17 names, more than 16"},
+	} {
+		wantError(t, f.do(http.MethodGet, target+tt.query, "", admin), http.StatusBadRequest, "INVALID", tt.want)
+	}
+}
