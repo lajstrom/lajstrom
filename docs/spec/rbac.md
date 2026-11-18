@@ -691,8 +691,10 @@ other rows (`source`, `requestId`, and `host`, the machine of a command-line cha
 `subject` `<name> <version>[ <variant>]` (an `oci` repo's path), `digest` the judged manifest's,
 `details` `{"verdict", "reason", "source", "scope", "validUntil", "attestation"}`. A request that
 policy refuses is `policy.refuse`, in a transaction of its own ([policy.md](policy.md) §6.6): the
-one read that is audited, so that a refusal can be traced to its rule or verdict. A test delivery and the
-deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
+one read that is audited, so that a refusal can be traced to its rule, its verdict or the
+attachment its repo requires (#1287). A change of a repo's required attachments is the repo's
+`repo.update`, `changed.policy` in its details the policy as the change left it (policy.md §11).
+A test delivery and the deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself. A CI token's
 exchange is: `token.exchange`, a row per token minted and, rate-limited, per refusal; and so is

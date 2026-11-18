@@ -1214,7 +1214,10 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** A version that a policy rule or verdict denies is left out of every rendered
   index, its download is `403` with the reason, its upload is refused at ingest, and a proxy
-  does not fetch it (ADR 0008); OCI pulls are refused only on a repo with `enforcePull`.
+  does not fetch it (ADR 0008); OCI pulls are refused only on a repo with `enforcePull`. A version
+  that misses an attachment its repo requires is left out and its download refused the same way
+  until the rows of that attachment commit, and its upload is not refused; no `allow` rule lets it
+  through (policy.md §11; decided on #1287, being built).
 - **Scope.** Every frontend, the proxy fetch, `/v2` as ADR 0008 says ([policy.md](policy.md) §6).
 - **Assumes.** As INV-27 for the invalidation of rendered indexes when a rule or a verdict
   changes; a document rendered under a decision that expires is rendered again after it

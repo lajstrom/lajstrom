@@ -758,7 +758,20 @@ table of record of scans (#89, decision 1).
   they are (#89).
 - **Versions without an attachment.** `ListVersionPage` with attachment kinds keeps the
   variants that have no row of any of them (`NOT EXISTS` on `version_id` and `kind`, over the
-  unique index), for `?without=` (http-routing.md §4).
+  unique index), for `?without=` (http-routing.md §4); with a requirement (`VersionFilter.Unmet`,
+  #1287), the variants that have no row `verified` whose predicate type it matches and whose
+  `signed_by` is one of its names, as [policy.md](policy.md) §11 matches them, for `?unmet=`.
+- **Required attachments** (#1287, [policy.md](policy.md) §11). A repo's requirements read the rows
+  that verified: `ListAttested(repoID, versionIDs)` answers each distinct `(version_id,
+  predicate_type, signed_by)` of a row `verified` of the repo's versions, or of the versions of
+  `versionIDs` when it is given, a row of kind `signature` with the predicate type
+  `https://sigstore.dev/cosign/sign/v1`; one statement, over the unique index. A render reads it
+  once for the repo, a download and a pull for their version. On a repo whose policy has
+  `requireAttachments`, the transaction that writes or deletes a version's attachment rows
+  (`ReplaceAttachments`, `DeleteAttachments`, a `SweepAttachments` that removes rows) also
+  invalidates the repo's `index_cache` (`InvalidateIndexCache`, which takes its groups' with it),
+  and so does the transaction of a change of the requirements; `TouchAttachments`, which changes
+  no label, does not. The requirements are in `repos.policy`: no migration.
 
 ### A repo's stats
 
