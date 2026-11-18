@@ -1085,8 +1085,9 @@ type Reader interface {
     ListVersions(ctx context.Context, packageID int64) ([]Version, error)
     // ListVersionPage: the rows of the limit versions of a package after `after` (nil: from the
     // newest), newest first by VersionKey, every variant of each, a version's rows by variant;
-    // with without (attachment kinds, #89), the variants that have no attachment of any of them
-    ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, without ...string) ([]Version, error)
+    // with f.Without (attachment kinds, #89), the variants that have no attachment of any of
+    // them; with f.Unmet (#1287), the variants that the requirement would refuse (policy.md §11)
+    ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int, f VersionFilter) ([]Version, error)
     // ListUnseenVersions: the versions of a repo whose IndexedAt is before seenBefore, with
     // their packages (the sweep of reindex)
     ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
@@ -1110,6 +1111,10 @@ type Reader interface {
     // attachments (#89, index-schema.md, Attachments): the rows of the versions ids, newest
     // first (CreatedAt descending, those without one last), then by Digest and Layer
     ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
+    // ListAttested (#1287, index-schema.md, Attachments): each distinct (VersionID,
+    // PredicateType, SignedBy) of a verified attachment of the repo's versions, or of
+    // versionIDs when not nil; a signature's PredicateType https://sigstore.dev/cosign/sign/v1
+    ListAttested(ctx context.Context, repoID int64, versionIDs []int64) ([]Attested, error)
     // RepoStats: the counts of the derived tables of each repo of repoIDs that has a package, in
     // no order; a repo without one has none (index-schema.md, A repo's stats)
     RepoStats(ctx context.Context, repoIDs []int64) ([]RepoStats, error)
@@ -1351,8 +1356,11 @@ type Writer interface {
 // SearchRank, SearchKey, SearchHit (index-schema.md, The package list, one package and search),
 // TokenFilter, RepoStats, IdentityGroup (a row of identity_groups with its identity's UserID and
 // GroupsExpireAt and its user's UID), AuditFilter (Feed and After: the feed, #1278), AuditSpan
-// (Rows, FirstID, LastID, FirstAt, LastAt) and Access (ReadAt, Users, IdentityGroups, Bindings,
-// Tokens, TokenRepos, CIPolicies, AnonymousRepos: the access report's read, #1279). Ids are int64, timestamps
+// (Rows, FirstID, LastID, FirstAt, LastAt), Access (ReadAt, Users, IdentityGroups, Bindings,
+// Tokens, TokenRepos, CIPolicies, AnonymousRepos: the access report's read, #1279),
+// VersionFilter (Without, the attachment kinds of ?without=; Unmet *Requirement, of ?unmet=),
+// Requirement (PredicateType, SignedBy []string: one of policy.requireAttachments, #1287) and
+// Attested (VersionID, PredicateType, SignedBy: a row of ListAttested). Ids are int64, timestamps
 // UTC, nullable columns are pointers, but nullable text, which is "" (Version.OCIRepo:
 // versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
@@ -2002,6 +2010,9 @@ func WithKeyless(k Keyless) Option
 // the trusted root's bytes and the SCT threshold, the trust column of attachments: rows labelled
 // under another hash are judged again by reindex.
 func (t *Trust) Hash() string
+// PredicateTypes answers the predicate types the key or identity name is trusted for (nil:
+// every type), and false when the trust has no such name (policy.md §11, #1287).
+func (t *Trust) PredicateTypes(name string) ([]string, bool)
 type Input struct {
     Subject   digest.Digest                 // the version's manifest
     Layer     ocispec.Descriptor            // with its annotations: a legacy signature's is there
@@ -2118,6 +2129,7 @@ type Subject struct {
     Variant   string
     Digest    digest.Digest                 // the manifest's; "" for a coordinate the repo does not hold
     Published time.Time                     // the quarantine's clock as the caller knows it; zero: now
+    NoRequirements bool                     // an upload, a push, a producer's read of /v2 (policy.md §3)
 }
 type Verdict struct {                       // a decision (policy.md §3)
     Effect      string                      // EffectAllow, EffectDeny, EffectQuarantine
@@ -2127,6 +2139,7 @@ type Verdict struct {                       // a decision (policy.md §3)
     Source      string
     Lifts       time.Time                   // the end of a quarantine
     Until       time.Time                   // when it may change by the clock alone; zero: never
+    Requirement *index.Requirement          // the requirement not met that decided (#1287)
 }
 func (v Verdict) Allowed() bool
 // DeniedError is a refusal; it wraps ErrDenied, which format.StatusOf answers 403 and the facade
@@ -2142,6 +2155,7 @@ type Options struct {
     Origin func(ctx context.Context) (addr, requestID string) // server.ClientAddr, server.RequestID
     Now    func() time.Time
     Log    *slog.Logger
+    Trust  *attest.Trust                     // attachments' trust: a name it lacks meets nothing (#1287)
 }
 func New(o Options) *Decider                // a nil *Decider allows everything
 // Decide reads the rules once per policy_state.generation, the groups of the subject's repo when
@@ -2163,6 +2177,10 @@ func ParseRule(r index.PolicyRule, now time.Time, order func(format string) Vers
 func Invalidate(ctx context.Context, w index.Writer, mask string) error
 func Quarantine(repo index.Repo) time.Duration  // policy.quarantineNewVersions of a proxy repo
 func EnforcePull(repo index.Repo) bool          // policy.enforcePull
+func RequireAttachments(repo index.Repo) []index.Requirement // policy.requireAttachments (#1287); nil: none
+// CheckRequirements checks requirements as policy.md §11 does for repo, against trust; the error
+// is a *RuleError naming the field (requireAttachments[1].signedBy[0])
+func CheckRequirements(reqs []index.Requirement, repo index.Repo, trust *attest.Trust) error
 ```
 
 The contract packages grow these, each nil or absent for no policy:

@@ -1,10 +1,11 @@
 # Spec: policy, its rules, verdicts and enforcement
 
-- Status: normative (2026-11-15), issue #101. Owned by `internal/policy`. Changes need an issue
-  labelled `contract`.
+- Status: normative (2026-11-15), issue #101; the required attachments of a repo (§11), after
+  the MVP (#1287). Owned by `internal/policy`. Changes need an issue labelled `contract`.
 - Related: [ADR 0008](../adr/0008-policy-verdicts-and-enforcement.md) and its amendment (the
-  decisions this spec writes down), [manifest-profile.md](manifest-profile.md) §3.1, §6.4 (the
-  verdict) and §10 (the deny list), [index-schema.md](index-schema.md#policy) (the tables),
+  decisions this spec writes down), [ADR 0033](../adr/0033-required-attachments-of-a-version.md)
+  (§11), [manifest-profile.md](manifest-profile.md) §3.1, §6.3 (the labels of attachments), §6.4
+  (the verdict) and §10 (the deny list), [index-schema.md](index-schema.md#policy) (the tables),
   [http-routing.md](http-routing.md) §2, §3, §4, §6 (the answers and routes),
   [rbac.md](rbac.md) §2, §3, §5 (who may, the audit rows),
   [proxy-and-group.md](proxy-and-group.md) §5, §10, [webhooks.md](webhooks.md) §1,
@@ -14,7 +15,9 @@ Policy says what a repo serves. A **rule** refuses or admits coordinates, includ
 artifacts that do not exist yet; a **verdict** judges one artifact, by the digest of its
 manifest, and is a signed attestation in the registry. The protocol frontends, ingest and the
 proxy enforce both; `/v2` publishes the verdicts and refuses a pull only on a repo that asks for
-it (ADR 0008).
+it (ADR 0008). A repo may also **require attachments** (§11): it serves a version only once the
+version has a verified attachment of each predicate type the repo names, signed by a key or an
+identity it names.
 
 ## 1. Rules
 
@@ -114,20 +117,26 @@ hold yet), and the quarantine clock of the version (§4). `policy.Decider.Decide
 decided, and until when it holds by the clock alone. In this order, the first that applies:
 
 1. a verdict `deny` in force: `deny`, with its reason;
-2. a rule `allow` that holds: `allow`;
-3. a rule `deny` that holds: `deny`, with its reason (the rule with the lowest `id` when several
+2. a requirement of the repo that the subject's manifest does not meet (§11), but in the decision
+   of an upload or a push (§6.3) and of a producer's read of `/v2` (§6.5), which leave the
+   requirements out: `deny`, with the reason `requires an attachment <predicate type> signed by
+   <name>`, the names joined by ` or `, of the first requirement not met in the order of the list;
+3. a rule `allow` that holds: `allow`;
+4. a rule `deny` that holds: `deny`, with its reason (the rule with the lowest `id` when several
    hold);
-4. a verdict `quarantine` in force, or a quarantine of the repo not over (§4), unless a verdict
+5. a verdict `quarantine` in force, or a quarantine of the repo not over (§4), unless a verdict
    `allow` is in force: `quarantine`, with the reason `quarantined until <RFC 3339>` and the
    verdict's reason after it, if any;
-5. otherwise `allow`.
+6. otherwise `allow`.
 
-So an `allow` rule makes an exception to the `deny` rules and to quarantine, an `allow` verdict
-releases a quarantine and nothing else, and only the expiry or the deletion of its referrer lifts
-a `deny` verdict. `quarantine` refuses as `deny` does: it differs in its reason and in that it
-lifts. A decision **holds until** the earliest time at which, by the clock alone, it could change:
-the end of a quarantine, or the `expiresAt` or `validUntil` of a rule or verdict that it read,
-whichever comes first; none when nothing it read expires.
+So an `allow` rule makes an exception to the `deny` rules and to quarantine, and not to a
+requirement; an `allow` verdict releases a quarantine and nothing else, and only the expiry or the
+deletion of its referrer lifts a `deny` verdict; only the attachments it lacks lift a requirement's
+`deny`. `quarantine` refuses as `deny` does: it differs in its reason and in that it lifts. A
+decision **holds until** the earliest time at which, by the clock alone, it could change: the end
+of a quarantine, or the `expiresAt` or `validUntil` of a rule or verdict that it read, whichever
+comes first; none when nothing it read expires. A requirement adds no time to it: what lifts its
+`deny` is the write of an attachment's rows, which invalidates the documents of the repo (§11).
 
 ## 4. Quarantine
 
@@ -188,14 +197,17 @@ the reader that `RenderIndex` gets leaves out of `ListVersions`, `ListVersionPag
 its name and has no versions where the format lists a package without versions (the pypi project
 list, an empty project page), and has no document where it does not (npm's packument: `404`). npm: a dist-tag that names a version left out is left out, and
 `latest` then names the greatest version left that is not a prerelease, or is absent. The view
-reads the rules once and the repo's verdicts once per render.
+reads the rules once and the repo's verdicts once per render, and, on a repo with requirements
+(§11), the verified attachments of the repo's versions once (`ListAttested`, index-schema.md,
+Attachments).
 
 Every document of a render is stored with the earliest time its decisions hold until (§3),
 `index_cache.expires_at`; a document read after that time is rendered again. The creation and
 the deletion of a rule invalidate the `index_cache` of every repo its mask matches (§1.1, a
 group's members included), and the write or deletion of a verdict's rows that of every repo its
 scope matches, in the transaction of the change (index-schema.md, The generation of a repo's
-documents).
+documents); on a repo with requirements, so do the write and the deletion of a version's
+attachment rows, and a change of the requirements (§11).
 
 A proxy's document (proxy-and-group.md §7) is rendered from the upstream's document, as
 `proxy_meta` keeps it, and from the versions the repo holds: the core passes the held versions
@@ -215,8 +227,10 @@ facade's blobs are not decided: a blob is shared by artifacts that are not denie
 Ingest decides after `Validate` and before the tag claim, on the coordinates and the digest of the
 manifest: a decision other than `allow` is `ingest.ErrDenied` (frontends `403`, `/v2` `403
 DENIED`), and nothing is claimed or written to the registry; the session of an upload that
-streams (`Publisher.UploadStream`) is cancelled. Referrers, journal entries, `Inspect` (reindex)
-and `MirrorManifest` are not decided. A push to an `oci` repo, which does not go through ingest
+streams (`Publisher.UploadStream`) is cancelled. The decision of an upload leaves the repo's
+requirements out (§3, step 2): a version has no attachment before it exists, and its attachments
+come after it. Referrers, journal entries, `Inspect` (reindex) and `MirrorManifest` are not
+decided. A push to an `oci` repo, which does not go through ingest
 but for a manifest with a subject, is decided by the facade before it passes through, with the
 path below the repo as the name, the tag as the version (`""` for a push by digest) and the
 manifest's digest.
@@ -237,19 +251,28 @@ On a repo with `policy.enforcePull: true` (any format, `oci` included), `GET` an
 …/manifests/<ref>` decide once the reference has resolved to a digest, on the version that digest
 is on a managed repo, else on the path below the repo, the tag of the reference (`""` for a
 digest) and the digest: a decision other than `allow` is `403 DENIED` with the reason in the
-message and `detail` `{"reason", "rule"}` or `{"reason", "verdict"}` (the referrer's digest).
-Blobs, tag lists, referrers and the catalog are never refused. Without `enforcePull` no read of
-`/v2` is refused; a push of a denied coordinate is refused on every repo (§6.3).
+message and `detail` `{"reason", "rule"}`, `{"reason", "verdict"}` (the referrer's digest) or
+`{"reason", "requirement"}` (§11). A read whose bearer token grants the repository `push` or
+`attach` (rbac.md §4), a producer's, is decided without the repo's requirements: the clients that
+sign and attach read the version's manifest first, `cosign sign` and `cosign attest` of a tag
+with a `GET` (cosign v3.1.4), `oras attach` with a `HEAD`, and ask their token with `pull,push`,
+while a client that only pulls asks for `pull`. A manifest that is no version (a referrer, a
+manifest under cosign's legacy tags) is not decided on a requirement. Blobs, tag lists, referrers
+and the catalog are never refused. Without `enforcePull` no read of `/v2` is refused; a push of a
+denied coordinate is refused on every repo (§6.3).
 
 ### 6.6 Answers and audit
 
 The message of a refusal is `<name> <version> is denied by policy: <reason>`, or
-`<name> <version> is quarantined until <RFC 3339>` with the verdict's reason after it, if any.
+`<name> <version> is quarantined until <RFC 3339>` with the verdict's reason after it, if any. A
+requirement's reads:
+`app 1.4.0 is denied by policy: requires an attachment https://spdx.dev/Document signed by release`.
 Every refused request, but a render's leaving a version out, appends an audit row `policy.refuse`
 in a transaction of its own (rbac.md §5): the repo, the subject `<name> <version>[ <variant>]`
 (the path and the reference on `/v2`), the digest when known, and `details` `{"surface", "effect",
-"reason"}` with `rule` (its id) or `verdict` (the referrer's digest) and `source`. `surface` is
-`download`, `upload`, `fetch`, `prefetch`, `pull` or `push`.
+"reason"}` with `rule` (its id) or `verdict` (the referrer's digest) and `source`, or with
+`requirement`, the requirement not met as the repo's policy has it (`{"predicateType",
+"signedBy"}`). `surface` is `download`, `upload`, `fetch`, `prefetch`, `pull` or `push`.
 
 ## 7. The management API
 
@@ -324,14 +347,20 @@ The document:
 An edge can block a path or a digest, and nothing else: it cannot take a version out of an index,
 and a range rule has no prefix (ADR 0008).
 
+A version that a requirement refuses (§11) is in neither: the list is of rules and verdicts, and a
+version waiting for its attachments is refused by Lajstrom alone, until the rows of its last
+required attachment commit. A requirement, and a change of one, does not move
+`policy_state.generation`.
+
 ## 9. Repo settings
 
-Two keys of a repo's `policy` (api.md, the policy keys), read on every request:
+Three keys of a repo's `policy` (api.md, the policy keys), read on every request:
 
 | Key | Value |
 | --- | --- |
 | `enforcePull` | bool, default `false`: `/v2` refuses the manifests that the decision refuses (§6.5) |
 | `quarantineNewVersions` | a duration, proxy repos only (`400` on another kind): §4 |
+| `requireAttachments` | a list of `{"predicateType", "signedBy"}`, absent by default; a hosted repo of a format other than `oci`, not encrypted at rest, only (`400` on another): §11 |
 
 ## 10. Reindex
 
@@ -343,3 +372,86 @@ referrers of each manifest that one of its tags names, one request per distinct 
 manifest that no tag names is not found again after the database is lost, and the last deny list
 names it. `policy_rules` and `policy_state` are control plane, `policy_seen` a cache: reindex
 neither reads nor writes them, and `ResetDerived` leaves them.
+
+## 11. Required attachments (after the MVP, #1287)
+
+`policy.requireAttachments` of a repo (§9) is a list of **requirements**, each
+`{"predicateType", "signedBy"}`, decided by the maintainer on #1287
+([ADR 0033](../adr/0033-required-attachments-of-a-version.md)). A version's manifest **meets** a
+requirement when it has an attachment (manifest-profile.md §6.1) labelled `verified`
+(manifest-profile.md §6.3) whose predicate type the requirement matches and whose `signedBy` is one
+of the requirement's names. A version is served only while its manifest meets every requirement
+of its repo; otherwise it is `deny` (§3, step 2), with the reason of the first requirement it does
+not meet, in the order of the list. Each variant is decided on its own manifest: a version's other
+variants, and the attachments of another digest, count for nothing.
+
+```json
+{"policy": {"requireAttachments": [
+  {"predicateType": "https://spdx.dev/Document", "signedBy": ["release"]},
+  {"predicateType": "https://slsa.dev/provenance/v1", "signedBy": ["release", "release-2027"]}
+]}}
+```
+
+- **The predicate type** of a requirement matches an attachment's when the two are equal, or when
+  the attachment's continues it after a `/`: `https://cyclonedx.org/bom` matches
+  `https://cyclonedx.org/bom/v1.6`, and `https://slsa.dev/provenance` matches
+  `https://slsa.dev/provenance/v1`, as the kinds of manifest-profile.md §6.1 recognise them. An
+  attachment of kind `signature` counts as `https://sigstore.dev/cosign/sign/v1`, as it does for
+  the trust (manifest-profile.md §6.3): a requirement of that type is a signature.
+- **The names** are those of `attachments.trust[].name` and `attachments.keyless.identities[].name`
+  ([configuration.md](../configuration.md#attachments)), the `signedBy` of what each verifies; any
+  one of a requirement's names meets it. The label read is the index's (`verification`, `signed_by`
+  of `attachments`), decided when the attachment was indexed (index-schema.md, Attachments), with
+  one check more at the decision: a name that the replica's trust does not have meets nothing, so
+  that a key or an identity dropped from the configuration stops counting at the start that drops
+  it, before any reindex. A key replaced under the same name counts for what the old key verified
+  until the next reindex of the repo labels it again: a new key takes a new name. `lajstrom`, the
+  name of the policy key, which verifies verdicts only, is no name of a requirement.
+- **Who sets it, and how.** It is a key of the repo's policy: `PATCH
+  /api/v1/repos/<format>/<repo>` with `manage` on the repo, as every key of a repo's policy;
+  `lajstrom admin repo create --policy`; the configuration's `repos`. No route or command of its
+  own. Its change is the repo's audit row, `repo.update` (`repo.create` for a new repo), whose
+  details name what changed, `changed.policy` the policy as the change left it (rbac.md §5).
+- **Validation.** The policy is refused, `400` with the key path first in the message (api.md, the
+  policy keys), when `requireAttachments` is not a list of 1 to 16 requirements (absent or `null`:
+  none); a requirement has a key other than the two, or is the same as another; a `predicateType`
+  is not an absolute URI (RFC 3986, with a scheme) of at most 256 bytes, or is the verdict's,
+  `https://lajstrom.dev/verdict/v1` (a verdict judges by its value, §2, and a `deny` would meet
+  it); `signedBy` is not a list of 1 to 16 names, or a name is not a key's or an identity's of the
+  replica's `attachments`, or is trusted for no predicate type that the requirement matches (its
+  `predicateTypes` empty, every type, or one that equals or continues the requirement's); or the
+  repo is a proxy (a version it would fetch has no attachment, so it would never fetch one), an
+  `oci` repo (it indexes no attachment: its consumers verify, ADR 0008), or keeps its files
+  encrypted (`encryption.mode: at-rest`: its attachments are encrypted, and labelled
+  `unsupported`). A group has no policy: a member's requirements hold for its versions read
+  through the group, since a decision is taken in the repo that holds the artifact (§1.1). The
+  `repos` of the configuration are checked at start, as errors of the configuration. `serve` warns
+  at start, once per repo, of a requirement that names a signer its trust does not have: that
+  requirement refuses every version.
+- **Every version, whenever it was pushed.** A requirement holds for every version of the repo from
+  the commit of the change that sets it: the versions pushed before, which nobody attached to, are
+  left out of the indexes and refused from then on. No time exempts a version, since the time a
+  version has, `org.opencontainers.image.created`, is the pusher's word.
+  `GET …/versions?unmet=<predicateType>&signedBy=<name>` lists the variants that a requirement
+  would refuse, before it is set as well as after (http-routing.md §4).
+- **A version before its attachments.** An upload is never refused for a requirement (§6.3): a
+  version is pushed, then its attachments, and it is served from the commit of the rows of the
+  attachment that meets its last requirement. Ingest writes those rows once the registry serves the
+  referrer back (`PutReferrer`), best effort: a version whose rows were not written waits for the
+  next reindex of its repo (index-schema.md, Attachments). On a repo with requirements, every
+  write and deletion of a version's attachment rows, by ingest, a delete or reindex, and every
+  change of the repo's requirements, invalidates the repo's `index_cache` (a group's with it) in
+  its transaction, as a verdict's rows do (§6.1): the next render lists a version whose
+  attachment came, and leaves out again one whose attachment went.
+- **Where it is decided.** At the enforcement points of §6 on the repo: the rendered indexes
+  (§6.1), the downloads (§6.2), and the manifest reads of `/v2` under `enforcePull` but with a
+  token that may push, a producer's (§6.5). Never at an upload or a push, a referrer, a journal
+  entry, reindex or a delete.
+- **Rules, verdicts and quarantine.** Only a `deny` verdict comes before a requirement (§3): no
+  `allow` rule and no `allow` verdict lets a version without its attachments through, and an allow
+  list (an `allow` rule `@acme/*` beside a `deny` rule `*`) does not exempt what it names. A version
+  that lacks an attachment and is also quarantined, by a verdict, is refused for the attachment,
+  and its quarantine shows once the attachment is there. A requirement adds nothing to the deny
+  list (§8).
+- **Reads.** The view of a render reads the repo's verified attachments once (`ListAttested`,
+  index-schema.md, Attachments); a download and a pull read those of their version.

@@ -10,7 +10,8 @@
   control plane, section 9, on 2026-11-14, #76; the maven file a proxy fetched, sections 2 to
   5, on 2026-11-15, #1152; the terraform profile, sections 1 to 5, on 2026-11-15, #66, ADR
   0023; encrypted repos, section 11 and sections 5 and 6, on 2026-11-15, #114, ADR 0009's
-  Amendment). Changes need an issue labelled `contract` and, if the wire format changes, an ADR.
+  Amendment; the label read by a repo's required attachments, section 6.3, on 2026-11-18, #1287,
+  ADR 0033). Changes need an issue labelled `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
   [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
@@ -640,6 +641,10 @@ trust of the replica that indexes it, and a change of the trust (a key, an ident
 root, the number of signed certificate timestamps) reaches each attachment at the next reindex
 of its repo (index-schema.md). The layers are read through the provider, at most
 `attachments.maxBlobSize` of each.
+
+A label refuses no push. A repo that requires attachments ([policy.md](policy.md) §11, #1287)
+reads it: such a repo serves a version only once the version's manifest has an attachment
+`verified`, of each predicate type the repo names, whose `signedBy` is a name the repo names.
 
 ### 6.4 Verdicts (#101)
 
