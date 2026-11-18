@@ -412,6 +412,9 @@ variants, and the attachments of another digest, count for nothing.
   `lajstrom admin repo create --policy`; the configuration's `repos`. No route or command of its
   own. Its change is the repo's audit row, `repo.update` (`repo.create` for a new repo), whose
   details name what changed, `changed.policy` the policy as the change left it (rbac.md §5).
+  Whoever may set a requirement may lift it, so `manage` on a production repo is the right to turn
+  its requirement off: grant it to those who may, and review its `repo.update` rows (decided on
+  #1287; the admins only, not taken).
 - **Validation.** The policy is refused, `400` with the key path first in the message (api.md, the
   policy keys), when `requireAttachments` is not a list of 1 to 16 requirements (absent or `null`:
   none); a requirement has a key other than the two, or is the same as another; a `predicateType`
