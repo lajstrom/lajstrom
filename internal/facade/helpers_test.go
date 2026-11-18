@@ -23,6 +23,7 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -80,6 +81,7 @@ type envOptions struct {
 	externalURL string                                     // Options.ExternalURL
 	ociProxy    OCIProxy                                   // Options.OCIProxy
 	policy      bool                                       // a Decider over the store, in Options.Policy and ingest's
+	trust       *attest.Trust                              // the Decider's trust of attachments
 	encrypted   bool                                       // raw/assets encrypts at rest, with keys over the store
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
@@ -103,7 +105,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 		e.idx = o.store(st)
 	}
 	if o.policy {
-		e.policy = policy.New(policy.Options{Index: e.idx, Now: e.clock.Now})
+		e.policy = policy.New(policy.Options{Index: e.idx, Now: e.clock.Now, Trust: o.trust})
 	}
 	if o.encrypted {
 		m, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
