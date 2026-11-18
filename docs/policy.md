@@ -1,4 +1,4 @@
-# Policy: deny lists, quarantine and verdicts
+# Policy: deny lists, quarantine, verdicts and required attachments
 
 The day a malicious release lands on PyPI or npm, or a version of your own must not be installed
 any more, you want one switch that keeps it out. Lajstrom has two kinds of policy data for that
@@ -8,6 +8,8 @@ any more, you want one switch that keeps it out. Lajstrom has two kinds of polic
   allows, including versions that do not exist yet: what a proxy must refuse before it fetches;
 - a **verdict** is a signed attestation about one artifact, by the digest of its manifest, stored
   in the registry as a referrer of it: `allow`, `deny` or `quarantine`, with a reason.
+- a **requirement** of a repo keeps a version out until it has a verified attachment, an SBOM,
+  provenance or a signature, signed by a key or a CI identity you name (§7, #1287).
 
 apt, pip, Maven and npm clients have no policy hook, so Lajstrom enforces for them: a refused
 version is left out of `Packages`, the simple index, `maven-metadata.xml` and the packument, its
@@ -19,7 +21,8 @@ This page was run on 2026-11-16 against Lajstrom of the #101 stack, on distribut
 registry, with pip 21.2, oras 1.3.6 and cosign v3.1.4: the rule and pip (§1), the deny of an image
 and `cosign verify-attestation` through Lajstrom (§2), `enforcePull` (§4), the Sigstore policy
 controller 0.13.1 in a kind cluster (§5) and the deny list with `oras pull` and `cosign verify-blob`
-(§6). The Kyverno policy of §5 was not run.
+(§6). The Kyverno policy of §5 was not run. The required attachments of §7 (#1287) were not run with
+clients: what §7 says is what the tests of the #1287 stack check.
 
 ## 1. A rule
 
@@ -132,6 +135,9 @@ curl -s -u admin -X PATCH "$LAJSTROM/api/v1/repos/oci/images" -H 'Content-Type: 
 
 Then a `GET` or `HEAD` of a denied manifest, by tag or digest, is `403 DENIED` with the reason;
 blobs and tag lists stay readable, since a layer is shared by images that are not denied.
+A repo that requires attachments (§7) refuses a version without them the same way, but to a
+token that may push or attach to the repo: the clients that sign and attach read the version
+first.
 
 ## 5. Admission controllers
 
@@ -233,9 +239,90 @@ entries of the repos the caller may read: for an edge proxy or an OPA policy tha
 and `digests` while Lajstrom is down. An edge can block a path and nothing else: it cannot take
 a version out of an index, and a range rule has no path.
 
-## 7. Not there yet
+## 7. Required attachments
+
+A production repo can serve only what your release pipeline built and attested: a repo's
+`policy.requireAttachments` lists **requirements**, each a predicate type and the names that may
+sign it ([ADR 0033](adr/0033-required-attachments-of-a-version.md), spec
+[policy.md](spec/policy.md) §11). A version is served only while its manifest has, for every
+requirement, an attachment labelled `verified` ([guides/sbom-and-scans.md](guides/sbom-and-scans.md))
+of that predicate type, or of a longer version of it after a `/`, signed by one of the names.
+Otherwise it is left out of every index, its download is `403`, and under `enforcePull` (§4) its
+manifest is `403 DENIED` to a consumer.
+
+**1. Trust the signers.** The names are those of `attachments.trust` (a key) and
+`attachments.keyless.identities` (a CI job's keyless identity), on every replica
+([configuration.md](configuration.md#attachments)). Each must be trusted for a predicate type the
+requirement matches: no `predicateTypes` (every type), or one that equals it or a longer version.
+
+**2. See what it would hide.** A requirement holds for every version of the repo, those pushed
+before it too: turning it on hides at once every version without the attachment. List them per
+package first, with the names given once each:
+
+```sh
+curl -s -u "$USER:$TOKEN" \
+  "$LAJSTROM/api/v1/repos/pypi/prod/packages/app/versions?unmet=https://spdx.dev/Document&signedBy=release" |
+  jq -r '.versions[] | .version as $v | .variants[] | "\($v) \(.variant)"'
+```
+
+Attach to those you keep (the guide, §8), or serve them from another repo.
+
+**3. Set it**, with `manage` on the repo, as every key of its policy:
+
+```sh
+curl -s -u admin -X PATCH "$LAJSTROM/api/v1/repos/pypi/prod" -H 'Content-Type: application/json' -d '{"policy": {
+  "requireAttachments": [
+    {"predicateType": "https://spdx.dev/Document", "signedBy": ["release"]},
+    {"predicateType": "https://slsa.dev/provenance", "signedBy": ["release", "release-2027"]}
+  ]}}'
+```
+
+`lajstrom admin repo create --policy` and the configuration's `repos` take the same key. The
+server refuses, `400` naming the field, a name its trust does not have (a typo would hide every
+version), `lajstrom` (the policy key, which signs verdicts only), a name trusted for no predicate
+type the requirement matches, a predicate type that is not an absolute URI, more than 16
+requirements or 16 names, and a proxy, `oci` or `at-rest` repo, whose versions it could never
+serve. A group has no policy: its members' requirements hold through it. `null` removes the key.
+Each change is a `repo.update` row with the policy it left: whoever has `manage` on the repo can
+turn the requirement off, so grant `manage` on production repos only to those who may, and review
+those rows ([compliance.md](compliance.md), 6.3.2).
+
+**What it does.**
+
+- **The order.** Only a `deny` verdict comes before a requirement. No `allow` rule and no `allow`
+  verdict lets a version without its attachments through: an allow list (`allow @acme/*` beside
+  `deny *`) exempts nothing. A version that is also quarantined shows its quarantine once its
+  attachment is there.
+- **The reason** names the first requirement not met:
+  `app 1.4.0 is denied by policy: requires an attachment https://spdx.dev/Document signed by release`.
+  Each refusal is a `policy.refuse` row whose `details.requirement` is the requirement as the
+  policy has it; `/v2`'s `403 DENIED` has it in `detail.requirement`. These versions are not in
+  the deny list (§6): Lajstrom alone refuses them.
+- **Each variant** needs its own attachments: a wheel is not served on another wheel's SBOM.
+- **Uploads are never refused for it.** A version is pushed, then its attachments; it is served
+  from the moment the rows of its last required attachment are written, which renders the repo's
+  indexes again. So CI attaches before consumers pull, and a job that installs what it has just
+  published attaches first. An attachment whose rows were not written (logged, and counted in
+  `lajstrom_attachments_index_failures_total`) counts after the next reindex of the repo.
+- **`/v2` under `enforcePull`** refuses a version without its attachments to a token asked with
+  `pull` only. A token that grants the repository `push` or `attach` still reads it, `GET` and
+  `HEAD`, because `cosign sign`, `cosign attest` and `oras attach` read the manifest they attach
+  to. Without `enforcePull`, `/v2` serves it, as it serves a denied version: OCI consumers verify
+  the attestations themselves.
+- **The trust.** Only an attachment `verified` counts, never `untrusted` or `unsigned`. A name
+  removed from the configuration counts no more from the next start of each replica, without a
+  reindex. A key replaced under the same name counts for what the old key verified until the next
+  reindex labels it again, so give a new key a new name and list both in `signedBy` while the old
+  versions are served. `serve` warns at start of a repo whose requirements name a signer its trust
+  does not have.
+- **Rolling update.** A replica of a release before this one serves the repo's versions as if it
+  had no requirement, and refuses any `PATCH` of its policy (an unknown key). Set a requirement
+  once every replica runs a release that has it.
+
+## 8. Not there yet
 
 - Lajstrom's `/v2` does not serve the deny-list artifact; pull it from the registry.
 - The server's policy key is not rotated.
 - The pypi and maven proxies get the policy of the proxy core when they merge (#67); until then
   the npm proxy has it.
+- What a requirement would hide is listed per package (`?unmet=`), not for a whole repo at once.

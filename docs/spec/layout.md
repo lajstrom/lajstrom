@@ -2138,8 +2138,9 @@ type Event struct {
 ### Policy (`internal/policy`, #101)
 
 What the contract packages use of it ([policy.md](policy.md)). `format`, `ingest`, `proxy`,
-`facade` and `api` import it; it imports `index`, `auth`, `audit`, `attest` and `config`, and
-nothing of theirs: the order of a format's versions comes in as a function.
+`facade` and `api` import it; it imports `index`, `auth`, `audit`, `attest`, `config` and
+`oci/profile` (`profile.IsType`, the match of a predicate type, #1287), and nothing of theirs: the
+order of a format's versions comes in as a function.
 
 ```go
 // package policy
@@ -2202,6 +2203,11 @@ func RequireAttachments(repo index.Repo) []index.Requirement // policy.requireAt
 // CheckRequirements checks requirements as policy.md §11 does for repo, against trust; the error
 // is a *RuleError naming the field (requireAttachments[1].signedBy[0])
 func CheckRequirements(reqs []index.Requirement, repo index.Repo, trust *attest.Trust) error
+// CheckPredicateType checks a requirement's predicate type, and that of ?unmet= (http-routing.md
+// §4): an absolute URI of at most 256 bytes; MaxSigners bounds the names of both
+func CheckPredicateType(t string) error
+const KeyRequireAttachments, PolicyKeySigner = "requireAttachments", "lajstrom"
+const MaxRequirements, MaxSigners = 16, 16
 ```
 
 The contract packages grow these, each nil or absent for no policy:
