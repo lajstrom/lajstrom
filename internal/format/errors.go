@@ -58,7 +58,8 @@ var (
 	ErrBadGateway = errors.New("format: bad gateway")
 
 	// ErrUnavailable means the upstream asked to wait (429), or the KMS that holds a signing key
-	// of the repo did not answer, timed out or throttled (internal/keys, ADR 0020). Frontends
+	// of the repo did not answer, timed out or throttled (internal/keys, ADR 0020), or the
+	// replica does not hold the master key that seals (keys.ErrNoSealingKey, #1288). Frontends
 	// answer 503 with the Retry-After of the *UnavailableError that wraps it.
 	ErrUnavailable = errors.New("format: upstream unavailable")
 
@@ -68,7 +69,8 @@ var (
 )
 
 // UnavailableError is an ErrUnavailable that says when to ask again: the upstream's own
-// Retry-After, at most a minute, 5 seconds when it sent none; 5 seconds for a KMS.
+// Retry-After, at most a minute, 5 seconds when it sent none; 5 seconds for a KMS; 30 seconds
+// for a master key that seals and that the replica does not hold.
 type UnavailableError struct {
 	// RetryAfter is the wait.
 	RetryAfter time.Duration

@@ -135,7 +135,9 @@ func (s *Service) localPolicyKey() (*index.Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	row.PrivateEnc = s.master.seal(row.Fingerprint, der)
+	if row.PrivateEnc, err = s.master.seal(row.Fingerprint, der); err != nil {
+		return nil, fmt.Errorf("keys: the policy key: %w", err)
+	}
 	row.CreatedAt = s.now().UTC()
 	return row, nil
 }
@@ -164,7 +166,9 @@ func (s *Service) kmsPolicyKey(ctx context.Context, uri string) (*index.Key, err
 		return nil, err
 	}
 	canonical := config.KMSKey{Scheme: key.Scheme, Name: desc.Name}
-	row.PrivateEnc = s.master.seal(row.Fingerprint, []byte(canonical.String()))
+	if row.PrivateEnc, err = s.master.seal(row.Fingerprint, []byte(canonical.String())); err != nil {
+		return nil, fmt.Errorf("keys: the policy key: %w", err)
+	}
 	row.CreatedAt = s.now().UTC()
 	return row, nil
 }

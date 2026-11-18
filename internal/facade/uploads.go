@@ -272,7 +272,11 @@ func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target,
 		h.cancelBackend(ctx, rr, u)
 		return err
 	} else if encrypted {
-		st.Enc = h.newEncState(id)
+		if st.Enc, err = h.newEncState(id); err != nil {
+			h.uploads.release(principal, id)
+			h.cancelBackend(ctx, rr, u)
+			return err
+		}
 	}
 	if err := h.saveSession(ctx, s, st); err != nil {
 		h.uploads.release(principal, id)

@@ -104,7 +104,9 @@ func (r Registry) build(cp *index.ControlPlane, sealed bool, binary string) (*bu
 		return nil, err
 	}
 	if sealed {
-		layer = r.Master.SealSnapshot(layer, []byte(profile.MediaTypeSnapshotSealed))
+		if layer, err = r.Master.SealSnapshot(layer, []byte(profile.MediaTypeSnapshotSealed)); err != nil {
+			return nil, fmt.Errorf("snapshot: %w", err)
+		}
 	}
 	s := profile.Snapshot{Version: Version, Schema: cp.Schema, Binary: binary, Created: cp.ReadAt, Sealed: sealed,
 		Layer: ocispec.Descriptor{Digest: digest.FromBytes(layer), Size: int64(len(layer))}}

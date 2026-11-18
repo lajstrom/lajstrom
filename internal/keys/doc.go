@@ -1,9 +1,13 @@
 // Package keys manages signing keys: the per-repo OpenPGP keys that sign apt indexes, the server
 // key that signs the bearer tokens of /v2, and their encryption at rest with the master key.
-// See docs/spec/index-schema.md (keys), docs/operations.md (keys and apt signing) and ADR 0010.
+// See docs/spec/index-schema.md (keys; The master key and its replacement), docs/operations.md
+// (keys and apt signing), ADR 0010 and ADR 0034.
 //
-// The master key is 32 bytes, 64 hexadecimal characters in the environment variable that
-// keys.masterKeyEnv names, loaded once at start (LoadMaster). Service implements
+// A master key is 32 bytes, 64 hexadecimal characters in the environment variable that
+// keys.masterKeyEnv names or in a file, read once at start. A process holds up to MaxMasterKeys
+// of them (Master, HoldMasters), each named by its id (MasterID), and seals with the one the
+// index names (SealWith) and with no other: while it does not hold that one, a seal fails with
+// ErrNoSealingKey. A value opens with any key held, the sealing one first. Service implements
 // format.Signer over the index: a repo's key is made on its first use (KeyFor), its private
 // key stored as nonce || AES-256-GCM with the fingerprint as additional data; ClearSign and
 // DetachSign make apt's InRelease and Release.gpg, PublicKeys its key.asc, Current tells
