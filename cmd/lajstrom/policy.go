@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"github.com/lajstrom/lajstrom/internal/api"
@@ -98,6 +99,40 @@ func serveTrust(ctx context.Context, c *config.Config, st index.Store, signer fo
 	}
 	trust, err := attachmentTrust(c.Attachments, log, entries...)
 	return key, trust, err
+}
+
+// configTrust returns the trust of the configuration's attachments, the keys and identities the
+// requirements of a repo's policy may name (docs/spec/policy.md §11), for the repos of the
+// bootstrap and of lajstrom admin repo, which check them before serve has the policy key: no
+// requirement names it. It logs nothing; serveTrust logs the trust of serve.
+func configTrust(c *config.Config) (*attest.Trust, error) {
+	return attachmentTrust(c.Attachments, slog.New(slog.DiscardHandler))
+}
+
+// warnRequirements warns, once per repo, of the requirements of its policy that name a signer
+// trust does not have (docs/spec/policy.md §11): such a requirement refuses every version of the
+// repo until the trust has the name again or the requirement changes.
+func warnRequirements(ctx context.Context, st index.Store, trust *attest.Trust, log *slog.Logger) {
+	repos, err := st.ListRepos(ctx, "")
+	if err != nil {
+		log.WarnContext(ctx, "the required attachments of the repos not checked against the trust", "error", err.Error())
+		return
+	}
+	for _, r := range repos {
+		var missing []string
+		for _, req := range policy.RequireAttachments(r) {
+			for _, name := range req.SignedBy {
+				if _, ok := trust.PredicateTypes(name); !ok && !slices.Contains(missing, name) {
+					missing = append(missing, name)
+				}
+			}
+		}
+		if len(missing) > 0 {
+			log.WarnContext(ctx, "a repo requires attachments signed by names that attachments.trust and attachments.keyless.identities "+
+				"do not have: a requirement whose names are all missing refuses every version of the repo",
+				"repo", r.Format+"/"+r.Name, "signedBy", missing)
+		}
+	}
 }
 
 // newRules returns the service of the policy rules over st, for serve and lajstrom admin policy.
