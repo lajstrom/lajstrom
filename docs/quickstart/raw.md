@@ -89,7 +89,11 @@ Last-Modified: Sat, 07 Nov 2026 10:00:00 GMT
 ```
 
 The `ETag` is the digest of the file, so `curl -H 'If-None-Match: "sha256:3011…"'` answers
-`304`, and `curl -r 0-4` answers `206` with the first five bytes. When the registry hands out
+`304`, and `curl -r 0-4` answers `206` with the first five bytes. `curl -R -z file.txt` and
+`wget -N` ask by `Last-Modified` instead: `304` while the file they hold is the newest. A path
+whose newest version was created in the same second as another has no `Last-Modified`, so that
+the date of the older one never gets `304`; such a client downloads the file whole each time,
+until a version of a later second. When the registry hands out
 download URLs (distribution on S3, for example), `GET` answers `307` to the blob instead.
 
 ## 4. Upload it again, then change it (R-02, R-03)

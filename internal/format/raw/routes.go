@@ -197,6 +197,9 @@ type resolved struct {
 	version     index.Version
 	file        index.File
 	contentType string
+	// lastModified is the Last-Modified of the answer: the version's created, or zero for none
+	// when a date to the second cannot tell the version from another of the path (pickVersion).
+	lastModified time.Time
 }
 
 // resolve finds the file at path p: the newest version of the package (by created, then id),
@@ -211,7 +214,7 @@ func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin strin
 	if err != nil {
 		return nil, fmt.Errorf("raw: package %q: %w", p, err)
 	}
-	v, err := pickVersion(ctx, st, repo, pkg, pin)
+	v, dated, err := pickVersion(ctx, st, repo, pkg, pin)
 	if err != nil {
 		return nil, err
 	}
@@ -225,38 +228,55 @@ func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin strin
 	case len(files) != 1:
 		return nil, fmt.Errorf("raw: %q %s has %d files in the index, want 1", p, v.Version, len(files))
 	}
-	return &resolved{pkg: *pkg, version: *v, file: files[0], contentType: contentTypeOf(v.Metadata)}, nil
+	f := &resolved{pkg: *pkg, version: *v, file: files[0], contentType: contentTypeOf(v.Metadata)}
+	if dated {
+		f.lastModified = v.CreatedAt
+	}
+	return f, nil
 }
 
 // pickVersion returns the version of pkg that pin names, or the newest without a pin; nil when
-// there is none.
-func pickVersion(ctx context.Context, st index.Reader, repo index.Repo, pkg *index.Package, pin string) (*index.Version, error) {
+// there is none. dated reports whether its created dates the answer (Last-Modified, to the
+// second): always for a pinned version, which the URL names alone; for the newest only when no
+// other version of the path was created in its second (#1274). A client that revalidates by
+// date alone sends the second of the version it holds, which is not after the newest's; when
+// no other version shares the newest's second, a date not before it is the newest's own. An
+// answer without Last-Modified is never 304 to If-Modified-Since (format.ServeBlob).
+func pickVersion(ctx context.Context, st index.Reader, repo index.Repo, pkg *index.Package, pin string) (v *index.Version, dated bool, err error) {
 	if pin == "" {
 		versions, err := st.ListVersions(ctx, pkg.ID)
 		if err != nil || len(versions) == 0 {
-			return nil, err
+			return nil, false, err
 		}
-		return &versions[len(versions)-1], nil // ordered by created, then id
+		newest := &versions[len(versions)-1] // ordered by created, then id
+		second := newest.CreatedAt.Truncate(time.Second)
+		for _, other := range versions[:len(versions)-1] {
+			if other.CreatedAt.Truncate(time.Second).Equal(second) {
+				return newest, false, nil
+			}
+		}
+		return newest, true, nil
 	}
 	d, err := digest.Parse(pin)
 	if err != nil {
-		return nil, fmt.Errorf("%w: digest %q: %w", format.ErrInvalid, pin, err)
+		return nil, false, fmt.Errorf("%w: digest %q: %w", format.ErrInvalid, pin, err)
 	}
-	v, err := st.GetVersionByDigest(ctx, repo.ID, d)
+	v, err = st.GetVersionByDigest(ctx, repo.ID, d)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return nil, nil
+		return nil, false, nil
 	case err != nil:
-		return nil, fmt.Errorf("raw: version %s: %w", d, err)
+		return nil, false, fmt.Errorf("raw: version %s: %w", d, err)
 	case v.PackageID != pkg.ID:
-		return nil, nil
+		return nil, false, nil
 	}
-	return v, nil
+	return v, true, nil
 }
 
 // serve answers the file f through format.ServeBlob: Content-Type from the metadata, ETag the
 // blob digest (so If-None-Match works without a request to the backend), Last-Modified the
-// version's created, Docker-Content-Digest the manifest digest, and the redirect as the repo
+// version's created unless another version shares its second (none then, pickVersion),
+// Docker-Content-Digest the manifest digest, and the redirect as the repo
 // policy's blobRedirect allows. HEAD asks the backend for the headers; GET is one request,
 // with the client's Range: a 307 to the backend's storage when the provider gives a URL,
 // otherwise the backend's answer, 200, 206 or 416, streamed. A stream that breaks after the
@@ -277,7 +297,7 @@ func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo
 		Subject:        format.VersionSubject(repo, f.pkg, f.version),
 		Decrypt:        key,
 		ContentType:    f.contentType,
-		LastModified:   f.version.CreatedAt,
+		LastModified:   f.lastModified,
 		ManifestDigest: f.version.Digest,
 		Redirect:       format.BlobRedirect(repo),
 		Fail:           func(w http.ResponseWriter, err error) { h.fail(w, r, err) },
