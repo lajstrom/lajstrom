@@ -16,7 +16,8 @@ fullnameOverride: ""
 
 # lajstrom.yaml, mounted at /etc/lajstrom/lajstrom.yaml (docs/configuration.md). The chart sets
 # these keys itself, over whatever this map says: server.listen (":8080"), server.metricsListen
-# (with metrics.enabled), database.driver (postgres), keys.masterKeyEnv (LAJSTROM_MASTER_KEY) and
+# (with metrics.enabled), database.driver (postgres), keys.masterKeyEnv (LAJSTROM_MASTER_KEY, ""
+# without masterKey.env), keys.masterKeyDir (masterKey.dir.path with a volume) and
 # auth.bootstrap.tokenFile (with bootstrap.enabled). Helm merges maps and replaces lists: a list
 # of your values replaces the one below, and null removes a key of the defaults.
 config:
@@ -49,6 +50,20 @@ masterKey:
   # The Secret; empty is the release's full name, lajstrom for a release named lajstrom.
   existingSecret: ""
   key: LAJSTROM_MASTER_KEY
+  # false: no variable LAJSTROM_MASTER_KEY, the keys of dir alone.
+  env: true
+  # keys.masterKeyDir, a directory with one master key per file, beside the variable: what a
+  # replacement of the master key adds the new key to (docs/operations.md, Replacing the master
+  # key). volume is a volume without its name, mounted whole at path, never with subPath, whose
+  # file the kubelet would never update: a Secret with a data key per master key,
+  #   {secret: {secretName: lajstrom-master-keys, defaultMode: 0440}}
+  # or a Secrets Store CSI volume with an object per master key,
+  #   {csi: {driver: secrets-store.csi.k8s.io, readOnly: true,
+  #          volumeAttributes: {secretProviderClass: lajstrom-master-keys}}}
+  # Empty: no directory. A file the group or others may read is used, with a warning.
+  dir:
+    path: /run/secrets/lajstrom-master-keys
+    volume: {}
 
 # The Postgres DSN, as LAJSTROM_DATABASE_DSN. The chart runs Postgres only: every replica
 # shares it. CloudNativePG's Secret <cluster>-app holds one under the key uri.

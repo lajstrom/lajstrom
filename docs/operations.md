@@ -373,19 +373,44 @@ openssl rand -hex 32
 
 It lives in the environment variable that `keys.masterKeyEnv` names (`LAJSTROM_MASTER_KEY` in
 the examples), or in a file of its own that `keys.masterKeyFile` (`LAJSTROM_MASTER_KEY_FILE`)
-names, never in the configuration file, and every replica gets the same value. Setting the file
-and the variable both is a configuration error. `serve` and `lajstrom admin key` read it when
-they start. A variable or a file that is empty, or is not 64 hexadecimal characters (spaces and
-line breaks around them are ignored), stops them with an error that names the variable or the
-file and the format, never the value; so does a file that is missing or cannot be read. A file
-that the group or others may read or write is used, with a warning: make it `0400` or `0600`.
-Without a master key (neither is set, or the variable is not) signing is
-off: `serve` logs a warning for every apt repo, `InRelease`, `Release.gpg` and `key.asc` are
-`404`, and clients have to mark the source `[trusted=yes]`; bearer tokens are signed with an
-ephemeral key ([below](#the-bearer-token-key)). Once the index holds apt signing keys, `serve`
-refuses to start without the master key: those keys are useless without it, and the clients
-that pinned them would see the repos turn unsigned. The token key does not count: no client
-pins it.
+names, never in the configuration file. Setting the file and the variable both is a configuration
+error. A third source, `keys.masterKeyDir`, is a directory with one key per file, a Kubernetes
+Secret or a Secrets Store CSI volume mounted whole: it is what a
+[replacement](#replacing-the-master-key) adds the new key to, and its keys join the one of the
+variable or the file, 8 at most in all. `serve`, `lajstrom reindex` and the `lajstrom admin`
+commands that read the keys read every source once, when they start. A variable or a file that is
+empty, or is not 64 hexadecimal characters (spaces and line breaks around them are ignored), stops
+them with an error that names the variable or the file and the format, never the value; so does a
+file that is missing or cannot be read, a directory without a key, and an entry of the directory
+that is neither a file nor a link to one. A file that the group or others may read or write is
+used, with a warning: make it `0400` or `0600`.
+
+**Which key seals.** The configuration gives no key a role: the index names the one that seals
+(the row of `sealing_key`), and a value opens with any key a process holds, that one first. A key is
+named everywhere by its **id**, 16 hexadecimal characters derived one-way from it (HKDF-SHA256),
+which shows nothing of the key. At its start `serve` logs them:
+
+```json
+{"level":"INFO","msg":"master keys","keys":{"3f3b91c7ca2e6906":"LAJSTROM_MASTER_KEY"},"sealing":"3f3b91c7ca2e6906"}
+```
+
+and writes the ids it holds in its row of `replicas`. The first start of a release with migration
+0040 records its one key as the key that seals, once that key has opened the first key of the
+index; a process that holds several keys on a database that names none refuses to start, and says
+`no master key seals yet: name one with lajstrom admin key rewrap --to <id>`. A process that does
+not hold the key the index names never seals: `serve` refuses to start and a command exits `1`,
+with `the index seals with master key <id>, which this process does not hold` and the ids it holds;
+a running replica that reads such an id at a beat stops sealing, answers `503` to what would seal
+(a repo's first signing key, a webhook made, an upload to an encrypted repo) and is not ready
+([Readiness](#readiness)), and serves reads all the while. Add the key to its sources and start it
+again, or name a key it holds.
+
+Without a master key (no source set, or the variable not set) signing is off: `serve` logs a
+warning for every apt repo, `InRelease`, `Release.gpg` and `key.asc` are `404`, and clients have to
+mark the source `[trusted=yes]`; bearer tokens are signed with an ephemeral key
+([below](#the-bearer-token-key)). Once the index holds apt signing keys, `serve` refuses to start
+without the master key: those keys are useless without it, and the clients that pinned them would
+see the repos turn unsigned. The token key does not count: no client pins it.
 
 With Docker Compose the master key is a Compose secret, the file
 `/run/secrets/lajstrom-master-key` of `keys.masterKeyFile`; the file on the host must belong to
@@ -413,18 +438,158 @@ env:
 A Secret mounted as a volume would be a file, but the kubelet makes its files owned by root:
 with `defaultMode: 0400` the user 65532 cannot read it, and with `fsGroup: 65532` it becomes
 `0440` (tried on kind, Kubernetes 1.37), which Lajstrom warns about. The variable is the cleaner
-fit there.
+fit for one key; a replacement mounts a Secret or a CSI volume as `keys.masterKeyDir` beside it
+(the Helm chart's `masterKey.dir`, [deploy/helm.md](deploy/helm.md#values)), and the warning of
+`0440` is expected there.
 
 Keep a copy of the master key apart from the database backups: a backup of the index holds the
 private keys only as ciphertext (`keys.private_enc`, AES-256-GCM), and the master key alone
 holds nothing. **Losing the master key loses every repo key**: no signature can be made with
 them any more. It loses every sealed snapshot of the control plane too
 ([Snapshots of the control plane](#snapshots-of-the-control-plane)), which opens with no other
-key; a snapshot made with `--unsealed` does not need it. Recover with a new master key and a rotation of every apt repo (below), then
-distribute the new `key.asc` to every client at once: the retired keys cannot sign beside the
-new ones, so clients that pinned only the old key fail until they have the new one. The token
-key is lost with it too: `serve` refuses to start with a token key it cannot decrypt, and
-`lajstrom admin key drop --token` under the new master key lets the next start make a new one.
+key; a snapshot made with `--unsealed` does not need it. Recover with a new master key: add it to
+the sources, name it with `lajstrom admin key rewrap --to <new id> --allow-lost` ([A lost
+key](#a-lost-key)), and rotate every apt repo (below), then distribute the new `key.asc` to every
+client at once: the retired keys cannot sign beside the new ones, so clients that pinned only the
+old key fail until they have the new one. The token key is lost with it too: `serve` refuses to
+start with a token key it cannot decrypt, and `lajstrom admin key drop --token` under the new
+master key lets the next start make a new one.
+
+### Replacing the master key
+
+A custodian who leaves, a key that may have leaked, or the end of its cryptoperiod: the master key
+is replaced with no client pinning anything again and no request failing on the way (#1288,
+[ADR 0034](adr/0034-replacing-the-master-key.md)). It takes two changes of the sources and one
+command, in this order, and a process that starts at any step, for any reason, is safe:
+
+1. **Add the new key** to the sources of every process, beside the old one: a file of the directory
+   of `keys.masterKeyDir`. Every process holds it from its next start: a rolling update of `serve`,
+   and the next run of each Job of `lajstrom admin` and `lajstrom reindex`. The old key still
+   seals. `lajstrom admin key rewrap --dry-run` lists the keys of each live replica: every one must
+   hold the new key's id.
+2. **`lajstrom admin key rewrap --to <new id>`**. It refuses while a live replica does not hold the
+   key, makes it the key that seals, waits a minute for every replica to read it, seals every
+   private key of the index and every webhook secret again under it, and counts again. It prints
+   one line of JSON and ends `ok`, or `failed` with what is `left` under the old key, which a run
+   again seals.
+3. **Remove the old key** from the sources once a rewrap run again with the same `--to`, after every
+   command started before the switch has ended, ends `ok` with nothing sealed again
+   (`"resealed":{"keys":0,"webhooks":0}`), and `--dry-run` shows no open upload session under the
+   old key (they end an hour after their last request). Nothing needs to restart: a process that
+   still holds the old key holds a key no value is under. Archive the old key
+   ([below](#archiving-the-old-key)).
+
+The ids come from `--dry-run`, which writes nothing: the sealing key (`sealing`), the keys of the
+command with their sources (`held`), each live replica with the ids it holds (`replicas`), the
+values under each id (`values`) and under none (`lost`, by row), the open upload sessions under
+each id (`sessions`), and, with `--to`, what a run would refuse (`refusals`). The image has no
+shell; run the command in a pod or a container of `serve`, which holds its keys:
+
+```sh
+kubectl -n lajstrom exec deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin key rewrap --dry-run
+kubectl -n lajstrom exec deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin key rewrap \
+  --to <new id> --reason "CHG-1234: the custodian left"
+```
+
+Each run writes the audit row `key.rewrap`, subject `master:<new id>`, with the ids `from` and
+`to`, the values found under each other key, what it sealed again and what is left, and
+`--actor` and `--reason` (`auth.requireReason` requires the reason); the row of `sealing_key`
+names the row of the run that switched. No row, line or output holds a key or a value.
+
+**With Docker Compose**, where the key is the secret `lajstrom-master-key`
+([deploy/compose.md](deploy/compose.md#1-secrets)):
+
+1. Write the new key beside the old one, owned by the image's user:
+
+   ```sh
+   openssl rand -hex 32 > secrets/master-key-new
+   sudo chown 65532 secrets/master-key-new && chmod 0400 secrets/master-key-new
+   ```
+
+2. Give it to the service as a second secret, in a directory of its own, and name that directory
+   in `lajstrom.yaml`; `docker compose up -d` starts the service with both keys:
+
+   ```yaml
+   # compose.yaml
+   services:
+     lajstrom:
+       secrets:
+         - lajstrom-master-key
+         - {source: lajstrom-master-key-new, target: /run/secrets/lajstrom-master-keys/new}
+   secrets:
+     lajstrom-master-key-new: {file: ./secrets/master-key-new}
+   # lajstrom.yaml, beside keys.masterKeyFile
+   keys:
+     masterKeyDir: /run/secrets/lajstrom-master-keys
+   ```
+
+3. Rewrap, after a dry run:
+
+   ```sh
+   docker compose exec lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml admin key rewrap --dry-run
+   docker compose exec lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml admin key rewrap --to <new id>
+   ```
+
+4. Once a run again says nothing is left: point the secret `lajstrom-master-key` at
+   `./secrets/master-key-new`, remove `lajstrom-master-key-new` and `keys.masterKeyDir`, and
+   `docker compose up -d`. Move `secrets/master-key` off the host, to where the old key is
+   archived.
+
+**With a Kubernetes Secret volume** (the Helm chart's `masterKey.dir.volume.secret`):
+
+1. Make a Secret with the new key, one data key per master key, and mount it whole as
+   `keys.masterKeyDir`, never with `subPath`, beside `LAJSTROM_MASTER_KEY`; with the chart,
+   `masterKey.dir.volume` and `fsGroup` ([deploy/helm.md](deploy/helm.md#1-the-secrets)), and
+   `helm upgrade` rolls the replicas, each with both keys:
+
+   ```sh
+   kubectl -n lajstrom create secret generic lajstrom-master-keys --from-literal=new="$(openssl rand -hex 32)"
+   ```
+
+2. `lajstrom admin key rewrap --to <new id>`, as above.
+3. Once a run again says nothing is left: put the new key in the place of the old one,
+   `LAJSTROM_MASTER_KEY` of the Secret of `masterKey`, and drop `masterKey.dir` (or keep the
+   directory and set `masterKey.env: false`); `helm upgrade`. Archive the old key.
+
+**With a Secrets Store CSI volume** (Vault, AWS Secrets Manager, …; the chart's
+`masterKey.dir.volume.csi`), one object of the store per master key, each a file of the volume:
+
+1. Add the new key to the store and its object to the `SecretProviderClass`. The driver writes
+   every object of the class when a pod mounts the volume, so roll the replicas
+   (`kubectl rollout restart`, or a change of the chart): each starts with both keys.
+2. `lajstrom admin key rewrap --to <new id>`, as above.
+3. Once a run again says nothing is left: remove the old object from the class and the old key from
+   the store, and archive it apart. The pods keep the old file until they restart, holding a key no
+   value is under.
+
+#### Archiving the old key
+
+The old key is archived, not destroyed, as long as a backup of the database or a sealed snapshot
+made under it is kept: neither is sealed again. A restore of one brings back the values under the
+key of its time and the row of `sealing_key` that names it, so the old key is added back to the
+sources for the restore: while the index names a key no process holds, every `serve` refuses to
+start and every command exits `1`, naming it. A rewrap to the current key then seals the restored
+values again. Keep the archive apart from the store, the database and its backups, under the
+custody the key had.
+
+#### A lost key
+
+When the old key is lost, not merely leaked, the values under it cannot be opened: a rewrap stops
+before it writes, naming each such row (`keys id 12 (gpg 3B2C…)`, `webhooks id 4`). `--allow-lost`
+leaves those values as they are, names them in its output, counts them in its row, and goes on:
+
+```sh
+lajstrom admin key rewrap --to <new id> --allow-lost --reason "INC-77: the master key is lost"
+```
+
+Then make again what the lost key held: `lajstrom admin key rotate --repo` for each signing key
+named, `lajstrom admin key drop --token` for the bearer-token key, `rotate --encryption` for an
+encrypted repo's key (whose files wrapped for the lost key are lost with it), and a rotation of
+each webhook's secret named.
+
+**During the rolling update to the release with migration 0040**, a replica of the release before
+seals with its one key whatever the index says, and lists no key in its `replicas` row, so a rewrap
+refuses to run until every replica runs the new release. Keep one key in the sources until then.
 
 ### Repo keys
 
@@ -806,8 +971,10 @@ minutes before the drop, so that it verifies nothing.
 
 ### `lajstrom admin key`
 
-Every subcommand needs the configuration, the master key (in the variable `keys.masterKeyEnv`
-names, or in the file of `keys.masterKeyFile`), and a migrated database; none goes through HTTP.
+Every subcommand needs the configuration, the master keys (in the variable `keys.masterKeyEnv`
+names, the file of `keys.masterKeyFile`, or the directory of `keys.masterKeyDir`), and a migrated
+database; none goes through HTTP. Each but `rewrap` reads the key the index names to seal at its
+start and exits `1` when it does not hold it.
 
 | Command | What it does |
 | --- | --- |
@@ -820,19 +987,26 @@ names, or in the file of `keys.masterKeyFile`), and a migrated database; none go
 | `admin key rotate --token` | a new bearer-token key; the old one verifies for 21 minutes; prints the new fingerprint |
 | `admin key rotate --token --drop` | the same, and no old key verifies anything from then on, one still in its 21 minutes included |
 | `admin key drop --token` | retires the bearer-token key without a successor, whether it decrypts or not (the next token a replica issues, or the next start of `serve`, makes one); prints its fingerprint |
+| `admin key rewrap --dry-run [--to <id>]` | prints the key that seals, the keys of the command and of each live replica, the values under each key and under none, the open upload sessions under each key, and with `--to` what a run would refuse; writes nothing ([Replacing the master key](#replacing-the-master-key)) |
+| `admin key rewrap --to <id>` | makes the master key of id the one that seals, waits a minute, seals every private key of the index and every webhook secret again under it, and counts again; its audit row is `key.rewrap`. It refuses while this command or a live replica does not hold the key, or a value is under no key it holds |
+| `admin key rewrap --to <id> --allow-lost` | the same, leaving the values under no key it holds as they are ([A lost key](#a-lost-key)) |
 
 `--repo` and `--token` exclude each other, and one of them is required. `--kms` and `--local` go
 with `--repo` only, and exclude each other; `--encryption` goes with `--repo` only, and with
 neither of them: the new key is what the repo's policy names. Without the master key
-the token commands fail and say that `serve` signs with an ephemeral key then.
+the token commands fail and say that `serve` signs with an ephemeral key then. `rewrap` takes
+`--to` but with `--dry-run` (exit status `2` without it, or with an id that is not 16 lowercase
+hexadecimal digits), and `--actor` and `--reason`, which `auth.requireReason` requires.
 
 ## Readiness
 
 `/-/readyz` answers `200 ok` while the index database answers a ping, no other replica serves on
-it when it is SQLite, the replica's clock is within 60 seconds of the database's
+it when it is SQLite, the replica holds the master key the index names to seal ([The master
+key](#the-master-key)), the replica's clock is within 60 seconds of the database's
 ([Clocks](#clocks)), and every registry answered `GET /v2/`, with Lajstrom's credentials, within
 the last minute; otherwise `503` with a line that names no host, user or registry (`index
-database is unreachable`, `another replica serves on this SQLite database`, `the clock of this
+database is unreachable`, `another replica serves on this SQLite database`, `this replica does not
+hold the master key that seals: <id>`, `the clock of this
 replica is 1m15s ahead of the database's`, `a registry has not answered for a minute`, or
 `a registry has refused Lajstrom's credentials for a minute` when it answered `401` or `403`);
 the log has the cause, a registry's once per outage, with the status it answered. `serve` pings

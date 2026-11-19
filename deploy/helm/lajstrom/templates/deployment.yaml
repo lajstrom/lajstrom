@@ -59,7 +59,7 @@ spec:
               containerPort: {{ .Values.metrics.port }}
             {{- end }}
           env:
-            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database "masterKey" true) | nindent 12 }}
+            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database "masterKey" .Values.masterKey.env) | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -95,6 +95,12 @@ spec:
               mountPath: {{ include "lajstrom.bootstrapDir" . }}
               readOnly: true
             {{- end }}
+            {{- with include "lajstrom.masterKeyDir" . }}
+            # keys.masterKeyDir, whole: never a subPath, whose file the kubelet never updates
+            - name: master-keys
+              mountPath: {{ . }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -119,6 +125,9 @@ spec:
             items:
               - key: {{ .Values.bootstrap.key }}
                 path: token
+        {{- end }}
+        {{- with .Values.masterKey.dir.volume }}
+        - {{- toYaml (merge (dict "name" "master-keys") (deepCopy .)) | nindent 10 }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

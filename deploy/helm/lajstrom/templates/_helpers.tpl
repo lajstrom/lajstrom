@@ -75,6 +75,13 @@ app.kubernetes.io/component: server
 {{- (urlParse (.Values.config.server.externalURL | default "")).hostname -}}
 {{- end -}}
 
+{{/* keys.masterKeyDir: masterKey.dir.path when masterKey.dir has a volume, else empty. */}}
+{{- define "lajstrom.masterKeyDir" -}}
+{{- if .Values.masterKey.dir.volume -}}
+{{- required "masterKey.dir.path is required with masterKey.dir.volume" .Values.masterKey.dir.path -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Where the Secret of bootstrap is mounted, and the file auth.bootstrap.tokenFile names. */}}
 {{- define "lajstrom.bootstrapDir" -}}/run/secrets/lajstrom-bootstrap{{- end -}}
 
@@ -89,7 +96,10 @@ run: another database than Postgres, the master key as a file, a passwordEnv no 
 {{- fail (printf "config.database.driver is %q: the chart runs Postgres only, which every replica shares; SQLite serves one replica on a volume (docs/deploy/helm.md)" $database.driver) -}}
 {{- end -}}
 {{- if dig "keys" "masterKeyFile" "" $config -}}
-{{- fail "config.keys.masterKeyFile: the chart passes the master key as the variable LAJSTROM_MASTER_KEY from masterKey.existingSecret; remove the file" -}}
+{{- fail "config.keys.masterKeyFile: the chart passes the master key as the variable LAJSTROM_MASTER_KEY from masterKey.existingSecret, and more keys as files of masterKey.dir; remove the file" -}}
+{{- end -}}
+{{- if not (or .Values.masterKey.env .Values.masterKey.dir.volume) -}}
+{{- fail "masterKey.env is false and masterKey.dir.volume is empty: the replicas would hold no master key" -}}
 {{- end -}}
 {{- $set := dict -}}
 {{- range .Values.registryPasswords -}}
@@ -104,7 +114,11 @@ run: another database than Postgres, the master key as a file, a passwordEnv no 
 {{- fail (printf "config.registries[%d].auth.passwordEnv names %s, which no entry of registryPasswords (or extraEnv) sets: add {env: %s, existingSecret: <Secret>, key: <key>}" $i $env $env) -}}
 {{- end -}}
 {{- end -}}
-{{- $wired := dict "server" (dict "listen" ":8080") "database" (dict "driver" "postgres") "keys" (dict "masterKeyEnv" "LAJSTROM_MASTER_KEY") -}}
+{{- $keys := dict "masterKeyEnv" (ternary "LAJSTROM_MASTER_KEY" "" (.Values.masterKey.env | default false)) -}}
+{{- with include "lajstrom.masterKeyDir" . -}}
+{{- $_ := set $keys "masterKeyDir" . -}}
+{{- end -}}
+{{- $wired := dict "server" (dict "listen" ":8080") "database" (dict "driver" "postgres") "keys" $keys -}}
 {{- if .Values.metrics.enabled -}}
 {{- $_ := set $wired.server "metricsListen" (printf "0.0.0.0:%d" (int .Values.metrics.port)) -}}
 {{- end -}}

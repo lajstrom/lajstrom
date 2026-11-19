@@ -74,6 +74,10 @@ the group or others (`the master key file is open to more than its owner: make i
 0600`); `0600` or `0400` is quiet. The DSN and the registry password have no file option and
 stay in the environment, where `docker inspect` shows them.
 
+A replacement of the master key adds the new key as a second Compose secret, in a directory of
+`keys.masterKeyDir`, for the time of `lajstrom admin key rewrap`
+([operations.md](../operations.md#replacing-the-master-key)).
+
 **Copy the master key somewhere apart from the host and from the database backups now**:
 without it the signing keys in the database are ciphertext
 ([operations.md](../operations.md#the-master-key)).
