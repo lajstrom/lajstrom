@@ -240,6 +240,9 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			runs.wg.Go(func() { warnRefreshGrant(ctx, c.Auth.OIDC, edge.idp, a.log) })
+			// auth.oidc.refresh.interval (docs/spec/rbac.md §8, #1282): the refresh of the OIDC logins on
+			// this replica, or, off, the refresh tokens deleted
+			startRefresh(ctx, c, st, edge.idp, ms.m, rep.row.ID, &runs.wg, a.log)
 
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
