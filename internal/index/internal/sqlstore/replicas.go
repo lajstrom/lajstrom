@@ -57,6 +57,11 @@ func (c *conn) HeartbeatReplica(ctx context.Context, id string, at time.Time) er
 		c.d.EncodeTime(at), id)
 }
 
+// SetReplicaMasterKeys writes master_keys of the replica's row; none is NULL.
+func (c *conn) SetReplicaMasterKeys(ctx context.Context, id string, keyIDs []string) error {
+	return c.execOne(ctx, fmt.Sprintf("replicas %q", id), "UPDATE replicas SET master_keys = ? WHERE id = ?", eventsArg(keyIDs), id)
+}
+
 // StopReplica deletes the replica's row.
 func (c *conn) StopReplica(ctx context.Context, id string) error {
 	return c.execOne(ctx, fmt.Sprintf("replicas %q", id), "DELETE FROM replicas WHERE id = ?", id)

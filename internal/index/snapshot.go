@@ -23,7 +23,7 @@ type Snapshotter interface {
 
 	// ImportControlPlane inserts the rows of cp with their ids, in one transaction. The tables
 	// it writes (repos, group_members, users, identities, identity_groups, tokens, bindings,
-	// keys, webhooks, ci_policies, sealing_key and audit) must be empty: otherwise the error wraps ErrNotEmpty and names
+	// keys, webhooks, ci_policies, sealing_key, wrapped_master_keys and audit) must be empty: otherwise the error wraps ErrNotEmpty and names
 	// the tables that have rows, and nothing changes. With opts.Force it first empties every
 	// table but schema_migrations, auth_version and replicas, in the same transaction. The
 	// sequence of each id is moved past the greatest id of cp and never back, with the data
@@ -94,6 +94,10 @@ type ControlPlane struct {
 	// SealingKey is the row of sealing_key, the id of the master key that sealed the values of
 	// Keys and Webhooks then (#1288); nil when the database had none, or before migration 0040.
 	SealingKey *SealingKey
+
+	// WrappedMasterKeys are the rows of wrapped_master_keys, the data keys of the master key as
+	// the KMS's ciphertexts (#1388); none when the table had none, or before migration 0041.
+	WrappedMasterKeys []WrappedMasterKey
 
 	// WithAudit and AuditSince are the ExportOptions of the read: Audit holds the rows they
 	// selected, and none without WithAudit.

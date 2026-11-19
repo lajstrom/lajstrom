@@ -46,6 +46,10 @@ type document struct {
 	// SealingKey is the row of sealing_key, the id of the master key that sealed then (#1288),
 	// never a key; absent when the database had none, and before migration 0040.
 	SealingKey *sealingKeyRow `json:"sealingKey,omitempty"`
+	// WrappedMasterKeys are the rows of wrapped_master_keys, the data keys of keys.masterKeyKMS
+	// as the KMS's ciphertexts, by keyId (#1388), never a key in clear; absent when the table has
+	// none, and before migration 0041.
+	WrappedMasterKeys []wrappedMasterKeyRow `json:"wrappedMasterKeys,omitempty"`
 	// Audit is nil when the snapshot was made without audit rows, and absent then.
 	Audit *[]auditRow `json:"audit,omitempty"`
 }
@@ -73,6 +77,37 @@ func (r *sealingKeyRow) row() *index.SealingKey {
 		return nil
 	}
 	return &index.SealingKey{KeyID: r.KeyID, Source: r.Source, Host: r.Host, AuditID: r.AuditID, SetAt: r.SetAt}
+}
+
+// wrappedMasterKeyRow is a row of wrapped_master_keys (#1388): wrapped is the KMS's ciphertext,
+// in base64.
+type wrappedMasterKeyRow struct {
+	KeyID     string    `json:"keyId"`
+	KMS       string    `json:"kms"`
+	Wrapped   []byte    `json:"wrapped"`
+	CreatedAt time.Time `json:"createdAt"`
+	WrappedAt time.Time `json:"wrappedAt"`
+	AuditID   *int64    `json:"auditId,omitempty"`
+}
+
+// wrappedMasterKeyRowsOf is the wrappedMasterKeys of the document of ks; nil for none.
+func wrappedMasterKeyRowsOf(ks []index.WrappedMasterKey) []wrappedMasterKeyRow {
+	var out []wrappedMasterKeyRow
+	for _, k := range ks {
+		out = append(out, wrappedMasterKeyRow{KeyID: k.KeyID, KMS: k.KMS, Wrapped: k.Wrapped, CreatedAt: k.CreatedAt,
+			WrappedAt: k.WrappedAt, AuditID: k.AuditID})
+	}
+	return out
+}
+
+// wrappedMasterKeysOf is the rows of wrapped_master_keys of rows, empty for none.
+func wrappedMasterKeysOf(rows []wrappedMasterKeyRow) []index.WrappedMasterKey {
+	out := make([]index.WrappedMasterKey, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, index.WrappedMasterKey{KeyID: r.KeyID, KMS: r.KMS, Wrapped: r.Wrapped, CreatedAt: r.CreatedAt,
+			WrappedAt: r.WrappedAt, AuditID: r.AuditID})
+	}
+	return out
 }
 
 // ciPolicyRow is a row of ci_policies; claims and grants are the JSON of their columns.
@@ -336,6 +371,7 @@ func documentOf(cp *index.ControlPlane, binary string) *document {
 			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
 	doc.SealingKey = sealingKeyRowOf(cp.SealingKey)
+	doc.WrappedMasterKeys = wrappedMasterKeyRowsOf(cp.WrappedMasterKeys)
 	if cp.WithAudit {
 		rows := make([]auditRow, 0, len(cp.Audit))
 		for _, e := range cp.Audit {
@@ -407,6 +443,7 @@ func controlPlaneOf(doc *document) *index.ControlPlane {
 			UpdatedBy: p.UpdatedBy, UpdatedAt: p.UpdatedAt, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt, Revision: p.Revision})
 	}
 	cp.SealingKey = doc.SealingKey.row()
+	cp.WrappedMasterKeys = wrappedMasterKeysOf(doc.WrappedMasterKeys)
 	if doc.Audit != nil {
 		cp.WithAudit, cp.Audit = true, []index.AuditEvent{}
 		for _, e := range *doc.Audit {

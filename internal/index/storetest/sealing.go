@@ -211,15 +211,17 @@ func testSealingKeyRace(t *testing.T, s index.Store) {
 	}
 }
 
-// testSnapshotNoSealingKey: a database without a sealing key exports none, and a snapshot without
-// one (a database before 0040) imports none: a restore into an empty database chooses no key.
+// testSnapshotNoSealingKey: a database without a sealing key exports none, nor a wrapped master
+// key (#1388), and a snapshot without one (a database before 0040) imports none: a restore into an
+// empty database chooses no key.
 func testSnapshotNoSealingKey(t *testing.T, open func(*testing.T) index.Store) {
 	ctx := t.Context()
 	src := open(t)
 	newRepo(t, src, "raw", "assets")
 	cp := export(t, src)
-	if cp.SealingKey != nil {
-		t.Fatalf("the sealing key of a database without one: %+v", cp.SealingKey)
+	if cp.SealingKey != nil || len(cp.WrappedMasterKeys) != 0 {
+		t.Fatalf("the sealing key and the wrapped master keys of a database without them: %+v, %+v", cp.SealingKey,
+			cp.WrappedMasterKeys)
 	}
 	dst := open(t)
 	must(t, snapshotter(t, dst).ImportControlPlane(ctx, cp, index.ImportOptions{}))

@@ -28,7 +28,7 @@ func snapshotter(t *testing.T, s index.Store) index.Snapshotter {
 // proxy and a group repo with its members; a live user, a deleted one and an OIDC one with its
 // identity and groups; a PAT, a deploy token, a revoked one and a deploy token over a mask;
 // bindings; a repo's key and a retired server key; a webhook of some types and an inactive one of
-// every type; the sealing key of a rewrap; audit rows. Besides, rows a snapshot leaves out: a session, derived rows (an
+// every type; the sealing key of a rewrap and a wrapped master key; audit rows. Besides, rows a snapshot leaves out: a session, derived rows (an
 // attachment among them), a webhook delivery, a bootstrap token.
 func fullControlPlane(t *testing.T, s index.Store) fixture {
 	t.Helper()
@@ -115,6 +115,8 @@ func fullControlPlane(t *testing.T, s index.Store) fixture {
 	}
 	must(t, s.PutSealingKey(ctx, &index.SealingKey{KeyID: "0123456789abcdef", Source: index.SealingRewrap, Host: "admin-1",
 		AuditID: ptr(int64(2))}, ""))
+	must(t, s.PutWrappedMasterKey(ctx, &index.WrappedMasterKey{KeyID: "0123456789abcdef",
+		KMS: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/k", Wrapped: []byte("ciphertext"), AuditID: ptr(int64(3))}, nil))
 	must(t, s.PutBootstrapToken(ctx, &index.BootstrapToken{Hash: "bootstrap", Replica: "host 1", ExpiresAt: at(86400)}, ""))
 	return f
 }
@@ -157,9 +159,10 @@ func testSnapshotRoundTrip(t *testing.T, open func(*testing.T) index.Store) {
 	counts := map[string]int{"repos": len(cp.Repos), "group_members": len(cp.GroupMembers), "users": len(cp.Users),
 		"identities": len(cp.Identities), "identity_groups": len(cp.IdentityGroups), "tokens": len(cp.Tokens),
 		"bindings": len(cp.Bindings), "keys": len(cp.Keys), "webhooks": len(cp.Webhooks), "policy_rules": len(cp.PolicyRules),
-		"ci_policies": len(cp.CIPolicies), "audit": len(cp.Audit)}
+		"ci_policies": len(cp.CIPolicies), "wrapped_master_keys": len(cp.WrappedMasterKeys), "audit": len(cp.Audit)}
 	same(t, "rows exported", map[string]int{"repos": 4, "group_members": 2, "users": 4, "identities": 1, "identity_groups": 2,
-		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "ci_policies": 2, "audit": 3}, counts)
+		"tokens": 7, "bindings": 3, "keys": 2, "webhooks": 2, "policy_rules": 1, "ci_policies": 2, "wrapped_master_keys": 1,
+		"audit": 3}, counts)
 	checkSealingKey(t, cp)
 
 	dst := open(t)
@@ -343,6 +346,10 @@ func testSnapshotNotEmpty(t *testing.T, open func(*testing.T) index.Store) {
 		{"ci_policies", func(s index.Store) { newCIPolicy(t, s, "early") }},
 		{"sealing_key", func(s index.Store) {
 			must(t, s.PutSealingKey(ctx, &index.SealingKey{KeyID: "fedcba9876543210", Source: index.SealingStart, Host: "serve-1"}, ""))
+		}},
+		{"wrapped_master_keys", func(s index.Store) {
+			must(t, s.PutWrappedMasterKey(ctx, &index.WrappedMasterKey{KeyID: "fedcba9876543210",
+				KMS: "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k", Wrapped: []byte("c")}, nil))
 		}},
 		{"audit", func(s index.Store) {
 			must(t, s.AppendAudit(ctx, &index.AuditEvent{Principal: "anonymous", Action: "reindex"}))

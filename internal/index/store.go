@@ -139,6 +139,9 @@ type Reader interface {
 	// GetSealingKey returns the row of sealing_key, the master key that every process seals
 	// with (#1288); an error wrapping ErrNotFound when there is none.
 	GetSealingKey(ctx context.Context) (*SealingKey, error)
+	// ListWrappedMasterKeys returns every row of wrapped_master_keys, the data keys of the
+	// master key in a KMS, by KeyID (#1388, docs/spec/index-schema.md, A master key in a KMS).
+	ListWrappedMasterKeys(ctx context.Context) ([]WrappedMasterKey, error)
 
 	// GetSession returns the open publication session with key in a repo.
 	GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
@@ -477,6 +480,15 @@ type Writer interface {
 	// rewraps one switches (#1288). It sets k.SetAt to the database's time. A rewrap's caller
 	// appends key.rewrap in the same transaction.
 	PutSealingKey(ctx context.Context, k *SealingKey, old string) error
+	// PutWrappedMasterKey inserts k where old is nil and there is no row of k.KeyID, and
+	// otherwise replaces its Wrapped, WrappedAt and AuditID where the row still holds the
+	// ciphertext old, a compare-and-set; another state wraps ErrConflict and changes nothing
+	// (#1388). It sets k.WrappedAt, and k.CreatedAt on an insert, to the database's time. The
+	// caller appends key.wrap in the same transaction.
+	PutWrappedMasterKey(ctx context.Context, k *WrappedMasterKey, old []byte) error
+	// DeleteWrappedMasterKey deletes the row of keyID; ErrNotFound when there is none. The
+	// caller appends key.drop in the same transaction (#1388).
+	DeleteWrappedMasterKey(ctx context.Context, keyID string) error
 
 	// UpsertSession inserts s when s.ID is 0 and otherwise stores State, Files and ExpiresAt
 	// of row s.ID; it sets UpdatedAt. A key has one open session in a repo: inserting a second
@@ -625,6 +637,10 @@ type Writer interface {
 	// HeartbeatReplica sets HeartbeatAt of the replica's row; ErrNotFound when the row is gone: a
 	// start that found it stale deleted it.
 	HeartbeatReplica(ctx context.Context, id string, at time.Time) error
+	// SetReplicaMasterKeys writes MasterKeys of the replica's row, at the beat that follows the
+	// unwrap of a data key of a KMS (#1388); none (nil or empty) is NULL. ErrNotFound when the row
+	// is gone, deleted as stale.
+	SetReplicaMasterKeys(ctx context.Context, id string, keyIDs []string) error
 	// StopReplica deletes the replica's row.
 	StopReplica(ctx context.Context, id string) error
 
