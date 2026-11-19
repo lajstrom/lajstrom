@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
@@ -317,6 +319,9 @@ func newSnapshotRestoreCmd(a *app) *cobra.Command {
 			if err := a.unwrapAll(ctx, st, reg.Master, true); err != nil {
 				return err
 			}
+			if reg.Master != nil {
+				reg.UnwrapKey = a.snapshotKey(reg.Master)
+			}
 			if err := preferSealing(ctx, st, reg.Master); err != nil {
 				return err
 			}
@@ -366,6 +371,37 @@ func preferSealing(ctx context.Context, st store, m *keys.Master) error {
 		m.SealWith(row.KeyID)
 	}
 	return nil
+}
+
+// snapshotKey returns the UnwrapKey of a restore under the master keys m (manifest-profile.md §9,
+// #1388): the data key of a sealed snapshot's lajstrom.snapshot.wrappedKey, which m does not hold
+// as the database has no row of it, unwrapped from the annotation when keys.masterKeyKMS names its
+// id and its KMS key, and held when the KMS's answer has that id. A key the configuration does not
+// name, or names under another KMS key, is an error that says so, and the KMS is asked nothing.
+func (a *app) snapshotKey(m *keys.Master) func(context.Context, index.WrappedMasterKey) error {
+	return func(ctx context.Context, row index.WrappedMasterKey) error {
+		i := slices.IndexFunc(a.cfg.Keys.MasterKeyKMS, func(e config.MasterKeyKMS) bool { return e.ID == row.KeyID })
+		switch {
+		case i < 0:
+			return fmt.Errorf("keys.masterKeyKMS does not name master key %s, which sealed the snapshot: add its entry, "+
+				"{id: %s, kms: %q}", row.KeyID, row.KeyID, row.KMS)
+		case a.cfg.Keys.MasterKeyKMS[i].KMS != row.KMS:
+			return fmt.Errorf("keys.masterKeyKMS names master key %s under %s, the snapshot under %s: it is not asked for", row.KeyID,
+				a.cfg.Keys.MasterKeyKMS[i].KMS, row.KMS)
+		}
+		ds, err := dataKeysOf(ctx, rowsOf{row}, a.cfg.Keys.MasterKeyKMS[i:i+1], a.masterKMS())
+		if err != nil {
+			return err
+		}
+		return ds[0].unwrap(ctx, m)
+	}
+}
+
+// rowsOf is rows as a wrappedReader: the wrapped keys of a snapshot's annotation.
+type rowsOf []index.WrappedMasterKey
+
+func (r rowsOf) ListWrappedMasterKeys(context.Context) ([]index.WrappedMasterKey, error) {
+	return r, nil
 }
 
 // noReplicaServes fails when a replica's row has a heartbeat younger than replicaStaleAfter: a

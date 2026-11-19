@@ -109,3 +109,46 @@ func TestParseSnapshotRefuses(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotWrappedKey: a sealed snapshot under a data key carries the key's row in
+// lajstrom.snapshot.wrappedKey, compact JSON with the ciphertext in base64, and parses back to it
+// (#1388); the annotation on an unsealed snapshot, of another shape, or of a malformed id is
+// refused, and the error does not show the ciphertext.
+func TestSnapshotWrappedKey(t *testing.T) {
+	k := &SnapshotWrappedKey{KeyID: "0123456789abcdef", KMS: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/k",
+		Wrapped: []byte("the KMS's ciphertext")}
+	s := Snapshot{Version: 1, Schema: 41, Created: time.Unix(0, 0).UTC(), Sealed: true,
+		Layer: ocispec.Descriptor{Digest: digest.FromString("layer"), Size: 5}, WrappedKey: k}
+	m, err := BuildSnapshot(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"keyId":"0123456789abcdef","kms":"awskms:///arn:aws:kms:eu-west-1:111122223333:key/k",` +
+		`"wrapped":"dGhlIEtNUydzIGNpcGhlcnRleHQ="}`
+	if got := m.Annotations[AnnotationSnapshotWrappedKey]; got != want {
+		t.Errorf("the annotation %s, want %s", got, want)
+	}
+	back, err := ParseSnapshot(m)
+	if err != nil || !reflect.DeepEqual(back.WrappedKey, k) {
+		t.Errorf("ParseSnapshot: %+v, %v; want the key back", back.WrappedKey, err)
+	}
+	unsealed := s
+	unsealed.Sealed = false
+	if _, err := BuildSnapshot(unsealed); err == nil || !strings.Contains(err.Error(), "not sealed") {
+		t.Errorf("the annotation on an unsealed snapshot: %v", err)
+	}
+	for _, v := range []string{`{"keyId":"0123456789abcdef","kms":"k","wrapped":"dGhl","key":"x"}`, `[]`,
+		`{"keyId":"0123","kms":"k","wrapped":"dGhl"}`, `{"keyId":"0123456789abcdef","kms":"","wrapped":"dGhl"}`,
+		`{"keyId":"0123456789abcdef","kms":"k","wrapped":"dGhl"} {}`} {
+		bad := m
+		bad.Annotations = map[string]string{}
+		for a, x := range m.Annotations {
+			bad.Annotations[a] = x
+		}
+		bad.Annotations[AnnotationSnapshotWrappedKey] = v
+		if _, err := ParseSnapshot(bad); !errors.Is(err, ErrSnapshot) || !strings.Contains(err.Error(), AnnotationSnapshotWrappedKey) ||
+			strings.Contains(err.Error(), "dGhl") {
+			t.Errorf("the annotation %s: %v, want ErrSnapshot naming it, without the ciphertext", v, err)
+		}
+	}
+}
