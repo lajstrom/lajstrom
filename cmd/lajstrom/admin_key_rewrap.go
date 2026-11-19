@@ -113,6 +113,9 @@ func newKeyRewrapCmd(a *app) *cobra.Command {
 				return err
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
+			if err := a.unwrapAll(ctx, st, m, false); err != nil {
+				return err
+			}
 			rep, c, err := a.rewrapCheck(ctx, st, m, to, allowLost)
 			if err != nil {
 				return err

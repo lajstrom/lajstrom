@@ -95,6 +95,9 @@ func newSnapshotCreateCmd(a *app) *cobra.Command {
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
 			if reg.Master != nil { // sealed with the key the index names, and no other
+				if err := a.unwrapAll(ctx, st, reg.Master, false); err != nil {
+					return err
+				}
 				if err := sealingAtStart(ctx, st, reg.Master, hostName()); err != nil {
 					return err
 				}
@@ -308,6 +311,10 @@ func newSnapshotRestoreCmd(a *app) *cobra.Command {
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
 			if err := noReplicaServes(ctx, st); err != nil {
+				return err
+			}
+			// the data keys whose rows the database has; the snapshot brings the others
+			if err := a.unwrapAll(ctx, st, reg.Master, true); err != nil {
 				return err
 			}
 			if err := preferSealing(ctx, st, reg.Master); err != nil {
