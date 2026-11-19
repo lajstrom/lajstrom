@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -73,6 +74,11 @@ type Info struct {
 	// Approval is auth.approval (ServerInfo.Approval): none or second-admin.
 	Approval string `json:"approval"`
 	Caller   Caller `json:"caller"`
+	// PendingApprovals is, while Caller.Admin is true, the number of requests for a second admin
+	// that are pending, not expired, and not the caller's own: those it could approve
+	// (docs/spec/rbac.md §13, Telling the second admin; #1336). Absent for every other caller, so
+	// that nobody without the admin role learns that a request waits.
+	PendingApprovals *int `json:"pendingApprovals,omitempty"`
 }
 
 // LoginInfo is what GET /api/v1/info tells a web UI of POST /api/v1/login: that the server has
@@ -110,11 +116,21 @@ func (h *handler) authModes() []string {
 }
 
 // serverInfo answers GET /api/v1/info. No authorization is asked for: anyone may read it. Unlike
-// whoami, the anonymous principal gets 200, with itself as the caller.
+// whoami, the anonymous principal gets 200, with itself as the caller. A caller whose credential
+// reaches the admin role gets the count of the requests it could approve, whatever auth.approval
+// says, so that the requests still pending once it is set back to none are counted.
 func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	caller, err := h.caller(r)
 	if err != nil {
 		return 0, nil, err
+	}
+	var pending *int
+	if caller.Admin {
+		n, err := h.repos.Index.CountPendingApprovals(r.Context(), h.repos.now(), auth.PrincipalFrom(r.Context()).String())
+		if err != nil {
+			return 0, nil, fmt.Errorf("api: the requests for a second admin that wait: %w", err)
+		}
+		pending = &n
 	}
 	b := version.Get()
 	return http.StatusOK, Info{
@@ -124,6 +140,7 @@ func (h *handler) serverInfo(_ http.ResponseWriter, r *http.Request) (int, any, 
 			TokenLifetime: int64(h.loginLifetime / time.Second), IdleTimeout: int64(h.loginIdle / time.Second),
 		},
 		AdminMFA: h.info.AdminMFA, RequireReason: h.info.RequireReason, Approval: cmp.Or(h.info.Approval, "none"), Caller: caller,
+		PendingApprovals: pending,
 	}, nil
 }
 

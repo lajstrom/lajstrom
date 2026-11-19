@@ -137,6 +137,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Approvals", testApprovals},
 		{"ApprovalDecisions", testApprovalDecisions},
 		{"ApprovalRace", testApprovalRace},
+		{"CountPendingApprovals", testCountPendingApprovals},
 		{"WebhookDeliveries", testWebhookDeliveries},
 		{"WebhookClaimRace", testWebhookClaimRace},
 		{"SnapshotAudit", testSnapshotAudit},

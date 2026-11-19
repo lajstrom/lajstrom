@@ -4193,6 +4193,13 @@ components:
             over a mask with write are answered 202 with a request for a second admin
             (docs/spec/rbac.md §13). A server before it answers none.
         caller: {$ref: "#/components/schemas/Caller"}
+        pendingApprovals:
+          type: integer
+          minimum: 0
+          description: >-
+            While caller.admin is true, the number of requests for a second admin that are
+            pending, not expired, and not made by the caller: those it could approve
+            (docs/spec/rbac.md §13). Absent for every other caller, and from a server before it.
     FormatInfo:
       description: "A format plugin the server serves, and the artifact type of its manifests."
       type: object
