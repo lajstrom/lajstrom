@@ -281,7 +281,7 @@ func New(o Options) http.Handler {
 	}
 	if h.approvals == nil {
 		h.approvals = &auth.Approvals{Index: o.Repos.Index, Bindings: h.bindings, Tokens: h.tokens, Audit: o.Repos.Audit, Now: o.Repos.Now,
-			Log: h.log}
+			Webhooks: o.Repos.Webhooks, Log: h.log} // a nil *webhook.Outbox writes no event
 	}
 	mux := http.NewServeMux()
 	for _, rt := range h.routes() {
