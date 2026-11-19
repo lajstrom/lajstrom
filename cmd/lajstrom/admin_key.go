@@ -28,7 +28,7 @@ var signedFormats = map[string]bool{"apt": true, "rpm": true}
 
 // ephemeralTokens says what a server without a master key does with bearer tokens.
 const ephemeralTokens = "bearer tokens are signed with an ephemeral key: they do not survive a restart and are not " +
-	"shared between replicas; set keys.masterKeyEnv or keys.masterKeyFile"
+	"shared between replicas; set keys.masterKeyEnv, keys.masterKeyFile or keys.masterKeyDir"
 
 // newAdminKeyCmd returns admin key: export, rotate and drop the signing keys in the index
 // database, without HTTP: the signing key of an apt repo (--repo) or the key that signs the
