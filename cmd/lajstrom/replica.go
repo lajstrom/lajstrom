@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -151,11 +152,35 @@ func (r *replica) Run(ctx context.Context) {
 	}
 }
 
-// beat sets the heartbeat of the row, then compares the clocks, then reads the sealing key again.
+// beat sets the heartbeat of the row, then compares the clocks, then writes the ids of the keys it
+// holds again when an unwrap changed them, then reads the sealing key again.
 func (r *replica) beat(ctx context.Context) {
 	r.heartbeat(ctx)
 	r.clock(ctx)
+	r.heldKeys(ctx)
 	r.sealing(ctx)
+}
+
+// heldKeys writes the ids of the master keys this replica holds in its row when they are not
+// those the row holds: a data key of keys.masterKeyKMS that the KMS unwrapped since, which the
+// rewrap's guard counts from then on (SetReplicaMasterKeys, #1388). A row that is gone is the
+// heartbeat's to write again; a failure is logged, and the next beat tries again.
+func (r *replica) heldKeys(ctx context.Context) {
+	if r.master == nil {
+		return
+	}
+	ids := r.master.IDs()
+	if slices.Equal(ids, r.row.MasterKeys) || len(ids) == 0 && len(r.row.MasterKeys) == 0 {
+		return
+	}
+	if err := r.st.SetReplicaMasterKeys(ctx, r.row.ID, ids); err != nil {
+		if ctx.Err() == nil && !errors.Is(err, index.ErrNotFound) {
+			r.log.WarnContext(ctx, "the master keys of this replica not written in its row", "replica", r.row.ID, "error", err.Error())
+		}
+		return
+	}
+	r.row.MasterKeys = ids
+	r.log.InfoContext(ctx, "the master keys of this replica written in its row", "replica", r.row.ID, "held", ids)
 }
 
 // sealing reads the row of sealing_key again, at each beat (docs/spec/index-schema.md, The master
@@ -170,6 +195,9 @@ func (r *replica) sealing(ctx context.Context) {
 		return
 	}
 	row, err := r.st.GetSealingKey(ctx)
+	if errors.Is(err, index.ErrNotFound) && len(r.master.Pending()) == 0 && len(r.master.IDs()) == 1 {
+		row, err = r.recordSealing(ctx) // the sole key, a data key unwrapped since the start (#1388)
+	}
 	if err != nil {
 		if !errors.Is(err, index.ErrNotFound) && ctx.Err() == nil {
 			r.log.WarnContext(ctx, "the sealing key of the index not read", "error", err.Error())
@@ -179,14 +207,29 @@ func (r *replica) sealing(ctx context.Context) {
 	was, held := r.master.Sealing()
 	switch {
 	case row.KeyID == was && held:
-	case r.master.SealWith(row.KeyID):
+	case r.master.SealWith(row.KeyID) && row.KeyID == was:
+		r.log.InfoContext(ctx, "the master key that seals is unwrapped: this replica seals with it, and is ready", "sealing", row.KeyID)
+	case r.master.Holds(row.KeyID):
 		r.log.InfoContext(ctx, "the index seals with another master key, which this replica holds", "sealing", row.KeyID,
 			"before", was)
+	case r.master.IsPending(row.KeyID):
+		r.log.ErrorContext(ctx, "not ready: the index seals with a master key that the KMS has not unwrapped for this replica yet, "+
+			"and the replica seals nothing until it does; it is asked for again in the background", "sealing", row.KeyID)
 	default:
 		r.log.ErrorContext(ctx, "not ready: the index seals with a master key this replica does not hold, and the replica "+
 			"seals nothing until it does: add the key to its sources and start it again, or name a key it holds with "+
 			"lajstrom admin key rewrap --to <id>", "sealing", row.KeyID, "held", r.master.IDs())
 	}
+}
+
+// recordSealing records the sole key of this replica as the sealing key where the database names
+// none, as a start does (recordSealing), and reads the row again.
+func (r *replica) recordSealing(ctx context.Context) (*index.SealingKey, error) {
+	if err := recordSealing(ctx, r.st, r.master, r.row.Host); err != nil {
+		r.log.ErrorContext(ctx, "not ready: the master key of this replica cannot seal", "error", err.Error())
+		return nil, err
+	}
+	return r.st.GetSealingKey(ctx)
 }
 
 // heartbeat sets the heartbeat of the row. A row that is gone, deleted by a start elsewhere that
@@ -270,12 +313,20 @@ func (r *replica) clock(ctx context.Context) {
 }
 
 // Err is the error of readiness while another replica serves on the database, while the index
-// seals with a master key this replica does not hold (it names the id, which shows nothing of the
-// key), or while the last comparison of the clocks found them more than clockFail apart; nil
-// otherwise.
+// seals with a master key this replica does not hold, or has not unwrapped (#1388), or names none
+// to it (each names the id, which shows nothing of the key), or while the last comparison of the
+// clocks found them more than clockFail apart; nil otherwise.
 func (r *replica) Err() error {
 	if r.master != nil {
-		if id, held := r.master.Sealing(); !held && id != "" {
+		switch id, held := r.master.Sealing(); {
+		case held:
+		case r.master.IsPending(id):
+			return errors.New("this replica has not unwrapped the master key that seals: " + id)
+		case id == "" && soleKeyPending(r.master):
+			return errors.New("this replica has not unwrapped the master key that seals: " + r.master.Pending()[0])
+		case id == "" && len(r.master.IDs()) > 0:
+			return errors.New("no master key seals yet: the index names none")
+		case id != "":
 			return errors.New("this replica does not hold the master key that seals: " + id)
 		}
 	}

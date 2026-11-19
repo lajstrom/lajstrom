@@ -36,9 +36,17 @@ const rewrapHint = "name one with lajstrom admin key rewrap --to <id>"
 // one records its key, and one that holds another stops. One that holds several records nothing
 // and stops: which of them seals is the operator's choice (rewrap --to), never the order of the
 // files.
+//
+// A data key of keys.masterKeyKMS that the KMS has not unwrapped yet, which only serve holds
+// (#1388), stops nothing: a row that names it leaves the process sealing nothing until a beat
+// after the unwrap, and so does a database without a row whose sole key it is, which that beat
+// records.
 func sealingAtStart(ctx context.Context, st sealingStore, m *keys.Master, host string) error {
 	row, err := st.GetSealingKey(ctx)
 	if errors.Is(err, index.ErrNotFound) {
+		if soleKeyPending(m) {
+			return nil
+		}
 		if err := recordSealing(ctx, st, m, host); err != nil {
 			return err
 		}
@@ -47,7 +55,7 @@ func sealingAtStart(ctx context.Context, st sealingStore, m *keys.Master, host s
 	if err != nil {
 		return fmt.Errorf("the sealing key of the index: %w", err)
 	}
-	if !m.SealWith(row.KeyID) {
+	if !m.SealWith(row.KeyID) && !m.IsPending(row.KeyID) {
 		return fmt.Errorf("the index seals with master key %s, which this process does not hold; it holds %s: add that key to "+
 			"keys.masterKeyDir, or name one this process holds with lajstrom admin key rewrap --to <id>",
 			row.KeyID, heldIDs(m))
@@ -60,7 +68,7 @@ func sealingAtStart(ctx context.Context, st sealingStore, m *keys.Master, host s
 // the caller reads.
 func recordSealing(ctx context.Context, st sealingStore, m *keys.Master, host string) error {
 	ids := m.IDs()
-	if len(ids) > 1 {
+	if len(ids)+len(m.Pending()) > 1 {
 		return fmt.Errorf("no master key seals yet: %s; this process holds %s", rewrapHint, heldIDs(m))
 	}
 	first, err := st.ListSealed(ctx, index.SealedKeys, 0, 1)
@@ -81,5 +89,15 @@ func recordSealing(ctx context.Context, st sealingStore, m *keys.Master, host st
 	return nil
 }
 
-// heldIDs is the ids of the keys m holds, for an error: "0123456789abcdef, fedcba9876543210".
-func heldIDs(m *keys.Master) string { return strings.Join(m.IDs(), ", ") }
+// heldIDs is the ids of the keys m holds, for an error: "0123456789abcdef, fedcba9876543210",
+// and those it has not unwrapped yet, so marked.
+func heldIDs(m *keys.Master) string {
+	ids := m.IDs()
+	for _, id := range m.Pending() {
+		ids = append(ids, id+" (not unwrapped yet)")
+	}
+	return strings.Join(ids, ", ")
+}
+
+// soleKeyPending reports whether the one key of m is a data key not unwrapped yet.
+func soleKeyPending(m *keys.Master) bool { return len(m.IDs()) == 0 && len(m.Pending()) == 1 }

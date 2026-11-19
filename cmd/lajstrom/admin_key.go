@@ -402,9 +402,11 @@ func newTokens(c *config.Config, st index.Store, m *keys.Master, log *slog.Logge
 // newTokenKeys returns the bearer-token keys of serve, loaded or made now, before the server
 // listens: the key of the index under the master keys of ms, made when there is none, with one
 // line at info that names its fingerprint and algorithm. An active key that does not decrypt
-// stops serve with an error that names it and admin key drop --token. Without a master key
-// (none configured, or the variable not set) the keys are an ephemeral key in memory, with a
-// warning that says why.
+// stops serve with an error that names it and admin key drop --token, but while a data key of
+// keys.masterKeyKMS is not unwrapped yet (#1388): the key may be under it, and serve, which does
+// not wait for the KMS, logs a warning and reads the key again at every token, 503 until then.
+// Without a master key (none configured, or the variable not set) the keys are an ephemeral key
+// in memory, with a warning that says why.
 func newTokenKeys(ctx context.Context, c *config.Config, ms masters, st index.Store, log *slog.Logger) (token.Keys, error) {
 	if ms.m == nil {
 		e := keys.NewEphemeralTokens()
@@ -417,7 +419,12 @@ func newTokenKeys(ctx context.Context, c *config.Config, ms masters, st index.St
 		return nil, err
 	}
 	k, err := t.TokenSigner(ctx)
-	if err != nil {
+	switch {
+	case err != nil && len(ms.m.Pending()) > 0 && (errors.Is(err, keys.ErrKMSUnavailable) || errors.Is(err, keys.ErrNoSealingKey)):
+		log.WarnContext(ctx, "the bearer-token key is not loaded yet: a master key is not unwrapped, and /v2/token answers 503 "+
+			"until it is", "pending", ms.m.Pending(), "error", err.Error())
+		return t, nil
+	case err != nil:
 		return nil, fmt.Errorf("the bearer-token key: %w", err)
 	}
 	log.InfoContext(ctx, "bearer tokens are signed with the key in the database",
