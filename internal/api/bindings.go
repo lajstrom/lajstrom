@@ -61,7 +61,10 @@ func (h *handler) listBindings(_ http.ResponseWriter, r *http.Request) (int, any
 // createBinding creates a binding from the BindingRequest of the body: 201 with the binding
 // and its Location. Under auth.approval second-admin, one of the role admin or on */* is a
 // request for a second admin in its place (auth.Approvals.RequestBinding): 202 with the request
-// and its Location (docs/spec/rbac.md §13).
+// and its Location (docs/spec/rbac.md §13). Such a request takes the admin's password or a web
+// UI's fresh sign-in through OIDC, checked once the body shows that the binding waits and before
+// its reason: 403 for a token, a service account's included, and 401 asking for more for a
+// sign-in that is not fresh (auth.Approvals.MayRequest; §13, Who requests).
 func (h *handler) createBinding(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -70,11 +73,17 @@ func (h *handler) createBinding(w http.ResponseWriter, r *http.Request) (int, an
 	if err := decodeBody(w, r, &req); err != nil {
 		return 0, nil, err
 	}
+	waits := h.secondAdmin && auth.BindingWaits(req.Role, req.RepoMask)
+	if waits {
+		if err := h.approvals.MayRequest(r.Context()); err != nil {
+			return 0, nil, serviceError(err)
+		}
+	}
 	o, err := h.changeOrigin(r, req.ChangeReason)
 	if err != nil {
 		return 0, nil, err
 	}
-	if h.secondAdmin && auth.BindingWaits(req.Role, req.RepoMask) {
+	if waits {
 		a, err := h.approvals.RequestBinding(r.Context(), req.Principal, req.Role, req.RepoMask, o)
 		if err != nil {
 			return 0, nil, serviceError(err)

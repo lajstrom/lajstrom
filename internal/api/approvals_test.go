@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -24,10 +25,14 @@ func approvalFixture(t *testing.T) *fixture {
 		must(t, f.st.CreateBinding(context.Background(), &index.Binding{Principal: "user:" + f.uidOf(t, name), Role: auth.RoleAdmin,
 			RepoMask: auth.MaskAll}))
 	}
-	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log,
-		Auth: fakeAuth{grants: map[string]bool{"user:admin manage */*": true, "user:root manage */*": true, "user:alice read raw/open": true}}}))
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Auth: fakeAuth{grants: approvalGrants}}))
 	return f
 }
+
+// approvalGrants are the grants of approvalFixture: admin and root manage everything, and so does
+// robot, a service account when a test makes it one; alice reads raw/open.
+var approvalGrants = map[string]bool{"user:admin manage */*": true, "user:root manage */*": true, "user:robot manage */*": true,
+	"user:alice read raw/open": true}
 
 var (
 	pass = auth.Credential{Kind: auth.CredPassword}
@@ -40,11 +45,18 @@ var (
 // by the user called by with the admin's password.
 func (f *fixture) requestBinding(t *testing.T, by, principal, role string) *auth.Approval {
 	t.Helper()
+	return f.requestBindingWith(t, by, pass, principal, role)
+}
+
+// requestBindingWith is requestBinding with the credential c, which the service does not check:
+// the API does (auth.Approvals.MayRequest).
+func (f *fixture) requestBindingWith(t *testing.T, by string, c auth.Credential, principal, role string) *auth.Approval {
+	t.Helper()
 	u, err := f.st.GetUser(context.Background(), by)
 	must(t, err)
 	s := &auth.Approvals{Index: f.st, Now: f.repos.Now, Bindings: &auth.Bindings{Index: f.st, Formats: f.repos.Formats},
 		Tokens: &auth.Tokens{Index: f.st, Formats: f.repos.Formats, Now: f.repos.Now}}
-	a, err := s.RequestBinding(auth.WithCredential(auth.WithPrincipal(context.Background(), auth.UserPrincipal(u)), pass), principal, role,
+	a, err := s.RequestBinding(auth.WithCredential(auth.WithPrincipal(context.Background(), auth.UserPrincipal(u)), c), principal, role,
 		auth.MaskAll, Origin{Source: SourceAPI})
 	must(t, err)
 	return a
@@ -146,8 +158,7 @@ func TestApprovalAdminMode(t *testing.T) {
 // secondAdmin is f with auth.approval second-admin when second is true, and the info that says it.
 func (f *fixture) secondAdmin(second bool) *fixture {
 	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, SecondAdmin: second,
-		Info: ServerInfo{Approval: map[bool]string{true: "second-admin", false: "none"}[second]},
-		Auth: fakeAuth{grants: map[string]bool{"user:admin manage */*": true, "user:root manage */*": true, "user:alice read raw/open": true}}}))
+		Info: ServerInfo{Approval: map[bool]string{true: "second-admin", false: "none"}[second]}, Auth: fakeAuth{grants: approvalGrants}}))
 	return f
 }
 
@@ -234,17 +245,93 @@ func TestApprovalAdminUser(t *testing.T) {
 	}
 }
 
-// TestApprovalNone: with auth.approval none, an admin binding is made at once, and a request made
-// before is still decided.
+// TestApprovalNone: with auth.approval none, an admin binding is made at once, with a token too,
+// and a request made before is still decided.
 func TestApprovalNone(t *testing.T) {
 	f := approvalFixture(t).secondAdmin(true)
 	a := f.request(t, "/api/v1/bindings", `{"principal": "group:ops", "role": "admin", "repoMask": "*/*"}`)
 	f.secondAdmin(false)
 	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "group:dev", "role": "admin", "repoMask": "*/*"}`, admin, pass),
 		http.StatusCreated)
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "group:qa", "role": "admin", "repoMask": "*/*"}`, admin,
+		auth.Credential{Kind: auth.CredPAT, TokenID: 3}), http.StatusCreated)
 	wantStatus(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/approve", a.ID), "", root, pass), http.StatusOK)
 	if bs, _ := f.st.ListBindings(context.Background(), "group:ops"); len(bs) != 1 {
 		t.Errorf("the binding of the request of before: %+v", bs)
+	}
+}
+
+// TestApprovalRequestCredential: with auth.approval second-admin, a binding that waits is
+// requested with the admin's password or a web UI's fresh sign-in, as its approval is (#1393):
+// a token is 403, the admin's own, one made for another admin and a service account's alike, and
+// a sign-in that is not fresh 401 asking for more, each before the reason and with no request and
+// no row. A binding that does not wait is made with a token, as before. The approval.request and
+// approval.approve rows have the credential of each side. A service account's request, made on a
+// release before, is 409 at its approval and stays pending.
+func TestApprovalRequestCredential(t *testing.T) {
+	ctx := context.Background()
+	f := approvalFixture(t).secondAdmin(true)
+	robot := index.User{Name: "robot", Kind: auth.KindService, Owner: "user:" + f.uidOf(t, "root")}
+	must(t, f.st.CreateUser(ctx, &robot))
+	must(t, f.st.CreateBinding(ctx, &index.Binding{Principal: auth.UserPrincipal(&robot).String(), Role: auth.RoleAdmin,
+		RepoMask: auth.MaskAll}))
+	robotP := auth.Principal{Kind: auth.KindUser, Name: "robot"}
+	pat := auth.Credential{Kind: auth.CredPAT, TokenID: 3}
+	stale := auth.Credential{Kind: auth.CredPAT, TokenID: 9, SignIn: &auth.SignIn{At: testNow.Add(-time.Hour), AMR: []string{"pwd", "otp"}}}
+	adminBinding := `{"principal": "user:alice", "role": "admin", "repoMask": "*/*", "changeReason": "CHG-1"}`
+	for _, tt := range []struct {
+		name   string
+		body   string
+		p      auth.Principal
+		c      auth.Credential
+		status int
+		msg    string
+	}{
+		{"the admin's own token", adminBinding, admin, pat, 403, "not with a token"},
+		{"a token made for another admin", adminBinding, root, auth.Credential{Kind: auth.CredPAT, TokenID: 11}, 403, "not with a token"},
+		{"a service account's token", adminBinding, robotP, auth.Credential{Kind: auth.CredPAT, TokenID: 12}, 403, "not with a token"},
+		{"a token, a binding on */*", `{"principal": "group:ops", "role": "reader", "repoMask": "*/*"}`, admin, pat, 403, "not with a token"},
+		{"a token, before the reason", `{"principal": "user:alice", "role": "admin", "repoMask": "*/*", "changeReason": ""}`, admin, pat, 403,
+			"not with a token"},
+		{"a stale sign-in", adminBinding, admin, stale, 401, "within the last 10 minutes"},
+	} {
+		wantError(t, f.doAs(http.MethodPost, "/api/v1/bindings", tt.body, tt.p, tt.c), tt.status, codeOf(tt.status), tt.msg)
+	}
+	if as, err := f.st.ListApprovals(ctx, "", 0, 10); err != nil || len(as) != 0 {
+		t.Errorf("requests after the refusals: %+v, %v; want none", as, err)
+	}
+	if rows := auditOf(t, f.st, auth.ActionApprovalRequest); len(rows) != 0 {
+		t.Errorf("approval.request rows after the refusals: %+v", rows)
+	}
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "user:alice", "role": "writer", "repoMask": "raw/*"}`, admin,
+		pat), http.StatusCreated)
+
+	var byPassword, bySignIn CreatedApproval
+	decodeJSON(t, f.doAs(http.MethodPost, "/api/v1/bindings", adminBinding, admin, pass), http.StatusAccepted, &byPassword)
+	decodeJSON(t, f.doAs(http.MethodPost, "/api/v1/bindings", `{"principal": "group:ops", "role": "admin", "repoMask": "*/*"}`, root,
+		freshMFA), http.StatusAccepted, &bySignIn)
+	credentials := map[string]any{}
+	for _, row := range auditOf(t, f.st, auth.ActionApprovalRequest) {
+		credentials[row.Subject] = row.details["credential"]
+	}
+	want := map[string]any{fmt.Sprintf("approval:%d", byPassword.ID): "password", fmt.Sprintf("approval:%d", bySignIn.ID): "token:9"}
+	if !reflect.DeepEqual(credentials, want) {
+		t.Errorf("the credentials of the approval.request rows: %v, want %v", credentials, want)
+	}
+	wantStatus(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/approve", byPassword.ID), "", root, freshMFA), http.StatusOK)
+	if row := oneAudit(t, f.st, auth.ActionApprovalApprove); row.details["credential"] != "token:9" {
+		t.Errorf("approval.approve: %v, want the credential token:9", row.details)
+	}
+
+	// A request as a release before #1393 made it, with the service account's token.
+	old := f.requestBindingWith(t, "robot", auth.Credential{Kind: auth.CredPAT, TokenID: 12}, "group:dev", auth.RoleAdmin)
+	approve := fmt.Sprintf("/api/v1/approvals/%d/approve", old.ID)
+	wantError(t, f.doAs(http.MethodPost, approve, "", root, pass), http.StatusConflict, codeConflict,
+		"its requester robot is a service account")
+	var still auth.Approval
+	decodeJSON(t, f.doAs(http.MethodGet, fmt.Sprintf("/api/v1/approvals/%d", old.ID), "", root, pass), http.StatusOK, &still)
+	if still.State != index.ApprovalPending {
+		t.Errorf("the service account's request after the refusal: %+v, want it pending", still)
 	}
 }
 

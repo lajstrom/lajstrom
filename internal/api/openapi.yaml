@@ -1615,6 +1615,15 @@ paths:
       tags: [bindings]
       operationId: createBinding
       summary: Create a binding (admin).
+      description: >-
+        With auth.approval second-admin, a binding of the role admin, or on */*, waits for a
+        second admin, and its request is made with the admin's password as the request's
+        credential, or a web UI's sign-in through OIDC in its place when it is fresh, its
+        auth_time within the last 10 minutes; one that is not is asked for more, 401 with
+        insufficient_user_authentication and max_age=600. Any other token, a service account's
+        included, is 403, checked once the body shows that the binding waits (docs/spec/rbac.md
+        §13, Who requests). A binding that does not wait is made with any credential that reaches
+        the admin role.
       requestBody:
         required: true
         content:
@@ -1881,9 +1890,9 @@ paths:
         minutes (401 with insufficient_user_authentication and max_age=600 for one that is not);
         any other token is 403, all before the request is looked up. Under auth.admin.requireMFA,
         the role needs the sign-in's second factor. The requester is 403. The approval checks
-        again what the request checked, and that the requester is an enabled user with the admin
-        role: one that fails is 409 naming it, and the request stays pending. No body, and no
-        If-Match: a request never changes.
+        again what the request checked, and that the requester is an enabled user, not a service
+        account, with the admin role: one that fails is 409 naming it, and the request stays
+        pending. No body, and no If-Match: a request never changes.
       parameters:
         - $ref: "#/components/parameters/changeReason"
       responses:
