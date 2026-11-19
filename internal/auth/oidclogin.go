@@ -37,6 +37,11 @@ type OIDCLogin struct {
 	Groups []string
 	// Lifetime is auth.oidc.tokenLifetime.
 	Lifetime time.Duration
+	// Refresh keeps the login's refresh token while auth.oidc.refresh.interval is set
+	// (docs/spec/rbac.md §8, Asking the IdP again, #1282): it is called in the login's
+	// transaction with the identity's id, and reports whether the login keeps one, which
+	// user.login records as refresh. nil while the setting is off: user.login has no refresh.
+	Refresh func(ctx context.Context, w index.Writer, identityID int64) (bool, error)
 }
 
 // LoginOIDC records the verified login l (docs/spec/rbac.md §8) in one transaction and returns
@@ -111,8 +116,15 @@ func (s *Users) loginOIDC(ctx context.Context, l OIDCLogin, o Origin, inactive b
 		if err := w.SetIdentityGroups(ctx, id.ID, l.Groups, now, now.Add(l.Lifetime)); err != nil {
 			return err
 		}
-		ev, err := s.record(uctx, w, ActionUserLogin, u, o,
-			map[string]any{"issuer": l.Issuer, "subject": l.Subject, "groups": l.Groups})
+		details := map[string]any{"issuer": l.Issuer, "subject": l.Subject, "groups": l.Groups}
+		if l.Refresh != nil {
+			kept, err := l.Refresh(ctx, w, id.ID)
+			if err != nil {
+				return err
+			}
+			details["refresh"] = kept
+		}
+		ev, err := s.record(uctx, w, ActionUserLogin, u, o, details)
 		events = append(events, ev)
 		return err
 	})
@@ -182,29 +194,31 @@ func (s *Users) identityUser(ctx context.Context, w index.Writer, l OIDCLogin, n
 
 // LoginToken mints the personal access token of an OIDC login for the user u
 // (docs/spec/rbac.md §8): without scopes, expiring after lifetime, named oidc <time> <4 hex>, with
-// its token.create event by the user and createdBy oidc. It returns the token and its secret.
-func (s *Tokens) LoginToken(ctx context.Context, u *index.User, lifetime time.Duration, o Origin) (*Token, string, error) {
-	return s.loginToken(ctx, u, lifetime, "", nil, o)
+// its token.create event by the user and createdBy oidc, and joined to the login's refresh token
+// by r in its transaction (#1282). It returns the token and its secret.
+func (s *Tokens) LoginToken(ctx context.Context, u *index.User, lifetime time.Duration, r LoginRefresh, o Origin) (*Token, string, error) {
+	return s.loginToken(ctx, u, lifetime, "", nil, r, o)
 }
 
 // BoundLoginToken mints the token of a web UI's OIDC sign-in (docs/spec/rbac.md §10): the token of
 // LoginToken, bound to the DPoP key whose JWK SHA-256 thumbprint is jkt (CreateBoundPAT), which
 // keeps in, the sign-in at the IdP of the login's ID token, when it is not nil.
 func (s *Tokens) BoundLoginToken(ctx context.Context, u *index.User, lifetime time.Duration, jkt string, in *SignIn,
-	o Origin) (*Token, string, error) {
+	r LoginRefresh, o Origin) (*Token, string, error) {
 	if !dpop.ValidThumbprint(jkt) {
 		return nil, "", invalidf("dpopJkt: must be a JWK SHA-256 thumbprint, 43 characters of base64url")
 	}
-	return s.loginToken(ctx, u, lifetime, jkt, in, o)
+	return s.loginToken(ctx, u, lifetime, jkt, in, r, o)
 }
 
 // loginToken is LoginToken, the token bound to the DPoP key of the thumbprint jkt unless it is "",
-// with the sign-in in.
-func (s *Tokens) loginToken(ctx context.Context, u *index.User, lifetime time.Duration, jkt string, in *SignIn, o Origin) (*Token, string, error) {
+// with the sign-in in, joined by r.
+func (s *Tokens) loginToken(ctx context.Context, u *index.User, lifetime time.Duration, jkt string, in *SignIn, r LoginRefresh,
+	o Origin) (*Token, string, error) {
 	o.Source = SourceOIDC
 	b := make([]byte, 2)
 	_, _ = rand.Read(b) // crypto/rand.Read does not return errors; it crashes the program instead
 	name := "oidc " + s.now().Format(time.RFC3339) + " " + hex.EncodeToString(b)
 	ctx = WithCredential(WithPrincipal(ctx, UserPrincipal(u)), Credential{Kind: CredOIDC})
-	return s.createPAT(ctx, u.Name, name, nil, binding{jkt: jkt, signIn: in}, Expiry{In: lifetime}, o)
+	return s.createPAT(ctx, u.Name, name, nil, binding{jkt: jkt, signIn: in, refresh: r}, Expiry{In: lifetime}, o)
 }

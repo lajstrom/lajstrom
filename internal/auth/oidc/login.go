@@ -220,7 +220,7 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.handOff(w, r, row, u)
 		return
 	}
-	t, secret, err := h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, h.origin(r))
+	t, secret, err := h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, auth.LoginRefresh{}, h.origin(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -450,7 +450,7 @@ func (h *handler) redeemDevice(w http.ResponseWriter, r *http.Request, d *index.
 	var t *auth.Token
 	var secret string
 	if err == nil {
-		t, secret, err = h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, h.origin(r))
+		t, secret, err = h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, auth.LoginRefresh{}, h.origin(r))
 	}
 	if err != nil {
 		h.o.Log.ErrorContext(ctx, "oidc: the token of a device login not made", "error", err.Error(), "requestId", server.RequestID(ctx))
