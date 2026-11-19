@@ -286,7 +286,9 @@ func (h *handler) unlockUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 // currentPassword it is the user's own change (ownPassword), which takes no role and ignores the
 // request's Authorization; without, an admin's new password: the authentication of the request,
 // which the server's middleware leaves to this handler (Options.Authenticate), then the admin
-// role (docs/spec/rbac.md §1, A user's own password; §3).
+// role (docs/spec/rbac.md §1, A user's own password; §3). Under auth.approval second-admin, an
+// admin's new password for a user who holds admin is 400 naming the setting, whoever asks
+// (adminPassword).
 func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	var req PasswordRequest
 	if err := decodeBody(w, r, &req); err != nil {
@@ -308,6 +310,11 @@ func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any,
 	if err != nil {
 		return 0, nil, err
 	}
+	if h.secondAdmin {
+		if err := h.adminPassword(r, name); err != nil {
+			return 0, nil, err
+		}
+	}
 	o, err := h.changeOrigin(r, req.ChangeReason)
 	if err != nil {
 		return 0, nil, err
@@ -316,6 +323,33 @@ func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any,
 		return 0, nil, serviceError(err)
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// adminPassword returns a 400 naming auth.approval second-admin when the user called name holds
+// admin (auth.HoldsAdmin: an admin binding of its own, or of a group whose membership has not
+// lapsed; enabled or disabled, whatever the admin mode), and nil otherwise, with a user that
+// does not exist left to SetPassword to answer (docs/spec/rbac.md §13, Another admin's password;
+// #1393). An admin who knew another's password would sign in as that admin and approve its own
+// requests: such a user changes its own password with currentPassword, or lajstrom admin user
+// set-password sets it. The refusal holds whoever asks, the user itself included, so that a token
+// made for the user sets none either; it writes no row.
+func (h *handler) adminPassword(r *http.Request, name string) error {
+	u, err := h.users.Index.GetUser(r.Context(), name)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+	admin, err := auth.HoldsAdmin(r.Context(), h.users.Index, u, h.repos.now())
+	switch {
+	case err != nil:
+		return err
+	case admin:
+		return invalid("password: under auth.approval second-admin, the API sets no new password for user %s, who holds admin: "+
+			"the user changes its own with currentPassword, or lajstrom admin user set-password sets it", name)
+	}
+	return nil
 }
 
 // ownPassword is a user's own change of its password, to password, from current, with reason when

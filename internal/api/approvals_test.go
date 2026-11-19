@@ -335,6 +335,92 @@ func TestApprovalRequestCredential(t *testing.T) {
 	}
 }
 
+// TestApprovalAdminPassword: with auth.approval second-admin, an admin's new password for a user
+// who holds admin is 400 naming the setting, with no row and the password as it was (#1393):
+// another admin's, a disabled admin's, one through a group whose membership has not lapsed, and
+// the user's own without currentPassword. A user without admin, by a lapsed membership too, gets
+// one as before, and so does an admin's own change with currentPassword. An unlock, mustChange
+// and enabling a disabled admin are as before. With none, an admin sets another admin's password.
+func TestApprovalAdminPassword(t *testing.T) {
+	ctx := context.Background()
+	f := approvalFixture(t)
+	users := &auth.Users{Index: f.st, Now: f.repos.Now, Log: f.repos.Log}
+	cli := auth.Origin{Source: SourceCLI}
+	f.addUsers(t, "dora", "carol", "erin")
+	for _, name := range []string{"root", "dora", "carol"} {
+		must(t, users.SetPassword(ctx, name, name+" password 1", cli))
+	}
+	must(t, f.st.CreateBinding(ctx, &index.Binding{Principal: "user:" + f.uidOf(t, "dora"), Role: auth.RoleAdmin, RepoMask: auth.MaskAll}))
+	must(t, users.Disable(ctx, "dora", cli))
+	must(t, f.st.CreateBinding(ctx, &index.Binding{Principal: "group:ops", Role: auth.RoleAdmin, RepoMask: auth.MaskAll}))
+	for name, until := range map[string]time.Time{"carol": testNow.Add(time.Hour), "erin": testNow.Add(-time.Minute)} {
+		id := index.Identity{UserID: f.idOf(t, name), Issuer: "https://idp.example", Subject: name}
+		must(t, f.st.CreateIdentity(ctx, &id))
+		must(t, f.st.SetIdentityGroups(ctx, id.ID, []string{"ops"}, testNow.Add(-time.Hour), until))
+	}
+	serve := func(second bool) {
+		f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, SecondAdmin: second, Users: users,
+			Auth: fakeAuth{grants: approvalGrants}, Passwords: auth.NewAuthenticator(auth.Options{Index: f.st, Log: f.repos.Log, Users: users})}))
+	}
+	serve(true)
+	hashes := func() map[string]string {
+		m := map[string]string{}
+		for _, name := range []string{"root", "dora", "carol"} {
+			u, err := f.st.GetUser(ctx, name)
+			must(t, err)
+			m[name] = u.PasswordHash
+		}
+		return m
+	}
+	before, rows := hashes(), len(auditOf(t, f.st, auth.ActionUserPassword))
+	for _, tt := range []struct {
+		name, user string
+		p          auth.Principal
+		c          auth.Credential
+	}{
+		{"another admin's", "root", admin, pass},
+		{"another admin's, by its uid", f.uidOf(t, "root"), admin, pass},
+		{"a disabled admin's", "dora", admin, pass},
+		{"an admin's through a group", "carol", admin, pass},
+		{"its own, without currentPassword", "root", root, pass},
+		{"with a token made for the user", "root", root, auth.Credential{Kind: auth.CredPAT, TokenID: 11}},
+	} {
+		wantError(t, f.doAs(http.MethodPost, "/api/v1/users/"+tt.user+"/password", `{"password": "set by another 2"}`, tt.p, tt.c),
+			http.StatusBadRequest, codeInvalid, "auth.approval second-admin", "holds admin", "currentPassword",
+			"lajstrom admin user set-password")
+	}
+	if n := len(auditOf(t, f.st, auth.ActionUserPassword)); n != rows {
+		t.Errorf("user.password rows after the refusals: %d, want %d", n, rows)
+	}
+	if after := hashes(); !reflect.DeepEqual(after, before) {
+		t.Error("a refusal changed a password")
+	}
+	for _, name := range []string{"alice", "erin"} {
+		wantStatus(t, f.doAs(http.MethodPost, "/api/v1/users/"+name+"/password", `{"password": "set by an admin 3"}`, admin, pass),
+			http.StatusNoContent)
+	}
+	wantStatus(t, f.do(http.MethodPost, "/api/v1/users/root/password", `{"currentPassword": "root password 1", "password": "root's own 4"}`,
+		auth.Anonymous), http.StatusNoContent)
+	if u, err := f.st.GetUser(ctx, "root"); err != nil || u.PasswordHash == before["root"] {
+		t.Errorf("root after its own change: %v, the hash unchanged %v", err, err == nil && u.PasswordHash == before["root"])
+	}
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/users/root/unlock", "", admin, pass), http.StatusNoContent)
+	wantStatus(t, f.doAs(http.MethodPatch, "/api/v1/users/root", `{"mustChange": true}`, admin, pass), http.StatusOK)
+	wantStatus(t, f.doAs(http.MethodPatch, "/api/v1/users/dora", `{"disabled": false}`, admin, pass), http.StatusOK)
+
+	serve(false)
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/users/root/password", `{"password": "set by another 5"}`, admin, pass),
+		http.StatusNoContent)
+}
+
+// idOf returns the id of the user called name.
+func (f *fixture) idOf(t *testing.T, name string) int64 {
+	t.Helper()
+	u, err := f.st.GetUser(context.Background(), name)
+	must(t, err)
+	return u.ID
+}
+
 // TestApprovalInfo: GET /api/v1/info answers auth.approval as approval.
 func TestApprovalInfo(t *testing.T) {
 	for _, second := range []bool{true, false} {
