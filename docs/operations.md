@@ -257,9 +257,12 @@ approval. Two settings tie the changes to theirs ([auth.md](auth.md#approval-of-
    a request.
 
 The requests that wait are `GET /api/v1/approvals?state=pending` and `lajstrom admin approval
-list --state pending`; nothing notifies the second admin, so tell them through your own channel.
-A request expires after 7 days. The command line against the database makes these changes at
-once, without a second admin, and sets an admin's lost password
+list --state pending`. Lajstrom sends no mail: route the events `approval.requested`,
+`approval.approved`, `approval.rejected` and `approval.expired` of a webhook of `*/*` to the
+admins' chat or mail gateway ([Webhooks](#webhooks), [auth.md](auth.md#telling-the-second-admin)),
+and a web UI shows an admin `pendingApprovals` of `GET /api/v1/info`, the requests it could
+approve (#1336). A request expires after 7 days. The command line against the database makes
+these changes at once, without a second admin, and sets an admin's lost password
 ([A lost password](#a-lost-password)): it is the break-glass path, and the way to the second
 admin of a server that has one; guard its credentials, and give it a reason. Turning
 `auth.approval` back to `none` makes every change at once again; the requests made before stay,
@@ -2013,7 +2016,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
 | `approval.request`, `approval.approve`, `approval.reject` | the API: a request for a second admin made in place of a change, by the requester, subject `approval:<id>`; its approval, beside the `binding.create` or `token.create` it makes, with `approval` and the request's `changeReason`; its rejection ([Approval of privileged changes](#approval-of-privileged-changes)). A request and an approval have `credential`, `password` or the sign-in's `token:<id>` (#1393); one made on a release before has none |
-| `approval.expire` | `serve`, by `anonymous` with `source: expiry`: a request still pending 7 days after it was made, marked once by one replica within a minute |
+| `approval.expire` | `serve`, by `anonymous` with `source: expiry`: a request still pending 7 days after it was made, marked once by one replica within a minute, which writes its `approval.expired` event too (#1336) |
 | `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed`; and a lock of the lockout, `limit: lockout`, once per lock whatever the replicas, with its `until` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
 | `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
 | `token.exchange` | `POST /-/oidc/token`: a CI token minted (`outcome: minted`), or a refusal (`outcome: refused`), at most one a minute per project or client address and replica, with `suppressed` ([auth.md](auth.md#audit-1)) |
@@ -2255,7 +2258,14 @@ curl -fsS -u alice -X POST "$LAJSTROM/api/v1/repos/raw/scratch/webhooks" \
   -d '{"url": "https://ci.example.com/hooks/lajstrom", "events": ["version.published"]}' | jq .
 # every repo of every format, as admin
 lajstrom admin webhook create --mask '*/*' --url https://audit.example.com/lajstrom
+# the requests for a second admin, to the admins' chat (auth.md, Telling the second admin)
+lajstrom admin webhook create --mask '*/*' --url https://chat.example.com/hooks/admins \
+  --events approval.requested,approval.approved,approval.rejected,approval.expired
 ```
+
+The events of the admin, those of a CI trust policy (`ci.policy.*`) and of a request for a second
+admin (`approval.*`), go only to a webhook of a mask with a `*` that covers theirs, never to a
+repo's: a request of an `admin` binding or of a binding on `*/*` only to a webhook of `*/*`.
 
 Keep the secret where the receiver reads it; `POST …/webhooks/<id>/secret` (or `lajstrom admin
 webhook rotate <id>`) makes a new one, which signs every request from then on.
