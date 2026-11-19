@@ -59,6 +59,12 @@ type LoginOptions struct {
 	// origin of server.externalURL and those of server.corsOrigins. Empty: a login with
 	// return_to is refused.
 	ReturnOrigins []string
+	// Refresh is auth.oidc.refresh.interval (docs/spec/rbac.md §8, Asking the IdP again, #1282):
+	// while it is not 0 the callback seals the login's refresh token with Sealer into a row of
+	// oidc_refresh, and the mint joins the row to the token; 0 keeps none.
+	Refresh time.Duration
+	// Sealer seals the refresh tokens: the master keys; required with Refresh.
+	Sealer Sealer
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log gets the refusals at info level with their reason; nil is slog.Default().
@@ -76,8 +82,8 @@ type handler struct {
 // NewHandler returns the handler of /-/oidc/ (docs/spec/http-routing.md §7), which the server
 // mounts while auth.oidc is on. It panics when a required option is nil.
 func NewHandler(o LoginOptions) http.Handler {
-	if o.Provider == nil || o.Index == nil || o.Users == nil || o.Tokens == nil {
-		panic("oidc: NewHandler: Provider, Index, Users and Tokens are required")
+	if o.Provider == nil || o.Index == nil || o.Users == nil || o.Tokens == nil || (o.Refresh > 0 && o.Sealer == nil) {
+		panic("oidc: NewHandler: Provider, Index, Users and Tokens are required, and Sealer with Refresh")
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -178,6 +184,10 @@ func (h *handler) pendingDevice(w http.ResponseWriter, r *http.Request, now time
 func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
+	if h.o.Refresh > 0 && !h.seals() {
+		h.sealsNothing(w, r, nil)
+		return
+	}
 	row, ok := h.redeem(w, r, q.Get("state"))
 	if !ok {
 		return
@@ -200,15 +210,8 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.refuse(w, r, err.Error(), "The login did not verify. Log in again; if it fails again, tell the administrator.")
 		return
 	}
-	u, err := h.o.Users.LoginOIDC(ctx, auth.OIDCLogin{Issuer: id.Issuer, Subject: id.Subject, Username: id.Username,
-		Groups: id.Groups, Lifetime: h.o.TokenLifetime}, h.origin(r))
-	switch {
-	case errors.Is(err, auth.ErrLoginRefused):
-		h.deny(ctx, row)
-		h.refuse(w, r, err.Error(), "Lajstrom refused the login: "+err.Error()+".")
-		return
-	case err != nil:
-		h.fail(w, r, err)
+	u, ok := h.record(w, r, row, id)
+	if !ok {
 		return
 	}
 	if row.DeviceID != nil {
@@ -220,13 +223,47 @@ func (h *handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.handOff(w, r, row, u)
 		return
 	}
-	t, secret, err := h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, auth.LoginRefresh{}, h.origin(r))
+	t, secret, err := h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, h.loginRefresh(row.ID), h.origin(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	writePage(w, http.StatusOK, page{Title: "Logged in", User: u.Name, Token: secret, Expires: t.ExpiresAt.UTC().Format(time.RFC3339),
 		Host: hostOf(h.base(r))})
+}
+
+// record records the verified login of row and id (auth.Users.LoginOIDC) and returns its user;
+// with auth.oidc.refresh.interval it keeps the exchange's refresh token in the login's
+// transaction, or warns that the IdP issued none. Else it answers the refusal, 503 for a refresh
+// token the replica could not seal, or the failure, and reports false.
+func (h *handler) record(w http.ResponseWriter, r *http.Request, row *index.OIDCLogin, id *Identity) (*index.User, bool) {
+	ctx := r.Context()
+	l := auth.OIDCLogin{Issuer: id.Issuer, Subject: id.Subject, Username: id.Username, Groups: id.Groups,
+		Lifetime: h.o.TokenLifetime}
+	if h.o.Refresh > 0 {
+		l.Refresh = h.keepRefresh(loginOf(row), id.RefreshToken)
+	}
+	u, err := h.o.Users.LoginOIDC(ctx, l, h.origin(r))
+	var sealErr *sealError
+	switch {
+	case errors.Is(err, auth.ErrLoginRefused):
+		h.deny(ctx, row)
+		h.refuse(w, r, err.Error(), "Lajstrom refused the login: "+err.Error()+".")
+		return nil, false
+	case errors.As(err, &sealErr):
+		h.deny(ctx, row)
+		h.sealsNothing(w, r, sealErr.err)
+		return nil, false
+	case err != nil:
+		h.fail(w, r, err)
+		return nil, false
+	}
+	if h.o.Refresh > 0 && id.RefreshToken == "" {
+		h.o.Log.WarnContext(ctx, "oidc: the IdP issued no refresh token: this login is not asked about again and lasts "+
+			"auth.oidc.tokenLifetime; add offline_access to auth.oidc.scopes where the IdP needs it",
+			"user", auth.UserPrincipal(u).String(), "requestId", server.RequestID(ctx))
+	}
+	return u, true
 }
 
 // redeem returns the login request of state, pending, not expired, of this browser, marked
@@ -450,7 +487,7 @@ func (h *handler) redeemDevice(w http.ResponseWriter, r *http.Request, d *index.
 	var t *auth.Token
 	var secret string
 	if err == nil {
-		t, secret, err = h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, auth.LoginRefresh{}, h.origin(r))
+		t, secret, err = h.o.Tokens.LoginToken(ctx, u, h.o.TokenLifetime, h.loginRefresh(d.ID), h.origin(r))
 	}
 	if err != nil {
 		h.o.Log.ErrorContext(ctx, "oidc: the token of a device login not made", "error", err.Error(), "requestId", server.RequestID(ctx))

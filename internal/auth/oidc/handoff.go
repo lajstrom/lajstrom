@@ -135,6 +135,9 @@ type Handoffs struct {
 	// TokenLifetime is the lifetime of the token: the shorter of auth.login.tokenLifetime and
 	// auth.oidc.tokenLifetime.
 	TokenLifetime time.Duration
+	// Refresh is auth.oidc.refresh.interval: while it is not 0 the token is joined to the
+	// login's refresh token, which its callback kept (docs/spec/rbac.md §8, #1282).
+	Refresh time.Duration
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log gets the refusals at info level; nil is slog.Default().
@@ -149,8 +152,8 @@ const errHandoff = "code: unknown, used, expired, or of another verifier or key:
 // login's dpop_jkt (RFC 9449 §10): the login request of the code, approved and not expired, is
 // marked redeemed once, on any replica, and the token of the login is minted for its user,
 // bound to that key (auth.Tokens.BoundLoginToken), with its token.create event, createdBy oidc,
-// and the auth_time, amr and acr of the login's ID token.
-// A verifier that is malformed, a code that is unknown, used or expired, a verifier of another
+// and the auth_time, amr and acr of the login's ID token, joined to the login's refresh token
+// with Refresh. A verifier that is malformed, a code that is unknown, used or expired, a verifier of another
 // challenge and a key of another thumbprint are errors wrapping auth.ErrInvalid; a wrong
 // verifier or key marks the request denied, so that a code is tried once. A user disabled or
 // deleted since the callback wraps auth.ErrBadCredentials. Any other error is a failure of the
@@ -191,7 +194,7 @@ func (h *Handoffs) Redeem(ctx context.Context, code, verifier, jkt string, o aut
 	case u.Disabled || u.DeletedAt != nil:
 		return nil, "", &refusal{msg: "the user " + u.Name + " is disabled", err: auth.ErrBadCredentials}
 	}
-	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), auth.LoginRefresh{}, o)
+	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), auth.LoginRefresh{Login: row.ID, Interval: h.Refresh}, o)
 }
 
 // signInOf is the sign-in at the IdP that the login row kept from its ID token, each of
