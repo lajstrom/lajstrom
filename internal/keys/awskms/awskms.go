@@ -1,7 +1,7 @@
-// Package awskms is the AWS KMS of internal/keys (ADR 0020, ADR 0009): the calls DescribeKey,
-// GetPublicKey, Sign and Decrypt of the KMS JSON 1.1 API over net/http, signed with SigV4 by
-// aws-sdk-go-v2, with the credentials of the SDK's default chain, as the ECR adapter gets them.
-// It holds no key material: KMS keys never leave the KMS.
+// Package awskms is the AWS KMS of internal/keys (ADR 0020, ADR 0009, ADR 0036): the calls
+// DescribeKey, GetPublicKey, Sign, Decrypt and Encrypt of the KMS JSON 1.1 API over net/http,
+// signed with SigV4 by aws-sdk-go-v2, with the credentials of the SDK's default chain, as the ECR
+// adapter gets them. It holds no key material: KMS keys never leave the KMS.
 package awskms
 
 import (
@@ -87,7 +87,7 @@ type Options struct {
 	Log *slog.Logger
 }
 
-// Client is AWS KMS for internal/keys: it implements keys.KMS and keys.DecryptKMS. The SDK's configuration is read at
+// Client is AWS KMS for internal/keys: it implements keys.KMS, keys.DecryptKMS and keys.MasterKMS. The SDK's configuration is read at
 // the first request, so a server that holds no key in AWS KMS never reads it. It is safe for
 // concurrent use.
 type Client struct {
@@ -303,6 +303,7 @@ func (c *Client) call(ctx context.Context, name, op string, in, out any) error {
 	if err != nil {
 		return fmt.Errorf("awskms: %s: %w", op, err)
 	}
+	defer clear(body) // an Encrypt's holds a data key of the master key (#1388)
 	wait := c.backoff
 	for attempt := 0; ; attempt++ {
 		err = c.send(ctx, creds, endpoint, region, op, body, out)
@@ -344,6 +345,7 @@ func (c *Client) send(ctx context.Context, creds aws.CredentialsProvider, endpoi
 	}
 	defer func() { _ = resp.Body.Close() }()
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+	defer clear(answer) // a Decrypt's holds a plaintext, which out gets a copy of
 	if err != nil {
 		return fmt.Errorf("%w: AWS KMS %s: the answer: %w", keys.ErrKMSUnavailable, op, err)
 	}
