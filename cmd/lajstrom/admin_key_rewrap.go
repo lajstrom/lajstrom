@@ -34,7 +34,8 @@ var masterKeyID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // rewrapReport is what admin key rewrap prints, one line of JSON: never a key nor a value, a key
 // by its id and a value by its row. Sealing is the sealing row as the command read it; Held the
-// keys of the command with their sources; Values the values of keys and webhooks under each key
+// keys of the command with their sources (a data key's KMS key); Wrapped the rows of
+// wrapped_master_keys, held or not; Values the values of keys and webhooks under each key
 // id, Lost those under none, Sessions the open uploads under each key id. A dry run adds the live
 // replicas and, with --to, what a run would refuse; a run adds what it switched, sealed again and
 // left, and its audit row.
@@ -48,6 +49,8 @@ type rewrapReport struct {
 	Lost     []lostValue             `json:"lost,omitempty"`
 	Sessions map[string]openSessions `json:"sessions"`
 	Refusals []string                `json:"refusals,omitempty"`
+	// Wrapped are the rows of wrapped_master_keys, the data keys of a KMS, held or not (#1388).
+	Wrapped []wrappedView `json:"wrappedMasterKeys,omitempty"`
 
 	Switched bool                 `json:"switched,omitempty"`
 	Resealed *keyCounts           `json:"resealed,omitempty"`
@@ -67,6 +70,32 @@ type sealingView struct {
 type heldView struct {
 	ID     string `json:"id"`
 	Source string `json:"source"`
+}
+
+// wrappedView is a row of wrapped_master_keys: the data key's id, its KMS key, and whether the
+// command holds it. Never the ciphertext.
+type wrappedView struct {
+	ID   string `json:"id"`
+	KMS  string `json:"kms"`
+	Held bool   `json:"held"`
+}
+
+// keyViews returns the keys m holds, with their sources, and the rows of wrapped_master_keys,
+// each held or not by m.
+func keyViews(ctx context.Context, st wrappedReader, m *keys.Master) ([]heldView, []wrappedView, error) {
+	var held []heldView
+	for _, k := range m.Held() {
+		held = append(held, heldView{ID: k.ID, Source: k.Source})
+	}
+	rows, err := st.ListWrappedMasterKeys(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	var wrapped []wrappedView
+	for _, w := range rows {
+		wrapped = append(wrapped, wrappedView{ID: w.KeyID, KMS: w.KMS, Held: m.Holds(w.KeyID)})
+	}
+	return held, wrapped, nil
 }
 
 // replicaView is a live replica of a dry run: where it runs and the ids of the keys it holds.
@@ -171,8 +200,8 @@ func (a *app) rewrapCheck(ctx context.Context, st store, m *keys.Master, to stri
 	if to != "" && m.Holds(to) {
 		m.SealWith(to) // opens try it first; nothing is sealed before the switch
 	}
-	for _, k := range m.Held() {
-		rep.Held = append(rep.Held, heldView{ID: k.ID, Source: k.Source})
+	if rep.Held, rep.Wrapped, err = keyViews(ctx, st, m); err != nil {
+		return nil, census{}, err
 	}
 	live, err := liveReplicas(ctx, st)
 	if err != nil {

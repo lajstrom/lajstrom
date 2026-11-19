@@ -350,7 +350,7 @@ func TestAdminKeyTokenErrors(t *testing.T) {
 		{args: []string{"admin", "key", "export", "--repo", "apt/ubuntu", "--token"},
 			wantErr: "if any flags in the group [repo token] are set none of the others can be"},
 		{args: []string{"admin", "key", "rotate", "--repo", "apt/ubuntu", "--drop"}, wantErr: "--drop goes with --token"},
-		{args: []string{"admin", "key", "drop"}, wantErr: `required flag(s) "token" not set`},
+		{args: []string{"admin", "key", "drop"}, wantErr: `at least one of the flags in the group [token master] is required`},
 	})
 	for _, args := range [][]string{
 		{"admin", "key", "rotate", "--token"}, {"admin", "key", "export", "--token"}, {"admin", "key", "drop", "--token"},
