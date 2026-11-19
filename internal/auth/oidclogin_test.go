@@ -20,7 +20,7 @@ func TestLoginToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	tokens := &Tokens{Index: st, Now: users.Now}
-	tok, secret, err := tokens.LoginToken(ctx, u, 2*time.Hour, Origin{IP: "192.0.2.1"})
+	tok, secret, err := tokens.LoginToken(ctx, u, 2*time.Hour, LoginRefresh{}, Origin{IP: "192.0.2.1"})
 	if err != nil || !strings.HasPrefix(secret, PATPrefix) || tok.User != "olga" || len(tok.Scopes) != 0 ||
 		tok.ExpiresAt == nil || !tok.ExpiresAt.Equal(users.Now().UTC().Add(2*time.Hour)) || !strings.HasPrefix(tok.Name, "oidc ") {
 		t.Fatalf("LoginToken = %+v, %v", tok, err)

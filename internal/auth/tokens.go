@@ -184,6 +184,8 @@ func (s *Tokens) CreateBoundPAT(ctx context.Context, user, name, jkt string, exp
 type binding struct {
 	jkt    string
 	signIn *SignIn
+	// refresh joins the token of an OIDC login to its refresh token (#1282).
+	refresh LoginRefresh
 }
 
 // createPAT is CreatePAT, the token bound to the DPoP key of b unless its thumbprint is "", with
@@ -196,7 +198,7 @@ func (s *Tokens) createPAT(ctx context.Context, user, name string, scopes []stri
 	if err != nil {
 		return nil, "", err
 	}
-	return s.create(ctx, TokenPAT, "user "+user, name, scopes, exp, o, func(w index.Writer) (*index.Token, tokenOwner, error) {
+	return s.create(ctx, TokenPAT, "user "+user, name, scopes, exp, o, b.refresh.join(ctx), func(w index.Writer) (*index.Token, tokenOwner, error) {
 		u, err := w.GetUser(ctx, user)
 		if errors.Is(err, index.ErrNotFound) {
 			return nil, tokenOwner{}, userError("create a token of", user, err)
@@ -328,7 +330,7 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 	if err != nil {
 		return nil, "", err
 	}
-	return s.create(ctx, TokenDeploy, "repo "+repo, name, scopes, exp, o, func(w index.Writer) (*index.Token, tokenOwner, error) {
+	return s.create(ctx, TokenDeploy, "repo "+repo, name, scopes, exp, o, nil, func(w index.Writer) (*index.Token, tokenOwner, error) {
 		r, err := w.GetRepo(ctx, formatName, repoName)
 		if errors.Is(err, index.ErrNotFound) {
 			return nil, tokenOwner{}, repoError(repo, err)
@@ -364,7 +366,7 @@ func (s *Tokens) CreateMaskDeploy(ctx context.Context, mask, name string, scopes
 	if err != nil {
 		return nil, "", err
 	}
-	return s.create(ctx, TokenDeploy, "mask "+mask, name, scopes, exp, o, func(index.Writer) (*index.Token, tokenOwner, error) {
+	return s.create(ctx, TokenDeploy, "mask "+mask, name, scopes, exp, o, nil, func(index.Writer) (*index.Token, tokenOwner, error) {
 		return &index.Token{RepoMask: mask}, tokenOwner{mask: mask}, nil
 	})
 }
@@ -383,9 +385,10 @@ type tokenOwner struct {
 // mask <mask>; read reads it in the transaction and returns the row with its owner set, and
 // the owner, whose kind the rule of the expiry depends on (lifetime). The name is unique among
 // the live tokens of the same kind and owner: a token over a mask is listed with every token
-// (ListTokens without a filter) and compared by its mask.
+// (ListTokens without a filter) and compared by its mask. after, when not nil, runs in the
+// transaction once the row is inserted: the join of an OIDC login's refresh token (#1282).
 func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []string, exp Expiry, o Origin,
-	read func(index.Writer) (*index.Token, tokenOwner, error)) (*Token, string, error) {
+	after func(index.Writer, *index.Token) error, read func(index.Writer) (*index.Token, tokenOwner, error)) (*Token, string, error) {
 	if err := checkTokenName(name); err != nil {
 		return nil, "", err
 	}
@@ -415,6 +418,11 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		row.Kind, row.Name, row.Hash, row.Scopes, row.ExpiresAt, row.CreatedAt = kind, name, HashSecret(secret), scopes, expiresAt, now
 		if err = w.CreateToken(ctx, row); err != nil {
 			return err
+		}
+		if after != nil {
+			if err := after(w, row); err != nil {
+				return err
+			}
 		}
 		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, createDetails(ctx, row, l))
 		return err
