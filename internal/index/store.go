@@ -109,6 +109,10 @@ type Reader interface {
 	// newest first: those whose id is below before (0: from the newest), at most limit; none when
 	// limit is below 1.
 	ListApprovals(ctx context.Context, state string, before int64, limit int) ([]Approval, error)
+	// CountPendingApprovals returns the number of pending requests whose ExpiresAt is after at
+	// and whose RequestedBy is not notBy: those an admin notBy could approve, the count of
+	// GET /api/v1/info (#1336), read from the index approvals_expires.
+	CountPendingApprovals(ctx context.Context, at time.Time, notBy string) (int, error)
 
 	// AuthVersion returns the counter of auth_version, which every write of bindings and of
 	// repos increments in its transaction (docs/spec/rbac.md §3). An evaluator reads it before

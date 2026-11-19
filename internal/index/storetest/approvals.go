@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -110,6 +111,51 @@ func testApprovalDecisions(t *testing.T, s index.Store) {
 	}
 	if v, err := s.AuthVersion(ctx); err != nil || v != v0 {
 		t.Errorf("auth_version after the requests: %d, %v; want %d", v, err, v0)
+	}
+}
+
+// testCountPendingApprovals: the count of GET /api/v1/info (#1336) is of the requests pending,
+// whose expiry is after its time, and not made by notBy: a request decided or marked expired is
+// not, whatever the time, nor one at its expiry.
+func testCountPendingApprovals(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	count := func(at time.Time, notBy string) int {
+		t.Helper()
+		n, err := s.CountPendingApprovals(ctx, at, notBy)
+		must(t, err)
+		return n
+	}
+	if n := count(at(0), ""); n != 0 {
+		t.Errorf("no request: %d", n)
+	}
+	newApproval(t, s, index.ApprovalBinding, "user:bob admin */*", 100) // by alice
+	newApproval(t, s, index.ApprovalBinding, "group:ops admin */*", 200)
+	carols := index.Approval{Kind: index.ApprovalDeployToken, Subject: "raw/* fleet", Change: json.RawMessage(`{"name":"fleet"}`),
+		RequestedBy: "user:carol", RequestedAt: at(0), ExpiresAt: at(300)}
+	must(t, s.CreateApproval(ctx, &carols))
+	rejected := newApproval(t, s, index.ApprovalBinding, "group:dev admin */*", 400)
+	must(t, s.DecideApproval(ctx, &index.Approval{ID: rejected.ID, State: index.ApprovalRejected, DecidedBy: "user:carol"}))
+	for _, tt := range []struct {
+		name  string
+		at    int
+		notBy string
+		want  int
+	}{
+		{"every request pending", 0, "", 3},
+		{"not alice's", 0, "user:alice", 1},
+		{"not carol's", 0, "user:carol", 2},
+		{"another's", 0, "user:dave", 3},
+		{"one at its expiry", 100, "", 2},
+		{"after every expiry", 300, "", 0},
+	} {
+		if n := count(at(tt.at), tt.notBy); n != tt.want {
+			t.Errorf("CountPendingApprovals: %s: %d, want %d", tt.name, n, tt.want)
+		}
+	}
+	_, err := s.ExpireApprovals(ctx, at(100))
+	must(t, err)
+	if n := count(at(50), ""); n != 2 {
+		t.Errorf("CountPendingApprovals after a request marked expired: %d, want 2", n)
 	}
 }
 
