@@ -74,16 +74,21 @@ func keys(t *testing.T) (rs, es, ed testKey) {
 // idp is a fake IdP: a discovery document, a JWKS of the keys it is given, and a token endpoint
 // that answers the ID token of the test for the one code it knows.
 type idp struct {
-	srv      *httptest.Server
-	mu       sync.Mutex
-	jwks     []map[string]string
-	idToken  string
-	issuer   string // the issuer of the discovery document; the server's URL by default
-	down     atomic.Bool
-	jwksGets atomic.Int64
-	discGets atomic.Int64
-	lastForm url.Values
-	lastAuth [2]string
+	srv     *httptest.Server
+	mu      sync.Mutex
+	jwks    []map[string]string
+	idToken string
+	issuer  string // the issuer of the discovery document; the server's URL by default
+	// grantTypes are the grant_types_supported of the discovery document; nil lists none.
+	grantTypes []string
+	down       atomic.Bool
+	jwksGets   atomic.Int64
+	discGets   atomic.Int64
+	lastForm   url.Values
+	lastAuth   [2]string
+	// refresh is the refresh grant of the IdP (refresh_test.go): the refresh token its code
+	// exchange answers, and how it answers a refresh.
+	refresh refreshIDP
 }
 
 const (
@@ -107,13 +112,17 @@ func newIDP(t *testing.T, published ...testKey) *idp {
 			return
 		}
 		p.mu.Lock()
-		iss := p.issuer
+		iss, grants := p.issuer, p.grantTypes
 		p.mu.Unlock()
 		if iss == "" {
 			iss = p.srv.URL
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": iss, "authorization_endpoint": p.srv.URL + "/auth?tenant=t1",
-			"token_endpoint": p.srv.URL + "/token", "jwks_uri": p.srv.URL + "/jwks"})
+		doc := map[string]any{"issuer": iss, "authorization_endpoint": p.srv.URL + "/auth?tenant=t1",
+			"token_endpoint": p.srv.URL + "/token", "jwks_uri": p.srv.URL + "/jwks"}
+		if grants != nil {
+			doc["grant_types_supported"] = grants
+		}
+		_ = json.NewEncoder(w).Encode(doc)
 	})
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, _ *http.Request) {
 		p.jwksGets.Add(1)
@@ -133,12 +142,20 @@ func newIDP(t *testing.T, published ...testKey) *idp {
 		tok := p.idToken
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if r.PostForm.Get("grant_type") == "refresh_token" {
+			p.refreshGrant(w, r)
+			return
+		}
 		if r.PostForm.Get("code") != testCode {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"the code is <script>bad</script>"}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "at", "token_type": "Bearer", "id_token": tok})
+		answer := map[string]string{"access_token": "at", "token_type": "Bearer", "id_token": tok}
+		if rt := p.issueRefresh(); rt != "" {
+			answer["refresh_token"] = rt
+		}
+		_ = json.NewEncoder(w).Encode(answer)
 	})
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
