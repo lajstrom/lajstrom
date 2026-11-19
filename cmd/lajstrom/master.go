@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -27,10 +28,12 @@ type masters struct {
 
 // loadMasters returns the master keys of k, none of which seals yet (sealingAtStart names it):
 // the key of the file of keys.masterKeyFile, otherwise of the variable keys.masterKeyEnv names
-// (Load has refused a configuration that sets both). No key configured, or the variable not set,
-// is an error wrapping keys.ErrNoMasterKey. A file that is missing, unreadable, empty or not a key
-// is an error that names the file, never its contents. A file that the group or others may read
-// or write is used, with a warning on log; log nil skips the check.
+// (Load has refused a configuration that sets both), and the keys of the directory of
+// keys.masterKeyDir (readMasterDir), at most keys.MaxMasterKeys in all, a key in two sources once.
+// No key configured, or the variable not set and no directory, is an error wrapping
+// keys.ErrNoMasterKey. A file that is missing, unreadable, empty or not a key is an error that
+// names the file, never its contents. A file that the group or others may read or write is used,
+// with a warning on log; log nil skips the check.
 func loadMasters(k config.Keys, lookupEnv func(string) (string, bool), log *slog.Logger) (*keys.Master, error) {
 	var srcs []keys.MasterSource
 	if k.MasterKeyFile != "" {
@@ -41,12 +44,64 @@ func loadMasters(k config.Keys, lookupEnv func(string) (string, bool), log *slog
 		srcs = append(srcs, src)
 	} else {
 		src, err := keys.MasterFromEnv(k.MasterKeyEnv, lookupEnv)
+		switch {
+		case err == nil:
+			srcs = append(srcs, src)
+		case !errors.Is(err, keys.ErrNoMasterKey) || k.MasterKeyDir == "":
+			return nil, err
+		}
+	}
+	if k.MasterKeyDir != "" {
+		dir, err := readMasterDir(k.MasterKeyDir, log)
+		if err != nil {
+			return nil, err
+		}
+		srcs = append(srcs, dir...)
+	}
+	m, err := keys.HoldMasters(srcs)
+	if err != nil && k.MasterKeyDir != "" {
+		return nil, fmt.Errorf("keys.masterKeyDir %s: %w", k.MasterKeyDir, err)
+	}
+	return m, err
+}
+
+// readMasterDir reads the master keys of the directory dir of keys.masterKeyDir, one per file, in
+// the order of their names (docs/configuration.md): every entry whose name does not start with a
+// dot and that is a regular file or a symbolic link to one, as a Kubernetes Secret or a Secrets
+// Store CSI volume makes each key a link through ..data. An entry whose name starts with a dot is
+// ignored, ..data and the volume's timestamped directory among them; any other entry (a
+// directory, a link to one or to nothing, a pipe) is an error that names it, and so is a directory
+// that is missing or holds no key. Each file is read as readMasterFile reads keys.masterKeyFile,
+// the mode warning of a link being its target's.
+func readMasterDir(dir string, log *slog.Logger) ([]keys.MasterSource, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("keys.masterKeyDir: %w", err) // a *PathError: the path and the cause
+	}
+	var srcs []keys.MasterSource
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		fi, err := os.Stat(path) // through a link; never opens a pipe, which would block
+		if err != nil {
+			return nil, fmt.Errorf("keys.masterKeyDir: %w", err)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil, fmt.Errorf("keys.masterKeyDir: %s is not a regular file, nor a link to one", path)
+		}
+		src, err := readMasterFile("keys.masterKeyDir", path, log)
 		if err != nil {
 			return nil, err
 		}
 		srcs = append(srcs, src)
 	}
-	return keys.HoldMasters(srcs)
+	if len(srcs) == 0 {
+		return nil, fmt.Errorf("keys.masterKeyDir: the directory %s holds no key: a file per master key, whose name does "+
+			"not start with a dot", dir)
+	}
+	return srcs, nil
 }
 
 // readMasterFile reads the master key of the file path, which the key of the configuration key
@@ -108,12 +163,16 @@ func (a *app) holdMasters(ctx context.Context, st sealingStore, log *slog.Logger
 
 // masterSources names the sources of the master keys that k configures, as attributes of the log
 // lines that say signing is on: keys.masterKeyFile or keys.masterKeyEnv with the path or the
-// variable's name.
+// variable's name, and keys.masterKeyDir with its path when it is set.
 func masterSources(k config.Keys) []any {
+	out := []any{"keys.masterKeyEnv", k.MasterKeyEnv}
 	if k.MasterKeyFile != "" {
-		return []any{"keys.masterKeyFile", k.MasterKeyFile}
+		out = []any{"keys.masterKeyFile", k.MasterKeyFile}
 	}
-	return []any{"keys.masterKeyEnv", k.MasterKeyEnv}
+	if k.MasterKeyDir != "" {
+		out = append(out, "keys.masterKeyDir", k.MasterKeyDir)
+	}
+	return out
 }
 
 // logMasters logs the master keys m holds, each id with its source, and the one that seals, at

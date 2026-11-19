@@ -26,10 +26,11 @@ var (
 	// override), server.listen and server.metricsListen (an address of each replica, such as a
 	// pod's IP) and repos (their effect has its own rows, repo.create with source config).
 	unrecorded = []string{"database", "log", "server.listen", "server.metricsListen", "repos"}
-	// secretKeys name where a secret is: a file or a variable, recorded as the path or the
-	// name. A test fails on a key ending in File or Env that is in neither list.
+	// secretKeys name where a secret is: a file, a directory of them or a variable, recorded as
+	// the path or the name, never what the file or the directory holds. A test fails on a key
+	// ending in File or Env that is in neither list.
 	secretKeys = []string{"server.tls.keyFile", "auth.bootstrap.tokenFile", "auth.oidc.clientSecretFile",
-		"keys.masterKeyEnv", "keys.masterKeyFile", "registries[].auth.passwordEnv", "upstreams[].auth.passwordEnv",
+		"keys.masterKeyEnv", "keys.masterKeyFile", "keys.masterKeyDir", "registries[].auth.passwordEnv", "upstreams[].auth.passwordEnv",
 		"upstreams[].auth.passwordFile", "upstreams[].auth.tokenFile"}
 	// publicFiles name a file of certificates or public keys, recorded as {"path", "sha256"}, so
 	// that a CA added to a bundle's file is a change.

@@ -843,6 +843,13 @@ type Keys struct {
 	// env LAJSTROM_MASTER_KEY_FILE. Like the variable, it is read by serve and admin key, never
 	// by Load. Setting it while the variable of MasterKeyEnv is set is a configuration error.
 	MasterKeyFile string `yaml:"masterKeyFile"`
+	// MasterKeyDir is the path of a directory of master keys, one per file in the encoding of the
+	// variable, for a Kubernetes Secret or a Secrets Store CSI volume mounted whole (#1288): its
+	// regular files and the symbolic links to one, but those whose name starts with a dot (..data
+	// and the volume's timestamped directory). Its keys join the one of MasterKeyEnv or
+	// MasterKeyFile, at most 8 in all; the index names the one that seals. Read at each start of
+	// serve and of the commands that read the master keys, never by Load; no environment variable.
+	MasterKeyDir string `yaml:"masterKeyDir"`
 	// Algorithm is the algorithm of the repo keys made from now on: ed25519 (apt 2.0 and later)
 	// or rsa4096 (older apt). Keys made before keep theirs.
 	Algorithm string `yaml:"algorithm"`

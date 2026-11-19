@@ -29,6 +29,7 @@ func recordedConfig() *Config {
 	c.Auth.Bootstrap.TokenFile = "/run/secrets/bootstrap"
 	c.Auth.ClientCertificates.Bundles = []CertBundle{{Name: "corp", CAFile: "/etc/lajstrom/corp-ca.pem", Identity: "cn"}}
 	c.Keys.MasterKeyFile = "/run/secrets/master"
+	c.Keys.MasterKeyDir = "/run/secrets/master-keys"
 	c.Repos = []Repo{{Name: "scratch", Format: "raw", Registry: "zot"}}
 	return c
 }
@@ -64,6 +65,7 @@ func TestRecorded(t *testing.T) {
 		"server.trustedProxies":                          `["10.0.0.0/8"]`,
 		"keys.retireGrace":                               `"720h0m0s"`,
 		"keys.masterKeyFile":                             `"/run/secrets/master"`,
+		"keys.masterKeyDir":                              `"/run/secrets/master-keys"`,
 		"auth.oidc.clientSecretFile":                     `"/run/secrets/oidc"`,
 		"registries[zot].url":                            `"https://zot.example.com"`,
 		"registries[zot].auth.passwordEnv":               `"ZOT_PASSWORD"`,
