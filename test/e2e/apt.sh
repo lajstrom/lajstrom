@@ -403,11 +403,14 @@ ok "deb-src: apt-get source --download-only $src: the .dsc and both tarballs, th
 
 # #79: the Contents of jammy/main, through apt-file when the client can install it from the
 # image's archive, else through apt's index target, which apt-file configures, its files read with
-# apt-helper, as apt-file reads them. Both find the files of the two packages.
+# apt-helper, as apt-file reads them. Both find the files of the two packages. The archive gets a
+# minute for each of its two commands: a slow mirror took five of make e2e's ten minutes on
+# 2026-11-19 (#1397), and the index target needs no network.
 in_client contents.log "
 	mkdir -p /tmp/lists && cp /etc/apt/sources.list.d/*.list /tmp/lists/
 	if [ -n \"\$(ls /w/archive-sources 2>/dev/null)\" ] && cp /w/archive-sources/* /etc/apt/sources.list.d/ &&
-		apt-get update >/tmp/archive.log 2>&1 && apt-get install -y --no-install-recommends apt-file >>/tmp/archive.log 2>&1; then
+		timeout 60 apt-get -o Acquire::http::Timeout=15 update >/tmp/archive.log 2>&1 &&
+		timeout 60 apt-get -o Acquire::http::Timeout=15 install -y --no-install-recommends apt-file >>/tmp/archive.log 2>&1; then
 		echo 'contents through apt-file'
 		rm -f /etc/apt/sources.list.d/* && cp /tmp/lists/* /etc/apt/sources.list.d/
 		apt-file update
