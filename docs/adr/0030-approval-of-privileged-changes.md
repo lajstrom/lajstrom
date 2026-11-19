@@ -1,6 +1,7 @@
 # 0030. Approval of privileged changes: a second admin for what grants most, a reason with each
 
-- Status: proposed; B with C decided on #1285 (2026-11-16)
+- Status: proposed; B with C decided on #1285 (2026-11-16); who requests and another admin's
+  password in [0035](0035-second-admin-is-another-person.md) (#1393)
 - Date: 2026-11-17
 - Deciders: gecube
 
@@ -53,8 +54,8 @@ left open:
    one decision made of two at once, an expiry marked once a minute by one replica.
 2. **What waits**: a binding of the role `admin`, whatever its principal (a service account's is
    "a service account with admin"), a binding on `*/*`, and a deploy token over a mask with
-   `write`, through the API. The route answers `202` with the request. A token of a service
-   account does not wait, so that rotating one takes one admin. `POST /api/v1/users` with
+   `write`, through the API. The route answers `202` with the request. Creating a token for a
+   service account does not wait, so that rotating one takes one admin. `POST /api/v1/users` with
    `admin: true`, which makes the user's `admin` binding with the user, is `400` naming the
    setting instead, so that the binding is requested with `POST /api/v1/bindings` (#1376).
 3. **A deploy token's secret** is made with the request and answered to the requester, once; the
