@@ -82,9 +82,11 @@ lajstrom admin user create --name rescue --admin --config lajstrom.yaml
 ```
 
 `set-password` works on a disabled user too; the old password fails at the next request on every
-replica. `create --admin` makes a new admin when every admin is lost or its password
-forgotten. Each writes an audit row (`user.password`, `user.create`) by
-`anonymous` with the source `cli`, the host name of the machine it ran on and the
+replica. With `auth.approval: second-admin`, the API sets no new password for a user who holds
+`admin` (#1393): `set-password` is the break-glass path to one. `create --admin` makes a new
+admin when every admin is lost or its password forgotten. Each writes an audit row
+(`user.password`, `user.create`) by `anonymous` with the source `cli`, the host name of the
+machine it ran on and the
 operating-system user it ran as (`osUser`), so that a recovery shows in `GET /api/v1/audit`
 afterwards. `--actor` (or `LAJSTROM_ACTOR`) adds who ran it, as your organisation names people,
 and `--reason` (or `LAJSTROM_REASON`) why, a ticket, as `actor` and `changeReason`: what the
@@ -244,7 +246,11 @@ approval. Two settings tie the changes to theirs ([auth.md](auth.md#approval-of-
    `*/*` and a deploy token over a mask with `write`, made through the API, answer `202` with a
    request that another admin approves (`POST /api/v1/approvals/<id>/approve`, with a password or
    a web UI's fresh sign-in). A script or a Terraform provider that makes these gets the `202`, and
-   no binding or working token until the approval.
+   no binding or working token until the approval. The request takes a password or a fresh sign-in
+   too: one made with a token, a service account's included, is `403` (#1393), so such a script
+   sends the admin's password, or the change is made on the command line. The API then sets no new
+   password for a user who holds `admin` (`400`): once the setting is on, have each admin change
+   its own password, so that none knows another's.
 3. **Each key** once every replica runs a release that knows it (a replica of the release before
    refuses the configuration), then a restart, recorded as `config.change`. With `second-admin`,
    `serve` says at start that the setting is on, and warns when fewer than two users could approve
@@ -253,10 +259,14 @@ approval. Two settings tie the changes to theirs ([auth.md](auth.md#approval-of-
 The requests that wait are `GET /api/v1/approvals?state=pending` and `lajstrom admin approval
 list --state pending`; nothing notifies the second admin, so tell them through your own channel.
 A request expires after 7 days. The command line against the database makes these changes at
-once, without a second admin: it is the break-glass path, and the way to the second admin of a
-server that has one; guard its credentials, and give it a reason. Turning `auth.approval` back to
-`none` makes every change at once again; the requests made before stay, to be decided or to
-expire.
+once, without a second admin, and sets an admin's lost password
+([A lost password](#a-lost-password)): it is the break-glass path, and the way to the second
+admin of a server that has one; guard its credentials, and give it a reason. Turning
+`auth.approval` back to `none` makes every change at once again; the requests made before stay,
+to be decided or to expire. During a rolling update to the release with #1393's rules, a replica
+of the release before still takes a request made with a token and sets an admin's password: to
+leave no gap, reject the requests made during the update and read the `user.password` rows of
+that window.
 
 ### Reviewing access
 
@@ -1828,7 +1838,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
 | `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.delete` | the API and `lajstrom admin ci-policy`: a CI trust policy of the API, its issuer, claims, grants, state and expiry, the `previous` ones of a change, and the `signIn` of a web UI's request ([auth.md](auth.md#token-exchange-for-ci)) |
 | `ci.policy.expire` | `serve`, by `anonymous` with `source: expiry`: a CI trust policy of the API whose expiry passed, marked once by one replica within a minute |
-| `approval.request`, `approval.approve`, `approval.reject` | the API: a request for a second admin made in place of a change, by the requester, subject `approval:<id>`; its approval, beside the `binding.create` or `token.create` it makes, with `approval` and the request's `changeReason`; its rejection ([Approval of privileged changes](#approval-of-privileged-changes)) |
+| `approval.request`, `approval.approve`, `approval.reject` | the API: a request for a second admin made in place of a change, by the requester, subject `approval:<id>`; its approval, beside the `binding.create` or `token.create` it makes, with `approval` and the request's `changeReason`; its rejection ([Approval of privileged changes](#approval-of-privileged-changes)). A request and an approval have `credential`, `password` or the sign-in's `token:<id>` (#1393); one made on a release before has none |
 | `approval.expire` | `serve`, by `anonymous` with `source: expiry`: a request still pending 7 days after it was made, marked once by one replica within a minute |
 | `login.block` | `serve`, by `anonymous`: a throttle of failed logins or of wrong bootstrap tokens that tripped, the account or the address, at most 60 a minute per replica, with `suppressed`; and a lock of the lockout, `limit: lockout`, once per lock whatever the replicas, with its `until` ([Failed logins and the edge](#failed-logins-and-the-edge)) |
 | `config.change` | `serve`, by `anonymous` with `source: config`, at a start whose configuration is not the one last recorded on the database: one row per change whatever the replicas, the keys that changed with their values before and after, secrets excluded ([configuration.md](configuration.md#changes-of-the-configuration)) |
