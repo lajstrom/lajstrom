@@ -1,6 +1,7 @@
-// Package gcpkms is the GCP Cloud KMS of internal/keys (ADR 0020, ADR 0009): cryptoKeyVersions.get,
-// getPublicKey, asymmetricSign and asymmetricDecrypt of the Cloud KMS REST API over net/http, with the access token
-// of the workload's service account from the metadata server (internal/gcpauth), as an oci
+// Package gcpkms is the GCP Cloud KMS of internal/keys (ADR 0020, ADR 0009, ADR 0036):
+// cryptoKeyVersions.get, getPublicKey, asymmetricSign and asymmetricDecrypt, and cryptoKeys.get,
+// encrypt and decrypt of a symmetric key, of the Cloud KMS REST API over net/http, with the access
+// token of the workload's service account from the metadata server (internal/gcpauth), as an oci
 // upstream with auth.gcp gets it. It holds no key material: KMS keys never leave the KMS.
 package gcpkms
 
@@ -79,7 +80,7 @@ type Options struct {
 	Log *slog.Logger
 }
 
-// Client is GCP Cloud KMS for internal/keys: it implements keys.KMS and keys.DecryptKMS. It is
+// Client is GCP Cloud KMS for internal/keys: it implements keys.KMS, keys.DecryptKMS and keys.MasterKMS. It is
 // safe for concurrent use.
 type Client struct {
 	o       Options
@@ -312,6 +313,7 @@ func (c *Client) call(ctx context.Context, method, name, suffix string, in, out 
 			return fmt.Errorf("gcpkms: %w", err)
 		}
 	}
+	defer clear(body) // an encrypt's holds a data key of the master key (#1388)
 	wait := c.backoff
 	for attempt := 0; ; attempt++ {
 		err = c.send(ctx, token, method, target, body, out)
@@ -356,6 +358,7 @@ func (c *Client) send(ctx context.Context, token func(context.Context) (string, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+	defer clear(answer) // a decrypt's holds a plaintext, which out gets a copy of
 	if err != nil {
 		return fmt.Errorf("%w: Cloud KMS: the answer: %w", keys.ErrKMSUnavailable, err)
 	}
