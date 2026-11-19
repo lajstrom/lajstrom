@@ -1,13 +1,15 @@
 # Spec: webhooks and events
 
 - Status: normative (2026-11-14), issue #77; the secret sealed again under a new master key (§5),
-  #1288. Owned by `internal/webhook`. Changes need an issue labelled `contract`.
+  #1288; the events of a request for a second admin (§1, §3), after the MVP (#1336). Owned by
+  `internal/webhook`. Changes need an issue labelled `contract`.
 - Related: [http-routing.md](http-routing.md) §4 (the routes), [rbac.md](rbac.md) §2, §3, §5
   (who may, the audit rows), [index-schema.md](index-schema.md#webhooks) (the tables),
   [guarantees.md](guarantees.md) INV-43 and INV-44.
 
 A webhook is a URL that Lajstrom sends an HTTP `POST` to when a write it asks for commits: a
-version published or deleted, a repo created or deleted, a CI trust policy changed. The request is a CloudEvent, signed
+version published or deleted, a repo created or deleted, a CI trust policy changed, a request for
+a second admin made or decided. The request is a CloudEvent, signed
 with the webhook's secret, sent from an outbox in the index database by any replica, again
 until the receiver answers `2xx` or the attempts run out. Webhooks are control plane: they and
 their deliveries are rows of the index that reindex neither reads nor rebuilds.
@@ -30,6 +32,10 @@ their deliveries are rows of the index that reindex neither reads nor rebuilds.
 | `ci.policy.approved` | `dev.lajstrom.ci.policy.approved` | a second admin approves a CI trust policy of the API that writes, or its renewal, `data.action` `ci.policy.approve` |
 | `ci.policy.expired` | `dev.lajstrom.ci.policy.expired` | a replica marks a CI trust policy of the API expired, once on any replica, `data.action` `ci.policy.expire` |
 | `ci.policy.deleted` | `dev.lajstrom.ci.policy.deleted` | a CI trust policy of the API is deleted, `data.action` `ci.policy.delete` |
+| `approval.requested` | `dev.lajstrom.approval.requested` | a change waits for a second admin: a request is made (rbac.md §13, #1336), `data.action` `approval.request` |
+| `approval.approved` | `dev.lajstrom.approval.approved` | a second admin approves a request, which makes its change, `data.action` `approval.approve` |
+| `approval.rejected` | `dev.lajstrom.approval.rejected` | an admin rejects a request, or its requester withdraws it, `data.action` `approval.reject` |
+| `approval.expired` | `dev.lajstrom.approval.expired` | a replica marks a request expired, 7 days after it was made, once on any replica, `data.action` `approval.expire` |
 | (none) | `dev.lajstrom.webhook.ping` | only by the test of one webhook (http-routing.md §4) |
 
 Each event is the write of an audit row, and is written in that row's transaction (§4). Not
@@ -67,9 +73,9 @@ The document:
 | --- | --- |
 | `specversion` | `1.0` |
 | `id` | a UUID v7, made when the event is written: one per event, the same for every webhook that gets it and on every attempt. A receiver deduplicates on it |
-| `source` | `<server.externalURL>/<format>/<repo>`; for a ping `<server.externalURL>/api/v1/webhooks/<id>`, for a policy rule's and a CI trust policy's that of their routes (§3). Without `server.externalURL` (the dev stack), the path alone |
+| `source` | `<server.externalURL>/<format>/<repo>`; for a ping `<server.externalURL>/api/v1/webhooks/<id>`, for a policy rule's, a CI trust policy's and a request's that of their routes (§3). Without `server.externalURL` (the dev stack), the path alone |
 | `type` | of §1 |
-| `subject` | the audit row's subject: `<package> <version>[ <variant>]` for a version, the name of a CI trust policy; absent for a repo and a ping |
+| `subject` | the audit row's subject: `<package> <version>[ <variant>]` for a version, the name of a CI trust policy, `approval:<id>` for a request; absent for a repo and a ping |
 | `time` | the time of the event's write, RFC 3339, UTC |
 | `datacontenttype` | `application/json` |
 | `data` | §3 |
@@ -87,7 +93,7 @@ Every event:
 | Field | Value |
 | --- | --- |
 | `schema` | `1` |
-| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `policy.rule.create`, `policy.rule.delete`, `policy.verdict.create`, `policy.verdict.delete`, `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.expire`, `ci.policy.delete`, `webhook.test` |
+| `action` | the audit row's action: `push`, `proxy.fetch`, `delete`, `repo.create`, `repo.delete`, `policy.rule.create`, `policy.rule.delete`, `policy.verdict.create`, `policy.verdict.delete`, `ci.policy.create`, `ci.policy.update`, `ci.policy.renew`, `ci.policy.approve`, `ci.policy.expire`, `ci.policy.delete`, `approval.request`, `approval.approve`, `approval.reject`, `approval.expire`, `webhook.test` |
 | `actor` | `{"principal", "name"}`: the principal of the write as rbac.md §1 writes it (`user:<uid>`, `token:<id>`, `anonymous`), and a user's name at the time of the event (absent for the others) |
 | `audit` | the id of the event's audit row; absent for a ping |
 | `requestId` | the request's id, when the write came from a request |
@@ -123,12 +129,27 @@ or after the change: a webhook of one repo, whose maintainer may not read the po
 §2), gets none. Its `source` is `<server.externalURL>/api/v1/ci/policies`, and its `subject` the
 policy's name.
 
+A request for a second admin (`approval.*`, rbac.md §13, #1336) adds `approval`: the request as
+`GET /api/v1/approvals/<id>` answers it once the change of the event is made (http-routing.md §4),
+`{"id", "kind", "change", "changeReason", "state", "requestedBy", "requestedAt", "expiresAt"}`,
+with `decidedBy`, `decidedAt`, `decisionReason` and `result` once it is decided; and `names`, the
+name at the time of the event of each user among `requestedBy`, `decidedBy` and a binding's
+`change.principal`, by principal (`{"user:<uid>": "alice"}`), so that a receiver can say who asks
+what for whom. `change` is the binding (`principal`, `role`, `repoMask`) or the deploy token
+(`name`, `repoMask`, `scopes`, `expiresAt`), never the token's secret nor its hash. The event goes
+only to the webhooks of the admin, whose mask has a `*`, that cover the mask of the change, the
+binding's or the deploy token's: a binding of `admin` and a binding on `*/*` reach the webhooks of
+`*/*` only. Its `source` is `<server.externalURL>/api/v1/approvals`, its `subject` `approval:<id>`,
+and its `actor` the requester, the admin who decided, or `anonymous` for an expiry.
+
 A repo (`repo.created`, `repo.deleted`) adds `repo`, as above; `repo.deleted` also `versions`,
 the number of versions it had, and `force`. A ping adds `webhook`: `{"id", "mask"}`.
 
 **Never in an event:** a secret of any kind (a webhook's secret, a token, a password, a registry's
-or an upstream's credentials, the master key), the client's address, a request's headers, an
-upstream's URL, a version's metadata layer, the details of its audit row. Nothing in an event
+or an upstream's credentials, the master key), a hash of one (a deploy token's that a request
+keeps), the credential or the sign-in of an audit row (`credential`, `signIn`), the client's
+address, a request's headers, an upstream's URL, a version's metadata layer, the details of its
+audit row. Nothing in an event
 needs more than `read` on its repo but `actor`, which the audit log shows to the admin role only
 (rbac.md §5): who may manage a repo's webhooks learns who wrote to it.
 
@@ -136,9 +157,9 @@ needs more than `read` on its repo but `actor`, which the audit log shows to the
 
 **The outbox.** An event is written in the transaction that writes its audit row `ok` (a
 publish's and a delete's, rbac.md §5), or that appends it (a repo's, a rule's, a CI trust
-policy's): one `webhook_deliveries` row per active webhook whose mask matches the repo (rbac.md
-§3, as a binding's), or covers the rule's or the policy's (§3), and whose `events` include the
-type, each with the body of §2. So an event is never lost once its write
+policy's, a request's): one `webhook_deliveries` row per active webhook whose mask matches the repo
+(rbac.md §3, as a binding's), or covers the rule's, the policy's or the request's (§3), and whose
+`events` include the type, each with the body of §2. So an event is never lost once its write
 committed, and never sent for a write that rolled back. A transaction whose event no webhook
 matches reads the webhooks and writes nothing more. A webhook created after the commit does not
 get the event; one deleted before its delivery does not either.

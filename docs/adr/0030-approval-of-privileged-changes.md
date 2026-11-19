@@ -1,7 +1,8 @@
 # 0030. Approval of privileged changes: a second admin for what grants most, a reason with each
 
 - Status: proposed; B with C decided on #1285 (2026-11-16); who requests and another admin's
-  password in [0035](0035-second-admin-is-another-person.md) (#1393)
+  password in [0035](0035-second-admin-is-another-person.md) (#1393); the webhook events of a
+  request and the count for admins in [0038](0038-telling-the-second-admin.md) (#1336)
 - Date: 2026-11-17
 - Deciders: gecube
 
@@ -73,8 +74,8 @@ left open:
    the changes of the control plane but a person's own credentials, the bootstrap and the writes
    of artifacts. `auth.requireReason: true` makes it required, there and on the command line.
 8. **Audit**: `approval.request`, `.approve`, `.reject` and `.expire`, and the change's own row
-   with `approval` and the request's `changeReason`. Requests are not in a snapshot, and no
-   webhook event is sent for them.
+   with `approval` and the request's `changeReason`. Requests are not in a snapshot. Webhook
+   events of their life came later, in [0038](0038-telling-the-second-admin.md) (#1336).
 
 ## Consequences
 
