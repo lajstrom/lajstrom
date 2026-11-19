@@ -75,9 +75,9 @@ func edgeInputs(c *config.Config, st index.Store, tokens token.Keys, m *keys.Mas
 // oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), the
 // redeemer of the codes its callback hands a web UI (§10), whose token lives the shorter of
 // auth.login.tokenLifetime and auth.oidc.tokenLifetime, and the relying party; all nil when its
-// issuer is empty. auth.oidc.refresh.interval takes a master key, m (#1282). It reads the client's
-// secret from auth.oidc.clientSecretFile, never logs it, and reads nothing from the IdP: the
-// discovery document loads at the first login.
+// issuer is empty. With auth.oidc.refresh.interval the logins keep their refresh tokens, sealed
+// with m (#1282). It reads the client's secret from auth.oidc.clientSecretFile, never logs it, and
+// reads nothing from the IdP: the discovery document loads at the first login.
 func oidcLogin(c *config.Config, st index.Store, m *keys.Master, log *slog.Logger) (http.Handler, *oidc.Handoffs, *oidc.Client, error) {
 	o := c.Auth.OIDC
 	if o.Issuer == "" {
@@ -104,11 +104,15 @@ func oidcLogin(c *config.Config, st index.Store, m *keys.Master, log *slog.Logge
 	log.Info("OIDC login on", "issuer", o.Issuer, "clientID", o.ClientID, "redirectURI", base+"/-/oidc/callback",
 		"tokenLifetime", o.TokenLifetime.String(), "webUIOrigins", origins, "refresh.interval", o.Refresh.Interval.String())
 	tokens := &auth.Tokens{Index: st, Log: log}
-	login := oidc.NewHandler(oidc.LoginOptions{Provider: p, Index: st, Users: usersOf(c, st, log),
+	lo := oidc.LoginOptions{Provider: p, Index: st, Users: usersOf(c, st, log),
 		Tokens: tokens, ExternalURL: base, InsecureCookie: c.Server.InsecureHTTP, TokenLifetime: o.TokenLifetime,
-		ReturnOrigins: origins, Log: log})
-	handoffs := &oidc.Handoffs{Index: st, Tokens: tokens, TokenLifetime: min(c.Auth.Login.TokenLifetime, o.TokenLifetime), Log: log}
-	return login, handoffs, p, nil
+		ReturnOrigins: origins, Refresh: o.Refresh.Interval, Log: log}
+	if o.Refresh.Interval > 0 {
+		lo.Sealer = m
+	}
+	handoffs := &oidc.Handoffs{Index: st, Tokens: tokens, TokenLifetime: min(c.Auth.Login.TokenLifetime, o.TokenLifetime),
+		Refresh: o.Refresh.Interval, Log: log}
+	return oidc.NewHandler(lo), handoffs, p, nil
 }
 
 // returnOrigins returns the origins a web UI's OIDC login may return to (docs/spec/rbac.md §10):
