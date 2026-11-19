@@ -450,7 +450,10 @@ type publish struct {
 	// of the same file, which claimTag waits for (awaitClaim).
 	contentTag bool
 	adopted    bool // the manifest is another publish's, taken over (adopt)
-	sent       bool // the manifest was sent to the registry (pushManifest)
+	// held: the manifest was taken over from a claim, and the tag in the backend holds it
+	// already (checkTag), so pushManifest does not push it again (#1369).
+	held bool
+	sent bool // the manifest was sent to the registry (pushManifest)
 
 	// origin is set on the proxy fetcher's upload: the origin annotations and proxy.fetch.
 	origin *format.Origin
