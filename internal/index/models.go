@@ -191,6 +191,30 @@ type OIDCLogin struct {
 	CreatedAt, ExpiresAt time.Time
 }
 
+// OIDCRefresh is a row of oidc_refresh (coordination, #1282): an OIDC login that serve asks the
+// IdP about again with its refresh token (docs/spec/rbac.md §8, Asking the IdP again;
+// docs/spec/index-schema.md, oidc_refresh). It lives as long as the login's token.
+type OIDCRefresh struct {
+	ID int64
+	// LoginID is the oidc_logins row of the login while its token is not minted, nil after;
+	// TokenID the login's token once minted, nil before.
+	LoginID, TokenID *int64
+	// IdentityID is the identity of the login.
+	IdentityID int64
+	// Sealed is the refresh token sealed with the master key, oidc_refresh:<ID> as its additional
+	// data; never the token in clear.
+	Sealed []byte
+	// CreatedAt is the login's callback; RefreshedAt the IdP's last answer that confirmed the
+	// login, CreatedAt until the first refresh; NextAt when it is due.
+	CreatedAt, RefreshedAt, NextAt time.Time
+	// Failures counts the errors since the last success, which space the next tries.
+	Failures int
+	// ClaimedBy is the replicas id of the replica that refreshes the row until ClaimedUntil; ""
+	// and nil while no replica does.
+	ClaimedBy    string
+	ClaimedUntil *time.Time
+}
+
 // BootstrapToken is the row of bootstrap_token (control plane): the one-time token that makes
 // the first admin, the same on every replica. The table has at most one row.
 type BootstrapToken struct {
@@ -258,6 +282,9 @@ type WrappedMasterKey struct {
 const (
 	SealedKeys     = "keys"     // keys.private_enc, the fingerprint as its additional data
 	SealedWebhooks = "webhooks" // webhooks.secret_enc, webhook:<uid> as its additional data
+	// SealedRefresh is oidc_refresh.refresh_enc, the refresh token of an OIDC login (#1282), with
+	// oidc_refresh:<id> as its additional data.
+	SealedRefresh = "oidc_refresh"
 	// SealedSessions is the data key of each open upload of the facade, sessions.files enc.key,
 	// the row's key as its additional data (nil for an upload to a repo that does not encrypt):
 	// ListSealed only, for the counts of a rewrap. Reseal refuses it, as an upload in flight is
