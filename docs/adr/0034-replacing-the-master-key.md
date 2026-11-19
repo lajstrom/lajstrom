@@ -1,7 +1,8 @@
 # 0034. Replacing the master key: the keys a process holds, the one the index names to seal
 
 - Status: proposed; A, then B, decided on #1288 (2026-11-16); the held keys and the sealing key
-  in the index decided in the review of #1371 (2026-11-18)
+  in the index decided in the review of #1371 (2026-11-18); what was left to B's contract in
+  [ADR 0036](0036-the-master-key-in-a-kms.md) (#1388)
 - Date: 2026-11-18
 - Deciders: gecube
 

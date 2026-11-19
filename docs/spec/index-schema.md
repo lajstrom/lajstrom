@@ -47,6 +47,7 @@ SQLite, `jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings`, every insert, update or delete of `repos` and of `ci_policies`, and every replacement of an identity's `identity_groups`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings, of the repos' `anonymous_read` and of the identities' groups when it moved (rbac.md §3) |
 | `config_state` | `id` int (always 1), `fingerprint` text (`sha256:<hex>`), `config` json (each key of the configuration that counts to its value), `release` text (the version of the `serve` that recorded it), `host` text (its host name), `recorded_at` ts | at most one row (#1284; 0035): the configuration last recorded by a `config.change` row (rbac.md §5), which holds no secret. A `serve` reads it at start (`GetConfigState`) and, when its own configuration differs, replaces it by its fingerprint only, `PutConfigState` with the fingerprint read (`""` inserts when there is no row), in the transaction that appends the row, so that of replicas that start together one records a change. Migration `0035_config_state.sql` only creates the table, empty: a replica of the release before neither reads nor writes it |
 | `sealing_key` | `id` int (always 1), `key_id` text (the id of a master key, 16 hexadecimal digits), `source` text (`start`: the first start of a process that held one key; `rewrap`: the switch of a rewrap), `host` text (the host name of the process that set it), `audit_id` bigint null (the `key.rewrap` row of the switch, which says who ran it and why; no reference, as a prune may delete that row), `set_at` ts (the database's time) | at most one row (#1288; 0040): the master key that every process seals with ([The master key and its replacement](#the-master-key-and-its-replacement)). Inserted if absent by the first start of a process that holds one key, and changed by `lajstrom admin key rewrap`, by compare-and-set on the id it read (`PutSealingKey`); read by every process that holds keys at its start, and by `serve` at every beat. It holds an id, never a key nor where a key comes from. It is in a snapshot, so that a restore brings back the key that sealed then |
+| `wrapped_master_keys` | `key_id` text (the id of a master key that is a data key, 16 hexadecimal digits), `kms` text (the key URI of the symmetric KMS key that wraps it: `awskms:///arn:aws:kms:<region>:<account>:key/<key id>`, `gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`), `wrapped` blob (the KMS's ciphertext of its 32 bytes), `created_at` ts, `wrapped_at` ts (the last wrap: `created_at` until `lajstrom admin key wrap --id` wraps it again), `audit_id` bigint null (the `key.wrap` row of the last wrap; no reference, as a prune may delete that row) | primary key `key_id` (#1388; 0041): the data keys of `keys.masterKeyKMS`, each wrapped by its KMS key ([A master key in a KMS](#a-master-key-in-a-kms)). Written by `lajstrom admin key wrap` and deleted by `lajstrom admin key drop --master`, each with its audit row in its transaction; read at its start by every process whose configuration names a data key. It holds no key in clear. It is in a snapshot and in a backup, so that a restore brings back what opens the values it brings back |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
 
 ### The audit row of a registry write
@@ -228,7 +229,8 @@ every change at once.
 
 ### The master key and its replacement
 
-The master keys (`keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir`;
+The master keys (`keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir`, and the data keys
+of `keys.masterKeyKMS`, [below](#a-master-key-in-a-kms);
 [operations.md](../operations.md#the-master-key)) seal these values of the index, and nothing
 else of it, each `nonce ‖ AES-256-GCM(value)` with a random 12-byte nonce and additional data that
 binds it to its row (#1288, [ADR 0034](../adr/0034-replacing-the-master-key.md)):
@@ -247,14 +249,17 @@ master key.
 
 - **The held keys.** A process that reads the master keys (`serve`, `lajstrom reindex`, the
   `lajstrom admin` commands that read them) holds every key of every source its configuration
-  names: the variable of `keys.masterKeyEnv` or the file of `keys.masterKeyFile`, and each key file
-  of `keys.masterKeyDir` ([configuration.md](../configuration.md#keys)). It reads them once, at its
-  start: a key added to a source, or removed from it, counts from the next start. A key in two
-  sources is held once; more than 8 keys, or a configured source without a key, is an error of the
-  configuration, which names the source and never a key. The configuration gives no key a role:
-  the index names the one that seals (below), and a value opens with any held key, that one first,
-  then the others by id. A process with no source configured holds no key, reads no row of
-  `sealing_key`, and runs without a master key as configuration.md says.
+  names: the variable of `keys.masterKeyEnv` or the file of `keys.masterKeyFile`, each key file
+  of `keys.masterKeyDir` ([configuration.md](../configuration.md#keys)), and each data key of
+  `keys.masterKeyKMS` once the KMS unwrapped it ([A master key in a KMS](#a-master-key-in-a-kms)).
+  It reads them once, at its start, a data key that the KMS did not unwrap then excepted: a key
+  added to a source, or removed from it, counts from the next start. A key in two sources is held
+  once; more than 8 keys, a data key not yet unwrapped counted, or a configured source without a
+  key, is an error of the configuration, which names the source and never a key. The
+  configuration gives no key a role: the index names the one that seals (below), and a value opens
+  with any held key, that one first, then the others by id. A process with no source configured
+  holds no key, reads no row of `sealing_key`, and runs without a master key as configuration.md
+  says.
 - **No row says which key sealed it.** The sealed format and the additional data stay as they
   are: AES-GCM authenticates, so a value that the sealing key does not open is tried with each
   other held key, one more open of a few hundred bytes each, and a key that is not the value's
@@ -276,6 +281,9 @@ master key.
     `the index seals with master key <id>, which this process does not hold` and the ids it holds.
     The held keys change only at a start, so `serve` does not stay up, not ready, waiting for a key
     it cannot get: an orchestrator that starts it again starts it with what its sources hold then.
+    A row that names a data key of `keys.masterKeyKMS` that the KMS has not unwrapped yet is the
+    exception: `serve` starts, seals nothing and is not ready until the KMS unwraps it, as at a
+    beat below ([A master key in a KMS](#a-master-key-in-a-kms)).
   - *Without a row*, at the first start of a release with 0040 or on a new database: a process
     that holds one key opens with it the value of the first `keys` row by id, if there is one, and
     stops as under another master key when it does not open it (operations.md, The master key).
@@ -283,10 +291,13 @@ master key.
     `""`), and reads the row again: of processes that start together one inserts it, and one that
     holds another key stops as above. A process that holds several keys inserts nothing, and stops
     as above with `no master key seals yet: name one with lajstrom admin key rewrap --to <id>` and
-    the ids it holds: which of them seals is the operator's choice, not the order of the files.
+    the ids it holds: which of them seals is the operator's choice, not the order of the files. A
+    data key not yet unwrapped counts among the keys: one that is the only key is unwrapped first,
+    and `serve` takes this step at the beat that follows the unwrap.
   - *At each beat* of its `replicas` row, every 30 seconds ([Coordination](#coordination)),
     `serve` reads the row again. A new id of a key it holds seals from then on, logged at info. A
-    new id of a key it does not hold fails closed, from that beat on:
+    new id of a key it does not hold, or of a data key it has not unwrapped yet, fails closed, from
+    that beat on:
     - the replica seals nothing, with no key, the one it sealed with before included. A request
       that would seal (a repo's first signing or encryption key, a webhook made or its secret
       rotated, an upload of the facade that opens its session on an encrypted repo) is answered
@@ -297,7 +308,9 @@ master key.
       that the edge takes the replica out, and the log has an error that names the id at every
       beat;
     - it does not exit, and `/-/healthz` stays `200`. A beat that reads the id of a key it holds
-      ends it (a rewrap `--to` such a key), and so does a start whose sources hold the key.
+      ends it (a rewrap `--to` such a key), and so does a start whose sources hold the key, or
+      the unwrap of that data key, whose readiness line says so
+      ([A master key in a KMS](#a-master-key-in-a-kms)).
   - *A command* reads the row once, at its start, as above. `lajstrom admin key rewrap`, which
     sets it, and `lajstrom admin snapshot restore`, which writes the row of its snapshot
     ([below](#snapshots-of-the-control-plane)), neither stop on it nor insert it. A command that
@@ -344,7 +357,8 @@ master key.
      run again seals what is left.
 
   With `--dry-run` it writes nothing and prints: the sealing row (its id, `source` and `set_at`);
-  the ids this command holds, each with its source; each live replica with its host, version and
+  the ids this command holds, each with its source (a data key's KMS key); the rows of
+  `wrapped_master_keys` by id and KMS key, held or not; each live replica with its host, version and
   the ids it holds; for each column, the values under each key id, and those under none by row;
   the open upload sessions under each key id and when the last of them expires; and, with `--to`,
   what a run would refuse. Exit status `0`.
@@ -413,15 +427,147 @@ master key.
   them: it seals with its one master key whatever the row says, and its replica's NULL counts as
   holding no key, so that a rewrap refuses while it runs. Keep one key in the sources until every
   process runs a release with 0040; the first of them to start records it.
-- **A KMS later** (the second step decided on #1288; ADR 0034, What B needs of A) adds a source of
-  held keys, not a mechanism: a KMS key of ADR 0020's key URIs, whose data keys, 32 bytes that
-  Lajstrom makes and keeps in the index wrapped by it, join the held keys once unwrapped. A data
-  key's id is the id above of its 32 bytes, so that the ids of every source compare: the sealing
-  row names an id and never a source, and a rewrap's guard compares ids only, so that during a
-  move one replica may hold a key from a file and another the same key from the KMS. A move onto
-  the KMS, off it or to a new data key is the rollout above; a rotation of the KMS key wraps the
-  data key again, keeps its id and seals no value. That source, its table and its migration are a
-  contract of their own.
+- **A master key in a KMS** (the second step decided on #1288; ADR 0034, What B needs of A) is a
+  source of held keys, not a mechanism: [below](#a-master-key-in-a-kms).
+
+### A master key in a KMS
+
+A master key can be a data key: 32 bytes that `lajstrom admin key wrap` makes and that the index
+keeps wrapped by a symmetric key of AWS KMS or GCP Cloud KMS, so that the key is in clear only in
+the memory of the processes that unwrapped it (#1388,
+[ADR 0036](../adr/0036-the-master-key-in-a-kms.md); ADR 0034, What B needs of A). It is one more
+source of held keys. Nothing else of [the section above](#the-master-key-and-its-replacement)
+changes: what is sealed, the format, the additional data, the sealing row, the guard, the rewrap
+and the rollout. A data key's id is a master key's id of its 32 bytes, so that the ids of every
+source compare: the sealing row names an id, never a source.
+
+- **The KMS key** is symmetric, AES-256 in the KMS, as strong as the key it wraps:
+  - AWS KMS: spec `SYMMETRIC_DEFAULT`, usage `ENCRYPT_DECRYPT`, enabled; named by its key ARN,
+    `awskms:///arn:aws:kms:<region>:<account>:key/<key id>`. The region is the ARN's; the
+    endpoint and the credentials are those of `keys.kms` (ADR 0020).
+  - GCP Cloud KMS: purpose `ENCRYPT_DECRYPT`, algorithm `GOOGLE_SYMMETRIC_ENCRYPTION`, its primary
+    version enabled; named by the key without a version,
+    `gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`: the KMS encrypts with the
+    primary version and decrypts with the version that the ciphertext names.
+
+  A wrap is the KMS's `Encrypt` of the 32 bytes (AWS `Encrypt`, GCP `cryptoKeys.encrypt`), an
+  unwrap its `Decrypt` (AWS `Decrypt` naming the key's ARN, GCP `cryptoKeys.decrypt`), each with
+  the additional data `lajstrom master key <id>` (on AWS the encryption context
+  `{"lajstrom": "master key <id>"}`), and on GCP with the CRC32C of both sides. A ciphertext opens
+  under its own id only, and the KMS's log records each unwrap with its caller (CloudTrail with the
+  id, from the encryption context). Another kind of key, or a GCP version, is refused by
+  `lajstrom admin key wrap`, naming its spec; an alias or a GCP version in `keys.masterKeyKMS` is
+  an error of the configuration.
+- **The row.** Each data key is a row of `wrapped_master_keys` ([Control plane](#control-plane)):
+  its id, its KMS key and the KMS's ciphertext. A data key has one KMS key; another KMS key is
+  another data key, and a move to it is a rewrap (ADR 0034).
+- **The configuration names each data key**, by its id and its KMS key:
+  `keys.masterKeyKMS: [{id: <id>, kms: <key URI>}]` ([configuration.md](../configuration.md#keys)).
+  A process unwraps those, and no other. At its start, after the migrations, it reads the row of
+  each: a row that is missing, or whose `kms` is not the entry's, is an error of the
+  configuration, which names the id and the KMS key, and the process stops (`serve` refuses to
+  start, a command exits `1`). It asks the KMS to unwrap the row's ciphertext, and holds the data
+  key when the answer is 32 bytes whose id is the entry's. Another answer is not held, the log
+  naming the id at error, and is not asked for again until a start: a row changed by someone who
+  could write the database, to a key of their own choosing wrapped by the same KMS key included,
+  is never held.
+- **`serve` listens without waiting for the KMS.** At its start each unwrap is one request,
+  bounded by 10 seconds, with the client's two retries (ADR 0020). One that did not open is asked
+  for again in the background, after 1, 2, 4, 8 and 16 seconds and every 30 seconds after, until it
+  opens, whether the KMS refused (access denied, a key disabled) or did not answer: a key enabled
+  again, or a permission granted, ends it without a restart. Each failure is logged, at warn, and
+  at error while the key is the one that seals, with the KMS's error code, never a ciphertext.
+  Meanwhile:
+  - while the sealing row names that data key, the replica seals nothing, as at a beat that reads
+    a key it does not hold (above): a request that would seal is `503` with `Retry-After: 30`, and
+    `/-/readyz` answers `503 this replica has not unwrapped the master key that seals: <id>`.
+    `/-/healthz` stays `200`, and it does not exit;
+  - a value that no held key opens, while a data key is not yet unwrapped, fails as when the KMS
+    is unavailable: `503` with `Retry-After: 5` on the routes that need it (ADR 0020);
+  - its `replicas` row lists the keys it holds, without that data key, so that a rewrap refuses
+    `--to` it while the replica is live.
+
+  The unwrap ends it: the key joins the held keys, logged at info, and the next beat writes them
+  again in the replica's row (`SetReplicaMasterKeys`) and reads the sealing row: when it names that
+  key, the replica seals with it and is ready.
+- **Kept in memory.** An unwrapped data key is kept as every held key is, as the ciphers made from
+  it, its bytes cleared, until the process ends. It is not fetched again, for a seal, an open or a
+  beat. Disabling the KMS key, or taking a permission away, stops the next start of a process, not
+  a running one: stop the replicas to cut them off.
+- **A command** (`lajstrom reindex`, the `lajstrom admin` commands that read the master keys)
+  unwraps every data key of its configuration at its start, as `serve` does, and waits for nothing
+  more: one that did not open within its retries stops it with exit status `1` before it writes,
+  naming the id, the KMS key and whether the KMS refused or did not answer. A command with a key
+  missing would count the values under it as under none. `lajstrom admin key wrap --kms` and
+  `lajstrom admin key drop --master` read no master key; `lajstrom admin snapshot restore` takes
+  the ciphertext of a data key from the snapshot when the database has no row of it (below).
+- **Making a data key.** `lajstrom admin key wrap --kms <key URI>`, with `--actor` and `--reason`
+  (rbac.md §6), runs against the database and the KMS:
+  1. it reads the KMS key (AWS `DescribeKey`, GCP `cryptoKeys.get`), resolves an AWS alias to the
+     key's ARN, and refuses, exit status `1` and nothing written, a key that is not a symmetric
+     key for encryption, enabled, naming its spec and its state;
+  2. it makes 32 bytes with `crypto/rand` and their id, and has the KMS wrap them;
+  3. it has the KMS unwrap the ciphertext, and compares the answer with the 32 bytes: when the KMS
+     cannot, or the command may not, unwrap what it wrapped, it writes nothing, exit status `1`;
+  4. in one transaction it inserts the row and appends `key.wrap` (rbac.md §5);
+  5. it prints the id and the entry of `keys.masterKeyKMS`, never a key nor the ciphertext.
+
+  `--id <id>` instead wraps again, under its own KMS key, a data key that the command holds from
+  `keys.masterKeyKMS`: steps 1 to 4 with those 32 bytes, the row's `wrapped` and `wrapped_at`
+  replaced where it still holds the ciphertext read (`PutWrappedMasterKey`, a compare-and-set).
+  It is for a GCP key's rotation (below). The id of a key from a file, or of none, is refused,
+  exit status `1`. The 32 bytes are held for the command's run only, and cleared.
+- **Removing one.** `lajstrom admin key drop --master <id>`, with `--actor` and `--reason`, deletes
+  the row and appends `key.drop` in one transaction. It refuses, exit status `1` and nothing
+  written, while the sealing row names `<id>`, or a `replicas` row with a heartbeat younger than
+  2 minutes holds it: the entry leaves the configuration of every process first. It deletes no
+  KMS key, and the snapshots and backups keep their copy of the row.
+- **Every move is the rollout above** (ADR 0034), a data key being a source among the others:
+  - *onto the KMS*: `lajstrom admin key wrap --kms <key URI>`; its entry added to
+    `keys.masterKeyKMS` of every process; `rewrap --to <its id>`; the file key removed;
+  - *off the KMS*: a new file key added; `rewrap --to <its id>`; the entry removed from the
+    configuration of every process, then `drop --master <id>`;
+  - *to a new data key*, under the same KMS key or another: `wrap --kms`, its entry added, the
+    rewrap, the old entry removed, then `drop --master <old id>`.
+
+  A key of a file is never wrapped: a data key's bytes have been in clear only in the memory of
+  the processes that hold it, where a file key's bytes keep the custody of the store that held
+  them. During a move every process holds both keys, from two sources, and the guard compares
+  their ids.
+- **A rotation of the KMS key** changes no id and seals no value again, and the configuration
+  stays as it is. AWS's rotation of a symmetric key, automatic or on demand, keeps every key
+  material it rotated out, and the ciphertext opens as before: there is nothing to do. GCP's
+  rotation makes a new primary version and keeps the others enabled:
+  `lajstrom admin key wrap --id <id>` wraps the key again under the primary, after which an older
+  version may be disabled once no backup or snapshot that is kept holds a ciphertext under it.
+- **Several replicas** each unwrap the data key at their start, one request each. A replica that
+  may not (no permission, a key policy of another account) does not hold that id, and fails closed
+  as above: while the id seals, it seals nothing and is not ready; before, a rewrap refuses `--to`
+  the id while the replica is live.
+- **Snapshots and backups.** A backup of the database holds `wrapped_master_keys` as it was, and a
+  snapshot every row of it ([Snapshots of the control plane](#snapshots-of-the-control-plane)). A
+  sealed snapshot whose sealing key is a data key also carries that key's row in an annotation of
+  its manifest, outside the layer it seals (manifest-profile.md §9). A restore into an empty
+  database unwraps it from there, when the restore's configuration names that id and KMS key, then
+  opens the layer and writes the rows. So the KMS key is kept, disabled or not, never deleted, as
+  long as a backup or a snapshot holding a ciphertext under it is kept: deleting it loses the data
+  key and what it sealed, as a lost key (`--allow-lost`, above).
+- **No key in clear.** A data key's 32 bytes are in no row, log line, error, output or audit row,
+  nor in a snapshot. Its ciphertext, which only the KMS opens, is in the row, the backups, a
+  snapshot's document and its manifest's annotation, and the requests to the KMS; never in a log
+  line, an error, an audit row or a command's output, which name the id and the KMS key.
+- **The methods.** `ListWrappedMasterKeys`, of the Reader, answers every row of
+  `wrapped_master_keys`, by `key_id`. `PutWrappedMasterKey(k, old)`, of the Writer, inserts `k`
+  where `old` is nil and there is no row of its id, and otherwise replaces its `wrapped`,
+  `wrapped_at` and `audit_id` where the row still holds `old`, in the caller's transaction, and
+  wraps `ErrConflict` otherwise. `DeleteWrappedMasterKey(id)` deletes the row in the caller's
+  transaction (none: `ErrNotFound`). `SetReplicaMasterKeys(id, keyIDs)` writes the `master_keys`
+  of the `replicas` row `id` (deleted as stale: `ErrNotFound`).
+- **Migration `0041_wrapped_master_keys.sql`** only creates the table, empty. A process of the
+  release before neither reads nor writes it, and refuses `keys.masterKeyKMS` as an unknown key of
+  the configuration (configuration.md): every process runs a release with 0041 before an entry is
+  added. Until then the `master_keys` of its replicas holds no data key, and a rewrap `--to` one
+  refuses while they are live, as with a release before 0040.
 
 ## Proxy and group repos
 
@@ -528,7 +674,7 @@ and none needs a backup: a backup of the database holds them, and after a restor
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
-| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts, `master_keys` json null (the ids of the master keys the process holds, a list; NULL: none, or a release before 0040, which its `version` tells; [The master key and its replacement](#the-master-key-and-its-replacement), #1288) | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752), `0040_master_keys.sql` (#1288) |
+| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts, `master_keys` json null (the ids of the master keys the process holds, a list; NULL: none, or a release before 0040, which its `version` tells; [The master key and its replacement](#the-master-key-and-its-replacement), #1288; written at the start, and again at the beat that follows the unwrap of a data key, which it lists from then on, [A master key in a KMS](#a-master-key-in-a-kms), #1388) | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752), `0040_master_keys.sql` (#1288) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 | `oidc_logins` | `id`, `kind` text (`code`, a login of the authorization code flow; `device`, a device request), `state` text null (sha256 of the state, hex), `binding` text null (sha256 of the browser's cookie), `nonce` text null, `verifier` text null (the PKCE verifier), `device_id` → oidc_logins null (`ON DELETE CASCADE`; the device request a code login approves), `device_code` text null (sha256 of the device code), `user_code` text null, `status` text (`pending`; a code login `used`; a device request, and a code login with `return_to` once its callback verified, `approved`, `denied`, `redeemed`), `user_id` → users null (the user a device request, or a code login with `return_to`, is approved for), `polled_at` ts null (a device request's latest poll), `return_to` text null, `code_challenge` text null (the S256 challenge of the web UI's PKCE verifier), `handoff` text null (sha256 of the code the callback hands to the web UI), `dpop_jkt` text null (the JWK SHA-256 thumbprint of the web UI's DPoP key, base64url, which the code is redeemed with), `auth_time` ts null, `amr` json null and `acr` text null (those of the ID token of a code login with `return_to`, kept by its callback for the token of its code), `created_at` ts, `expires_at` ts | the flows of rbac.md §8 and §10 across replicas (0021; `return_to`, `code_challenge`, `handoff` and `dpop_jkt`, 0028; `auth_time` and `amr`, 0033; `acr`, 0038): unique `oidc_logins_state` on `(state)`, `oidc_logins_device_code` on `(device_code)`, `oidc_logins_user_code` on `(user_code)` and `oidc_logins_handoff` on `(handoff)`, each where not null; index `oidc_logins_expires` on `(expires_at)`. Migration `0028_web_ui_sign_in.sql` only adds the columns and the index: a replica of the release before finishes a web UI's login as its own, on the token page. A change of `status` is a compare-and-set on the status it read, so that a state, an approval, a device code and a handoff are each used once. A row lives 10 minutes; the start of a login deletes the rows that expired an hour ago or more. Written by the OIDC routes only; never backed up, never rebuilt |
 | `dpop_proofs` | `jti` text (sha256 hex of a DPoP proof's key thumbprint, a space, and its `jti`), `expires_at` ts (the proof's `iat` and 5 minutes) | the DPoP proofs used (rbac.md §10, http-routing.md §4), so that a proof is used once on any replica (0028): primary key `jti`; index `dpop_proofs_expires` on `(expires_at)`. A proof whose row has not expired is refused; one whose row has expired takes the row over (its `iat` is out of the window by then, so only a proof of the same key and `jti` made later). Each replica deletes the expired rows at most once a minute, at a check. Written by the check of a proof only; never backed up, never rebuilt |
@@ -1032,7 +1178,7 @@ uses and which does not have it.
 
 | Table | In a snapshot |
 | --- | --- |
-| `repos`, `group_members`, `users` (the deleted ones too, with `owner`, `last_seen_at`, `must_change` and `password_history`, without `password_failures` and `locked_until`: a restore unlocks every user), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937), `sealing_key` (#1288) | every row, with its id |
+| `repos`, `group_members`, `users` (the deleted ones too, with `owner`, `last_seen_at`, `must_change` and `password_history`, without `password_failures` and `locked_until`: a restore unlocks every user), `identities`, `identity_groups`, `tokens` (the deploy tokens over a mask too, with `repo_mask`), `bindings`, `keys`, `webhooks`, `policy_rules` (#101), `ci_policies` (#937), `sealing_key` (#1288), `wrapped_master_keys` (#1388) | every row, with its id |
 | `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
 | `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
 | `approvals` | no: a request waits 7 days at most, and the audit rows hold every request and decision (rbac.md §5); a restore drops the requests that wait, which are made again |
@@ -1058,7 +1204,9 @@ migration, unless this table says why not.
   names the key that sealed then: one made before a rewrap brings back values under the key
   before it, and a row that names it, so that every process stops until that key is held again
   or a rewrap names another, and a rewrap seals them again
-  ([The master key and its replacement](#the-master-key-and-its-replacement)).
+  ([The master key and its replacement](#the-master-key-and-its-replacement)). The rows of
+  `wrapped_master_keys` hold the data keys only as the KMS's ciphertexts, which only the KMS opens
+  ([A master key in a KMS](#a-master-key-in-a-kms)).
 - **One moment.** `ExportControlPlane` reads every table in one transaction, `SERIALIZABLE, READ
   ONLY, DEFERRABLE` on Postgres and YugabyteDB, and returns before anything talks to the registry:
   no transaction is held across a request to it. Every token's user and repo, every key's repo and
@@ -1133,8 +1281,9 @@ the column `users.last_seen_at`, filled (#1283), `0035_config_state.sql` the tab
 `users.locked_until` (#1280), `0037_users_password_history.sql` the columns
 `users.must_change` and `users.password_history` (#1281), `0038_tokens_acr.sql` the columns
 `tokens.acr` and `oidc_logins.acr` (#1276), `0039_approvals.sql` the table `approvals`
-(#1285), and `0040_master_keys.sql` the table `sealing_key` and the column `replicas.master_keys`
-(#1288); the others are named with their tables
+(#1285), `0040_master_keys.sql` the table `sealing_key` and the column `replicas.master_keys`
+(#1288), and `0041_wrapped_master_keys.sql` the table `wrapped_master_keys` (#1388); the others
+are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
