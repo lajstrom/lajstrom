@@ -88,6 +88,11 @@ func (r Registry) open(ctx context.Context, rr provider.Repository, s profile.Sn
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: %w", err)
 	}
+	if w := s.WrappedKey; s.Sealed && w != nil && !r.Master.Holds(w.KeyID) && r.UnwrapKey != nil {
+		if err := r.UnwrapKey(ctx, index.WrappedMasterKey{KeyID: w.KeyID, KMS: w.KMS, Wrapped: w.Wrapped}); err != nil {
+			return nil, fmt.Errorf("snapshot: sealed under master key %s, a data key of %s: %w", w.KeyID, w.KMS, err)
+		}
+	}
 	if s.Sealed {
 		if layer, err = r.Master.OpenSnapshot(layer, []byte(profile.MediaTypeSnapshotSealed)); err != nil {
 			return nil, err
