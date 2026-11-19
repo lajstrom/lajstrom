@@ -4229,7 +4229,8 @@ components:
             type: string
             enum: [version.published, version.deleted, repo.created, repo.deleted, policy.rule.created, policy.rule.deleted,
               policy.verdict.created, policy.verdict.deleted, ci.policy.created, ci.policy.updated, ci.policy.renewed,
-              ci.policy.approved, ci.policy.expired, ci.policy.deleted]
+              ci.policy.approved, ci.policy.expired, ci.policy.deleted, approval.requested, approval.approved, approval.rejected,
+              approval.expired]
         active: {type: boolean}
         description: {type: string}
         createdBy: {type: string, description: The principal that created it.}
@@ -4264,7 +4265,8 @@ components:
             type: string
             enum: [version.published, version.deleted, repo.created, repo.deleted, policy.rule.created, policy.rule.deleted,
               policy.verdict.created, policy.verdict.deleted, ci.policy.created, ci.policy.updated, ci.policy.renewed,
-              ci.policy.approved, ci.policy.expired, ci.policy.deleted]
+              ci.policy.approved, ci.policy.expired, ci.policy.deleted, approval.requested, approval.approved, approval.rejected,
+              approval.expired]
         active: {type: boolean}
         description: {type: string, maxLength: 256}
         changeReason: {$ref: "#/components/schemas/ChangeReason"}
