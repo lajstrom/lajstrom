@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
@@ -12,10 +13,13 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // masterFormat says what a master key is, for the errors about one. It never shows a value.
@@ -53,10 +57,33 @@ const idInfo = "lajstrom master key id v1"
 // control plane with a key derived from each (#1288). The keys are loaded once at start and never
 // printed: String, GoString and LogValue show no key material, and the bytes themselves are not
 // kept, only the ciphers made from them and the ids. A value is sealed with the key the index
-// names (SealWith) and with no other; it opens with any key held, that one first.
+// names (SealWith) and with no other; it opens with any key held, that one first. A data key of
+// keys.masterKeyKMS joins the held keys once the KMS unwrapped it (Unwrap, #1388): until then it
+// is pending, and stays so in a process whose KMS does not answer.
 type Master struct {
-	held    []*masterKey               // by id
-	sealing *atomic.Pointer[sealState] // never nil; a pointer, so that a copy of a Master shares it
+	keys    *atomic.Pointer[heldKeys]  // never nil; pointers, so that a copy of a Master shares them
+	sealing *atomic.Pointer[sealState] // never nil
+	mu      *sync.Mutex                // serializes the unwraps that add a key
+}
+
+// heldKeys are the keys a Master holds, by id, and the ids of the data keys it is configured
+// with and has not unwrapped yet, by id. Never changed once stored: an unwrap stores another.
+type heldKeys struct {
+	held    []*masterKey
+	pending []string
+}
+
+// sealedMin is the length of the shortest sealed value: a nonce and the tag of AES-256-GCM.
+const sealedMin = 12 + 16
+
+// ErrOtherDataKey means the KMS unwrapped, for a data key of keys.masterKeyKMS, bytes that are
+// not that key: another id, or not 32 bytes. They are never held (#1388).
+var ErrOtherDataKey = errors.New("keys: the KMS answered another key than the one named")
+
+// MasterAD is the additional data of every wrap and unwrap of the data key id (#1388): on AWS the
+// encryption context {"lajstrom": "master key <id>"}, on GCP "lajstrom master key <id>".
+func MasterAD(id string) AdditionalData {
+	return AdditionalData{Key: "lajstrom", Value: "master key " + id}
 }
 
 // masterKey is one master key held: its id, its source (the variable's name or the file's path),
@@ -147,7 +174,7 @@ func ParseMaster(s string) (*Master, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.SealWith(m.held[0].id)
+	m.SealWith(m.state().held[0].id)
 	return m, nil
 }
 
@@ -156,9 +183,15 @@ func ParseMaster(s string) (*Master, error) {
 // error that names its source and the format, never the text; a key in two sources is held once,
 // under the first; no source is an error wrapping ErrNoMasterKey, and more than MaxMasterKeys keys
 // an error that names how many.
-func HoldMasters(srcs []MasterSource) (*Master, error) {
-	m := &Master{sealing: &atomic.Pointer[sealState]{}}
+func HoldMasters(srcs []MasterSource) (*Master, error) { return HoldMasterKeys(srcs, nil) }
+
+// HoldMasterKeys is HoldMasters with the ids of the data keys of keys.masterKeyKMS, pending until
+// Unwrap holds them (#1388): they count among the keys, against MaxMasterKeys and against none.
+func HoldMasterKeys(srcs []MasterSource, dataKeys []string) (*Master, error) {
+	m := &Master{keys: &atomic.Pointer[heldKeys]{}, sealing: &atomic.Pointer[sealState]{}, mu: &sync.Mutex{}}
 	m.sealing.Store(&sealState{})
+	var held []*masterKey
+	holds := func(id string) bool { return slices.ContainsFunc(held, func(k *masterKey) bool { return k.id == id }) }
 	for _, src := range srcs {
 		b, err := parseMaster(src.Text)
 		if err != nil {
@@ -168,19 +201,73 @@ func HoldMasters(srcs []MasterSource) (*Master, error) {
 			return nil, fmt.Errorf("%s: %w", src.Source, err)
 		}
 		id := masterID(b)
-		if m.holds(id) == nil {
-			m.held = append(m.held, newMasterKey(id, src.Source, b))
+		if !holds(id) {
+			held = append(held, newMasterKey(id, src.Source, b))
 		}
 		clear(b)
 	}
-	switch n := len(m.held); {
+	var pending []string
+	for _, id := range dataKeys {
+		if !holds(id) && !slices.Contains(pending, id) {
+			pending = append(pending, id)
+		}
+	}
+	switch n := len(held) + len(pending); {
 	case n == 0:
 		return nil, fmt.Errorf("%w: no source holds a key", ErrNoMasterKey)
 	case n > MaxMasterKeys:
 		return nil, fmt.Errorf("the sources of the master keys hold %d keys, more than %d", n, MaxMasterKeys)
 	}
-	slices.SortFunc(m.held, func(a, b *masterKey) int { return strings.Compare(a.id, b.id) })
+	slices.SortFunc(held, func(a, b *masterKey) int { return strings.Compare(a.id, b.id) })
+	slices.Sort(pending)
+	m.keys.Store(&heldKeys{held: held, pending: pending})
 	return m, nil
+}
+
+// state returns the keys m holds now, and those pending.
+func (m *Master) state() *heldKeys { return m.keys.Load() }
+
+// Pending returns the ids of the data keys of keys.masterKeyKMS that m has not unwrapped yet, by
+// id (#1388).
+func (m *Master) Pending() []string { return slices.Clone(m.state().pending) }
+
+// IsPending reports whether id is a data key that m is configured with and has not unwrapped.
+func (m *Master) IsPending(id string) bool { return slices.Contains(m.state().pending, id) }
+
+// Unwrap has kms unwrap the data key of row, wrapped by the KMS key key, and holds it (#1388):
+// the KMS's answer, 32 bytes whose id is row.KeyID, joins the held keys under the source key, the
+// KMS key's URI, and leaves the pending ones; it does not seal until SealWith names it. Another
+// answer wraps ErrOtherDataKey and is never held; a KMS that refused or did not answer is its
+// error, which wraps ErrKMSUnavailable when asking again may succeed. A row of another KMS key is
+// an error, and nothing is asked. A key m holds is not asked for again. The bytes are cleared
+// before it returns, and no error holds them or the ciphertext.
+func (m *Master) Unwrap(ctx context.Context, kms MasterKMS, key config.KMSKey, row index.WrappedMasterKey) error {
+	if m.Holds(row.KeyID) {
+		return nil
+	}
+	if row.KMS != key.String() {
+		return fmt.Errorf("keys: master key %s is wrapped by %s, not %s", row.KeyID, row.KMS, key)
+	}
+	plain, err := kms.DecryptSymmetric(ctx, key.Name, row.Wrapped, MasterAD(row.KeyID))
+	if err != nil {
+		return fmt.Errorf("keys: master key %s: the KMS key %s: %w", row.KeyID, key, err)
+	}
+	defer clear(plain)
+	if len(plain) != 32 || masterID(plain) != row.KeyID {
+		return fmt.Errorf("%w: the KMS key %s unwrapped, for master key %s, what is not that key; it is not held", ErrOtherDataKey,
+			key, row.KeyID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.state()
+	if slices.ContainsFunc(st.held, func(k *masterKey) bool { return k.id == row.KeyID }) {
+		return nil
+	}
+	held := append(slices.Clone(st.held), newMasterKey(row.KeyID, key.String(), plain))
+	slices.SortFunc(held, func(a, b *masterKey) int { return strings.Compare(a.id, b.id) })
+	pending := slices.DeleteFunc(slices.Clone(st.pending), func(id string) bool { return id == row.KeyID })
+	m.keys.Store(&heldKeys{held: held, pending: pending})
+	return nil
 }
 
 // parseMaster returns the 32 bytes of s, 64 hexadecimal characters, spaces and line breaks
@@ -220,7 +307,7 @@ func (Master) LogValue() slog.Value { return slog.StringValue("redacted") }
 
 // holds returns the held key of id, nil when there is none.
 func (m *Master) holds(id string) *masterKey {
-	for _, k := range m.held {
+	for _, k := range m.state().held {
 		if k.id == id {
 			return k
 		}
@@ -230,8 +317,9 @@ func (m *Master) holds(id string) *masterKey {
 
 // Held returns the ids of the keys m holds, each with its source, by id.
 func (m *Master) Held() []HeldKey {
-	out := make([]HeldKey, 0, len(m.held))
-	for _, k := range m.held {
+	held := m.state().held
+	out := make([]HeldKey, 0, len(held))
+	for _, k := range held {
 		out = append(out, HeldKey{ID: k.id, Source: k.source})
 	}
 	return out
@@ -239,8 +327,9 @@ func (m *Master) Held() []HeldKey {
 
 // IDs returns the ids of the keys m holds, by id.
 func (m *Master) IDs() []string {
-	out := make([]string, 0, len(m.held))
-	for _, k := range m.held {
+	held := m.state().held
+	out := make([]string, 0, len(held))
+	for _, k := range held {
 		out = append(out, k.id)
 	}
 	return out
@@ -269,7 +358,7 @@ func (m *Master) Sealing() (id string, held bool) {
 func (m *Master) sealer() (*masterKey, error) {
 	s := m.sealing.Load()
 	if s.key == nil {
-		return nil, &SealingError{ID: s.id}
+		return nil, &SealingError{ID: s.id, Pending: s.id != "" && m.IsPending(s.id)}
 	}
 	return s.key, nil
 }
@@ -281,11 +370,17 @@ func (m *Master) sealer() (*masterKey, error) {
 type SealingError struct {
 	// ID is the id of the key the index names, "" when it named none to this process.
 	ID string
+	// Pending is true when ID is a data key of keys.masterKeyKMS that the KMS has not unwrapped
+	// for this process yet (#1388).
+	Pending bool
 }
 
 func (e *SealingError) Error() string {
-	if e.ID == "" {
+	switch {
+	case e.ID == "":
 		return "keys: no master key seals yet: the index named none to this process"
+	case e.Pending:
+		return "keys: the index seals with master key " + e.ID + ", which this process has not unwrapped yet"
 	}
 	return "keys: the index seals with master key " + e.ID + ", which this process does not hold"
 }
@@ -295,21 +390,32 @@ func (e *SealingError) Unwrap() []error {
 	return []error{ErrNoSealingKey, &format.UnavailableError{RetryAfter: SealRetryAfter}}
 }
 
-// order returns the keys of m in the order an open tries them: the sealing key first, then the
+// order returns the keys of st in the order an open tries them: the sealing key first, then the
 // others by id.
-func (m *Master) order() []*masterKey {
+func (m *Master) order(st *heldKeys) []*masterKey {
 	s := m.sealing.Load()
-	if s.key == nil || len(m.held) == 1 {
-		return m.held
+	if s.key == nil || len(st.held) == 1 {
+		return st.held
 	}
-	out := make([]*masterKey, 0, len(m.held))
+	out := make([]*masterKey, 0, len(st.held))
 	out = append(out, s.key)
-	for _, k := range m.held {
+	for _, k := range st.held {
 		if k != s.key {
 			out = append(out, k)
 		}
 	}
 	return out
+}
+
+// pendingErr is err, of a value that no key of st opens, as the KMS's unavailability while st has
+// data keys it has not unwrapped yet, one of which may be the value's: the routes answer 503 with
+// Retry-After (#1388). err as it is otherwise.
+func pendingErr(st *heldKeys, err error) error {
+	if len(st.pending) == 0 {
+		return err
+	}
+	return unavailable(fmt.Errorf("%w; master keys %s are not unwrapped yet: %w", err, strings.Join(st.pending, ", "),
+		ErrKMSUnavailable))
 }
 
 // seal encrypts plain, a private key, as nonce || AES-256-GCM(plain) under the key that seals,
@@ -341,10 +447,11 @@ func (m *Master) Seal(aad string, plain []byte) ([]byte, error) { return m.seal(
 // a ciphertext of another row and one that was changed fail alike, and the error never shows a
 // byte of either.
 func (m *Master) Open(aad string, sealed []byte) ([]byte, error) {
-	plain, _, err := m.OpenKey(aad, sealed)
+	st := m.state()
+	plain, _, err := m.openKey(st, aad, sealed)
 	if err != nil {
-		return nil, fmt.Errorf("keys: the secret of %s does not decrypt with the master key: another master key, "+
-			"or the row was changed", aad)
+		return nil, pendingErr(st, fmt.Errorf("keys: the secret of %s does not decrypt with the master key: another master key, "+
+			"or the row was changed", aad))
 	}
 	return plain, nil
 }
@@ -352,12 +459,19 @@ func (m *Master) Open(aad string, sealed []byte) ([]byte, error) {
 // OpenKey decrypts what Seal or seal returned for aad, as Open, and returns the id of the key
 // that opened it (#1288: the rewrap counts the values under each key).
 func (m *Master) OpenKey(aad string, sealed []byte) (plain []byte, id string, err error) {
-	for _, k := range m.order() {
+	st := m.state()
+	plain, id, err = m.openKey(st, aad, sealed)
+	return plain, id, pendingErr(st, err)
+}
+
+// openKey is OpenKey with the keys of st.
+func (m *Master) openKey(st *heldKeys, aad string, sealed []byte) (plain []byte, id string, err error) {
+	for _, k := range m.order(st) {
 		if plain, err = openWith(k.aead, sealed, []byte(aad)); err == nil {
 			return plain, k.id, nil
 		}
 	}
-	if len(sealed) < m.held[0].aead.NonceSize()+m.held[0].aead.Overhead() {
+	if len(sealed) < sealedMin {
 		return nil, "", fmt.Errorf("keys: the value of %s is %d bytes, too short to be sealed", aad, len(sealed))
 	}
 	return nil, "", fmt.Errorf("keys: %s does not decrypt with a master key this process holds", aad)
@@ -375,13 +489,14 @@ func openWith(aead cipher.AEAD, sealed, ad []byte) ([]byte, error) {
 // open decrypts what seal returned for the key of fingerprint, with any key m holds. A master
 // key m does not hold, a ciphertext of another key and one that was changed all fail alike.
 func (m *Master) open(fingerprint string, sealed []byte) ([]byte, error) {
-	if n := m.held[0].aead.NonceSize() + m.held[0].aead.Overhead(); len(sealed) < n {
+	if len(sealed) < sealedMin {
 		return nil, fmt.Errorf("keys: the private key of %s is %d bytes, too short to be encrypted", fingerprint, len(sealed))
 	}
-	plain, _, err := m.OpenKey(fingerprint, sealed)
+	st := m.state()
+	plain, _, err := m.openKey(st, fingerprint, sealed)
 	if err != nil {
-		return nil, fmt.Errorf("keys: the private key of %s does not decrypt with the master key: another master key, "+
-			"or the row was changed", fingerprint)
+		return nil, pendingErr(st, fmt.Errorf("keys: the private key of %s does not decrypt with the master key: another master "+
+			"key, or the row was changed", fingerprint))
 	}
 	return plain, nil
 }
@@ -403,13 +518,15 @@ func (m *Master) SealSnapshot(plain, ad []byte) ([]byte, error) {
 // any key m holds, the key that seals first. A master key m does not hold, other additional data
 // and changed bytes fail alike.
 func (m *Master) OpenSnapshot(sealed, ad []byte) ([]byte, error) {
-	if n := m.held[0].snapshot.NonceSize() + m.held[0].snapshot.Overhead(); len(sealed) < n {
+	if len(sealed) < sealedMin {
 		return nil, fmt.Errorf("keys: the snapshot is %d bytes, too short to be sealed", len(sealed))
 	}
-	for _, k := range m.order() {
+	st := m.state()
+	for _, k := range m.order(st) {
 		if plain, err := openWith(k.snapshot, sealed, ad); err == nil {
 			return plain, nil
 		}
 	}
-	return nil, errors.New("keys: the snapshot does not open with the master key: another master key, or its bytes were changed")
+	return nil, pendingErr(st, errors.New("keys: the snapshot does not open with the master key: another master key, or its "+
+		"bytes were changed"))
 }
