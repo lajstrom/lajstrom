@@ -39,6 +39,40 @@ var (
 	gcpKey = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/?$`)
 )
 
+var (
+	// awsKeyARN is the ARN of an AWS KMS key, never of an alias.
+	awsKeyARN = regexp.MustCompile(`^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$`)
+	// gcpKeyName is the resource name of a Cloud KMS key without its version, nothing after it.
+	gcpKeyName = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$`)
+)
+
+// ParseMasterKMSKey parses the key URI of a symmetric KMS key that wraps a data key of the master
+// key, as keys.masterKeyKMS and the rows of wrapped_master_keys name it (#1388): an AWS key ARN,
+// awskms:///arn:<partition>:kms:<region>:<account>:key/<key id>, or a GCP key without a version,
+// gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>. An alias, a key id without its
+// ARN and a GCP version are errors that say so: the configuration names the key a process calls.
+func ParseMasterKMSKey(uri string) (KMSKey, error) {
+	scheme, rest, _ := strings.Cut(uri, "://")
+	switch {
+	case scheme == KMSSchemeGCP && gcpKeyName.MatchString(rest):
+		return KMSKey{Scheme: KMSSchemeGCP, Name: rest}, nil
+	case scheme == KMSSchemeGCP && gcpKeyVersion.MatchString(rest):
+		return KMSKey{}, fmt.Errorf("%q names a version of a key: a data key is wrapped by the key, "+
+			"gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>", uri)
+	case scheme == KMSSchemeGCP:
+		return KMSKey{}, fmt.Errorf("%q is not gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>", uri)
+	}
+	k, err := ParseKMSKey(uri)
+	switch {
+	case err != nil:
+		return KMSKey{}, err
+	case !awsKeyARN.MatchString(k.Name):
+		return KMSKey{}, fmt.Errorf("%q does not name a key by its ARN, awskms:///arn:aws:kms:<region>:<account>:key/<key id>; "+
+			"an alias or a key id is not taken here", uri)
+	}
+	return k, nil
+}
+
 // maxKMSName bounds a key's name: AWS's KeyId takes 2048 characters.
 const maxKMSName = 2048
 

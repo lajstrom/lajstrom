@@ -497,6 +497,16 @@ func TestLoadErrors(t *testing.T) {
 		{name: "keys.tokenAlgorithm", file: minimal + "keys: {tokenAlgorithm: HS256}\n", want: []string{`keys.tokenAlgorithm: "HS256" is not ES256 or EdDSA`}},
 		{name: "keys.kms", file: minimal + "keys: {kms: \"awskms://localhost:4566/alias/x\"}\n",
 			want: []string{`keys.kms: "awskms://localhost:4566/alias/x" names an endpoint`}},
+		{name: "keys.masterKeyKMS", file: minimal + "keys:\n  masterKeyKMS:\n" +
+			"    - {id: 0123456789abcdef, kms: \"awskms:///alias/lajstrom-master\"}\n" +
+			"    - {id: 0123456789abcdef, kms: \"gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1\"}\n" +
+			"    - {id: 0123456789ABCDEF, kms: \"awskms:///1234abcd-12ab-34cd-56ef-1234567890ab\"}\n" +
+			"    - {id: fedcba9876543210, kms: \"gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k\"}\n",
+			want: []string{`keys.masterKeyKMS[0].kms: "awskms:///alias/lajstrom-master" does not name a key by its ARN`,
+				"keys.masterKeyKMS[1].id: 0123456789abcdef is named twice", "keys.masterKeyKMS[1].kms: \"gcpkms://projects/p/locations/" +
+					"l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1\" names a version of a key",
+				`keys.masterKeyKMS[2].id: "0123456789ABCDEF" is not the id of a master key`,
+				`keys.masterKeyKMS[2].kms: "awskms:///1234abcd-12ab-34cd-56ef-1234567890ab" does not name a key by its ARN`}},
 		{name: "master key in the file", file: minimal + "keys: {masterKey: abc}\n", want: []string{"field masterKey not found"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
@@ -981,13 +991,15 @@ registries:
 // loads, as the example does for make run.
 func TestLoadKeys(t *testing.T) {
 	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h, tokenAlgorithm: EdDSA, "+
-		"kms: \"awskms:///alias/lajstrom-apt\"}\n"), nil)
+		"kms: \"awskms:///alias/lajstrom-apt\", masterKeyKMS: [{id: 0123456789abcdef, "+
+		"kms: \"gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/master\"}]}\n"), nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour, TokenAlgorithm: "EdDSA",
-		KMS: "awskms:///alias/lajstrom-apt"}
-	if c.Keys != want {
+		KMS: "awskms:///alias/lajstrom-apt", MasterKeyKMS: []MasterKeyKMS{{ID: "0123456789abcdef",
+			KMS: "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/master"}}}
+	if !reflect.DeepEqual(c.Keys, want) {
 		t.Errorf("keys = %+v, want %+v", c.Keys, want)
 	}
 }
