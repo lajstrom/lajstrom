@@ -84,3 +84,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0035](0035-second-admin-is-another-person.md) | A second admin is another person: no token requests, no admin's password set by another | proposed |
 | [0036](0036-the-master-key-in-a-kms.md) | The master key in a KMS: a data key wrapped by a symmetric KMS key, named by its id | proposed |
 | [0037](0037-asking-the-idp-again-about-each-login.md) | Asking the IdP again: each login's sealed refresh token, a refusal ends the login | proposed |
+| [0038](0038-telling-the-second-admin.md) | Telling the second admin: webhook events of a request's life, a count for admins | proposed |

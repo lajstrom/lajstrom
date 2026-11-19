@@ -218,14 +218,17 @@ Nothing that reads `bindings` or `tokens` reads it, so a request grants nothing 
 those. A deploy token's `change` keeps the sha256 of its secret as `hash`, as `tokens.hash` does,
 and its approval inserts the `tokens` row with it. Unique `approvals_pending` on `(kind, subject)
 WHERE state = 'pending'`: the same change pending twice is a conflict. Index `approvals_expires`
-on `(expires_at) WHERE state = 'pending'`, which the look for expired requests reads.
+on `(expires_at) WHERE state = 'pending'`, which the look for expired requests reads, and the
+count of `GET /api/v1/info` (`CountPendingApprovals`, #1336).
 
 `state` changes once, from `pending`, in a statement that changes it only while it is `pending`
 (`DecideApproval`, `ExpireApprovals`), so that of an approval, a rejection and the replicas that
 mark an expiry one decides; an approval makes its change and appends its rows in that
-transaction. Rows are never deleted. They are not in a snapshot (below). The migration only
-creates the table, empty: a replica of the release before neither reads nor writes it, and makes
-every change at once.
+transaction. Each change of a request, its expiry included, writes the deliveries of its webhook
+event in its transaction too ([webhooks.md](webhooks.md) §4, #1336), so the event of an expiry is
+written once, by the replica that marks it. Rows are never deleted. They are not in a snapshot
+(below). The migration only creates the table, empty: a replica of the release before neither
+reads nor writes it, and makes every change at once.
 
 ### The master key and its replacement
 

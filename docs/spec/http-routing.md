@@ -1121,7 +1121,11 @@ signs in:
   nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and
   `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does
   not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second
-  factor.
+  factor;
+- `pendingApprovals` (#1336): while `caller.admin` is `true`, the number of requests for a second
+  admin that are pending, not expired, and not made by the caller, those it could approve
+  (rbac.md §13, Telling the second admin); left out for every other caller, and by a release
+  before #1336.
 
 Unlike whoami, a request without credentials gets `200`, with the caller `anonymous`. Credentials
 that are refused get `401`, as on every route.

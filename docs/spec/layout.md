@@ -1023,9 +1023,11 @@ type Reader interface {
     ReadAccess(ctx context.Context) (*Access, error)
     // the requests that wait for a second admin (rbac.md §13, index-schema.md, Approvals):
     // ListApprovals by id, newest first, below before (0: from the newest), of state ("": any),
-    // at most limit
+    // at most limit; CountPendingApprovals the pending rows whose ExpiresAt is after at and whose
+    // RequestedBy is not notBy, the count of GET /api/v1/info (#1336)
     GetApproval(ctx context.Context, id int64) (*Approval, error)
     ListApprovals(ctx context.Context, state string, before int64, limit int) ([]Approval, error)
+    CountPendingApprovals(ctx context.Context, at time.Time, notBy string) (int, error)
     // AuthVersion: the counter of auth_version, which every write of bindings and repos
     // increments in its transaction (rbac.md §3); an evaluator reads it before its snapshot
     AuthVersion(ctx context.Context) (int64, error)

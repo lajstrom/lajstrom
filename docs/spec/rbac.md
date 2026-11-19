@@ -9,8 +9,9 @@
   of the audit log (§5), after the MVP (#1278); the access report and its review (§14), after the
   MVP (#1279); the rewrap of the master key's values (§5, §6), after the MVP (#1288); the master
   key in a KMS, its rows `key.wrap` and `key.drop` (§5, §6), after the MVP (#1388); asking the
-  IdP again about each OIDC login with its refresh token (§8, §5), after the MVP (#1282). Owned
-  by `internal/auth`.
+  IdP again about each OIDC login with its refresh token (§8, §5), after the MVP (#1282); the
+  webhook events of a request for a second admin and the count of those that wait (§13, §5),
+  after the MVP (#1336). Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
@@ -21,6 +22,7 @@
   [ADR 0034](../adr/0034-replacing-the-master-key.md),
   [ADR 0036](../adr/0036-the-master-key-in-a-kms.md),
   [ADR 0037](../adr/0037-asking-the-idp-again-about-each-login.md),
+  [ADR 0038](../adr/0038-telling-the-second-admin.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -773,7 +775,10 @@ approver, with `approval` `{"id", "requestedBy", "requestedAt"}` and the request
 expiry `approval.expire`, by `anonymous`, `source: expiry`. Each has the `signIn` of the request
 that wrote it (above). A request and an approval have `credential` too, `password` or the
 sign-in's `token:<id>`, as a token's creation has `createdBy` (#1393): the proof that each side
-was a person's. A request or a password that §13 refuses writes no row.
+was a person's. A request or a password that §13 refuses writes no row. Each of the four rows is
+also the event of its type for the admin's webhooks, written in its transaction
+([webhooks.md](webhooks.md) §1, #1336): `approval.requested`, `approval.approved`,
+`approval.rejected` and `approval.expired`.
 
 **An access review** (§14, #1279) is `access.review`, by the admin who records it, in a
 transaction of its own: `subject` the report's `sha256:<hex>`, no `repo`, and `details`
@@ -1850,8 +1855,31 @@ decided: another decision is `409`. Requests are kept, decided or not; the audit
 
 **Lists.** `GET /api/v1/approvals` and `GET /api/v1/approvals/<id>` take the admin role
 (http-routing.md §4); a web UI shows the requests that wait from them, and
-`lajstrom admin approval list` reads the same on the command line. No webhook event is sent for a
-request.
+`lajstrom admin approval list` reads the same on the command line.
+
+**Telling the second admin** (#1336, [ADR 0038](../adr/0038-telling-the-second-admin.md)).
+Lajstrom sends no mail and keeps no address. Two things tell an admin that a request waits:
+
+- **Webhook events.** A request, its approval, its rejection or withdrawal, and its expiry are
+  each an event of webhooks.md §1 (`approval.requested`, `approval.approved`, `approval.rejected`,
+  `approval.expired`), written with its audit row in its transaction, so that the outbox has it
+  once its change commits, and never for a change rolled back. The expiry's event is written by
+  the replica whose mark of the request wins (above): once, whatever the replicas. An event goes
+  only to the webhooks of the admin, a mask with a `*` that covers the change's: the operator
+  routes them to a chat or a mail of its own, and only the admin role makes such a webhook (§2).
+  The event holds the request as the API answers it and the names of its users, never the deploy
+  token's secret nor its hash, nor the credential or the sign-in of either side (webhooks.md §3).
+- **A count.** `GET /api/v1/info` answers `pendingApprovals` to a caller whose credential reaches
+  the admin role (`caller.admin`, http-routing.md §4): the requests that are pending, not expired,
+  and not the caller's own, which it can approve. It is left out for every other caller, so that
+  nobody without the role learns that a request waits. A web UI shows it when the person acts; it
+  asks `GET /api/v1/info` without its token while the person does nothing (§10, Idle), and gets
+  no count then.
+
+Both hold whatever `auth.approval` says, so that the requests still pending once it is set back
+to `none` are counted, and their end is sent. Neither needs a setting nor a migration. During a rolling update, a replica of the release before writes
+no event for the requests, decisions and expiries it makes, answers no count, and refuses a
+webhook whose `events` name the new types (`400`, as for any type it does not know).
 
 **The command line** writes the database without a credential and is the operator's (§6):
 `lajstrom admin binding create`, `user create --admin` and `token create --mask` make the change at
