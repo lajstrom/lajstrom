@@ -387,7 +387,9 @@ names, never in the configuration file. Setting the file and the variable both i
 error. A third source, `keys.masterKeyDir`, is a directory with one key per file, a Kubernetes
 Secret or a Secrets Store CSI volume mounted whole: it is what a
 [replacement](#replacing-the-master-key) adds the new key to, and its keys join the one of the
-variable or the file, 8 at most in all. `serve`, `lajstrom reindex` and the `lajstrom admin`
+variable or the file, 8 at most in all. A fourth, `keys.masterKeyKMS`, names data keys that a
+symmetric KMS key wraps, so that no file or Secret holds the key in clear ([The master key in a
+KMS](#the-master-key-in-a-kms)). `serve`, `lajstrom reindex` and the `lajstrom admin`
 commands that read the keys read every source once, when they start. A variable or a file that is
 empty, or is not 64 hexadecimal characters (spaces and line breaks around them are ignored), stops
 them with an error that names the variable or the file and the format, never the value; so does a
@@ -821,6 +823,153 @@ aws --endpoint-url "$AWS_ENDPOINT_URL_KMS" kms create-key --key-spec RSA_4096 --
 runs the client's integration test against it. Never point that test at AWS: it makes keys,
 and a KMS key cannot be deleted at once.
 
+#### The master key in a KMS
+
+The master key itself can be a data key of a KMS (#1388,
+[ADR 0036](adr/0036-the-master-key-in-a-kms.md)): 32 bytes that `lajstrom admin key wrap` makes
+and has a symmetric key of AWS KMS or GCP Cloud KMS wrap, AES-256 in the KMS. The index keeps the
+KMS's ciphertext only, a row of `wrapped_master_keys`: no file, Secret, database or backup holds
+the key in clear, and a process holds it in memory once the KMS unwrapped it at its start. The
+configuration names each data key by its id and its KMS key, `keys.masterKeyKMS`
+([configuration.md](configuration.md#keys)), and a process holds a data key only when the KMS's
+answer has that id: a row changed through the database is never held. A data key is one more
+source of the held keys. The index names the one that seals, and every move below is the rollout
+of [Replacing the master key](#replacing-the-master-key).
+
+**Which key.** In AWS KMS, spec `SYMMETRIC_DEFAULT` with usage `ENCRYPT_DECRYPT`, made in the KMS
+rather than imported, named in the configuration by its key ARN, never an alias. In Cloud KMS,
+purpose `ENCRYPT_DECRYPT` with algorithm `GOOGLE_SYMMETRIC_ENCRYPTION`, named by the key without
+a version. `lajstrom admin key wrap` refuses another key, naming its spec. Every wrap and unwrap
+carries the encryption context `{"lajstrom": "master key <id>"}` (on GCP the additional data
+`lajstrom master key <id>`), so that a ciphertext opens as its own id only and CloudTrail names the
+id of each unwrap.
+
+```sh
+aws kms create-key --key-spec SYMMETRIC_DEFAULT --key-usage ENCRYPT_DECRYPT --description "Lajstrom master key"
+aws kms create-alias --alias-name alias/lajstrom-master --target-key-id <the KeyId it printed>
+aws kms enable-key-rotation --key-id <the KeyId>
+
+gcloud kms keys create master --keyring lajstrom --location europe-west1 --purpose encryption \
+  --protection-level hsm --rotation-period 365d --next-rotation-time 2027-01-01T00:00:00Z
+```
+
+**Permissions.** Every process that holds the master keys needs `kms:Decrypt` on the key: `serve`
+on every replica, `lajstrom reindex` and the commands of `lajstrom admin` that read the master
+keys. On GCP that is `cloudkms.cryptoKeyVersions.useToDecrypt`, in
+`roles/cloudkms.cryptoKeyDecrypter`. `lajstrom admin key wrap`, which the operator runs, also
+needs `kms:Encrypt` and `kms:DescribeKey` (on GCP `cloudkms.cryptoKeyVersions.useToEncrypt` and
+`cloudkms.cryptoKeys.get`, in `roles/cloudkms.cryptoKeyEncrypterDecrypter` and
+`roles/cloudkms.viewer`). Never give `serve` `Encrypt`: whoever may encrypt with the key and
+write the database could plant a ciphertext of a key of their own, which the id of the
+configuration still refuses. The role of `serve`, for IRSA or EKS Pod Identity:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "kms:Decrypt",
+    "Resource": "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+    "Condition": {"StringLike": {"kms:EncryptionContext:lajstrom": "master key *"}}
+  }]
+}
+```
+
+The operator's, for `lajstrom admin key wrap`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["kms:Encrypt", "kms:Decrypt"],
+     "Resource": "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+     "Condition": {"StringLike": {"kms:EncryptionContext:lajstrom": "master key *"}}},
+    {"Effect": "Allow", "Action": "kms:DescribeKey",
+     "Resource": "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"}
+  ]
+}
+```
+
+On GCP, bind the roles on the key:
+
+```sh
+gcloud kms keys add-iam-policy-binding master --keyring lajstrom --location europe-west1 \
+  --member serviceAccount:<the workload's> --role roles/cloudkms.cryptoKeyDecrypter
+```
+
+Credentials, regions and endpoints are those of the signing keys above: AWS's default chain and
+`AWS_ENDPOINT_URL_KMS`, GCP's metadata server. With the Helm chart, the service account's
+annotation names the role (`serviceAccount.annotations`, [deploy/helm.md](deploy/helm.md)).
+
+**Onto the KMS**, from a key of a file:
+
+1. Make the data key; it prints its id and the entry of `keys.masterKeyKMS`, never the key:
+
+   ```sh
+   lajstrom admin key wrap --kms awskms:///alias/lajstrom-master --reason "CHG-1234: the master key into the KMS"
+   ```
+
+   ```text
+   0123456789abcdef
+   keys:
+     masterKeyKMS:
+       - {id: 0123456789abcdef, kms: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/1234abcd-…"}
+   ```
+
+2. Add the entry to the configuration of every process, beside the key of the file: a rolling
+   update of `serve` (with the chart, `masterKey.kms`), and the next run of each Job.
+   `lajstrom admin key rewrap --dry-run` lists the keys of each live replica: every one must hold
+   the id.
+3. `lajstrom admin key rewrap --to <id>`, as in
+   [Replacing the master key](#replacing-the-master-key).
+4. Once a run again says nothing is left, remove the key of the file from the sources of every
+   process, a rolling update, and archive it ([Archiving the old key](#archiving-the-old-key)).
+
+**Off the KMS**: add a new key of a file to the sources of every process; `rewrap --to` its id;
+remove the entry from `keys.masterKeyKMS` of every process; then
+`lajstrom admin key drop --master <id>`, which refuses while the id seals or a live replica holds
+it. **To a new data key**, under the same KMS key or another: `wrap --kms`, its entry added,
+`rewrap --to` the new id, the old entry removed, then `drop --master <old id>`. A key of a file is
+never wrapped: a data key's bytes have been in clear only in the memory of the processes that
+hold it.
+
+**A rotation of the KMS key** changes no id, seals no value again, and leaves the configuration as
+it is. On AWS, automatic (`enable-key-rotation`) or on demand (`rotate-key-on-demand`), there is
+nothing to do: the KMS keeps every key material it rotated out, and the ciphertext opens as before.
+On GCP, after a new primary version, wrap the key again under it:
+
+```sh
+lajstrom admin key wrap --id 0123456789abcdef --reason "CHG-1240: the KMS key rotated"
+```
+
+Disable the older version only once no backup or snapshot that is kept holds a ciphertext under
+it.
+
+**When the KMS does not answer.** Running replicas are unaffected: an unwrapped key stays in
+memory and is never fetched again. A replica that starts then (a rollout, a node drain, a crash)
+listens without waiting, and while the key that seals is the data key it has not unwrapped, it
+seals nothing (`503` with `Retry-After: 30` on what would seal), a value only that key opens is
+`503` with `Retry-After: 5`, and `/-/readyz` is `503`; it asks the KMS again after 1, 2, 4, 8 and
+16 seconds, then every 30 seconds, logging each failure (at error for the key that seals), and the
+beat after the unwrap makes it ready. A rollout during an outage therefore takes the replicas out
+one by one: pause it. A command (`reindex`, `admin`) exits `1` before it writes, naming the id, the
+KMS key and whether the KMS refused or did not answer.
+
+**A disabled KMS key** stops the next starts, not the running processes: stop them as well to cut
+them off. **Never delete the KMS key** while a backup or a snapshot holds a key wrapped under it:
+disable it at most. Deleting it loses the data key and what it sealed, as a [lost
+key](#a-lost-key).
+
+**Requests to the KMS.** One `Decrypt` per data key at each start of a process and each run of a
+command; none per request. `wrap --kms` is one `DescribeKey`, one `Encrypt` and one `Decrypt`,
+`wrap --id` one more `Decrypt`. An AWS key is about $1 a month.
+
+**During the rolling update to the release with migration 0041**, a process of the release before
+refuses `keys.masterKeyKMS` as an unknown key of the configuration, exit status `2`. Every process
+runs the new release with its old sources first, and only then is the entry added. Until then the
+replicas of the release before list no data key in their `replicas` row, so a rewrap `--to` one
+refuses while they are live.
+
 ### Encryption at rest
 
 A repo can keep its files encrypted in the registry, so that the registry's operator and a leaked
@@ -981,10 +1130,12 @@ minutes before the drop, so that it verifies nothing.
 
 ### `lajstrom admin key`
 
-Every subcommand needs the configuration, the master keys (in the variable `keys.masterKeyEnv`
-names, the file of `keys.masterKeyFile`, or the directory of `keys.masterKeyDir`), and a migrated
-database; none goes through HTTP. Each but `rewrap` reads the key the index names to seal at its
-start and exits `1` when it does not hold it.
+Every subcommand needs the configuration and a migrated database; none goes through HTTP. Each but
+`wrap` and `drop --master` needs the master keys (in the variable `keys.masterKeyEnv` names, the
+file of `keys.masterKeyFile`, the directory of `keys.masterKeyDir`, or the data keys of
+`keys.masterKeyKMS`, which it has the KMS unwrap at its start and exits `1` when one does not
+open), and each of those but `rewrap` reads the key the index names to seal at its start and exits
+`1` when it does not hold it.
 
 | Command | What it does |
 | --- | --- |
@@ -1000,13 +1151,18 @@ start and exits `1` when it does not hold it.
 | `admin key rewrap --dry-run [--to <id>]` | prints the key that seals, the keys of the command and of each live replica, the values under each key and under none, the open upload sessions under each key, and with `--to` what a run would refuse; writes nothing ([Replacing the master key](#replacing-the-master-key)) |
 | `admin key rewrap --to <id>` | makes the master key of id the one that seals, waits a minute, seals every private key of the index and every webhook secret again under it, and counts again; its audit row is `key.rewrap`. It refuses while this command or a live replica does not hold the key, or a value is under no key it holds |
 | `admin key rewrap --to <id> --allow-lost` | the same, leaving the values under no key it holds as they are ([A lost key](#a-lost-key)) |
+| `admin key wrap --kms <key URI>` | makes a data key of the master key that the symmetric KMS key wraps, `awskms:///<key id, ARN or alias>` or `gcpkms://projects/…/cryptoKeys/<k>`, checks that the KMS unwraps it, writes its row of `wrapped_master_keys` and its audit row `key.wrap`, and prints its id and its entry of `keys.masterKeyKMS`, never the key ([The master key in a KMS](#the-master-key-in-a-kms)) |
+| `admin key wrap --id <id>` | wraps the data key of `keys.masterKeyKMS` of that id again under its KMS key, after a rotation of a GCP key; `key.wrap` |
+| `admin key drop --master <id>` | deletes the row of a data key, with `key.drop`; refuses while the index seals with it or a live replica holds it; prints the id |
 
 `--repo` and `--token` exclude each other, and one of them is required. `--kms` and `--local` go
 with `--repo` only, and exclude each other; `--encryption` goes with `--repo` only, and with
 neither of them: the new key is what the repo's policy names. Without the master key
 the token commands fail and say that `serve` signs with an ephemeral key then. `rewrap` takes
 `--to` but with `--dry-run` (exit status `2` without it, or with an id that is not 16 lowercase
-hexadecimal digits), and `--actor` and `--reason`, which `auth.requireReason` requires.
+hexadecimal digits), and `--actor` and `--reason`, which `auth.requireReason` requires, as it does
+for `wrap` and `drop --master`. `wrap` takes `--kms` or `--id`, and `drop` `--token` or
+`--master`, one of them and not both.
 
 ## Readiness
 
@@ -1016,7 +1172,10 @@ key](#the-master-key)), the replica's clock is within 60 seconds of the database
 ([Clocks](#clocks)), and every registry answered `GET /v2/`, with Lajstrom's credentials, within
 the last minute; otherwise `503` with a line that names no host, user or registry (`index
 database is unreachable`, `another replica serves on this SQLite database`, `this replica does not
-hold the master key that seals: <id>`, `the clock of this
+hold the master key that seals: <id>`,
+`this replica has not unwrapped the master key that seals: <id>` while the KMS has not unwrapped
+that data key of `keys.masterKeyKMS` ([The master key in a KMS](#the-master-key-in-a-kms)),
+`the clock of this
 replica is 1m15s ahead of the database's`, `a registry has not answered for a minute`, or
 `a registry has refused Lajstrom's credentials for a minute` when it answered `401` or `403`);
 the log has the cause, a registry's once per outage, with the status it answered. `serve` pings
@@ -2573,6 +2732,7 @@ key, and only part of the database can be rebuilt from the registry.
 | packages, versions, files, cached indexes, OCI repositories | the derived tables | yes | yes |
 | tag claims, reindex runs | the coordination tables | yes | not needed: they live for one publish or one run |
 | the master key | the environment of `serve` and `admin key`, or the file of `keys.masterKeyFile`, from your secret store | **no** | no: without it the keys in the database are useless |
+| a data key of the master key in a KMS | `wrapped_master_keys`, the KMS's ciphertext only; its KMS key in the KMS | yes, as ciphertext, which only the KMS key opens | no: keep the KMS key as long as the backup |
 | the configuration file, the registry passwords, the DSN | your configuration management | no | no |
 
 A snapshot of the control plane ([below](#snapshots-of-the-control-plane)) holds the repos,
@@ -2597,7 +2757,9 @@ no user, token, binding or key is in the registry ([manifest-profile.md](spec/ma
 - **The master key**: once, when it is made, kept apart from the database backups (a password
   manager, a vault, a printed copy in a safe). Without it the keys of a restored database do
   not decrypt, and `serve` refuses to start until they are replaced
-  ([The master key](#the-master-key)).
+  ([The master key](#the-master-key)). A data key of `keys.masterKeyKMS` is in the backup, wrapped:
+  what is kept apart is its KMS key, disabled at most, never deleted while a backup or a snapshot
+  holds a key wrapped under it ([The master key in a KMS](#the-master-key-in-a-kms)).
 
 What a restore loses is what changed in the control plane after the backup: users, tokens,
 bindings and repos created since are gone, and **what was revoked, disabled or deleted since
@@ -2654,7 +2816,10 @@ lajstrom admin snapshot list                  # TAG CREATED SCHEMA SEALED SIZE D
    that have rows; `--force` empties it first, every table but the schema's version, and the
    derived rows come back with reindex.
 3. `lajstrom admin snapshot restore latest`, or a tag of `list`, or a manifest's digest, with the
-   master key of the snapshot in `keys.masterKeyEnv` or `keys.masterKeyFile`. It prints what it
+   master key of the snapshot in `keys.masterKeyEnv` or `keys.masterKeyFile`, or its entry in
+   `keys.masterKeyKMS` when it is a data key of a KMS: a sealed snapshot under a data key carries
+   the key's row in its manifest (`lajstrom.snapshot.wrappedKey`), which the restore has the KMS
+   unwrap when the empty database has no row of it. It prints what it
    restored as JSON. A snapshot of a newer schema than the binary's is refused: restore it with a
    binary at least as new. One of an older schema is restored, and the database keeps the
    binary's schema. Of two snapshots of the same second, `latest` is either.
@@ -2685,7 +2850,8 @@ restored into a new Postgres schema serves the same.
    lajstrom.dump`; for SQLite, copy the backup in place of `lajstrom.db` with no
    `lajstrom.db-wal` or `lajstrom.db-shm` beside it.
 3. Give the processes the master key of the backup, through the same `keys.masterKeyEnv` or
-   `keys.masterKeyFile`.
+   `keys.masterKeyFile`, or the same `keys.masterKeyKMS`: the backup holds the rows of its data
+   keys, and the KMS key unwraps them.
 4. `lajstrom migrate`: the binary may be newer than the backup.
 5. `lajstrom reindex`: every repo, with prune.
 6. Start the replicas, and check: `whoami` of an admin, a package published before and one

@@ -1,0 +1,12 @@
+# The master key as a data key of AWS KMS alone (docs/operations.md, The master key in a KMS):
+# no variable LAJSTROM_MASTER_KEY, the entry of keys.masterKeyKMS that lajstrom admin key wrap
+# printed, and the role of IRSA that may Decrypt with the KMS key, on the service account. make
+# helm-lint renders the chart with this file too.
+masterKey:
+  env: false
+  kms:
+    - id: 0123456789abcdef
+      kms: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/lajstrom

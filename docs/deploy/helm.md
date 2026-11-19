@@ -82,15 +82,33 @@ masterKey:
 ```
 
 A key file that the group or others may read is used with a warning, which a Secret volume with
-`fsGroup` gives. `helm template` refuses `masterKey.env: false` without a volume. The migration and
-the recovery Jobs read no master key.
+`fsGroup` gives.
+
+The master key can be a data key of a symmetric KMS key instead, which no Secret holds
+([operations.md](../operations.md#the-master-key-in-a-kms)): `masterKey.kms` takes the entries of
+`keys.masterKeyKMS` that `lajstrom admin key wrap` printed, and the service account's annotation
+gives the replicas the role that may `Decrypt` with the key:
+
+```yaml
+masterKey:
+  env: false
+  kms:
+    - {id: 0123456789abcdef, kms: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/<key id>"}
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/lajstrom   # GKE: iam.gke.io/gcp-service-account
+```
+
+`helm template` refuses `masterKey.env: false` without a volume or an entry of `masterKey.kms`.
+The migration and the recovery Jobs read no master key.
 
 ## 2. The values
 
 `config` is `lajstrom.yaml` ([configuration.md](../configuration.md)) as a map. The chart sets
 `server.listen`, `server.metricsListen`, `database.driver`, `keys.masterKeyEnv`,
-`keys.masterKeyDir` and `auth.bootstrap.tokenFile` over it, whatever the map says. Helm merges
-maps and replaces lists, so `config.registries` of your values replaces the default's whole.
+`keys.masterKeyDir`, `keys.masterKeyKMS` (from `masterKey.kms`, when it has entries) and
+`auth.bootstrap.tokenFile` over it, whatever the map says. Helm merges maps and replaces lists, so
+`config.registries` of your values replaces the default's whole.
 
 ```yaml
 image:
@@ -392,6 +410,7 @@ whoami with the password of the Secret: 200
 | `masterKey.existingSecret`, `.key` | the full name, `LAJSTROM_MASTER_KEY` | the master key, as `LAJSTROM_MASTER_KEY` |
 | `masterKey.env` | `true` | pass `LAJSTROM_MASTER_KEY`; `false`: the keys of `masterKey.dir` alone |
 | `masterKey.dir.path`, `.volume` | `/run/secrets/lajstrom-master-keys`, none | a volume without its name (`secret` or `csi`), mounted whole at the path as `keys.masterKeyDir`, a master key per file ([1. The Secrets](#1-the-secrets)) |
+| `masterKey.kms` | `[]` | `keys.masterKeyKMS`: data keys of a symmetric KMS key, each `{id, kms}` as `lajstrom admin key wrap` printed it; the replicas need `kms:Decrypt` on the key through `serviceAccount.annotations` ([operations.md](../operations.md#the-master-key-in-a-kms)) |
 | `database.existingSecret`, `.key` | the full name, `LAJSTROM_DATABASE_DSN` | the Postgres DSN, as `LAJSTROM_DATABASE_DSN` |
 | `registryPasswords[]` | `{env: LAJSTROM_REGISTRY_PASSWORD, existingSecret: "", key: LAJSTROM_REGISTRY_PASSWORD}` | one per `registries[].auth.passwordEnv`; an empty `existingSecret` is the full name |
 | `bootstrap.enabled` | `true` | mount the bootstrap Secret and set `auth.bootstrap.tokenFile` |
@@ -409,7 +428,7 @@ whoami with the password of the Secret: 200
 | `terminationGracePeriodSeconds` | `40` | must exceed `server.shutdownDelay` and `server.shutdownTimeout` together |
 | `revisionHistoryLimit` | `10` | |
 | `podDisruptionBudget.enabled`, `.maxUnavailable`, `.minAvailable` | `true`, `1`, none | `minAvailable` replaces `maxUnavailable` when set |
-| `serviceAccount.create`, `.name`, `.annotations` | `true`, the full name, `{}` | for a registry of type `ecr` or an upstream with `auth.ecr`: IRSA's `eks.amazonaws.com/role-arn`; for an upstream with `auth.gcp` that acts as a Google service account: GKE's `iam.gke.io/gcp-service-account` |
+| `serviceAccount.create`, `.name`, `.annotations` | `true`, the full name, `{}` | for a registry of type `ecr`, an upstream with `auth.ecr` or a key of AWS KMS (`keys.kms`, `masterKey.kms`): IRSA's `eks.amazonaws.com/role-arn`; for an upstream with `auth.gcp` or a key of Cloud KMS, acting as a Google service account: GKE's `iam.gke.io/gcp-service-account` |
 | `automountServiceAccountToken` | `false` | Lajstrom never talks to the Kubernetes API |
 | `podAnnotations`, `podLabels` | `{}` | |
 | `podSecurityContext`, `securityContext` | those of `deployment.yaml` | user 65532, `RuntimeDefault`, no privilege escalation, no capability, read-only root |
