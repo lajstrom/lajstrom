@@ -1377,7 +1377,10 @@ paths:
       summary: Create a local user or a service account (admin).
       description: >-
         While auth.localPasswords is false no password is set, so a local user is 400, naming the
-        setting (docs/spec/rbac.md §1, Local passwords); a service account is made as before.
+        setting (docs/spec/rbac.md §1, Local passwords); a service account is made as before. With
+        auth.approval second-admin, admin true is 400, naming the setting, and nothing is made: the
+        admin role is bound with POST /api/v1/bindings, which waits for a second admin
+        (docs/spec/rbac.md §13).
       requestBody:
         required: true
         content:
@@ -3110,7 +3113,11 @@ components:
       properties:
         name: {type: string}
         password: {$ref: "#/components/schemas/Password"}
-        admin: {type: boolean}
+        admin:
+          type: boolean
+          description: >-
+            Binds the user to the admin role on */* in the same transaction. 400 with auth.approval
+            second-admin: bind it with POST /api/v1/bindings, which waits for a second admin.
         kind: {type: string, enum: [local, service], default: local}
         owner: {type: string, description: "A service account's owner: user:<name> or user:<uid> of a user that is not a service account, or group:<name>."}
         changeReason: {$ref: "#/components/schemas/ChangeReason"}

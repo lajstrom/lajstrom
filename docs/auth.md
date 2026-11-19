@@ -1728,6 +1728,10 @@ $ curl -s -u root:<password> -X POST 'https://art.example.com/api/v1/approvals/1
   the break-glass path, and the way to the second admin of a server that has one.
 - **A token of a service account** does not wait, whatever its bindings, so that rotating one
   takes one admin.
+- **A user made an admin**: `POST /api/v1/users` with `admin: true` is `400`, naming the
+  setting, and makes no user: make the user without `admin`, then request its `admin` binding
+  with `POST /api/v1/bindings`, which waits (#1376). `lajstrom admin user create --admin` still
+  makes both at once.
 
 With `second-admin`, `serve` warns at start when fewer than two enabled users have an `admin`
 binding that counts (under the admin mode, OIDC users only): no request could be approved.

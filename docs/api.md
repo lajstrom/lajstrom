@@ -1333,6 +1333,10 @@ a password and `admin` (bind it with [Bindings](#bindings)). `kind` is `local` w
 While `auth.localPasswords` is `false`, a local user is `400`, naming the setting: no password is
 set ([auth.md](auth.md#turning-local-passwords-off)). A service account is made as before.
 
+With `auth.approval: second-admin`, `admin: true` is `400`, naming the setting, and makes neither
+the user nor a request: make the user without it, then bind it to the admin role with
+[Bindings](#bindings), which waits for a second admin ([Approvals](#approvals), #1376).
+
 ```sh
 curl -s -u admin -X POST "$LAJSTROM/api/v1/users" \
   -H 'Content-Type: application/json' -d '{"name": "ci-release", "kind": "service", "owner": "group:platform"}'
@@ -1508,6 +1512,8 @@ binding of the role `admin` or on `*/*`, and `POST /api/v1/deploy-tokens` whose 
 `write`, answer `202 Accepted` with a request in place of the change, and its `Location`,
 `/api/v1/approvals/<id>`; a deploy token's request has its `secret`, shown once, which is no
 credential until the request is approved. The same change pending twice is `409`.
+`POST /api/v1/users` with `admin: true` is `400` instead, naming the setting
+([Create](#create-post-apiv1users)).
 
 ### The resource
 
@@ -2237,7 +2243,7 @@ curl -s "$LAJSTROM/api/v1/info"
 | `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
 | `adminMFA` | `true` while `auth.admin.requireMFA` is on, left out otherwise: the admin role counts only for a web UI's sign-in through OIDC with a second factor ([auth.md](auth.md#administrative-access-with-a-second-factor), #1276) |
 | `requireReason` | `auth.requireReason`: `true` when a change of the control plane without `changeReason` is `400` ([Conventions](#conventions), #1285). A server before it answers none, which is `false` |
-| `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it. A server before it answers none, which is `none` |
+| `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it, and `admin: true` in `POST /api/v1/users` is `400`. A server before it answers none, which is `none` |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not, nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second factor. Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.

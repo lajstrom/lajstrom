@@ -473,7 +473,7 @@ of an enabled user when no enabled user would keep one: nobody could manage the 
 (§1), which cannot make a token once its own expire.
 `lajstrom admin binding create` on the command line can always make one (§6). With
 `auth.approval: second-admin`, a binding of the role `admin` or on `*/*` made through the API
-waits for a second admin (§13).
+waits for a second admin, and `POST /api/v1/users` refuses `admin: true` (§13).
 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
 credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
@@ -1672,6 +1672,12 @@ answered `202 Accepted` with the request and its `Location`, `/api/v1/approvals/
 (http-routing.md §4). The same change pending twice is `409`. A request grants nothing; its
 approval makes the change, which then counts as any change does (§3: from the next request on, on
 every replica). A token of a service account, whatever its bindings, does not wait.
+
+**The users route.** `POST /api/v1/users` with `admin: true` makes the user's `admin` binding in
+the transaction that makes the user. With `second-admin` the route refuses `admin: true`: `400`,
+naming the setting and saying to bind the role with `POST /api/v1/bindings`, which waits. It makes
+nothing, neither the user nor a request; the user is made without `admin`, and its `admin`
+binding is requested as any other is (#1376). With `none`, `admin: true` makes both at once.
 
 **A deploy token that waits.** Its secret is made with the request and answered to the requester
 in the `202`, once, as a creation answers it (§1); the request keeps its sha256, as `tokens`
