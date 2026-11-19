@@ -49,6 +49,13 @@ type Provider interface {
 	// Exchange redeems code with the verifier at the token endpoint and verifies the ID token
 	// against nonce. Errors wrap ErrRefused or ErrUnavailable.
 	Exchange(ctx context.Context, code, verifier, nonce string) (*Identity, error)
+	// Refresh redeems a login's refresh token at the token endpoint (docs/spec/rbac.md §8,
+	// Asking the IdP again, #1282) and verifies the answer's ID token, when there is one, as at
+	// a login but for the nonce. Its error wraps ErrRefused for the IdP's invalid_grant only,
+	// which ends the login; every other failure, an ID token that does not verify included, is
+	// a *RefreshError, which ends nothing. The caller checks that the ID token names the login's
+	// identity.
+	Refresh(ctx context.Context, refreshToken string) (*Refreshed, error)
 }
 
 // Identity is what a verified ID token says of its person.
@@ -68,6 +75,19 @@ type Identity struct {
 	AuthTime *time.Time
 	AMR      []string
 	ACR      string
+	// RefreshToken is the refresh_token of the code exchange's answer, "" without one (#1282).
+	// It is a credential of the IdP: never logged, audited, answered or put in an error.
+	RefreshToken string
+}
+
+// Refreshed is the answer of a refresh (#1282).
+type Refreshed struct {
+	// RefreshToken is the new refresh token when the IdP rotated it, "" when it sent none and
+	// the one sent stays good.
+	RefreshToken string
+	// Identity is what the answer's ID token says, verified but for the nonce; nil without one.
+	// Its RefreshToken is "".
+	Identity *Identity
 }
 
 // Config configures a Client: the keys of auth.oidc and how to reach the IdP.
@@ -191,9 +211,24 @@ func (c *Client) Exchange(ctx context.Context, code, verifier, nonce string) (*I
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.redeem(ctx, m.TokenEndpoint, code, verifier)
+	a, err := c.redeem(ctx, m.TokenEndpoint, code, verifier)
 	if err != nil {
 		return nil, err
 	}
-	return c.verify(ctx, raw, nonce)
+	id, err := c.verify(ctx, a.IDToken, nonce)
+	if err != nil {
+		return nil, err
+	}
+	id.RefreshToken = a.RefreshToken
+	return id, nil
+}
+
+// GrantTypes returns the grant_types_supported of the discovery document, nil when it lists none.
+// Errors wrap ErrUnavailable.
+func (c *Client) GrantTypes(ctx context.Context) ([]string, error) {
+	m, err := c.disc.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Clone(m.GrantTypesSupported), nil
 }

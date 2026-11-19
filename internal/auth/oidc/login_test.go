@@ -55,6 +55,11 @@ func (f *fakeProvider) Exchange(_ context.Context, code, verifier, nonce string)
 	return &id, nil
 }
 
+// Refresh is not called by the login's routes.
+func (f *fakeProvider) Refresh(context.Context, string) (*Refreshed, error) {
+	return nil, &RefreshError{Kind: RefreshUnavailable, msg: "the login's fake provider does not refresh"}
+}
+
 var memoryDBs atomic.Int64
 
 type loginFixture struct {

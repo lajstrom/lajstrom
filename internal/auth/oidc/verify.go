@@ -34,7 +34,7 @@ func (c *Client) verify(ctx context.Context, raw, nonce string) (*Identity, erro
 	if err != nil {
 		return nil, err
 	}
-	return c.identity(ctx, claims, nonce)
+	return c.identity(ctx, claims, nonce, false)
 }
 
 // parse checks the signature of the JWT raw by the key of its kid with an algorithm that is the
@@ -82,12 +82,14 @@ func (c *Client) parse(ctx context.Context, raw, audience string) (jwt.MapClaims
 }
 
 // identity checks the claims that the parser does not (azp, nonce, sub) and reads the identity.
-func (c *Client) identity(ctx context.Context, claims jwt.MapClaims, nonce string) (*Identity, error) {
+// The ID token of a refresh (refreshed) is not checked against a nonce: OpenID Connect Core §12.2
+// says it should have none, and Lajstrom does not keep the login's.
+func (c *Client) identity(ctx context.Context, claims jwt.MapClaims, nonce string, refreshed bool) (*Identity, error) {
 	if azp, ok := claims["azp"]; ok && azp != c.cfg.ClientID {
 		return nil, fmt.Errorf("%w: the ID token's azp is not the client", ErrRefused)
 	}
 	got, _ := claims["nonce"].(string)
-	if nonce == "" || subtle.ConstantTimeCompare([]byte(got), []byte(nonce)) != 1 {
+	if !refreshed && (nonce == "" || subtle.ConstantTimeCompare([]byte(got), []byte(nonce)) != 1) {
 		return nil, fmt.Errorf("%w: the ID token's nonce is not the login's", ErrRefused)
 	}
 	sub, _ := claims["sub"].(string)
