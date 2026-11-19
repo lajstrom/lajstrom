@@ -776,7 +776,22 @@ type OIDC struct {
 	// #1276), for every step that needs one: the admin role under auth.admin.requireMFA, a CI
 	// trust policy of the API that writes, and its approval.
 	MFA OIDCMFA `yaml:"mfa"`
+	// Refresh is asking the IdP again about each login (docs/spec/rbac.md §8, Asking the IdP
+	// again, #1282).
+	Refresh OIDCRefresh `yaml:"refresh"`
 }
+
+// OIDCRefresh is auth.oidc.refresh (#1282, ADR 0037).
+type OIDCRefresh struct {
+	// Interval is how often serve asks the IdP again about each login, with the login's refresh
+	// token, sealed in the index; 0, the default, is off. Otherwise at least MinOIDCRefreshInterval
+	// and less than auth.oidc.tokenLifetime: 15m for PCI DSS 8.2.5. It takes a master key, which
+	// serve checks at its start.
+	Interval time.Duration `yaml:"interval"`
+}
+
+// MinOIDCRefreshInterval is the least auth.oidc.refresh.interval that is not off.
+const MinOIDCRefreshInterval = time.Minute
 
 // OIDCMFA is auth.oidc.mfa: the values of the ID token's amr and acr taken as a second factor.
 // With both empty, the default, a second factor is mfa in amr, or methods of two kinds of factor

@@ -235,10 +235,11 @@ func newServeCmd(a *app) *cobra.Command {
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			repos.Encryption = encryption != nil
 			repos.Trust = trust
-			edge, err := edgeInputs(c, st, tokens, a.log)
+			edge, err := edgeInputs(c, st, tokens, ms.m, a.log)
 			if err != nil {
 				return err
 			}
+			runs.wg.Go(func() { warnRefreshGrant(ctx, c.Auth.OIDC, edge.idp, a.log) })
 
 			plugins := withArchiveTokens(servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				newArchiveTokens(tokens, c.Server.ExternalURL, a.log))
@@ -312,12 +313,16 @@ func newServeCmd(a *app) *cobra.Command {
 
 // serveKeys reads the master keys of serve and the one the index names to seal (serveMasters),
 // before the replicas row, a seal or the listener (docs/spec/index-schema.md, The master key and
-// its replacement), logs them, then writes the row of this process with their ids (startReplica;
-// file is the SQLite file, "" for none). It returns the data keys of keys.masterKeyKMS that did
-// not open at the start, for unwrapLater.
+// its replacement), logs them, refuses auth.oidc.refresh.interval without one (checkRefreshKey),
+// then writes the row of this process with their ids (startReplica; file is the SQLite file, ""
+// for none). It returns the data keys of keys.masterKeyKMS that did not open at the start, for
+// unwrapLater.
 func (a *app) serveKeys(ctx context.Context, st store, file string) (masters, *replica, []dataKey, error) {
 	ms, pending, err := a.serveMasters(ctx, st)
 	if err != nil {
+		return masters{}, nil, nil, err
+	}
+	if err := checkRefreshKey(a.cfg.Auth.OIDC, ms.m); err != nil {
 		return masters{}, nil, nil, err
 	}
 	logMasters(a.log, ms.m)
