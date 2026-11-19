@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
@@ -40,25 +41,30 @@ type replica struct {
 	every time.Duration
 	row   index.Replica
 	lock  *os.File // the lock file of the SQLite file while this process holds its lock (Flock), nil otherwise
+	// master is the master keys this process holds, nil for none (#1288).
+	master *keys.Master
 
 	mu   sync.Mutex
 	lost error         // set while another replica holds the database (SQLite)
 	skew time.Duration // this process's clock minus the database's, at the last comparison
 }
 
-// startReplica writes the row of this process and compares its clock with the database's. On
-// SQLite, which serves one replica, it first takes the lock of the lock file next to the SQLite
-// file, file (lockFile; file is "" for postgres and an in-memory database), and a row of another
-// replica with a fresh heartbeat is an error that names it, unless its process is known to be
-// gone (start).
-func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time, file string) (*replica, error) {
+// startReplica writes the row of this process, with the ids of the master keys m it holds (nil:
+// none), and compares its clock with the database's. On SQLite, which serves one replica, it first
+// takes the lock of the lock file next to the SQLite file, file (lockFile; file is "" for postgres
+// and an in-memory database), and a row of another replica with a fresh heartbeat is an error
+// that names it, unless its process is known to be gone (start).
+func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time, file string, m *keys.Master) (*replica, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown"
 	}
 	at := now()
 	r := &replica{st: st, log: log, now: now, every: replicaBeatEvery, row: index.Replica{ID: index.NewUID(at), Host: host,
-		PID: os.Getpid(), Process: thisProcess(), Version: version.Get().Version, StartedAt: at}}
+		PID: os.Getpid(), Process: thisProcess(), Version: version.Get().Version, StartedAt: at}, master: m}
+	if m != nil {
+		r.row.MasterKeys = m.IDs()
+	}
 	if file != "" {
 		r.takeLock(ctx, file+lockSuffix)
 	}

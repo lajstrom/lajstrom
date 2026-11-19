@@ -50,10 +50,10 @@ func TestLoadMasterFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeKeyFile(t, tt.content, 0o600)
-			m, err := loadMaster(config.Keys{MasterKeyFile: path}, noEnv, slog.New(slog.DiscardHandler))
+			m, err := loadMasters(config.Keys{MasterKeyFile: path}, noEnv, slog.New(slog.DiscardHandler))
 			if tt.wantErr == "" {
 				if err != nil || m == nil {
-					t.Fatalf("loadMaster: %v, %v", m, err)
+					t.Fatalf("loadMasters: %v, %v", m, err)
 				}
 				return
 			}
@@ -75,7 +75,7 @@ func TestLoadMasterFileMissing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope")
 	dir := t.TempDir()
 	for path, want := range map[string]string{missing: "no such file", dir: "is not a regular file"} {
-		_, err := loadMaster(config.Keys{MasterKeyFile: path, MasterKeyEnv: "LAJSTROM_MASTER_KEY"},
+		_, err := loadMasters(config.Keys{MasterKeyFile: path, MasterKeyEnv: "LAJSTROM_MASTER_KEY"},
 			noEnv, slog.New(slog.DiscardHandler))
 		if err == nil || !strings.Contains(err.Error(), "keys.masterKeyFile") || !strings.Contains(err.Error(), path) ||
 			!strings.Contains(err.Error(), want) {
@@ -94,7 +94,7 @@ func TestLoadMasterFileMode(t *testing.T) {
 	}{{0o600, false}, {0o400, false}, {0o640, true}, {0o644, true}, {0o604, true}, {0o660, true}} {
 		path := writeKeyFile(t, testMasterKey+"\n", tt.perm)
 		var logged bytes.Buffer
-		m, err := loadMaster(config.Keys{MasterKeyFile: path}, noEnv, slog.New(slog.NewTextHandler(&logged, nil)))
+		m, err := loadMasters(config.Keys{MasterKeyFile: path}, noEnv, slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil || m == nil {
 			t.Fatalf("%04o: loadMaster: %v", tt.perm, err)
 		}
@@ -110,7 +110,7 @@ func TestLoadMasterFileMode(t *testing.T) {
 		}
 	}
 	path := writeKeyFile(t, testMasterKey, 0o644)
-	if _, err := loadMaster(config.Keys{MasterKeyFile: path}, noEnv, nil); err != nil {
+	if _, err := loadMasters(config.Keys{MasterKeyFile: path}, noEnv, nil); err != nil {
 		t.Errorf("without a logger: %v", err)
 	}
 }

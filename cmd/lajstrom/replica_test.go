@@ -56,10 +56,16 @@ func startServe(t *testing.T, cfg, addr string) (stop func() error) {
 // --config.
 func startServeWith(t *testing.T, cfg, addr string, stderr io.Writer, args ...string) (stop func() error) {
 	t.Helper()
+	return startServeEnv(t, cfg, addr, nil, stderr, args...)
+}
+
+// startServeEnv is startServeWith with env as the environment of serve.
+func startServeEnv(t *testing.T, cfg, addr string, env map[string]string, stderr io.Writer, args ...string) (stop func() error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		cmd := newRootCmd(func(string) (string, bool) { return "", false })
+		cmd := newRootCmd(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(stderr)
 		cmd.SetArgs(append([]string{"serve", "--config", cfg}, args...))
@@ -447,7 +453,7 @@ func TestReplicaBeat(t *testing.T) {
 	var logs bytes.Buffer
 	now := time.Now()
 	clock := func() time.Time { return now }
-	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.NewTextHandler(&logs, nil)), clock, "")
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.NewTextHandler(&logs, nil)), clock, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +503,7 @@ func TestReplicaBeatGone(t *testing.T) {
 	st := openIndex(t, t.TempDir())
 	now := time.Now()
 	clock := func() time.Time { return now }
-	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.DiscardHandler), clock, "")
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.DiscardHandler), clock, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +531,7 @@ func TestReplicaClock(t *testing.T) {
 	st := openIndex(t, t.TempDir())
 	var logs bytes.Buffer
 	var skew time.Duration
-	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return time.Now().Add(skew) }, "")
+	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return time.Now().Add(skew) }, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

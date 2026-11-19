@@ -88,7 +88,7 @@ func newReindexCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			encryption, err := newEncryption(c, a.lookupEnv, st, a.log)
+			encryption, err := a.encryptionOf(ctx, st)
 			if err != nil {
 				return err
 			}

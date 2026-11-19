@@ -149,4 +149,8 @@ func TestIntegrationSnapshotRestore(t *testing.T) {
 	if len(evs) != 1 || evs[0].Subject != "lajstrom/control-plane@"+created.Digest {
 		t.Errorf("the audit rows snapshot.restore after a forced restore: %+v; want the forced one's", evs)
 	}
+	// the sealing row came with the snapshot: the one snapshot create recorded at its start (#1288)
+	if k, err := st.GetSealingKey(t.Context()); err != nil || k.KeyID != masterID(t, testMasterKey) || k.Source != index.SealingStart {
+		t.Errorf("the sealing key after the restore: %+v, %v; want the key of the snapshot's database", k, err)
+	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 
@@ -26,22 +25,6 @@ func newDeliverer(c *config.Config, log *slog.Logger) *webhook.Deliverer {
 	return webhook.NewDeliverer(webhook.Options{AllowedHosts: c.Webhooks.AllowedHosts, Timeout: c.Webhooks.Timeout, Log: log})
 }
 
-// webhookMaster is the master key of the webhooks' secrets, or nil without one: then no
-// webhook is created and no replica of that configuration delivers. A master key that is
-// configured and does not load has stopped serve before, at newSigner; were it to fail here,
-// it is nil too, logged at error.
-func webhookMaster(c *config.Config, lookupEnv func(string) (string, bool), log *slog.Logger) *keys.Master {
-	m, err := loadMaster(c.Keys, lookupEnv, nil)
-	switch {
-	case errors.Is(err, keys.ErrNoMasterKey):
-		return nil
-	case err != nil:
-		log.Error("webhooks off: the master key does not load", "error", err.Error())
-		return nil
-	}
-	return m
-}
-
 // newWebhookService is the webhook service of the API: the index, the deliverer of the
 // configuration for the URLs and the tests, the master key (nil: none) and the replica whose
 // claim a test's row carries.
@@ -61,7 +44,7 @@ func startWebhooks(ctx context.Context, c *config.Config, m *keys.Master, st ind
 		log.Info("webhook delivery off on this replica (webhooks.workers is 0)")
 		return
 	case m == nil:
-		log.Info("webhook delivery off: webhooks need the master key (keys.masterKeyEnv or keys.masterKeyFile)")
+		log.Info("webhook delivery off: webhooks need the master key (keys.masterKeyEnv, keys.masterKeyFile or keys.masterKeyDir)")
 		return
 	}
 	w := &webhook.Worker{Index: st, Deliverer: newDeliverer(c, log), Master: m, Replica: replica, Workers: c.Webhooks.Workers,
