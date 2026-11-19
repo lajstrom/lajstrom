@@ -92,8 +92,9 @@ func MaskDeployWaits(scopes []string) bool { return slices.Contains(scopes, Scop
 
 // Approvals manages the requests for a second admin (docs/spec/rbac.md §13): it makes them in
 // place of the changes that wait, and approves, rejects and expires them. Every request and
-// decision is an audit row by PrincipalFrom(ctx), with the subject approval:<id>; an approval
-// writes the change's own row beside it. Create it as a struct literal; its methods may be called
+// decision is an audit row by PrincipalFrom(ctx), with the subject approval:<id>, and the webhook
+// event of that row, both in the transaction of its step (Webhooks); an approval writes the
+// change's own row beside it. Create it as a struct literal; its methods may be called
 // concurrently.
 //
 // Errors for the caller wrap ErrInvalid (a field that breaks its rule), ErrScope (a credential
@@ -110,10 +111,21 @@ type Approvals struct {
 	// Audit records the events; nil means each event goes to the index in the transaction of its
 	// change.
 	Audit audit.Writer
+	// Webhooks writes the webhook event of each request, decision and expiry in the transaction
+	// of its audit row (docs/spec/rbac.md §13, Telling the second admin; #1336); nil writes none.
+	Webhooks ApprovalEvents
 	// Now is the clock of the requests, their expiry and the decisions; nil means time.Now.
 	Now func() time.Time
 	// Log is the logger; nil means slog.Default().
 	Log *slog.Logger
+}
+
+// ApprovalEvents writes on w, in the transaction of the audit row ev of a request, a decision or
+// an expiry, its webhook event (docs/spec/webhooks.md §1, §3): a is the request as the API
+// answers it once the step is made. *webhook.Outbox is one, which this package may not import.
+// An error rolls the step back.
+type ApprovalEvents interface {
+	ApprovalEvent(ctx context.Context, w index.Writer, ev index.AuditEvent, a Approval) error
 }
 
 // MayRequest returns nil when the credential of ctx may make a request for a second admin
@@ -303,12 +315,22 @@ func addCredential(ctx context.Context, d map[string]any) map[string]any {
 	return d
 }
 
-// record builds the audit event of action about the request a, its subject approval:<id>, and
-// appends it on w when there is no audit.Writer (recordAudit).
+// record builds the audit event of action about the request a, its subject approval:<id>,
+// appends it on w when there is no audit.Writer (recordAudit), and writes its webhook event on w
+// with Webhooks, so that the event commits with the row and the step, or rolls back with them.
+// a is the row as the step left it.
 func (s *Approvals) record(ctx context.Context, w index.Writer, action string, a *index.Approval, o Origin,
 	details map[string]any) (index.AuditEvent, error) {
 	ev := index.AuditEvent{At: s.now(), Action: action, Subject: "approval:" + strconv.FormatInt(a.ID, 10)}
-	return recordAudit(ctx, w, s.Audit, ev, o, details)
+	ev, err := recordAudit(ctx, w, s.Audit, ev, o, details)
+	if err != nil || s.Webhooks == nil {
+		return ev, err
+	}
+	shown, err := approvalOf(a)
+	if err != nil {
+		return ev, err
+	}
+	return ev, s.Webhooks.ApprovalEvent(ctx, w, ev, shown)
 }
 
 // writeAudit passes ev to the audit.Writer, after the commit of its change (writeAuditEvent).
