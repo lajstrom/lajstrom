@@ -35,8 +35,8 @@ var masterKeyID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 // rewrapReport is what admin key rewrap prints, one line of JSON: never a key nor a value, a key
 // by its id and a value by its row. Sealing is the sealing row as the command read it; Held the
 // keys of the command with their sources (a data key's KMS key); Wrapped the rows of
-// wrapped_master_keys, held or not; Values the values of keys and webhooks under each key
-// id, Lost those under none, Sessions the open uploads under each key id. A dry run adds the live
+// wrapped_master_keys, held or not; Values the values of keys, webhooks and refresh tokens under
+// each key id, Lost those under none, Sessions the open uploads under each key id. A dry run adds the live
 // replicas and, with --to, what a run would refuse; a run adds what it switched, sealed again and
 // left, and its audit row.
 type rewrapReport struct {
@@ -118,10 +118,11 @@ func newKeyRewrapCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rewrap --to <id> [--dry-run] [--allow-lost]",
 		Short: "Make a master key the one that seals, and seal every value of the index again under it",
-		Long: "Name, by its id, the master key that every process seals with, and seal every private key of the index and\n" +
-			"every webhook's secret again under it. The key comes from the configuration only (keys.masterKeyDir,\n" +
-			"keys.masterKeyFile, keys.masterKeyEnv): this command and every live replica must hold it, which --dry-run\n" +
-			"shows with the ids of every key, the values under each and the open upload sessions. A run switches the\n" +
+		Long: "Name, by its id, the master key that every process seals with, and seal every private key of the index,\n" +
+			"every webhook's secret and every OIDC login's refresh token again under it. The key comes from the\n" +
+			"configuration only (keys.masterKeyDir, keys.masterKeyFile, keys.masterKeyEnv): this command and every live\n" +
+			"replica must hold it, which --dry-run shows with the ids of every key, the values under each and the open\n" +
+			"upload sessions. A run switches the\n" +
 			"sealing key with its audit row key.rewrap, waits a minute for every replica to read it, seals again 100\n" +
 			"rows at a time, and counts again: ok when nothing is left under another key. A value under no key this\n" +
 			"command holds stops it before it writes, unless --allow-lost leaves such values as they are. Run it again\n" +
