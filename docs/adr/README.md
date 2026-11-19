@@ -82,3 +82,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0033](0033-required-attachments-of-a-version.md) | Required attachments: a repo serves a version only with the verified attachments it names | proposed |
 | [0034](0034-replacing-the-master-key.md) | Replacing the master key: the keys a process holds, the one the index names to seal | proposed |
 | [0035](0035-second-admin-is-another-person.md) | A second admin is another person: no token requests, no admin's password set by another | proposed |
+| [0036](0036-the-master-key-in-a-kms.md) | The master key in a KMS: a data key wrapped by a symmetric KMS key, named by its id | proposed |

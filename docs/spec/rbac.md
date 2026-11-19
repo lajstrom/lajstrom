@@ -7,7 +7,8 @@
   sign-in in place of a password (§12), after the MVP (#1276, #1323); the approval of privileged
   changes and a reason with every change (§13), after the MVP (#1285); the export and the prune
   of the audit log (§5), after the MVP (#1278); the access report and its review (§14), after the
-  MVP (#1279); the rewrap of the master key's values (§5, §6), after the MVP (#1288). Owned by
+  MVP (#1279); the rewrap of the master key's values (§5, §6), after the MVP (#1288); the master
+  key in a KMS, its rows `key.wrap` and `key.drop` (§5, §6), after the MVP (#1388). Owned by
   `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
@@ -17,6 +18,7 @@
   [ADR 0031](../adr/0031-export-and-retention-of-the-audit-log.md),
   [ADR 0032](../adr/0032-access-report-and-its-review.md),
   [ADR 0034](../adr/0034-replacing-the-master-key.md),
+  [ADR 0036](../adr/0036-the-master-key-in-a-kms.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -785,9 +787,10 @@ on the database:
   offline: `server.tls.keyFile`, `auth.bootstrap.tokenFile`, `auth.oidc.clientSecretFile`,
   `keys.masterKeyEnv`, `keys.masterKeyFile`, `keys.masterKeyDir` (its path, never the files in it
   nor what they hold), `registries[].auth.passwordEnv`, `upstreams[].auth.passwordEnv`,
-  `upstreams[].auth.passwordFile` and `upstreams[].auth.tokenFile`. A key that names a file of
-  public material counts by its path and the sha256 of the content the start read, so that a CA
-  added to a bundle's file is a change: `server.tls.certFile`, the `caFile` of
+  `upstreams[].auth.passwordFile` and `upstreams[].auth.tokenFile`. `keys.masterKeyKMS` counts by
+  its value, the ids and the KMS keys of its data keys, which are neither keys nor secrets. A key
+  that names a file of public material counts by its path and the sha256 of the content the start
+  read, so that a CA added to a bundle's file is a change: `server.tls.certFile`, the `caFile` of
   `auth.clientCertificates.bundles[]`, `auth.kubernetes.clusters[]` and `auth.ci.issuers[]`,
   `attachments.trust[].publicKeyFile` and `attachments.keyless.trustedRoot`.
 - **Keys.** An item of a list of named items is written with its name,
@@ -897,6 +900,19 @@ no line and no answer of the command holds a key or a value, sealed or not: a ke
 value by its row. `lajstrom admin key rotate` and `drop` keep their rows, `key.rotate` and
 `key.drop`.
 
+**A data key of the master key in a KMS** (#1388;
+[index-schema.md](index-schema.md#a-master-key-in-a-kms)) is made or wrapped again by
+`lajstrom admin key wrap`, whose row is `key.wrap`, and removed by
+`lajstrom admin key drop --master`, whose row is `key.drop`: each by `anonymous` with
+`source: cli` and the origin of every row of the command line (§6), no `repo`, `subject`
+`master:<id>`, the data key's id, written in the transaction of its change of
+`wrapped_master_keys`. `key.wrap` has `details` `{"kms", "new"}`:
+the KMS key's URI, and `new` `true` for a data key made, `false` for one wrapped again (`--id`);
+`key.drop` has `{"kms"}`. A `key.drop` of the token key keeps its fingerprint as its subject, so
+that the subject tells the two apart. No row holds a key, in clear or wrapped. Lajstrom writes no
+row for an unwrap, one per start of each process: the KMS's own log has each with its caller (AWS's
+with the id, from the encryption context), and the `replicas` rows the ids each replica holds.
+
 ## 6. Bootstrap
 
 No admin password is read from the environment or the configuration (#440). The first admin
@@ -953,7 +969,8 @@ the server writes for the credential they send, and those that write no row do n
 `lajstrom admin policy rule create`, `--reason` is the rule's, which clients see; the reason of
 the change comes from `LAJSTROM_REASON` there. With `auth.requireReason` (§13), the commands of
 `lajstrom admin user`, `binding`, `token`, `repo`, `webhook`, `ci-policy` and `policy rule` that
-change the control plane, `admin audit prune` (§5) and `admin key rewrap` (§5), exit with status
+change the control plane, `admin audit prune` (§5), `admin key rewrap`, `admin key wrap` and
+`admin key drop --master` (§5), exit with status
 `2` without a reason, before anything is written. No command waits for a second admin: the
 command line makes its change at once, whatever `auth.approval` says (§13).
 

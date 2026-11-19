@@ -63,10 +63,12 @@ internal/auth/ci/             token exchange for CI (rbac.md §11): the trust po
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020),
                               the keys of encrypted repos and their data keys (ADR 0009),
-                              the master keys, the one the index names to seal, the rewrap (#1288)
-internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign, Decrypt over net/http, SigV4 of aws-sdk-go-v2
-internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign, asymmetricDecrypt
-                              over net/http
+                              the master keys, the one the index names to seal, the rewrap (#1288),
+                              the data keys of keys.masterKeyKMS, wrapped by a KMS key (#1388)
+internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign, Decrypt, Encrypt over net/http, SigV4 of
+                              aws-sdk-go-v2
+internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign, asymmetricDecrypt,
+                              cryptoKeys.get, encrypt, decrypt over net/http
 internal/keys/keystest/       test doubles: a KMS in memory; imported only by tests
 internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
                               (an oci upstream's auth.gcp, gcpkms)
@@ -1041,6 +1043,9 @@ type Reader interface {
     // GetSealingKey: the row of sealing_key, the master key that every process seals with
     // (#1288); none: ErrNotFound
     GetSealingKey(ctx context.Context) (*SealingKey, error)
+    // ListWrappedMasterKeys: every row of wrapped_master_keys, the data keys of a KMS, by KeyID
+    // (#1388, index-schema.md, A master key in a KMS)
+    ListWrappedMasterKeys(ctx context.Context) ([]WrappedMasterKey, error)
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
     GetSessionByID(ctx context.Context, id int64) (*Session, error)
     // ListOpenSessions: the repo's open publication sessions that expire after at, by id, above
@@ -1221,6 +1226,12 @@ type Writer interface {
     // together one records its key, and of two rewraps one switches (#1288). SetAt is the
     // database's time; a rewrap's caller appends key.rewrap in the transaction
     PutSealingKey(ctx context.Context, k *SealingKey, old string) error
+    // PutWrappedMasterKey inserts k where old is nil and there is no row of k.KeyID, and otherwise
+    // replaces its Wrapped, WrappedAt and AuditID where the row still holds old, a compare-and-set;
+    // another state wraps ErrConflict. DeleteWrappedMasterKey deletes the row of keyID
+    // (ErrNotFound). Both in the caller's transaction, which appends key.wrap or key.drop (#1388)
+    PutWrappedMasterKey(ctx context.Context, k *WrappedMasterKey, old []byte) error
+    DeleteWrappedMasterKey(ctx context.Context, keyID string) error
     UpsertSession(ctx context.Context, s *Session) error // a second open session of a key: ErrConflict
     // TouchSession moves the expiry of an open, unexpired session and returns it, holding the
     // row until the transaction ends: a change of its files starts with it.
@@ -1298,6 +1309,9 @@ type Writer interface {
     // is *ReplicaConflictError naming it and nothing changes, on Postgres the rows coexist
     StartReplica(ctx context.Context, r *Replica, staleBefore time.Time) error
     HeartbeatReplica(ctx context.Context, id string, at time.Time) error // ErrNotFound: deleted as stale
+    // SetReplicaMasterKeys writes MasterKeys of the row id: at the beat that follows the unwrap of
+    // a data key of a KMS (#1388); ErrNotFound: deleted as stale
+    SetReplicaMasterKeys(ctx context.Context, id string, keyIDs []string) error
     StopReplica(ctx context.Context, id string) error
     // operational: the answers 404 MANIFEST_UNKNOWN that a removal by reindex waits on
     // (index-schema.md, Coordination); ResetDerived leaves them
@@ -1366,7 +1380,8 @@ type Writer interface {
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent,
-// Webhook, WebhookDelivery, Approval, SealingKey (KeyID, Source, Host, AuditID, SetAt; #1288);
+// Webhook, WebhookDelivery, Approval, SealingKey (KeyID, Source, Host, AuditID, SetAt; #1288),
+// WrappedMasterKey (KeyID, KMS, Wrapped, CreatedAt, WrappedAt, AuditID; #1388);
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
@@ -1645,6 +1660,7 @@ type ControlPlane struct {                  // every row with its id; no secret 
     Keys           []Key
     Webhooks       []Webhook                // SecretEnc as the table has it; not their deliveries
     SealingKey     *SealingKey              // nil: none, or a snapshot before 0040 (#1288)
+    WrappedMasterKeys []WrappedMasterKey    // the KMS's ciphertexts; none before 0041 (#1388)
     WithAudit      bool                     // the ExportOptions of the read
     AuditSince     time.Time
     Audit          []AuditEvent
@@ -2573,6 +2589,7 @@ auth:
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts the apt keys and the bearer-token key at rest
   masterKeyDir: ""                          # a key per file; the index names which seals (#1288)
+  masterKeyKMS: []                          # {id, kms}: data keys wrapped by a KMS key (#1388)
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
