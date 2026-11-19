@@ -162,7 +162,8 @@ line (§3): the account has no password and never mints its own. Their lifetime 
 created without an expiry expires at the bound, and one asked to expire later is `400`. `0` bounds
 nothing, and a token created without an expiry then never expires. A bound lowered later counts
 for the tokens created after it; a live token beyond it is answered with `beyondMaxTTL: true` and
-counted at start, as a deploy token beyond `auth.deployTokens.maxTTL` is (above).
+counted at start, as a deploy token beyond `auth.deployTokens.maxTTL` is (above). With
+`auth.approval: second-admin`, its token requests nothing that waits (§13, Who requests).
 
 A service account may have any binding, `admin` included. Its `admin` binding does not count for
 the last-admin rule (above, §3) nor for the bootstrap (§6), as a group's does not: without a
@@ -372,7 +373,8 @@ tokens are not touched, as with an admin's new password.
 An admin's new password (`POST …/password` without `currentPassword`, `set-password`, a create) is
 not compared with the history, so that an admin does not learn which passwords a user had; the
 hash it replaces goes into the history all the same, so that the user's next change returns
-neither to it nor to the admin's.
+neither to it nor to the admin's. With `auth.approval: second-admin`, the API sets no new password
+for a user who holds `admin` (§13, Another admin's password).
 
 **Change at first use.** A user's `mustChange` (`users.must_change`) says that its password must
 be changed before it is used for anything else. With `auth.passwords.changeAtFirstUse`
@@ -473,7 +475,8 @@ of an enabled user when no enabled user would keep one: nobody could manage the 
 (§1), which cannot make a token once its own expire.
 `lajstrom admin binding create` on the command line can always make one (§6). With
 `auth.approval: second-admin`, a binding of the role `admin` or on `*/*` made through the API
-waits for a second admin, and `POST /api/v1/users` refuses `admin: true` (§13).
+waits for a second admin, requested with a password or a fresh sign-in and never a token, and
+`POST /api/v1/users` refuses `admin: true` (§13).
 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
 credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
@@ -757,7 +760,9 @@ approver, with `approval` `{"id", "requestedBy", "requestedAt"}` and the request
 `changeReason` in its details, and the `createdBy` of the request for a token. A rejection is
 `approval.reject`, by the admin, the requester for a withdrawal, with its `changeReason`; an
 expiry `approval.expire`, by `anonymous`, `source: expiry`. Each has the `signIn` of the request
-that wrote it (above).
+that wrote it (above). A request and an approval have `credential` too, `password` or the
+sign-in's `token:<id>`, as a token's creation has `createdBy` (#1393): the proof that each side
+was a person's. A request or a password that §13 refuses writes no row.
 
 **An access review** (§14, #1279) is `access.review`, by the admin who records it, in a
 transaction of its own: `subject` the report's `sha256:<hex>`, no `repo`, and `details`
@@ -1671,13 +1676,49 @@ the change: a row of `approvals` ([index-schema.md](index-schema.md#approvals)),
 answered `202 Accepted` with the request and its `Location`, `/api/v1/approvals/<id>`
 (http-routing.md §4). The same change pending twice is `409`. A request grants nothing; its
 approval makes the change, which then counts as any change does (§3: from the next request on, on
-every replica). A token of a service account, whatever its bindings, does not wait.
+every replica). Creating a token for a service account, whatever its bindings, does not wait, so
+that rotating one takes one admin; such a token makes no request (Who requests, below).
 
 **The users route.** `POST /api/v1/users` with `admin: true` makes the user's `admin` binding in
 the transaction that makes the user. With `second-admin` the route refuses `admin: true`: `400`,
 naming the setting and saying to bind the role with `POST /api/v1/bindings`, which waits. It makes
 nothing, neither the user nor a request; the user is made without `admin`, and its `admin`
 binding is requested as any other is (#1376). With `none`, `admin: true` makes both at once.
+
+**Who requests** (#1393, [ADR 0035](../adr/0035-second-admin-is-another-person.md)). A second
+admin is worth an approval only while one admin cannot act as another. So a request is made with
+what its approval takes (below): the admin's password, or a web UI's fresh sign-in through OIDC
+in its place (§12), under the admin mode with a second factor, and never a token.
+`POST /api/v1/deploy-tokens` takes no other credential already (§1). `POST /api/v1/bindings` is
+`403` with any other credential once its body shows that the binding waits, the message naming
+the rule, and a sign-in that is not fresh is asked for more (§10: `401`); a binding that does not
+wait is made with any credential that reaches the role, as before. A personal
+access token, whoever made it and whenever, so files no request in its user's name: not one that
+an admin made for another admin, nor a service account's, which has neither a password nor a
+sign-in and so requests nothing. A service account's changes that wait are requested by a person,
+or made on the command line. A token that an admin made for another user so gives that admin no
+second voice: it neither requests nor approves.
+
+**Another admin's password.** With `second-admin`, an admin's new password,
+`POST /api/v1/users/<name>/password` without `currentPassword`, is `400` for a user who holds
+`admin`, naming the setting. A user holds `admin` by a binding of its own or of a group whose
+membership has not lapsed, as the approval reads its requester (below), whether it is enabled or
+disabled and whatever the admin mode. The refusal holds whoever asks, the user itself included,
+so that a token made for it sets none either. A person who holds `admin` changes its own password
+with `currentPassword` (§1), and `lajstrom admin user set-password` is the break-glass path; an
+admin who forgot its password may also have its `admin` binding deleted, its password set, and
+the binding requested again, which a second admin approves. A user without `admin` gets a new
+password as before. An unlock (`POST …/unlock`) and `mustChange` (`PATCH`) are as before: neither
+gives anyone the password.
+
+**What else stays.** Enabling a user who holds `admin` (`PATCH` with `disabled: false`), a
+service account included, does not wait: under the two rules above it gives no admin a credential
+of that user, whose tokens neither request nor approve and whose password no admin sets. A
+rename, which keeps the uid that the approval compares, a change of owner, `mustChange` and a
+create without `admin` are as before. A password that an admin set while its user held no `admin`
+(a create, a new password) is still known to that admin once a second admin approves the user's
+`admin` binding: that approver decides that the binding is the person's, and the `user.create` or
+`user.password` row by another principal shows who set it.
 
 **A deploy token that waits.** Its secret is made with the request and answered to the requester
 in the `202`, once, as a creation answers it (§1); the request keeps its sha256, as `tokens`
@@ -1691,8 +1732,9 @@ than the requester, compared by uid, with what creating a deploy token over a ma
 admin's password, or a web UI's fresh sign-in through OIDC in its place (§12), and no other token
 (`403` before the request is looked up). Under the admin mode that is a fresh sign-in with a second
 factor (§12). The approver who made the request is `403`. The approval checks again what the
-request checked, and that the requester is an enabled user and a binding's principal live: one
-that fails is `409` naming it, and the request stays pending. In one transaction it marks the
+request checked, that the requester is an enabled user that is not a service account (a request
+of a release before #1393, Upgrades below), and that a binding's principal is live: one that
+fails is `409` naming it, and the request stays pending. In one transaction it marks the
 request `approved` while it is still `pending`, so that of two decisions one is made, and makes
 the change, with its rows (§5). A request never changes, so the approval needs no `If-Match`: a
 different change is a new request.
@@ -1711,16 +1753,26 @@ request.
 
 **The command line** writes the database without a credential and is the operator's (§6):
 `lajstrom admin binding create`, `user create --admin` and `token create --mask` make the change at
-once whatever the setting, with their `source: cli` rows and their reason. It is the break-glass
-path, and the way to the second admin of a server that has only one.
+once whatever the setting, and `user set-password` sets an admin's password, with their
+`source: cli` rows and their reason. It is the break-glass path, and the way to the second admin
+of a server that has only one.
 
 **The setting** is configuration: a change takes a restart, each replica applies its own, and a
 replica of a release that does not know it refuses the configuration. Turning it on leaves the
-bindings and the tokens made before as they are. With `none`, nothing new waits, and the requests
-made before stay pending, to be approved, rejected or to expire. With `second-admin`, `serve` logs
-at warn at start when fewer than two enabled users have an `admin` binding that counts, under the
-admin mode an OIDC user's (§12): no request could be approved. `GET /api/v1/info` answers the
-setting as `approval` (http-routing.md §4), so that a UI expects the `202`.
+bindings, the tokens and the passwords set before as they are: an admin's password that another
+admin set stays known to that admin until its person changes it. With `none`, nothing new waits,
+a token makes these changes and an admin sets any user's password as before, and the requests
+made before stay pending, to be approved, rejected or to expire. With `second-admin`, `serve`
+logs at warn at start when fewer than two enabled users have an `admin` binding that counts,
+under the admin mode an OIDC user's (§12): no request could be approved. `GET /api/v1/info`
+answers the setting as `approval` (http-routing.md §4), so that a UI expects the `202`.
+
+**Upgrades.** Who requests and another admin's password (#1393) take no new setting and no
+migration: they hold under `second-admin` on every replica of a release that has them. During a
+rolling update to it, a replica of the release before still makes a request with a token, a
+service account's included, and still sets an admin's password. The approval of the new release
+refuses a service account's request (above) and approves any other made there; the
+`approval.request` row of one made on the release before has no `credential` (§5).
 
 **A reason.** A control-plane change through `/api/v1` takes a reason, `changeReason`: a ticket or
 a sentence of 1 to 1024 bytes of UTF-8 without control characters, as the command line's
