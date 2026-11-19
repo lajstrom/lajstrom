@@ -330,7 +330,7 @@ expiry.
 | Gap | Requirement | Issue |
 | --- | --- | --- |
 | Deprovisioning from the IdP: asking it again with each login's sealed refresh token; until then, the [offboarding procedure](#offboarding-a-person) | PCI DSS 8.2.5; CC6.2 | [#1282](https://github.com/lajstrom/lajstrom/issues/1282) |
-| The master key in a KMS, as a data key wrapped by a KMS key (envelope encryption): decided on #1288 as its second step, with a contract of its own ([ADR 0034](adr/0034-replacing-the-master-key.md), What B needs of A) | PCI DSS 3.6.1 where the keys are in scope | [#1288](https://github.com/lajstrom/lajstrom/issues/1288) |
+| The master key in a KMS, as a data key wrapped by a KMS key (envelope encryption): decided on #1288 as its second step, with a contract of its own (#1388, [ADR 0034](adr/0034-replacing-the-master-key.md), What B needs of A) | PCI DSS 3.6.1 where the keys are in scope | [#1388](https://github.com/lajstrom/lajstrom/issues/1388) |
 
 Not gaps, though they are asked about: the synchronisation of clocks ([Clocks](operations.md#clocks)),
 "deny all" by default (7.3.3 above), vendor default accounts (2.2.2 above), an audit log that
