@@ -448,8 +448,11 @@ func (p *Pipeline) push(ctx context.Context, pub *publish) (existed bool, err er
 // tag. pub takes it over and moves its claim to it (takeOver); existed reports that the index
 // has it meanwhile. Nothing re-points the tag: pub pushes the digest the tag holds. A manifest
 // of other files there is the conflict. The same digest there is pushed again too, which
-// changes nothing, and confirmed. On a registry that folds the case of tags, a conflict with the
-// version of the tag of another case says so (caseConflict).
+// changes nothing, and confirmed; but a manifest that pub took over from a claim (claimTag) is
+// held and not pushed again: the publish that holds the claim pushed it, and may be between its
+// push and its confirm, so that pub's push would be a second write of the same file (#1369). On
+// a registry that folds the case of tags, a conflict with the version of the tag of another case
+// says so (caseConflict).
 func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	desc, err := pub.rr.Resolve(ctx, pub.tag)
 	switch {
@@ -458,6 +461,7 @@ func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, er
 	case err != nil:
 		return false, fmt.Errorf("ingest: resolve %s:%s: %w", pub.name, pub.tag, err)
 	case desc.Digest == pub.digest:
+		pub.held = pub.adopted
 		return false, nil
 	}
 	conflict := &index.TagConflictError{Tag: pub.tag, Existing: desc.Digest}
@@ -495,10 +499,15 @@ func (p *Pipeline) caseConflict(ctx context.Context, pub *publish, conflict *ind
 // pushManifest calls intend and pushes the manifest with its tag in one request, after
 // checkTag, and again while a registry not classified strong answers MANIFEST_BLOB_UNKNOWN, for
 // visibility (retryBlobsLag). The streamed file of UploadStream is committed after intend, the
-// first write to the registry, and before the manifest.
+// first write to the registry, and before the manifest. A held manifest (checkTag) is not
+// pushed, and the streamed file is left to cancelStreamed: the manifest is another publish's,
+// whose blobs that publish stored; confirm indexes it, or finds it indexed.
 func (pub *publish) pushManifest(ctx context.Context, visibility time.Duration, intend func(context.Context) error) error {
 	if err := intend(ctx); err != nil {
 		return err
+	}
+	if pub.held {
+		return nil
 	}
 	if err := pub.commit(ctx); err != nil {
 		return err
