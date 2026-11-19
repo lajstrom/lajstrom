@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
@@ -125,4 +127,76 @@ func TestAdminKeyWrapReason(t *testing.T) {
 		t.Errorf("a wrap without a reason wrote %d rows", len(rows))
 	}
 	runEnv(t, cfg, env, []step{{args: []string{"admin", "key", "wrap", "--kms", kms.URI(), "--reason", "CHG-8"}}})
+}
+
+// TestAdminKeyDropMaster: rewrap --dry-run lists the rows of wrapped_master_keys by id and KMS
+// key, held or not, never a ciphertext; admin key drop --master refuses the key that seals and one
+// that a live replica holds, and writes nothing; otherwise it deletes the row with key.drop,
+// subject master:<id>, {kms}; a key without a row is refused.
+func TestAdminKeyDropMaster(t *testing.T) {
+	kms := keystest.NewWrapKMS()
+	cfg, dsn, env := kmsConfig(t, kms)
+	runEnv(t, cfg, env, []step{{args: []string{"migrate"}}})
+	a, b, loose := plantDataKey(t, dsn, kms, kms.ARN, kms.URI()), plantDataKey(t, dsn, kms, kms.ARN, kms.URI()),
+		plantDataKey(t, dsn, kms, kms.ARN, kms.URI())
+	appendConfig(t, cfg, masterKeyKMS([]string{a.id, b.id}, []string{kms.URI(), kms.URI()}))
+	st := openTestStore(t, dsn)
+	ctx := t.Context()
+	must(t, st.PutSealingKey(ctx, &index.SealingKey{KeyID: a.id, Source: index.SealingRewrap, Host: "admin"}, ""))
+	outs := runEnv(t, cfg, env, []step{{args: []string{"admin", "key", "rewrap", "--dry-run"}}})
+	var rep rewrapReport
+	must(t, json.Unmarshal([]byte(outs[0]), &rep))
+	held := map[string]bool{}
+	for _, w := range rep.Wrapped {
+		if w.KMS == kms.URI() {
+			held[w.ID] = w.Held
+		}
+	}
+	if fmt.Sprint(held) != fmt.Sprint(map[string]bool{a.id: true, b.id: true, loose.id: false}) {
+		t.Errorf("the wrapped master keys of the dry run: %+v, want %s and %s held, %s not", rep.Wrapped, a.id, b.id, loose.id)
+	}
+	noSecretIn(t, errors.New(outs[0]), a, b, loose)
+
+	must(t, st.StartReplica(ctx, &index.Replica{ID: "r1", Host: "node-1", PID: 7, MasterKeys: []string{a.id, b.id}},
+		time.Now().Add(-time.Hour)))
+	who := []string{"--actor", "dana", "--reason", "CHG-9"}
+	runEnv(t, cfg, env, []step{
+		{args: append([]string{"admin", "key", "drop", "--master", a.id}, who...), wantErr: "the index seals with master key " + a.id},
+		{args: append([]string{"admin", "key", "drop", "--master", b.id}, who...), wantErr: "replica r1 on host node-1, process 7, " +
+			"holds master key " + b.id},
+		{args: []string{"admin", "key", "drop", "--master", "fedcba9876543210"}, wantErr: "has no row in wrapped_master_keys"},
+		{args: []string{"admin", "key", "drop", "--master", "x"}, wantErr: "16 lowercase hexadecimal digits"},
+		{args: []string{"admin", "key", "drop", "--master", b.id, "--token"}, wantErr: "none of the others can be"},
+	})
+	must(t, st.StopReplica(ctx, "r1"))
+	runEnv(t, cfg, env, []step{
+		{args: append([]string{"admin", "key", "drop", "--master", b.id}, who...), wantOut: b.id + "\n"},
+		{args: []string{"admin", "key", "drop", "--master", b.id}, wantErr: "has no row in wrapped_master_keys"},
+	})
+	rows, err := st.ListWrappedMasterKeys(ctx)
+	must(t, err)
+	evs, err := st.ListAudit(ctx, index.AuditFilter{Action: keys.ActionDrop})
+	must(t, err)
+	if len(rows) != 2 || len(evs) != 1 || evs[0].Subject != "master:"+b.id || !strings.Contains(string(evs[0].Details),
+		`"kms":"`+kms.URI()+`"`) || !strings.Contains(string(evs[0].Details), `"changeReason":"CHG-9"`) {
+		t.Errorf("after the drop: %d rows, key.drop rows %+v; want 2 rows and one key.drop of %s", len(rows), evs, b.id)
+	}
+}
+
+// TestAdminKeyDropMasterReason: with auth.requireReason, admin key drop --master without a reason
+// is exit status 2 and deletes nothing.
+func TestAdminKeyDropMasterReason(t *testing.T) {
+	kms := keystest.NewWrapKMS()
+	cfg, dsn, env := kmsConfig(t, kms)
+	appendConfig(t, cfg, "auth:\n  requireReason: true\n")
+	runEnv(t, cfg, env, []step{{args: []string{"migrate"}}})
+	k := plantDataKey(t, dsn, kms, kms.ARN, kms.URI())
+	_, _, err := run(t, env, "admin", "key", "drop", "--master", k.id, "--config", cfg)
+	if err == nil || !strings.Contains(err.Error(), "required (auth.requireReason)") || exitStatus(err) != 2 {
+		t.Errorf("a drop without a reason: %v (exit status %d)", err, exitStatus(err))
+	}
+	if rows, _ := wrapState(t, dsn); len(rows) != 1 {
+		t.Errorf("a drop without a reason left %d rows, want 1", len(rows))
+	}
+	runEnv(t, cfg, env, []step{{args: []string{"admin", "key", "drop", "--master", k.id, "--reason", "CHG-10"}, wantOut: k.id}})
 }

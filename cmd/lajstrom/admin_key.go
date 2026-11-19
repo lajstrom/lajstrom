@@ -246,15 +246,21 @@ func unfinishedRotation(ctx context.Context, st store, repo index.Repo) (string,
 // successor, for an active key that does not decrypt (ADR 0010): serve refuses to start with
 // one, and makes a new key at its next start once it is dropped, as a running replica does at
 // its next token. It prints the fingerprint dropped. The key need not decrypt; the master key
-// is needed all the same, as for the other commands.
+// is needed all the same, as for the other commands. With --master <id> instead: delete the row
+// of a data key of the master key in a KMS, with key.drop (dropMaster, #1388).
 func newKeyDropCmd(a *app) *cobra.Command {
 	var tok bool
+	var master string
 	cmd := &cobra.Command{
-		Use:         "drop --token",
-		Short:       "Retire the bearer-token key without a successor (the next token or start makes one) and print its fingerprint",
+		Use: "drop (--token | --master <id>)",
+		Short: "Retire the bearer-token key without a successor (the next token or start makes one) and print its fingerprint; " +
+			"or delete the row of a data key of the master key",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if master != "" {
+				return a.dropMaster(cmd.Context(), cmd.OutOrStdout(), master)
+			}
 			return a.withTokenKeys(cmd.Context(), func(ctx context.Context, t *keys.Tokens) error {
 				fp, err := t.DropToken(ctx)
 				if err != nil {
@@ -265,8 +271,11 @@ func newKeyDropCmd(a *app) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&tok, "token", false, "the key that signs the bearer tokens of /v2 (required)")
-	_ = cmd.MarkFlagRequired("token") // fails only for a flag that does not exist
+	cmd.Flags().BoolVar(&tok, "token", false, "the key that signs the bearer tokens of /v2")
+	cmd.Flags().StringVar(&master, "master", "", "the id of a data key of the master key in a KMS, whose row of "+
+		"wrapped_master_keys is deleted: never one that seals or that a live replica holds")
+	cmd.MarkFlagsMutuallyExclusive("token", "master")
+	cmd.MarkFlagsOneRequired("token", "master")
 	return cmd
 }
 
