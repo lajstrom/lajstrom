@@ -25,7 +25,7 @@ jobs:
   integration:
     name: integration (zot-yugabyte)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90 # 38 to 44 minutes on #1287's pull requests; #1288 adds conformance tests
     # Non-blocking: a failure marks this job and not the run, and no branch protection names it.
     continue-on-error: true
     services:
@@ -95,7 +95,7 @@ jobs:
         # Skipped: the conformance half of TestDataRole, the suite again as another user, another
         # quarter of an hour.
         run: >-
-          go test -v -race -tags integration -p 1 -parallel 1 -timeout 45m
+          go test -v -race -tags integration -p 1 -parallel 1 -timeout 75m
           -skip 'TestDataRole/conformance'
           ./internal/index ./internal/index/postgres
       - name: The tests on the migrated database
