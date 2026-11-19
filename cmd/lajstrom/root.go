@@ -12,6 +12,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/keys"
 )
 
 // app is the state the commands share: the persistent flags, and the configuration and logger
@@ -30,6 +31,9 @@ type app struct {
 	cfg *config.Config // loaded only for the commands marked with needsConfig
 	log *slog.Logger
 	now func() time.Time // the clock checkClock compares with the database's; nil means time.Now
+	// wrapKMS are the clients of the data keys of keys.masterKeyKMS by scheme; nil means
+	// masterClients (tests set it, #1388).
+	wrapKMS map[string]keys.MasterKMS
 }
 
 // clock returns the time of a.now.

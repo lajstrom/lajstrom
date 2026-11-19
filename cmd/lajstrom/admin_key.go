@@ -308,9 +308,10 @@ func (a *app) withTokenKeys(ctx context.Context, fn func(context.Context, *keys.
 	})
 }
 
-// withMaster loads the master keys, opens the index database, reads the key the index names to
-// seal (sealingAtStart: a command that does not hold it exits 1 before it writes) and runs fn
-// with both, then closes the database. hint follows the error of a missing master key.
+// withMaster loads the master keys, opens the index database, has the KMS unwrap the data keys of
+// keys.masterKeyKMS (unwrapAll: one that does not open stops the command), reads the key the index
+// names to seal (sealingAtStart: a command that does not hold it exits 1 before it writes) and
+// runs fn with both, then closes the database. hint follows the error of a missing master key.
 func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Context, *keys.Master, store) error) (err error) {
 	m, err := loadMasters(a.cfg.Keys, a.lookupEnv, a.log)
 	if errors.Is(err, keys.ErrNoMasterKey) {
@@ -324,6 +325,9 @@ func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Conte
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
+	if err := a.unwrapAll(ctx, st, m, false); err != nil {
+		return err
+	}
 	if err := sealingAtStart(ctx, st, m, hostName()); err != nil {
 		return err
 	}

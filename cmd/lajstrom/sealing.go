@@ -19,6 +19,7 @@ type sealingStore interface {
 	GetSealingKey(ctx context.Context) (*index.SealingKey, error)
 	PutSealingKey(ctx context.Context, k *index.SealingKey, old string) error
 	ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]index.Sealed, error)
+	wrappedReader
 }
 
 // rewrapHint is what a process that holds several keys on a database that names none says.
