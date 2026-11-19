@@ -233,7 +233,7 @@ func (s *Approvals) requesterHolds(ctx context.Context, w index.Writer, a *index
 	case u.Disabled:
 		return conflictf("request %d: its requester %s is disabled", a.ID, u.Name)
 	}
-	admin, err := hasAdmin(ctx, w, u, now)
+	admin, err := HoldsAdmin(ctx, w, u, now)
 	switch {
 	case err != nil:
 		return err
@@ -243,9 +243,12 @@ func (s *Approvals) requesterHolds(ctx context.Context, w index.Writer, a *index
 	return nil
 }
 
-// hasAdmin reports whether the user u has an admin binding, its own or one of a group it is in
-// whose membership has not lapsed at now (docs/spec/rbac.md §3, §8).
-func hasAdmin(ctx context.Context, r index.Reader, u *index.User, now time.Time) (bool, error) {
+// HoldsAdmin reports whether the user u holds the admin role by its bindings: an admin binding of
+// its own, or of a group it is in whose membership has not lapsed at now (docs/spec/rbac.md §3,
+// §8), whether u is enabled or disabled and whatever the admin mode, which is the credential's.
+// The approval reads its requester so (requesterHolds), and under auth.approval second-admin the
+// API sets no new password for such a user (§13, Another admin's password; #1393).
+func HoldsAdmin(ctx context.Context, r index.Reader, u *index.User, now time.Time) (bool, error) {
 	principals := []string{UserPrincipal(u).String()}
 	groups, err := r.ListIdentityGroups(ctx)
 	if err != nil {

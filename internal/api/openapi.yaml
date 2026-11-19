@@ -1484,6 +1484,11 @@ paths:
         mustChange and is a user.password audit row by the user. Either new password follows
         the rules of auth.passwords (minLength, requireLettersAndDigits), else 400 naming the
         rule. While auth.localPasswords is false no password is set: 400, naming the setting.
+        With auth.approval second-admin, {"password"} for a user who holds admin, by an admin
+        binding of its own or of a group whose membership has not lapsed, enabled or disabled,
+        is 400 naming the setting, whoever asks, the user itself included: such a user changes
+        its own password with currentPassword, or lajstrom admin user set-password sets it
+        (docs/spec/rbac.md §13, Another admin's password).
       security:
         - {}
         - basic: []
