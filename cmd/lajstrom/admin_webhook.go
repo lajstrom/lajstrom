@@ -15,7 +15,6 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/index"
-	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
@@ -261,18 +260,20 @@ func webhookID(arg string) (int64, error) {
 }
 
 // withWebhooks opens the index database of the configuration, runs fn with the webhook service
-// over it, with the master key when one is configured, and closes the database.
+// over it, with the master keys when they are configured and the key the index names to seal
+// (holdMasters: a command that does not hold it exits 1 before it writes), and closes the
+// database.
 func (a *app) withWebhooks(ctx context.Context, fn func(context.Context, *webhook.Service) error) (err error) {
-	m, err := loadMaster(a.cfg.Keys, a.lookupEnv, a.log)
-	if err != nil && !errors.Is(err, keys.ErrNoMasterKey) {
-		return err
-	}
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &webhook.Service{Index: st, Deliverer: newDeliverer(a.cfg, a.log), Master: m, Formats: api.RepoFormat,
+	ms, err := a.holdMasters(ctx, st, a.log)
+	if err != nil {
+		return err
+	}
+	return fn(ctx, &webhook.Service{Index: st, Deliverer: newDeliverer(a.cfg, a.log), Master: ms.m, Formats: api.RepoFormat,
 		Replica: "cli:" + hostName(), Source: a.cfg.Server.ExternalURL, Log: a.log})
 }
 
