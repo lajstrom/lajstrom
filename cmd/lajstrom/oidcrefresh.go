@@ -70,6 +70,7 @@ const (
 // The outcomes of a refresh, the label of lajstrom_oidc_refreshes_total.
 const (
 	refreshOK      = "ok"      // the IdP confirmed the login
+	refreshRefused = "refused" // the IdP answered invalid_grant: the login's token is revoked
 	refreshError   = "error"   // anything else: tried again later, nothing ends
 	refreshDropped = "dropped" // the login's token is revoked, expired or never minted: the row is deleted without a call
 )
@@ -95,6 +96,8 @@ type refresher struct {
 	st       index.Store
 	idp      refreshIDP
 	keys     refreshKeys
+	tokens   *auth.Tokens
+	users    *auth.Users
 	replica  string
 	interval time.Duration
 	now      func() time.Time
@@ -117,7 +120,8 @@ func startRefresh(ctx context.Context, c *config.Config, st index.Store, idp *oi
 		}
 		return
 	}
-	r := &refresher{st: st, idp: idp, keys: m, replica: replica, interval: interval, now: time.Now, log: log}
+	r := &refresher{st: st, idp: idp, keys: m, tokens: &auth.Tokens{Index: st, Log: log}, users: usersOf(c, st, log),
+		replica: replica, interval: interval, now: time.Now, log: log}
 	wg.Go(func() { r.run(ctx) })
 	log.InfoContext(ctx, "OIDC logins asked about again with their refresh tokens", "auth.oidc.refresh.interval", interval.String())
 }
@@ -192,8 +196,7 @@ func (r *refresher) refresh(ctx context.Context, row index.OIDCRefresh) string {
 	case err == nil:
 		return r.confirmed(ctx, row, got)
 	case errors.Is(err, oidc.ErrRefused):
-		// What a refusal ends comes with its audit row; until then it ends nothing.
-		return r.failed(ctx, row, "refused", err)
+		return r.refused(ctx, row)
 	case ctx.Err() != nil:
 		return ""
 	case errors.As(err, &re):
@@ -232,6 +235,35 @@ func (r *refresher) drop(ctx context.Context, row index.OIDCRefresh) string {
 	return refreshDropped
 }
 
+// refused revokes the login's token, once on any replica, with its token.revoke row, in the
+// transaction that deletes the row under its claim. The user and its other tokens are as they
+// were. The refusal is logged at info with the principal and the token's id.
+func (r *refresher) refused(ctx context.Context, row index.OIDCRefresh) string {
+	var ev *index.AuditEvent
+	err := r.write(ctx, row, func(ctx context.Context, w index.Writer) (err error) {
+		fence := row
+		fence.Sealed = nil
+		if err := w.FinishOIDCRefresh(ctx, &fence, r.replica); err != nil {
+			return err
+		}
+		if ev, err = r.tokens.RevokeRefused(ctx, w, *row.TokenID, row.RefreshedAt); err != nil {
+			return err
+		}
+		return w.DeleteOIDCRefresh(ctx, row.ID)
+	})
+	if err != nil {
+		return refreshError
+	}
+	r.tokens.WriteAudit(ctx, ev)
+	principal := ""
+	if ev != nil {
+		principal = ev.Subject
+	}
+	r.log.InfoContext(ctx, "oidc: the IdP refused a login's refresh: its token is revoked", "principal", principal,
+		"token", *row.TokenID, "refreshedAt", row.RefreshedAt.UTC().Format(time.RFC3339))
+	return refreshRefused
+}
+
 // failed records an error of kind under the row's claim: nothing ends, the row is due again
 // after a backoff, and the error is logged at warn by its kind, never in the IdP's words.
 func (r *refresher) failed(ctx context.Context, row index.OIDCRefresh, kind string, cause error) string {
@@ -255,8 +287,9 @@ func refreshBackoff(n int, interval time.Duration) time.Duration {
 }
 
 // confirmed records a success under the row's claim: the new refresh token, sealed, when the IdP
-// rotated it, the IdP's confirmation and the next due time. An answer's ID token must name the
-// row's identity. The token's expiry, its sign-in and the user's last activity do not move.
+// rotated it, the IdP's confirmation and the next due time; and, when the answer has an ID token,
+// which must name the row's identity, the identity's groups replaced when they differ, in the same
+// transaction. The token's expiry, its sign-in and the user's last activity do not move.
 func (r *refresher) confirmed(ctx context.Context, row index.OIDCRefresh, got *oidc.Refreshed) string {
 	if id := got.Identity; id != nil {
 		ident, err := r.st.GetIdentity(context.WithoutCancel(ctx), id.Issuer, id.Subject)
@@ -280,10 +313,19 @@ func (r *refresher) confirmed(ctx context.Context, row index.OIDCRefresh, got *o
 	}
 	now := r.now()
 	next.RefreshedAt, next.NextAt, next.Failures = now, auth.RefreshDue(now, r.interval), 0
-	err := r.write(ctx, row, func(ctx context.Context, w index.Writer) error { return w.FinishOIDCRefresh(ctx, &next, r.replica) })
+	var ev *index.AuditEvent
+	err := r.write(ctx, row, func(ctx context.Context, w index.Writer) (err error) {
+		ev = nil
+		if err := w.FinishOIDCRefresh(ctx, &next, r.replica); err != nil || got.Identity == nil {
+			return err
+		}
+		ev, err = r.users.RefreshGroups(ctx, w, got.Identity.Issuer, got.Identity.Subject, got.Identity.Groups, *row.TokenID)
+		return err
+	})
 	if err != nil {
 		return refreshError
 	}
+	r.users.WriteAudit(ctx, ev)
 	return refreshOK
 }
 
