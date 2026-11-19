@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -17,20 +18,21 @@ import (
 var sealedColumns = map[string]struct{ aad, value string }{
 	index.SealedKeys:     {aad: "fingerprint", value: "private_enc"},
 	index.SealedWebhooks: {aad: "uid", value: "secret_enc"},
+	index.SealedRefresh:  {aad: "id", value: "refresh_enc"},
 }
 
 // sealedOf returns the columns of table, or an error that names it.
 func sealedOf(table string) (aad, value string, err error) {
 	c, ok := sealedColumns[table]
 	if !ok {
-		return "", "", fmt.Errorf("index: %q is not a table of sealed values (keys, webhooks)", table)
+		return "", "", fmt.Errorf("index: %q is not a table of sealed values (keys, webhooks, oidc_refresh)", table)
 	}
 	return c.aad, c.value, nil
 }
 
 // ListSealed returns the sealed values of table whose id is above afterID, by id, at most limit:
-// a key's with its fingerprint as the additional data, a webhook's with webhook:<uid>, an open
-// upload's data key with the session's key.
+// a key's with its fingerprint as the additional data, a webhook's with webhook:<uid>, an OIDC
+// login's refresh token with oidc_refresh:<id>, an open upload's data key with the session's key.
 func (c *conn) ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]index.Sealed, error) {
 	if table == index.SealedSessions {
 		return c.sealedSessions(ctx, afterID, limit)
@@ -43,8 +45,11 @@ func (c *conn) ListSealed(ctx context.Context, table string, afterID int64, limi
 		"SELECT id, "+aad+", "+value+" FROM "+table+" WHERE id > ? ORDER BY id LIMIT ?", afterID, limit)
 	for i := range rows {
 		rows[i].Table = table
-		if table == index.SealedWebhooks {
+		switch table {
+		case index.SealedWebhooks:
 			rows[i].AAD = "webhook:" + rows[i].AAD
+		case index.SealedRefresh:
+			rows[i].AAD = "oidc_refresh:" + strconv.FormatInt(rows[i].ID, 10)
 		}
 	}
 	return rows, err

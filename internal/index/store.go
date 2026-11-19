@@ -132,9 +132,9 @@ type Reader interface {
 	ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
 	// ListSealed (#1288, docs/spec/index-schema.md, The master key and its replacement): the
 	// values that the master keys seal in table (SealedKeys: keys.private_enc; SealedWebhooks:
-	// webhooks.secret_enc; SealedSessions: the data keys of the open uploads of the facade) of
-	// the rows whose id is above afterID, by id, at most limit, each with its additional data.
-	// Another table is an error.
+	// webhooks.secret_enc; SealedRefresh: oidc_refresh.refresh_enc, #1282; SealedSessions: the
+	// data keys of the open uploads of the facade) of the rows whose id is above afterID, by id,
+	// at most limit, each with its additional data. Another table is an error.
 	ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]Sealed, error)
 	// GetSealingKey returns the row of sealing_key, the master key that every process seals
 	// with (#1288); an error wrapping ErrNotFound when there is none.
@@ -614,6 +614,33 @@ type Writer interface {
 	UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
 	// ExpireOIDCLogins deletes the rows whose ExpiresAt is before before, and returns how many.
 	ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
+
+	// The refresh of OIDC logins (docs/spec/rbac.md §8, Asking the IdP again, #1282;
+	// docs/spec/index-schema.md, oidc_refresh).
+
+	// CreateOIDCRefresh inserts r with its Sealed value and fills ID, CreatedAt when zero and
+	// RefreshedAt CreatedAt when zero; a LoginID or a TokenID that another row has wraps
+	// ErrConflict. The caller seals the value with oidc_refresh:<ID> in the same transaction
+	// (Reseal), since ID is known only once inserted.
+	CreateOIDCRefresh(ctx context.Context, r *OIDCRefresh) error
+	// JoinOIDCRefresh gives the row of the login loginID, not joined yet, its token and nextAt,
+	// and clears its LoginID, in the transaction of the mint; no such row wraps ErrNotFound: the
+	// login keeps no refresh token.
+	JoinOIDCRefresh(ctx context.Context, loginID, tokenID int64, nextAt time.Time) error
+	// ClaimOIDCRefresh claims for replica, until until, at most limit rows whose NextAt is not
+	// after at and whose claim is free or ended (ClaimedUntil not after at), and returns them
+	// claimed, by NextAt and ID. A claim is a compare-and-set on the row, so that of replicas
+	// that claim at once one takes each row; on Postgres the rows another holds are skipped.
+	ClaimOIDCRefresh(ctx context.Context, replica string, at, until time.Time, limit int) ([]OIDCRefresh, error)
+	// FinishOIDCRefresh stores RefreshedAt, NextAt and Failures of r, and Sealed when it is not
+	// nil (a nil Sealed keeps the row's value), and frees the claim, while the row's claim is
+	// still replica's and ends at r.ClaimedUntil; otherwise it wraps ErrConflict and nothing
+	// changes: the claim ended and another replica may hold the row, or the row is gone.
+	FinishOIDCRefresh(ctx context.Context, r *OIDCRefresh, replica string) error
+	// DeleteOIDCRefresh deletes the row id; none wraps ErrNotFound.
+	DeleteOIDCRefresh(ctx context.Context, id int64) error
+	// ClearOIDCRefresh deletes every row, and returns how many.
+	ClearOIDCRefresh(ctx context.Context) (int, error)
 	// UseDPoPProof stores key, the sha256 hex of a DPoP proof's key thumbprint and jti
 	// (docs/spec/rbac.md §10, dpop_proofs), until expiresAt, in one statement: a key stored that
 	// expires at now or later wraps ErrConflict, a proof used already, and nothing changes; one

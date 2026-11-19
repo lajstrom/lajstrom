@@ -27,7 +27,7 @@ var SnapshotTables = []string{"repos", "group_members", "users", "identities", "
 // it: every table but KeptTables. A test of each engine lists the tables of the schema and fails
 // when a migration adds one that neither list names.
 var ForcedTables = []string{
-	"identity_groups", "oidc_logins", "identities", "group_members", "tokens", "bindings", "keys", "sessions", "audit",
+	"oidc_refresh", "identity_groups", "oidc_logins", "identities", "group_members", "tokens", "bindings", "keys", "sessions", "audit",
 	"webhook_deliveries", "webhooks", "policy_rules", "policy_seen", "bootstrap_token", "journal_state", "journal", "verdicts",
 	"attachments", "files", "versions",
 	"packages", "blob_map", "index_cache", "index_cache_generations", "oci_repos", "proxy_meta", "tag_claims", "fetch_claims",
