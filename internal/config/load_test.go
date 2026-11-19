@@ -176,6 +176,29 @@ func TestLoadLoginIdle(t *testing.T) {
 	}
 }
 
+// oidcOn opens auth.oidc with an issuer, a client and its secret's file; a test closes it.
+const oidcOn = "auth: {oidc: {issuer: \"https://idp.example\", clientID: c, " +
+	"clientSecretFile: /s, "
+
+// TestLoadOIDCRefresh: auth.oidc.refresh.interval is 0 by default, which is off, and a file sets
+// it from 1m to less than auth.oidc.tokenLifetime, 15m for PCI DSS 8.2.5 (#1282).
+func TestLoadOIDCRefresh(t *testing.T) {
+	for file, want := range map[string]time.Duration{
+		minimal + oidcOn + "scopes: [openid]}}\n":                            0,
+		minimal + oidcOn + "refresh: {interval: 15m}}}\n":                    15 * time.Minute,
+		minimal + oidcOn + "refresh: {interval: 1m}}}\n":                     time.Minute,
+		minimal + oidcOn + "tokenLifetime: 1h, refresh: {interval: 59m}}}\n": 59 * time.Minute,
+		minimal + oidcOn + "refresh: {interval: 0s}}}\n":                     0,
+	} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Auth.OIDC.Refresh.Interval != want {
+			t.Errorf("Load(%q): auth.oidc.refresh.interval %v, want %v", file, c.Auth.OIDC.Refresh.Interval, want)
+		}
+	}
+}
+
 // TestLoadDisableInactiveUsersAfter: auth.disableInactiveUsersAfter is 0 by default, which
 // disables nobody, and a file sets it as a duration of a day or more (#1283).
 func TestLoadDisableInactiveUsersAfter(t *testing.T) {
@@ -474,6 +497,12 @@ func TestLoadErrors(t *testing.T) {
 			"mfa: {amr: [hwk, \"\", " + strings.Repeat("x", 65) + "], acr: [gold, " + strings.Repeat("y", 257) + "]}}}\n",
 			want: []string{"auth.oidc.mfa.amr[1]: must be 1 to 64 bytes", "auth.oidc.mfa.amr[2]: must be 1 to 64 bytes",
 				"auth.oidc.mfa.acr[1]: must be 1 to 256 bytes"}, wantNot: []string{"amr[0]", "acr[0]"}},
+		{name: "oidc refresh interval too short", file: minimal + oidcOn + "refresh: {interval: 30s}}}\n",
+			want: []string{"auth.oidc.refresh.interval: must be 0 (off), or at least 1m0s and less than auth.oidc.tokenLifetime (24h0m0s)"}},
+		{name: "oidc refresh interval of the lifetime", file: minimal + oidcOn + "tokenLifetime: 1h, refresh: {interval: 1h}}}\n",
+			want: []string{"auth.oidc.refresh.interval: must be 0 (off), or at least 1m0s and less than auth.oidc.tokenLifetime (1h0m0s)"}},
+		{name: "negative oidc refresh interval", file: minimal + oidcOn + "refresh: {interval: -15m}}}\n",
+			want: []string{"auth.oidc.refresh.interval: must be 0 (off)"}},
 		{name: "negative grace age", file: minimal + "reconcile: {graceAge: -24h}\n", want: []string{"reconcile.graceAge: must not be negative"}},
 		{name: "webhooks out of bounds",
 			file: minimal + "webhooks: {timeout: 2m, maxAttempts: 0, retention: 0s, workers: -1, allowedHosts: [\"https://ci.internal\", \"ci.internal:8080\", \"\"]}\n",

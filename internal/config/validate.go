@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
@@ -1108,7 +1109,7 @@ func (c ClientCertificates) validate(p *problems, s Server) {
 // validate checks auth.oidc when its issuer is set (docs/spec/rbac.md §8): an absolute issuer
 // without a query, https unless server.insecureHTTP; a client id and the file of its secret;
 // server.externalURL, the base of the redirect URI; a user name claim; a lifetime of at most a
-// year.
+// year; a refresh interval that is 0, or from 1m to less than the lifetime (#1282).
 func (o OIDC) validate(p *problems, s Server) {
 	if o.Issuer == "" {
 		return
@@ -1135,8 +1136,18 @@ func (o OIDC) validate(p *problems, s Server) {
 	if o.TokenLifetime <= 0 || o.TokenLifetime > MaxOIDCTokenLifetime {
 		p.add("auth.oidc.tokenLifetime", "must be positive and at most 8760h (a year)")
 	}
+	o.Refresh.validate(p, o.TokenLifetime)
 	mfaValues(p, "auth.oidc.mfa.amr", o.MFA.AMR, MaxMFAAMRValue)
 	mfaValues(p, "auth.oidc.mfa.acr", o.MFA.ACR, MaxMFAACRValue)
+}
+
+// validate checks auth.oidc.refresh.interval (#1282): 0, which is off, or from
+// MinOIDCRefreshInterval to less than lifetime, auth.oidc.tokenLifetime.
+func (r OIDCRefresh) validate(p *problems, lifetime time.Duration) {
+	if i := r.Interval; i != 0 && (i < MinOIDCRefreshInterval || i >= lifetime) {
+		p.add("auth.oidc.refresh.interval", "must be 0 (off), or at least %s and less than auth.oidc.tokenLifetime (%s); "+
+			"15m for PCI DSS 8.2.5", MinOIDCRefreshInterval, lifetime)
+	}
 }
 
 // mfaValues checks the values of the list key of auth.oidc.mfa: each not empty and at most max

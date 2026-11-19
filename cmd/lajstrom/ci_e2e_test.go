@@ -91,7 +91,7 @@ func (cs *ciServer) open(t *testing.T) *sqlite.Store {
 func (cs *ciServer) replica(t *testing.T, st *sqlite.Store) http.Handler {
 	t.Helper()
 	log := slog.New(slog.DiscardHandler)
-	edge, err := edgeInputs(cs.cfg, st, cs.tokens, log)
+	edge, err := edgeInputs(cs.cfg, st, cs.tokens, nil, log)
 	must(t, err)
 	authz := auth.NewRBAC(auth.RBACOptions{Index: st, Log: log})
 	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

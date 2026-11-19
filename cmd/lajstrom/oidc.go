@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -31,6 +32,9 @@ type edge struct {
 	// both nil while auth.oidc is off.
 	login    http.Handler
 	handoffs *oidc.Handoffs
+	// idp is the relying party of auth.oidc, nil while it is off: serve's refresh of the logins
+	// asks it again (#1282).
+	idp *oidc.Client
 	// proxies are server.trustedProxies.
 	proxies []netip.Prefix
 	// certs is the verifier of auth.clientCertificates (clientCertificates), nil without bundles.
@@ -44,9 +48,10 @@ type edge struct {
 	ci       server.CIAuthenticator
 }
 
-// edgeInputs returns the edge of the configuration c; the CI tokens are signed and verified with tokens.
-func edgeInputs(c *config.Config, st index.Store, tokens token.Keys, log *slog.Logger) (edge, error) {
-	login, handoffs, err := oidcLogin(c, st, log)
+// edgeInputs returns the edge of the configuration c; the CI tokens are signed and verified with
+// tokens, and the refresh tokens of the OIDC logins sealed with m (nil without a master key).
+func edgeInputs(c *config.Config, st index.Store, tokens token.Keys, m *keys.Master, log *slog.Logger) (edge, error) {
+	login, handoffs, idp, err := oidcLogin(c, st, m, log)
 	if err != nil {
 		return edge{}, err
 	}
@@ -63,42 +68,47 @@ func edgeInputs(c *config.Config, st index.Store, tokens token.Keys, log *slog.L
 		return edge{}, err
 	}
 	exchange, ci, err := ciExchange(c, st, tokens, log)
-	return edge{login: login, handoffs: handoffs, proxies: proxies, certs: certs, kubernetes: kubernetes, exchange: exchange, ci: ci}, err
+	return edge{login: login, handoffs: handoffs, idp: idp, proxies: proxies, certs: certs, kubernetes: kubernetes, exchange: exchange,
+		ci: ci}, err
 }
 
-// oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), and the
+// oidcLogin returns the handler of /-/oidc/ when auth.oidc is on (docs/spec/rbac.md §8), the
 // redeemer of the codes its callback hands a web UI (§10), whose token lives the shorter of
-// auth.login.tokenLifetime and auth.oidc.tokenLifetime; both nil when its issuer is empty. It
-// reads the client's secret from auth.oidc.clientSecretFile, never logs it, and reads nothing
-// from the IdP: the discovery document loads at the first login.
-func oidcLogin(c *config.Config, st index.Store, log *slog.Logger) (http.Handler, *oidc.Handoffs, error) {
+// auth.login.tokenLifetime and auth.oidc.tokenLifetime, and the relying party; all nil when its
+// issuer is empty. auth.oidc.refresh.interval takes a master key, m (#1282). It reads the client's
+// secret from auth.oidc.clientSecretFile, never logs it, and reads nothing from the IdP: the
+// discovery document loads at the first login.
+func oidcLogin(c *config.Config, st index.Store, m *keys.Master, log *slog.Logger) (http.Handler, *oidc.Handoffs, *oidc.Client, error) {
 	o := c.Auth.OIDC
 	if o.Issuer == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
+	}
+	if err := checkRefreshKey(o, m); err != nil {
+		return nil, nil, nil, err
 	}
 	secret, err := readClientSecret(o.ClientSecretFile)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	base := strings.TrimSuffix(c.Server.ExternalURL, "/")
 	p, err := oidc.New(oidc.Config{Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: secret,
 		RedirectURL: base + "/-/oidc/callback", Scopes: o.Scopes, UsernameClaim: o.UsernameClaim, GroupsClaim: o.GroupsClaim,
 		KeepGroup: auth.CheckGroupName, AllowHTTP: c.Server.InsecureHTTP, Log: log})
 	if err != nil {
-		return nil, nil, fmt.Errorf("auth.oidc: %w", err)
+		return nil, nil, nil, fmt.Errorf("auth.oidc: %w", err)
 	}
 	origins, err := returnOrigins(c.Server)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	log.Info("OIDC login on", "issuer", o.Issuer, "clientID", o.ClientID, "redirectURI", base+"/-/oidc/callback",
-		"tokenLifetime", o.TokenLifetime.String(), "webUIOrigins", origins)
+		"tokenLifetime", o.TokenLifetime.String(), "webUIOrigins", origins, "refresh.interval", o.Refresh.Interval.String())
 	tokens := &auth.Tokens{Index: st, Log: log}
 	login := oidc.NewHandler(oidc.LoginOptions{Provider: p, Index: st, Users: usersOf(c, st, log),
 		Tokens: tokens, ExternalURL: base, InsecureCookie: c.Server.InsecureHTTP, TokenLifetime: o.TokenLifetime,
 		ReturnOrigins: origins, Log: log})
 	handoffs := &oidc.Handoffs{Index: st, Tokens: tokens, TokenLifetime: min(c.Auth.Login.TokenLifetime, o.TokenLifetime), Log: log}
-	return login, handoffs, nil
+	return login, handoffs, p, nil
 }
 
 // returnOrigins returns the origins a web UI's OIDC login may return to (docs/spec/rbac.md §10):
