@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -130,7 +131,7 @@ func (f *refreshFixture) advance(d time.Duration) {
 
 // refresher is serve's refresher on the fixture for the replica.
 func (f *refreshFixture) refresher(replica string) *refresher {
-	return &refresher{st: f.st, idp: f.idp, keys: f.m, replica: replica, interval: refreshInterval,
+	return &refresher{st: f.st, idp: f.idp, keys: f.m, tokens: f.tokens, users: f.users, replica: replica, interval: refreshInterval,
 		now: f.clock, log: f.log}
 }
 
@@ -290,6 +291,55 @@ func (f *refreshFixture) checkUnmoved(u *index.User, tok *auth.Token) {
 	}
 }
 
+// TestRefreshRefused: invalid_grant revokes that login's token, once, with its token.revoke row,
+// in the transaction that deletes its row; the user stays enabled, and its other login keeps its
+// token and its row. A disabled user's logins are refreshed too.
+func TestRefreshRefused(t *testing.T) {
+	f := newRefreshFixture(t)
+	ctx := context.Background()
+	u, refused := f.login("alice", "a", nil, refreshSecret+"-a")
+	_, kept := f.login("alice", "a", nil, refreshSecret+"-b")
+	carol, disabled := f.login("carol", "c", nil, refreshSecret+"-c")
+	if _, err := f.users.Change(ctx, carol.Name, auth.UserChange{Disabled: ptrTo(true)}, auth.Origin{Source: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	f.idp.set(func(rt string) (*oidc.Refreshed, error) {
+		if rt != refreshSecret+"-b" {
+			return nil, fmt.Errorf("%w: the token endpoint answered 400, error \"invalid_grant\"", oidc.ErrRefused)
+		}
+		return &oidc.Refreshed{}, nil
+	})
+	f.advance(refreshInterval)
+	f.refresher("r1").round(ctx)
+	if f.idp.total() != 3 || f.live(refused.ID) || f.rowOf(refused.ID) != nil || f.live(disabled.ID) || f.rowOf(kept.ID) == nil {
+		t.Errorf("after the refusals: calls %v; want the refused tokens revoked and their rows gone, the other kept", f.idp.calls)
+	}
+	f.checkRefusal(u, refused.ID)
+	if after, _ := f.st.GetUserByID(ctx, u.ID); after.Disabled || len(f.audit(auth.ActionUserDisable)) != 1 {
+		t.Errorf("a refusal changed the user: %+v", after)
+	}
+	if !strings.Contains(f.logs.String(), "the IdP refused a login's refresh") ||
+		!strings.Contains(f.logs.String(), fmt.Sprintf("token=%d", refused.ID)) {
+		t.Errorf("the refusal is not logged: %s", f.logs)
+	}
+}
+
+// checkRefusal checks the token.revoke row of the refused token of u: by anonymous, source
+// refresh, reason refused.
+func (f *refreshFixture) checkRefusal(u *index.User, tokenID int64) {
+	f.t.Helper()
+	for _, ev := range f.audit(auth.ActionTokenRevoke) {
+		if ev.Subject == auth.UserPrincipal(u).String() {
+			if ev.Principal != auth.Anonymous.String() || !strings.Contains(string(ev.Details), `"source":"refresh"`) ||
+				!strings.Contains(string(ev.Details), `"reason":"refused"`) || !strings.Contains(string(ev.Details), fmt.Sprintf(`"id":%d`, tokenID)) {
+				f.t.Errorf("token.revoke = %+v", ev)
+			}
+			return
+		}
+	}
+	f.t.Errorf("no token.revoke of %s", u.Name)
+}
+
 // TestRefreshErrorEndsNothing: every other failure ends nothing: the token stays live, the row
 // is due again after 1, 2, 4 … minutes up to the interval, the error is logged by its kind, and
 // a success clears the count. An ID token that names another identity is such an error.
@@ -326,6 +376,31 @@ func TestRefreshErrorEndsNothing(t *testing.T) {
 	r.round(ctx)
 	if row := f.rowOf(tok.ID); row == nil || row.Failures != 0 {
 		t.Errorf("a success after errors: %+v", row)
+	}
+}
+
+// TestRefreshGroupsChanged: a refreshed ID token's groups replace the identity's when they differ,
+// with user.groups; an answer without an ID token leaves them.
+func TestRefreshGroupsChanged(t *testing.T) {
+	f := newRefreshFixture(t)
+	ctx := context.Background()
+	u, tok := f.login("alice", "a", []string{"dev", "ops"}, refreshSecret)
+	f.idp.set(func(string) (*oidc.Refreshed, error) {
+		return &oidc.Refreshed{Identity: &oidc.Identity{Issuer: testIssuer, Subject: "a", Groups: []string{"dev"}}}, nil
+	})
+	r := f.refresher("r1")
+	f.advance(refreshInterval)
+	r.round(ctx)
+	groups, _ := auth.UserGroups(ctx, f.st, u, f.clock())
+	evs := f.audit(auth.ActionUserGroups)
+	if len(groups) != 1 || groups[0] != "dev" || len(evs) != 1 || !strings.Contains(string(evs[0].Details), fmt.Sprintf(`"token":%d`, tok.ID)) {
+		t.Errorf("the groups after a refresh: %q; user.groups %+v", groups, evs)
+	}
+	f.idp.set(func(string) (*oidc.Refreshed, error) { return &oidc.Refreshed{}, nil })
+	f.advance(refreshInterval)
+	r.round(ctx)
+	if groups, _ := auth.UserGroups(ctx, f.st, u, f.clock()); len(groups) != 1 || len(f.audit(auth.ActionUserGroups)) != 1 {
+		t.Errorf("an answer without an ID token changed the groups: %q", groups)
 	}
 }
 
@@ -403,6 +478,43 @@ func TestStartRefreshOff(t *testing.T) {
 	wg.Wait()
 	if rows := f.rows(); len(rows) != 0 || !strings.Contains(f.logs.String(), "count=1") {
 		t.Errorf("the rows after a start with the setting off: %+v; %s", rows, f.logs)
+	}
+}
+
+// TestRefreshTokenNowhere: the refresh tokens, sealed in the index, are in no log line, no audit
+// row and no snapshot of the control plane, through a rotation, an error and a refusal.
+func TestRefreshTokenNowhere(t *testing.T) {
+	f := newRefreshFixture(t)
+	ctx := context.Background()
+	f.login("alice", "a", []string{"dev"}, refreshSecret+"-a")
+	f.login("bob", "b", nil, refreshSecret+"-b")
+	f.idp.set(func(rt string) (*oidc.Refreshed, error) {
+		if rt == refreshSecret+"-b" {
+			return nil, &oidc.RefreshError{Kind: oidc.RefreshRejected}
+		}
+		return &oidc.Refreshed{RefreshToken: refreshSecret + "-a2",
+			Identity: &oidc.Identity{Issuer: testIssuer, Subject: "a", Groups: []string{"ops"}}}, nil
+	})
+	r := f.refresher("r1")
+	f.advance(refreshInterval)
+	r.round(ctx)
+	f.idp.set(func(string) (*oidc.Refreshed, error) { return nil, fmt.Errorf("%w: invalid_grant", oidc.ErrRefused) })
+	f.advance(refreshInterval)
+	r.round(ctx)
+	cp, err := f.st.ExportControlPlane(ctx, index.ExportOptions{WithAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := json.Marshal(cp)
+	evs, _ := f.st.ListAudit(ctx, index.AuditFilter{Limit: 1000})
+	audit, _ := json.Marshal(evs)
+	for what, text := range map[string]string{"the log": f.logs.String(), "the audit rows": string(audit), "a snapshot": string(snapshot)} {
+		if strings.Contains(text, refreshSecret) {
+			t.Errorf("%s holds a refresh token", what)
+		}
+	}
+	if len(f.audit(auth.ActionTokenRevoke)) != 2 || len(f.audit(auth.ActionUserGroups)) != 1 {
+		t.Errorf("the flows did not run: %s", audit)
 	}
 }
 
