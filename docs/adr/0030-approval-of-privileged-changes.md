@@ -54,7 +54,9 @@ left open:
 2. **What waits**: a binding of the role `admin`, whatever its principal (a service account's is
    "a service account with admin"), a binding on `*/*`, and a deploy token over a mask with
    `write`, through the API. The route answers `202` with the request. A token of a service
-   account does not wait, so that rotating one takes one admin.
+   account does not wait, so that rotating one takes one admin. `POST /api/v1/users` with
+   `admin: true`, which makes the user's `admin` binding with the user, is `400` naming the
+   setting instead, so that the binding is requested with `POST /api/v1/bindings` (#1376).
 3. **A deploy token's secret** is made with the request and answered to the requester, once; the
    request keeps its hash, and the approval makes the token with it. The approver never sees the
    secret, and a request rejected or expired leaves nothing to revoke.
@@ -81,7 +83,7 @@ left open:
 - A client of `POST /api/v1/bindings` or `POST /api/v1/deploy-tokens`, a script or a Terraform
   provider, gets `202` and no binding or working token for these changes while the setting is
   `second-admin`: it must wait for the approval, or the operator makes those changes on the
-  command line.
+  command line. One of `POST /api/v1/users` with `admin: true` gets `400`, and no user.
 - The deploy token's secret is in the requester's hands before it works; a request that nobody
   approves within 7 days is dropped, and the secret never works.
 - `auth.requireReason` makes every control-plane change of the API and of the command line take a

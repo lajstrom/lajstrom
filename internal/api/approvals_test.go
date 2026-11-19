@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -198,6 +199,38 @@ func TestApprovalRequests(t *testing.T) {
 	decodeJSON(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/approve", tok.ID), "", root, pass), http.StatusOK, &done)
 	if p, _, err := authn.AuthenticateBearer(context.Background(), tok.Secret); err != nil || "token:"+p.Name != done.Result {
 		t.Errorf("the secret of the approved request: %v, %v; want %s", p, err, done.Result)
+	}
+}
+
+// TestApprovalAdminUser: with auth.approval second-admin, POST /api/v1/users with admin is 400
+// naming the setting and POST /api/v1/bindings, and makes neither the user, nor its binding, nor a
+// request; a user without admin is made at once. With none, admin makes the user and its admin
+// binding at once, as before (#1376).
+func TestApprovalAdminUser(t *testing.T) {
+	ctx := context.Background()
+	body := `{"name": "second", "password": "a long password", "admin": true}`
+	f := approvalFixture(t).secondAdmin(true)
+	wantError(t, f.doAs(http.MethodPost, "/api/v1/users", body, admin, pass), http.StatusBadRequest, codeInvalid,
+		"auth.approval second-admin", "POST /api/v1/bindings")
+	if _, err := f.st.GetUser(ctx, "second"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the user after the refusal: %v, want none", err)
+	}
+	if bs, _ := f.st.ListBindings(ctx, ""); len(bs) != 2 {
+		t.Errorf("bindings after the refusal: %+v, want the admins' only", bs)
+	}
+	var waiting ApprovalList
+	decodeJSON(t, f.doAs(http.MethodGet, "/api/v1/approvals", "", root, pass), http.StatusOK, &waiting)
+	if len(waiting.Approvals) != 0 {
+		t.Errorf("requests after the refusal: %+v, want none", waiting.Approvals)
+	}
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/users", `{"name": "carol", "password": "a long password"}`, admin, pass),
+		http.StatusCreated)
+
+	f.secondAdmin(false)
+	wantStatus(t, f.doAs(http.MethodPost, "/api/v1/users", body, admin, pass), http.StatusCreated)
+	if bs, _ := f.st.ListBindings(ctx, "user:"+f.uidOf(t, "second")); len(bs) != 1 || bs[0].Role != auth.RoleAdmin ||
+		bs[0].RepoMask != auth.MaskAll {
+		t.Errorf("the bindings of the admin made with none: %+v, want admin on */*", bs)
 	}
 }
 

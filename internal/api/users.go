@@ -23,9 +23,10 @@ type UserList struct {
 }
 
 // UserRequest is the body of POST /api/v1/users. Admin also binds the user to the admin role
-// on */* (docs/spec/rbac.md §6). Kind is local, the default, or service: a service account
-// (docs/spec/rbac.md §1), which has Owner, user:<name>, user:<uid> or group:<name>, and neither
-// a password nor Admin.
+// on */* (docs/spec/rbac.md §6); under auth.approval second-admin it is refused, and that
+// binding is requested with POST /api/v1/bindings (§13). Kind is local, the default, or service:
+// a service account (docs/spec/rbac.md §1), which has Owner, user:<name>, user:<uid> or
+// group:<name>, and neither a password nor Admin.
 type UserRequest struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
@@ -136,7 +137,9 @@ func page(r *http.Request) (limit int, after string, err error) {
 func cursor(key string) string { return base64.RawURLEncoding.EncodeToString([]byte(key)) }
 
 // createUser creates a local user or a service account from the UserRequest of the body: 201
-// with the user and its Location.
+// with the user and its Location. Under auth.approval second-admin, Admin is 400 naming the
+// setting, and nothing is made: the admin binding is made with POST /api/v1/bindings, which waits
+// for a second admin (docs/spec/rbac.md §13), so that the users route is no way around it.
 func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -152,8 +155,12 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 	var u *auth.User
 	switch req.Kind {
 	case "", auth.KindLocal:
-		if req.Owner != "" {
+		switch {
+		case req.Owner != "":
 			return 0, nil, invalid("owner: only a service account has an owner (kind service)")
+		case req.Admin && h.secondAdmin:
+			return 0, nil, invalid("admin: under auth.approval second-admin, a user is bound with POST /api/v1/bindings, " +
+				"which waits for a second admin, not made an admin here")
 		}
 		u, err = h.users.Create(r.Context(), req.Name, req.Password, req.Admin, o)
 	case auth.KindService:
