@@ -44,8 +44,9 @@ var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // newServeCmd returns serve: load and validate the configuration (in the root's
 // PersistentPreRunE), warn of plain HTTP beyond loopback (warnPlainHTTP), read the credential
 // files of the upstreams (loadUpstreams), open the index database and apply its pending
-// migrations, load the master keys and read the one the index names to seal (holdMasters: one
-// that the process does not hold stops serve here), write this process's row of replicas, with
+// migrations, load the master keys and read the one the index names to seal (serveMasters: one
+// that the process does not hold stops serve here, but a data key of keys.masterKeyKMS that the
+// KMS has not unwrapped yet, which unwrapLater asks for again), write this process's row of replicas, with
 // the ids of its keys, and beat it (startReplica: on SQLite a live row of another replica stops
 // serve here), create the repos of the configuration that the control plane does not have, build
 // a provider for every registry and probe its capabilities, build the server and run it until
@@ -129,7 +130,7 @@ func newServeCmd(a *app) *cobra.Command {
 			if err := serveMigrations(ctx, st, c.Database, a.log); err != nil {
 				return err
 			}
-			ms, rep, err := a.serveKeys(ctx, st, c.Database.File())
+			ms, rep, pending, err := a.serveKeys(ctx, st, c.Database.File())
 			if err != nil {
 				return err
 			}
@@ -192,6 +193,7 @@ func newServeCmd(a *app) *cobra.Command {
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			runs.wg.Go(func() { fillSummaries(ctx, st, a.log, summaryBatch) })
 			runs.wg.Go(func() { rep.Run(ctx) })
+			runs.wg.Go(func() { unwrapLater(ctx, a.log, ms.m, pending) }) // the data keys that did not open at the start
 			startWebhooks(ctx, c, ms.m, st, rep.row.ID, &runs.wg, a.log)
 			if err := checkProxyRepos(ctx, st, upstreams, ociUpstreams, a.log); err != nil {
 				return err
@@ -308,18 +310,43 @@ func newServeCmd(a *app) *cobra.Command {
 	}
 }
 
-// serveKeys reads the master keys of serve and the one the index names to seal (holdMasters),
+// serveKeys reads the master keys of serve and the one the index names to seal (serveMasters),
 // before the replicas row, a seal or the listener (docs/spec/index-schema.md, The master key and
 // its replacement), logs them, then writes the row of this process with their ids (startReplica;
-// file is the SQLite file, "" for none).
-func (a *app) serveKeys(ctx context.Context, st store, file string) (masters, *replica, error) {
-	ms, err := a.holdMasters(ctx, st, a.log)
+// file is the SQLite file, "" for none). It returns the data keys of keys.masterKeyKMS that did
+// not open at the start, for unwrapLater.
+func (a *app) serveKeys(ctx context.Context, st store, file string) (masters, *replica, []dataKey, error) {
+	ms, pending, err := a.serveMasters(ctx, st)
 	if err != nil {
-		return masters{}, nil, err
+		return masters{}, nil, nil, err
 	}
 	logMasters(a.log, ms.m)
 	rep, err := startReplica(ctx, st, a.log, time.Now, file, ms.m)
-	return ms, rep, err
+	return ms, rep, pending, err
+}
+
+// serveMasters is holdMasters for serve, which does not wait for the KMS (docs/spec/index-schema.md,
+// A master key in a KMS, #1388): an entry of keys.masterKeyKMS whose row is missing or under
+// another KMS key stops it, but a data key that the KMS does not unwrap at the start
+// (unwrapAtStart) does not: serve starts, and while that key is the one that seals it seals
+// nothing and is not ready. It returns those keys, which may open when asked again.
+func (a *app) serveMasters(ctx context.Context, st store) (masters, []dataKey, error) {
+	m, err := loadMasters(a.cfg.Keys, a.lookupEnv, a.log)
+	if errors.Is(err, keys.ErrNoMasterKey) {
+		return masters{none: err}, nil, nil
+	}
+	if err != nil {
+		return masters{}, nil, err
+	}
+	ds, err := dataKeysOf(ctx, st, a.cfg.Keys.MasterKeyKMS, a.masterKMS())
+	if err != nil {
+		return masters{}, nil, err
+	}
+	errs := unwrapAtStart(ctx, m, ds)
+	if err := sealingAtStart(ctx, st, m, hostName()); err != nil {
+		return masters{}, nil, err
+	}
+	return masters{m: m}, unwrappedAtStart(ctx, a.log, m, ds, errs), nil
 }
 
 // bootstrapRepos makes the keys of encrypted repos under the master keys m (nil without a master
@@ -399,7 +426,8 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 
 // ready is the readiness check of serve (docs/spec/http-routing.md §5): the index database
 // answers, no other replica serves on it when it is SQLite, this replica holds the master key the
-// index names to seal, this replica's clock is within clockFail of the database's, and every
+// index names to seal, unwrapped when it is a data key of a KMS, this replica's clock is within
+// clockFail of the database's, and every
 // registry answered GET /v2/ within the last minute; one
 // that refused the credentials is answered as such. A failure is logged with its cause and
 // answered without it: /-/readyz is public, and a driver error can name hosts and users; the

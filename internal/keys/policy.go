@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -33,6 +34,30 @@ type PolicyKey struct {
 	private *ecdsa.PrivateKey // a key made here
 	kms     KMS               // or the KMS that holds it, under kmsName
 	kmsName string
+	later   *laterKey // or the row, opened at its first signature (#1388)
+}
+
+// laterKey is the private part of a policy key whose row did not open at the start, under a data
+// key of keys.masterKeyKMS that the KMS had not unwrapped yet (#1388): it is opened at a signature
+// once it opens, and kept.
+type laterKey struct {
+	open func() (*PolicyKey, error)
+	mu   sync.Mutex
+	key  *PolicyKey
+}
+
+// get returns the policy key opened, opening it now when it is not yet.
+func (l *laterKey) get() (*PolicyKey, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.key == nil {
+		k, err := l.open()
+		if err != nil {
+			return nil, err
+		}
+		l.key = k
+	}
+	return l.key, nil
 }
 
 // String is the key's fingerprint, never its material.
@@ -64,6 +89,13 @@ func (k *PolicyKey) PEM() []byte {
 // Sign returns the ECDSA signature, ASN.1 DER, of the SHA-256 of msg: by the key itself, or by the
 // KMS that holds it, with ctx.
 func (k *PolicyKey) Sign(ctx context.Context, msg []byte) ([]byte, error) {
+	if k.later != nil {
+		opened, err := k.later.get()
+		if err != nil {
+			return nil, err
+		}
+		return opened.Sign(ctx, msg)
+	}
 	digest := k.hashOf(msg)
 	if k.private != nil {
 		return ecdsa.SignASN1(rand.Reader, k.private, digest)
@@ -79,7 +111,9 @@ func (k *PolicyKey) Sign(ctx context.Context, msg []byte) ([]byte, error) {
 // insert wins, keys_active): an ECDSA P-256 key made here and sealed with the master key, or,
 // when uri is a KMS key URI of ADR 0020, that key, whose canonical URI the row seals instead.
 // uri "" or Local makes the key here. A row that does not open is an error naming its
-// fingerprint.
+// fingerprint; while a data key of keys.masterKeyKMS is not unwrapped yet, it is the key of the
+// row, whose private part opens at its first signature that it can (#1388), an unavailable KMS
+// until then.
 func (s *Service) PolicyKey(ctx context.Context, uri string) (*PolicyKey, error) {
 	row, err := s.st.GetKey(ctx, nil, KindPolicy)
 	if errors.Is(err, index.ErrNotFound) {
@@ -88,7 +122,15 @@ func (s *Service) PolicyKey(ctx context.Context, uri string) (*PolicyKey, error)
 	if err != nil {
 		return nil, err
 	}
-	return s.openPolicyKey(*row)
+	k, err := s.openPolicyKey(*row)
+	if errors.Is(err, ErrKMSUnavailable) && len(s.master.Pending()) > 0 {
+		pub, perr := x509.ParsePKIXPublicKey(row.Public)
+		if perr == nil {
+			r := *row
+			return &PolicyKey{Key: r, Public: pub, later: &laterKey{open: func() (*PolicyKey, error) { return s.openPolicyKey(r) }}}, nil
+		}
+	}
+	return k, err
 }
 
 // newPolicyKey makes and stores the policy key of uri, or reads the one another replica stored
