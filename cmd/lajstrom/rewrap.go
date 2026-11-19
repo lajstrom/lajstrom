@@ -20,31 +20,37 @@ import (
 // rewrapBatch is how many rows of a table one transaction of a rewrap seals again.
 const rewrapBatch = 100
 
-// sealedTables are the columns a rewrap seals again, in its order: keys.private_enc, then
-// webhooks.secret_enc.
-var sealedTables = []string{index.SealedKeys, index.SealedWebhooks}
+// sealedTables are the columns a rewrap seals again, in its order: keys.private_enc,
+// webhooks.secret_enc, then oidc_refresh.refresh_enc, the refresh tokens of the OIDC logins
+// (#1282).
+var sealedTables = []string{index.SealedKeys, index.SealedWebhooks, index.SealedRefresh}
 
 // noKey is the key id of the census under which it counts the upload sessions that no key held
 // opens.
 const noKey = "none"
 
-// keyCounts are values by table: of keys and of webhooks.
+// keyCounts are values by table: of keys, of webhooks and of the refresh tokens of oidc_refresh
+// (docs/spec/rbac.md §5, key.rewrap: refresh, #1282).
 type keyCounts struct {
 	Keys     int `json:"keys"`
 	Webhooks int `json:"webhooks"`
+	Refresh  int `json:"refresh"`
 }
 
 // add counts n values of table.
 func (c *keyCounts) add(table string, n int) {
-	if table == index.SealedKeys {
+	switch table {
+	case index.SealedKeys:
 		c.Keys += n
-	} else {
+	case index.SealedRefresh:
+		c.Refresh += n
+	default:
 		c.Webhooks += n
 	}
 }
 
 // lostValue names a value under no master key the process holds, by its row: a key by its id,
-// kind and fingerprint, a webhook by its id; never the value.
+// kind and fingerprint, a webhook or a refresh token by its id; never the value.
 type lostValue struct {
 	Table       string `json:"table"`
 	ID          int64  `json:"id"`
@@ -52,7 +58,8 @@ type lostValue struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
-// String is the row of v as an error names it: "keys id 3 (gpg AB12…)", "webhooks id 2".
+// String is the row of v as an error names it: "keys id 3 (gpg AB12…)", "webhooks id 2",
+// "oidc_refresh id 7".
 func (v lostValue) String() string {
 	if v.Table == index.SealedKeys {
 		return fmt.Sprintf("keys id %d (%s %s)", v.ID, v.Kind, v.Fingerprint)
@@ -67,9 +74,9 @@ type openSessions struct {
 	LastExpiresAt time.Time `json:"lastExpiresAt"`
 }
 
-// census is what a count of the sealed values found: the values of keys and webhooks under each
-// key id; those under no key held, by row; and the open upload sessions of encrypted repos under
-// each key id, noKey for those under none.
+// census is what a count of the sealed values found: the values of keys, webhooks and refresh
+// tokens under each key id; those under no key held, by row; and the open upload sessions of
+// encrypted repos under each key id, noKey for those under none.
 type census struct {
 	Under    map[string]keyCounts
 	Lost     []lostValue
@@ -87,9 +94,10 @@ func (c census) other(id string) map[string]keyCounts {
 	return out
 }
 
-// countSealed reads every value of keys.private_enc and webhooks.secret_enc, a page at a time,
-// and the data keys of the open uploads of the facade, and opens each with m, its sealing key
-// first, to count them under the key that opens each. A value opened is cleared at once.
+// countSealed reads every value of keys.private_enc, webhooks.secret_enc and
+// oidc_refresh.refresh_enc, a page at a time, and the data keys of the open uploads of the
+// facade, and opens each with m, its sealing key first, to count them under the key that opens
+// each. A value opened is cleared at once.
 func countSealed(ctx context.Context, st store, m *keys.Master) (census, error) {
 	c := census{Under: map[string]keyCounts{}, Sessions: map[string]openSessions{}}
 	for _, table := range sealedTables {
@@ -266,12 +274,13 @@ func liveReplicas(ctx context.Context, st store) ([]index.Replica, error) {
 	return live, nil
 }
 
-// reseal seals again under the key m seals with, to, every value of keys.private_enc and
-// webhooks.secret_enc that another key m holds opens: rewrapBatch rows a transaction, each value
-// written only where its row still holds the value read (Reseal), a new nonce and the same
-// additional data. A value under to is left as it is, and so is one under no key held (the check
-// has stopped the run unless --allow-lost). A row changed since its batch read it is read again
-// after the last batch, once. It returns what it sealed again, also when it fails part way.
+// reseal seals again under the key m seals with, to, every value of keys.private_enc,
+// webhooks.secret_enc and oidc_refresh.refresh_enc that another key m holds opens: rewrapBatch
+// rows a transaction, each value written only where its row still holds the value read (Reseal),
+// a new nonce and the same additional data. A value under to is left as it is, and so is one
+// under no key held (the check has stopped the run unless --allow-lost). A row changed since its
+// batch read it (a webhook's secret rotated, a refresh token rotated) is read again after the
+// last batch, once. It returns what it sealed again, also when it fails part way.
 func reseal(ctx context.Context, st store, m *keys.Master, to string) (keyCounts, error) {
 	var done keyCounts
 	for _, table := range sealedTables {
