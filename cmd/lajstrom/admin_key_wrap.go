@@ -165,3 +165,81 @@ func printEntry(out io.Writer, row index.WrappedMasterKey) error {
 	_, err := fmt.Fprintf(out, "%s\nkeys:\n  masterKeyKMS:\n    - {id: %s, kms: %q}\n", row.KeyID, row.KeyID, row.KMS)
 	return err
 }
+
+// dropMaster is admin key drop --master: the row of the data key id deleted with its audit row
+// key.drop, {kms}, subject master:<id>, in one transaction (docs/spec/index-schema.md, A master key
+// in a KMS, Removing one). It refuses, and writes nothing, while the index seals with the key or a
+// live replica holds it: its entry leaves the configuration of every process first. It reads no
+// master key, deletes no KMS key, and the snapshots and backups keep their copy of the row. It
+// prints the id. With auth.requireReason it needs a reason, as admin key wrap does.
+func (a *app) dropMaster(ctx context.Context, out io.Writer, id string) (err error) {
+	switch {
+	case !masterKeyID.MatchString(id):
+		return usageError("--master %q: the id of a master key is 16 lowercase hexadecimal digits", id)
+	case a.cfg.Auth.RequireReason && a.cliOrigin().ChangeReason == "":
+		return usageError("--reason (%s): required (auth.requireReason): a ticket or a sentence, the reference of the change's "+
+			"approval", envReason)
+	}
+	st, err := a.openMigrated(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, st.Close()) }()
+	row, err := wrappedRow(ctx, st, id)
+	if err != nil {
+		return err
+	}
+	if err := dropGuard(ctx, st, id); err != nil {
+		return err
+	}
+	ev := index.AuditEvent{Principal: auth.Anonymous.String(), Action: keys.ActionDrop, Subject: "master:" + id,
+		Details: rewrapDetails(map[string]any{"kms": row.KMS}, a.cliOrigin())}
+	if err := st.Tx(ctx, func(w index.Writer) error {
+		if err := w.AppendAudit(ctx, &ev); err != nil {
+			return err
+		}
+		return w.DeleteWrappedMasterKey(ctx, id)
+	}); err != nil {
+		return fmt.Errorf("master key %s: %w", id, err)
+	}
+	_, err = fmt.Fprintln(out, id)
+	return err
+}
+
+// wrappedRow returns the row of wrapped_master_keys of id; none is an error.
+func wrappedRow(ctx context.Context, st wrappedReader, id string) (index.WrappedMasterKey, error) {
+	rows, err := st.ListWrappedMasterKeys(ctx)
+	if err != nil {
+		return index.WrappedMasterKey{}, err
+	}
+	for _, r := range rows {
+		if r.KeyID == id {
+			return r, nil
+		}
+	}
+	return index.WrappedMasterKey{}, fmt.Errorf("master key %s has no row in wrapped_master_keys: it is no data key of a KMS, or "+
+		"it was dropped", id)
+}
+
+// dropGuard refuses the drop of the data key id while the sealing row names it, or a replica
+// whose heartbeat is younger than replicaStaleAfter holds it, naming it.
+func dropGuard(ctx context.Context, st store, id string) error {
+	switch row, err := st.GetSealingKey(ctx); {
+	case err == nil && row.KeyID == id:
+		return fmt.Errorf("the index seals with master key %s: make another key the one that seals first, lajstrom admin key "+
+			"rewrap --to <id>", id)
+	case err != nil && !errors.Is(err, index.ErrNotFound):
+		return fmt.Errorf("the sealing key of the index: %w", err)
+	}
+	live, err := liveReplicas(ctx, st)
+	if err != nil {
+		return err
+	}
+	for _, r := range live {
+		if slices.Contains(r.MasterKeys, id) {
+			return fmt.Errorf("replica %s on host %s, process %d, holds master key %s: remove its entry from keys.masterKeyKMS of "+
+				"every process first", r.ID, r.Host, r.PID, id)
+		}
+	}
+	return nil
+}
