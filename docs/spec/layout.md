@@ -1038,7 +1038,8 @@ type Reader interface {
     ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
     // ListSealed (#1288, index-schema.md, The master key and its replacement): the values that
     // the master keys seal in table (SealedKeys: keys.private_enc; SealedWebhooks:
-    // webhooks.secret_enc) of the rows whose id is above afterID, by id, at most limit
+    // webhooks.secret_enc; SealedRefresh: oidc_refresh.refresh_enc, #1282) of the rows whose id
+    // is above afterID, by id, at most limit
     ListSealed(ctx context.Context, table string, afterID int64, limit int) ([]Sealed, error)
     // GetSealingKey: the row of sealing_key, the master key that every process seals with
     // (#1288); none: ErrNotFound
@@ -1297,6 +1298,19 @@ type Writer interface {
     CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
     UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
     ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
+    // the refresh of OIDC logins (rbac.md §8, #1282; index-schema.md, oidc_refresh).
+    // CreateOIDCRefresh inserts r, sealed, and fills ID; JoinOIDCRefresh gives the row of
+    // loginID its token and its NextAt, in the transaction of the mint. ClaimOIDCRefresh claims
+    // for replica until until at most limit rows whose NextAt is not after at and whose claim is
+    // free or ended, and answers them. FinishOIDCRefresh stores Sealed, RefreshedAt, NextAt and
+    // Failures of r and frees its claim while the claim is still replica's, else ErrConflict and
+    // nothing changes. DeleteOIDCRefresh deletes a row; ClearOIDCRefresh every row
+    CreateOIDCRefresh(ctx context.Context, r *OIDCRefresh) error
+    JoinOIDCRefresh(ctx context.Context, loginID, tokenID int64, nextAt time.Time) error
+    ClaimOIDCRefresh(ctx context.Context, replica string, at, until time.Time, limit int) ([]OIDCRefresh, error)
+    FinishOIDCRefresh(ctx context.Context, r *OIDCRefresh, replica string) error
+    DeleteOIDCRefresh(ctx context.Context, id int64) error
+    ClearOIDCRefresh(ctx context.Context) (int, error)
     // UseDPoPProof stores key, the sha256 hex of a DPoP proof's key thumbprint and jti
     // (rbac.md §10, index-schema.md, dpop_proofs), until expiresAt; a key stored that expires at
     // now or later wraps ErrConflict, a replay, and nothing changes. ExpireDPoPProofs deletes
@@ -1382,7 +1396,9 @@ type Writer interface {
 // control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent,
 // Webhook, WebhookDelivery, Approval, SealingKey (KeyID, Source, Host, AuditID, SetAt; #1288),
 // WrappedMasterKey (KeyID, KMS, Wrapped, CreatedAt, WrappedAt, AuditID; #1388);
-// coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
+// coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin, OIDCRefresh (LoginID,
+// TokenID, IdentityID, Sealed, CreatedAt, RefreshedAt, NextAt, Failures, ClaimedBy,
+// ClaimedUntil; #1282); derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
 // PackageFacts, PackageQuery, PackageSort, PackageKey, PackagePlace, AttrValue, SearchQuery,
@@ -2115,11 +2131,21 @@ type Provider interface {
     // token or its claims do not verify; the reason is for the log, never the client) or
     // ErrUnavailable (the IdP does not answer).
     Exchange(ctx context.Context, code, verifier, nonce string) (*Identity, error)
+    // Refresh redeems a login's refresh token at the token endpoint (rbac.md §8, #1282) and
+    // verifies the answer's ID token, when there is one, but for the nonce, against the issuer
+    // and subject of the identity. Errors wrap ErrRefused for invalid_grant only, which ends the
+    // login; every other failure, an ID token that does not verify included, ends nothing.
+    Refresh(ctx context.Context, refreshToken, subject string) (*Refreshed, error)
 }
 type Identity struct {
     Issuer, Subject string                  // iss and sub of the ID token
     Username        string                  // the claim auth.oidc.usernameClaim, unchecked
     Groups          []string                // the claim auth.oidc.groupsClaim, the names of rbac.md §8 kept
+    RefreshToken    string                  // the exchange's refresh_token, "" without one (#1282)
+}
+type Refreshed struct {
+    RefreshToken string                     // the new refresh token, "" when the IdP sent none
+    Identity     *Identity                  // the answer's ID token, nil without one
 }
 var ErrRefused, ErrUnavailable error
 ```

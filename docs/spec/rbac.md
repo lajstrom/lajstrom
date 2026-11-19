@@ -8,8 +8,9 @@
   changes and a reason with every change (§13), after the MVP (#1285); the export and the prune
   of the audit log (§5), after the MVP (#1278); the access report and its review (§14), after the
   MVP (#1279); the rewrap of the master key's values (§5, §6), after the MVP (#1288); the master
-  key in a KMS, its rows `key.wrap` and `key.drop` (§5, §6), after the MVP (#1388). Owned by
-  `internal/auth`.
+  key in a KMS, its rows `key.wrap` and `key.drop` (§5, §6), after the MVP (#1388); asking the
+  IdP again about each OIDC login with its refresh token (§8, §5), after the MVP (#1282). Owned
+  by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [ADR 0021](../adr/0021-service-accounts.md),
   [ADR 0027](../adr/0027-inactive-users-disabled-at-authentication.md),
   [ADR 0028](../adr/0028-local-passwords-off-or-locked-out.md),
@@ -19,6 +20,7 @@
   [ADR 0032](../adr/0032-access-report-and-its-review.md),
   [ADR 0034](../adr/0034-replacing-the-master-key.md),
   [ADR 0036](../adr/0036-the-master-key-in-a-kms.md),
+  [ADR 0037](../adr/0037-asking-the-idp-again-about-each-login.md),
   [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -183,8 +185,9 @@ OIDC login (§8: the callback that verified the ID token, for a browser, a web U
 service account authenticates with its tokens only, so their use is its activity. Nothing else
 is: the bearer of §4 and the archive token of a terraform download are issued for an
 authentication, which counts, and are no credential of the user; an admin's change of the user
-(a password set, a token made for it, a binding, a rename) is not the user's. A deploy token, a
-CI token (§11) and the principals of §9 are no user, and nothing here concerns them.
+(a password set, a token made for it, a binding, a rename) is not the user's, nor is the refresh
+of its OIDC logins, which `serve` makes without the person (§8). A deploy token, a CI token (§11)
+and the principals of §9 are no user, and nothing here concerns them.
 
 An authentication reads the user's row for every credential anyway (§3). After the credential
 has verified and the check below has passed, it records the activity as a request records a
@@ -678,7 +681,13 @@ OIDC (§10), a token's creation or any other control-plane change, has `signIn`,
 `{token, authTime, amr, acr}`, in its details, each of the last three when the sign-in kept it
 (#1276): an admin's change shows how the admin signed in at the IdP (§12). The
 token of a web UI's sign-in refused as idle (§10) is revoked by the server: a `token.revoke` row by
-`anonymous`, with `source` `idle` and `reason` `idle`. A service account's requests have the
+`anonymous`, with `source` `idle` and `reason` `idle`. So is the token of an OIDC login whose
+refresh the IdP refuses (§8, #1282): `source` `refresh`, `reason` `refused`, and `refreshedAt`,
+the IdP's last confirmation of the login (its mint when there was none), beside `id`, `kind` and
+`name`. A refresh that changes an identity's groups is `user.groups`, by `anonymous`, `source`
+`refresh`, `subject` the user's `user:<uid>`, with `issuer`, `subject`, `groups`, `previous` and
+`token` in its details, `token` the id of the login's token. A refresh that changes nothing, and
+one that fails, writes no row. A service account's requests have the
 principal `user:<uid>` and the name of every user, and the answers of the audit log add
 `principalKind` `service` to its rows; its `user.create` row has `kind` `service` and
 `owner` in its details, a change of its owner is `user.owner`, with `from` and `owner`, and a
@@ -889,11 +898,12 @@ the key it names to seal (`--to`;
 [index-schema.md](index-schema.md#the-master-key-and-its-replacement)), written as a registry
 write's: `pending` in the transaction of its switch of the sealing key, with `details`
 `{"from", "to", "under", "lost", "sessions"}`: `from` the id that the sealing key had before (`""`
-without one, `to` itself when it had it already), `to`, `under` the values of `keys` and of
-`webhooks` that the check found under each other key, by id (`{"<id>": {"keys", "webhooks"}}`),
-`lost` those under no key it holds (`{"keys", "webhooks"}`, with `--allow-lost`), and `sessions` the
-open upload sessions under each other key, by id; then `ok` with `resealed` `{"keys", "webhooks"}`,
-what it sealed again, and `sessions` as it found them at its end, or `failed` with `resealed`,
+without one, `to` itself when it had it already), `to`, `under` the values of `keys`, of
+`webhooks` and of `oidc_refresh` (`refresh`, #1282) that the check found under each other key, by
+id (`{"<id>": {"keys", "webhooks", "refresh"}}`), `lost` those under no key it holds
+(`{"keys", "webhooks", "refresh"}`, with `--allow-lost`), and `sessions` the open upload sessions
+under each other key, by id; then `ok` with `resealed` `{"keys", "webhooks", "refresh"}`, what it
+sealed again, and `sessions` as it found them at its end, or `failed` with `resealed`,
 `left` (the values still under another key, by id, as `under`) and the error. A run that sets
 nothing and finds nothing under another key writes its row `ok` at once, with zero counts. No row,
 no line and no answer of the command holds a key or a value, sealed or not: a key by its id only, a
@@ -1051,9 +1061,10 @@ One OpenID Connect provider, `auth.oidc` (configuration.md), logs people in; OID
 `auth.oidc.issuer` is empty. Lajstrom is its relying party, a confidential client whose redirect
 URI is `<server.externalURL>/-/oidc/callback`. A login ends in a personal access token (§1),
 never in a token of the IdP: the clients send what they send today, and no request but a login
-asks the IdP anything. Token exchange for CI (a CI provider's OIDC token for a short-lived
-token) is §11, and joining an existing user to an identity is not in this section (decisions on
-#69).
+asks the IdP anything; with `auth.oidc.refresh.interval`, `serve` asks it again about each login,
+apart from any request (Asking the IdP again, below). Token exchange for CI (a CI provider's OIDC
+token for a short-lived token) is §11, and joining an existing user to an identity is not in this
+section (decisions on #69).
 
 **The identity.** An identity is the pair (`iss`, `sub`) of a verified ID token
 (index-schema.md, `identities`), and maps to one user. The first login of an identity creates
@@ -1073,8 +1084,9 @@ group, the principal `group:<name>`; any other is dropped and logged at debug le
 claim when it is not a list. Each login replaces the groups of its identity, in the transaction
 that moves `auth_version`, and they count until the login's `auth.oidc.tokenLifetime` has
 passed (`identities.groups_expire_at`). So a group removed at the IdP grants nothing from the
-user's next login on, on every replica, and no group grants beyond the lifetime of the token
-its login minted. A group exists only through the identities that name it.
+user's next login on, or from the next refresh of one of its logins that has an ID token (below),
+on every replica, and no group grants beyond the lifetime of the token its login minted. A group
+exists only through the identities that name it.
 
 **Group bindings.** `group:<name>` takes every role and mask of §3. The permission of a user
 is the union of its own bindings and the bindings of its current groups, and a personal access
@@ -1109,7 +1121,8 @@ The JWKS is cached: a `kid` it does not have fetches it again, at most once ever
 is fetched again hourly; while the IdP does not answer, the last set that loaded stays. Then,
 in one transaction with the audit rows, the identity's user is found or created, its groups
 replaced and its last activity recorded (§1): `user.create` for a first login (`details.source`
-`oidc`), and `user.login` (`details`: `issuer`, `subject`, `groups`). The browser's login mints
+`oidc`), and `user.login` (`details`: `issuer`, `subject`, `groups`, and `refresh` with
+`auth.oidc.refresh.interval`, whether the login keeps a refresh token). The browser's login mints
 a personal access token of the user without scopes, named `oidc <time>`, which expires after
 `auth.oidc.tokenLifetime` (24h by default, at most a year), with its `token.create` row (`createdBy` `oidc`), and answers
 it once, on a page with `Cache-Control: no-store`; a login that a web UI started hands the UI a
@@ -1139,6 +1152,78 @@ the transaction that marks the device request redeemed, and answers `200` with `
 `token_type` `Bearer`, `expires_in` and `user`, the user's name. A user code that is unknown,
 expired or approved is a page that asks again; the pages and the start of a device request are
 throttled per client address as the failed logins are (§1).
+
+**Asking the IdP again** (#1282, [ADR 0037](../adr/0037-asking-the-idp-again-about-each-login.md);
+option B, decided on #1282, 2026-11-16). A login asks the IdP once. With
+`auth.oidc.refresh.interval` (configuration.md; `0`, the default, is off; `15m` for PCI DSS
+8.2.5), `serve` asks it again about each login, every interval, with the refresh token of the
+login's code exchange, and ends the login when the IdP refuses. A person disabled or removed at
+the IdP so loses the tokens of their logins within the interval and a minute, on every replica,
+where the window was `auth.oidc.tokenLifetime`. A login here is the personal access token that
+one OIDC login mints: the browser's, `lajstrom login`'s and a web UI's (§10).
+
+- **What is kept.** The code exchange answers a refresh token when the IdP issues one, which most
+  do only for the scope `offline_access` (Keycloak without it too): the operator adds it to
+  `auth.oidc.scopes`, and Lajstrom asks for no scope or parameter of its own. The callback seals
+  the refresh token with the master key into a row of `oidc_refresh` (index-schema.md), one per
+  login, and the mint of the login's token (at the callback, the device's poll or
+  `POST /api/v1/login`) joins the row to the token. `lajstrom admin key rewrap` seals the rows
+  again. A refresh token is never logged, audited, answered or put in a URL, and is of no use
+  without the client's secret (`client_secret_basic`). A login whose IdP issued none is not
+  refreshed: its token lasts its lifetime, as before, the callback logs a warning that says to
+  ask for `offline_access`, and its `user.login` row has `refresh: false`. The setting takes a
+  master key, without which it is an error of the configuration, and the callback of a replica
+  that seals nothing (index-schema.md, The master key and its replacement) is `503` with
+  `Retry-After: 30`, before the code exchange.
+- **Who refreshes.** A login is due `interval` after its mint, less up to a tenth of the interval
+  at random, then so after each refresh, so that none goes longer than the interval unasked and
+  the logins of one morning spread out. Every 30 seconds, each replica claims the rows that are
+  due, each for 2 minutes with its `replicas` id (a compare-and-set on the row), and refreshes
+  them, at most 4 at once, until none is due: `grant_type=refresh_token` at the IdP's
+  `token_endpoint`, with the client's credentials, 10 seconds at most. So one replica at a time
+  refreshes a login, as a refresh token that the IdP takes once needs, and the replicas share the
+  work without a leader. A replica that seals nothing claims none: an answer may hold a new
+  refresh token, which it could not keep. A due row whose token is revoked or expired, or that
+  has no token 10 minutes after its login (a code never redeemed), is deleted without a call. The
+  logins of a disabled user are refreshed as any other, so that enabling the user again brings
+  back no login that the IdP ended.
+- **A success** confirms the login. In one transaction, which releases the claim while it is
+  still the replica's, the row keeps the new refresh token when the answer holds one (an IdP may
+  rotate it at each use, and then refuse the old one: Okta, Entra ID, Keycloak, Dex), its
+  `refreshed_at` and its next due time. A new refresh token that cannot be written is tried again
+  until the claim ends; lost, the next refresh sends the old one, which the IdP may refuse. The
+  ID token of the answer, when there is one, is verified as at a login but for the nonce, and
+  must name the identity's `iss` and `sub` (OpenID Connect Core §12.2). Its groups replace the
+  identity's when they differ, in the transaction that moves `auth_version`, with a `user.groups`
+  row (§5), and leave `groups_expire_at` as it is; without an ID token the groups stay. A success
+  moves neither the token's expiry nor its sign-in (`auth_time`, `amr`, `acr`, §10), and is no
+  activity of the user (§1).
+- **A refusal** is the answer `invalid_grant` (RFC 6749 §5.2), and nothing else: the IdP no longer
+  honours the refresh token, because the person was disabled or removed, signed out at the IdP,
+  or because their session there ended. It revokes the login's token, once on any replica, in the
+  transaction that deletes the row, with its `token.revoke` row (§5). The user's other tokens and
+  the user itself are as they were; every login of a person removed at the IdP is refused at its
+  own refresh, all within the interval. The person gets what a revoked token gets, `401`, and
+  logs in again, which the IdP refuses to a person it removed; a bearer of `/v2` issued for the
+  token before lasts until its `exp`, 20 minutes at most (§4). The refusal is logged at info with
+  the principal and the token's id.
+- **An error** is any other answer, or none: the IdP down or slow, `5xx`, `429`,
+  `invalid_client`, an answer that does not parse, an ID token that does not verify or that names
+  another identity. It ends nothing: the row is due again after a minute, then 2, 4 and so on up
+  to the interval, less up to a tenth at random, and the error is logged at warn by its kind,
+  never in the IdP's words. While the IdP does not answer, a login so lasts its lifetime, as
+  without the setting, and a new login fails, as it does today.
+- **The load** on the IdP is one request to its token endpoint per login and interval: 1,000 live
+  logins at `15m` make about 1.2 a second. A login whose session at the IdP ends before its token
+  does is refused then (Keycloak's SSO Session Max, 10 hours by default, without
+  `offline_access`): a login lasts the shorter of the two. `serve` logs a warning at start when
+  the IdP's discovery document lists `grant_types_supported` without `refresh_token`.
+- **The setting off, and upgrades.** With `0`, no login keeps a refresh token, no replica
+  refreshes, and `serve` deletes every row of `oidc_refresh` at its start. Migration 0042 only
+  creates the table, empty: a replica of the release before neither reads nor writes it, and
+  refuses `auth.oidc.refresh` as an unknown key, so every process runs the new release before the
+  key is set. A login on a replica without the setting keeps no refresh token, and lasts its
+  lifetime.
 
 **What OIDC does not change.** Local users, their passwords, personal access tokens, deploy
 tokens, anonymous read and the bearer tokens of §4 stay as they are, unless

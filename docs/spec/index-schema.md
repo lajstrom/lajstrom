@@ -239,6 +239,7 @@ binds it to its row (#1288, [ADR 0034](../adr/0034-replacing-the-master-key.md))
 | --- | --- | --- | --- |
 | `keys.private_enc` | every row of every kind, retired or not: a `gpg` key's private key packets, a `jwt` or `policy` key's PKCS #8 DER, an `enc` key's PKCS #8 DER of its RSA key, or the key URI of a key held in a KMS (ADR 0020) | the row's `fingerprint` | yes |
 | `webhooks.secret_enc` | a webhook's secret (webhooks.md §5) | `webhook:<uid>` | yes |
+| `oidc_refresh.refresh_enc` | the refresh token of an OIDC login that `serve` asks the IdP about again (rbac.md §8, #1282) | `oidc_refresh:<id>` | yes |
 | `sessions.files` `enc.key` | the data key of an open upload of the facade to an encrypted repo (http-routing.md §2.1) | the row's `key` | no: the session ends, an hour after its last request at the latest |
 
 Outside the index, a sealed snapshot of the control plane is sealed with a key derived from the
@@ -300,10 +301,11 @@ master key.
     that beat on:
     - the replica seals nothing, with no key, the one it sealed with before included. A request
       that would seal (a repo's first signing or encryption key, a webhook made or its secret
-      rotated, an upload of the facade that opens its session on an encrypted repo) is answered
-      `503` with `Retry-After: 30` (on `/v2` and the API with the code `UNAVAILABLE`); work in the
-      background that would seal fails as on an error of the database, and is tried again later.
-      What only opens goes on, with every held key;
+      rotated, an upload of the facade that opens its session on an encrypted repo, an OIDC
+      callback that would keep a refresh token) is answered `503` with `Retry-After: 30` (on `/v2`
+      and the API with the code `UNAVAILABLE`); work in the background that would seal fails as on
+      an error of the database, and is tried again later, and no OIDC login is refreshed (rbac.md
+      §8). What only opens goes on, with every held key;
     - `/-/readyz` answers `503 this replica does not hold the master key that seals: <id>`, so
       that the edge takes the replica out, and the log has an error that names the id at every
       beat;
@@ -325,14 +327,15 @@ master key.
      ([operations.md](../operations.md#clocks)); an `<id>` that the command does not hold; a
      `replicas` row with a heartbeat younger than 2 minutes whose `master_keys` does not hold
      `<id>`, NULL (a release before 0040) included, named by its host, pid and version.
-  2. **A check first.** It reads every value of `keys.private_enc` and `webhooks.secret_enc`, by
-     table and by id, a page at a time (`ListSealed`), and opens each with the held keys, `<id>`
-     first: it counts the values under each key, by id, and those under none. A value under no
-     held key stops the run, exit status `1` before anything is written, naming its row (`keys` by
-     id, kind and fingerprint, a webhook by id): a key that no source holds sealed it, an old key
-     not added back or another installation's. With `--allow-lost` such values are counted as
-     lost, each named in the output, and left as they are: the way out when their key is lost
-     (operations.md, The master key), after which the keys among them are rotated or dropped.
+  2. **A check first.** It reads every value of `keys.private_enc`, `webhooks.secret_enc` and
+     `oidc_refresh.refresh_enc`, by table and by id, a page at a time (`ListSealed`), and opens each
+     with the held keys, `<id>` first: it counts the values under each key, by id, and those under
+     none. A value under no held key stops the run, exit status `1` before anything is written,
+     naming its row (`keys` by id, kind and fingerprint, a webhook or a refresh token by id): a key
+     that no source holds sealed it, an old key not added back or another installation's. With
+     `--allow-lost` such values are counted as lost, each named in the output, and left as they
+     are: the way out when their key is lost (operations.md, The master key), after which the keys
+     among them are rotated or dropped.
   3. **The switch.** In one transaction it appends its row, `key.rewrap`, `pending`, with what the
      check found (rbac.md §5), and sets the sealing row to `<id>`, `source` `rewrap`, with that
      audit row's id, where the row still names the id it read, or is still absent (`PutSealingKey`,
@@ -347,8 +350,8 @@ master key.
   5. **Batches.** It seals again with `<id>`, a new nonce and the same additional data every value
      under another held key, 100 rows at a time, each batch a transaction of its own, and writes
      each value only where the row still holds the value it read (`Reseal`, a compare-and-set). A
-     row changed since (a webhook's secret rotated, a key dropped) is read again after the last
-     batch.
+     row changed since (a webhook's secret rotated, a refresh token rotated, a key dropped) is read
+     again after the last batch.
   6. **Its end.** It counts again, as the check did: a value that a late replica, or a command
      started before the switch, sealed under another key after its batch is found there. Its row
      is then `ok` when every value that a held key opens is under `<id>`, exit status `0`, with
@@ -416,9 +419,10 @@ master key.
   a value, sealed or not. A value opened to be sealed again is held for its batch only, and
   cleared.
 - **The methods.** `ListSealed(table, afterID, limit)`, of the Reader, answers the values of `keys`
-  (`SealedKeys`) or `webhooks` (`SealedWebhooks`) whose id is above `afterID`, by id, at most
-  `limit`, each with its additional data; `Reseal(table, id, old, sealed)`, of the Writer, writes
-  `sealed` where the row still holds `old`, in the caller's transaction, and answers whether it did.
+  (`SealedKeys`), `webhooks` (`SealedWebhooks`) or `oidc_refresh` (`SealedRefresh`) whose id is
+  above `afterID`, by id, at most `limit`, each with its additional data;
+  `Reseal(table, id, old, sealed)`, of the Writer, writes `sealed` where the row still holds `old`,
+  in the caller's transaction, and answers whether it did.
   `GetSealingKey`, of the Reader, answers the sealing row (none: `ErrNotFound`);
   `PutSealingKey(k, old)`, of the Writer, writes it where the row names `old` (`""`: where there is
   no row), in the caller's transaction, and wraps `ErrConflict` otherwise.
@@ -665,10 +669,11 @@ in the transaction of the change.
 
 ## Coordination
 
-Neither control plane nor derived: a row lives for one publish, one fetch, one `serve`
-process, one OIDC login or the window of one DPoP proof, a `reindex_runs` row while its run runs and then as its record, until ten newer runs of
-its scope have finished, or, in `prune_sightings`, from one run to a later one. None is rebuilt,
-and none needs a backup: a backup of the database holds them, and after a restore they are stale.
+Neither control plane nor derived: a row lives for one publish, one fetch, one `serve` process,
+one OIDC login (in `oidc_refresh`, as long as the login's token) or the window of one DPoP proof,
+a `reindex_runs` row while its run runs and then as its record, until ten newer runs of its scope
+have finished, or, in `prune_sightings`, from one run to a later one. None is rebuilt, and none
+needs a backup: a backup of the database holds them, and after a restore they are stale.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -677,6 +682,7 @@ and none needs a backup: a backup of the database holds them, and after a restor
 | `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `flock` text (the device and inode, `<dev>:<ino>`, of the lock file next to the SQLite file whose lock the process holds; `''` when it holds none), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts, `master_keys` json null (the ids of the master keys the process holds, a list; NULL: none, or a release before 0040, which its `version` tells; [The master key and its replacement](#the-master-key-and-its-replacement), #1288; written at the start, and again at the beat that follows the unwrap of a data key, which it lists from then on, [A master key in a KMS](#a-master-key-in-a-kms), #1388) | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720), `0027_replicas_flock.sql` (#752), `0040_master_keys.sql` (#1288) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 | `oidc_logins` | `id`, `kind` text (`code`, a login of the authorization code flow; `device`, a device request), `state` text null (sha256 of the state, hex), `binding` text null (sha256 of the browser's cookie), `nonce` text null, `verifier` text null (the PKCE verifier), `device_id` → oidc_logins null (`ON DELETE CASCADE`; the device request a code login approves), `device_code` text null (sha256 of the device code), `user_code` text null, `status` text (`pending`; a code login `used`; a device request, and a code login with `return_to` once its callback verified, `approved`, `denied`, `redeemed`), `user_id` → users null (the user a device request, or a code login with `return_to`, is approved for), `polled_at` ts null (a device request's latest poll), `return_to` text null, `code_challenge` text null (the S256 challenge of the web UI's PKCE verifier), `handoff` text null (sha256 of the code the callback hands to the web UI), `dpop_jkt` text null (the JWK SHA-256 thumbprint of the web UI's DPoP key, base64url, which the code is redeemed with), `auth_time` ts null, `amr` json null and `acr` text null (those of the ID token of a code login with `return_to`, kept by its callback for the token of its code), `created_at` ts, `expires_at` ts | the flows of rbac.md §8 and §10 across replicas (0021; `return_to`, `code_challenge`, `handoff` and `dpop_jkt`, 0028; `auth_time` and `amr`, 0033; `acr`, 0038): unique `oidc_logins_state` on `(state)`, `oidc_logins_device_code` on `(device_code)`, `oidc_logins_user_code` on `(user_code)` and `oidc_logins_handoff` on `(handoff)`, each where not null; index `oidc_logins_expires` on `(expires_at)`. Migration `0028_web_ui_sign_in.sql` only adds the columns and the index: a replica of the release before finishes a web UI's login as its own, on the token page. A change of `status` is a compare-and-set on the status it read, so that a state, an approval, a device code and a handoff are each used once. A row lives 10 minutes; the start of a login deletes the rows that expired an hour ago or more. Written by the OIDC routes only; never backed up, never rebuilt |
+| `oidc_refresh` | `id`, `login_id` bigint null (the `oidc_logins` row of the login while its token is not minted; no reference, since that row is deleted first), `token_id` → tokens null (`ON DELETE CASCADE`; the login's token, once minted), `identity_id` → identities (`ON DELETE CASCADE`), `refresh_enc` blob (nonce ‖ AES-256-GCM(refresh token) with the master key, `oidc_refresh:<id>` as additional data; sealed again by a rewrap, [The master key and its replacement](#the-master-key-and-its-replacement)), `created_at` ts, `refreshed_at` ts (the IdP's last answer that confirmed the login; the mint until the first), `next_at` ts (when it is due: 10 minutes after the login until its token is minted), `failures` int (`0`; the errors since the last success, which space the next tries), `claimed_by` text null (the `replicas.id` of the replica that refreshes it), `claimed_until` ts null | the OIDC logins that `serve` asks the IdP about again (rbac.md §8, #1282; 0042): unique `oidc_refresh_token` on `(token_id)` and `oidc_refresh_login` on `(login_id)`, each where not null; index `oidc_refresh_next` on `(next_at)`. A claim is a compare-and-set on `claimed_until`, so that one replica at a time refreshes a row, and its outcome is written only while the claim is still the replica's. A refusal deletes the row in the transaction that revokes the token; a due row without a token, or whose token is revoked or expired, is deleted without a call; `serve` with `auth.oidc.refresh.interval: 0` deletes every row at its start. Written by the OIDC routes and the refresh only. Not in a snapshot; a backup holds the values as they were sealed, and after its restore a refresh token that the IdP rotated since is refused, which ends its login. Migration `0042_oidc_refresh.sql` only creates the table, empty: a replica of the release before neither reads nor writes it |
 | `dpop_proofs` | `jti` text (sha256 hex of a DPoP proof's key thumbprint, a space, and its `jti`), `expires_at` ts (the proof's `iat` and 5 minutes) | the DPoP proofs used (rbac.md §10, http-routing.md §4), so that a proof is used once on any replica (0028): primary key `jti`; index `dpop_proofs_expires` on `(expires_at)`. A proof whose row has not expired is refused; one whose row has expired takes the row over (its `iat` is out of the window by then, so only a proof of the same key and `jti` made later). Each replica deletes the expired rows at most once a minute, at a check. Written by the check of a proof only; never backed up, never rebuilt |
 
 A `versions` row exists only after the registry accepted the manifest and served it back (the
@@ -1282,7 +1288,8 @@ the column `users.last_seen_at`, filled (#1283), `0035_config_state.sql` the tab
 `users.must_change` and `users.password_history` (#1281), `0038_tokens_acr.sql` the columns
 `tokens.acr` and `oidc_logins.acr` (#1276), `0039_approvals.sql` the table `approvals`
 (#1285), `0040_master_keys.sql` the table `sealing_key` and the column `replicas.master_keys`
-(#1288), and `0041_wrapped_master_keys.sql` the table `wrapped_master_keys` (#1388); the others
+(#1288), `0041_wrapped_master_keys.sql` the table `wrapped_master_keys` (#1388), and
+`0042_oidc_refresh.sql` the table `oidc_refresh` (#1282); the others
 are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
