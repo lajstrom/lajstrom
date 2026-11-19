@@ -1706,13 +1706,24 @@ $ curl -s -u root:<password> -X POST 'https://art.example.com/api/v1/approvals/1
 {"id":12,…,"state":"approved","decidedBy":"user:01a2…","decidedAt":"…","decisionReason":"CHG-1050","result":"binding:31"}
 ```
 
+- **Who requests** (#1393, [ADR 0035](adr/0035-second-admin-is-another-person.md)): a request
+  is made with what its approval takes (below), the admin's password or a web UI's fresh sign-in
+  through OIDC, never a token. `POST /api/v1/bindings` of a binding that waits is `403` with a
+  token, a service account's included, and asks a sign-in that is not fresh for more (`401`); a
+  deploy token over a mask took no token already. So a token that one admin made for another
+  admin, or for a service account with `admin`, neither requests nor approves, whoever made it
+  and whenever, and a service account, which has neither a password nor a sign-in, requests
+  nothing: a person requests its change, or the command line makes it. Scripts and Terraform
+  that request these changes with a token get `403`: they send a password, or the operator makes
+  the change on the command line.
 - **The approval** is an admin's other than the requester, compared by uid, with what a deploy
   token over a mask takes: the admin's password, or a web UI's fresh sign-in through OIDC in its
   place ([Rules](#rules)), never another token; under `auth.admin.requireMFA`
   ([Administrative access with a second factor](#administrative-access-with-a-second-factor)),
   a fresh sign-in with a second factor. It
-  checks again what the request checked, and that the requester is still an enabled user with the
-  admin role: one that fails is `409` naming it (the requester disabled or demoted, the
+  checks again what the request checked, and that the requester is still an enabled user, not a
+  service account, with the admin role: one that fails is `409` naming it (the requester
+  disabled or demoted, a service account's request made on a release before #1393, the
   principal deleted, the binding or the name made meanwhile, an expiry beyond a bound lowered
   meanwhile), and the request stays pending. It makes the change, which counts from the next
   request on, on every replica.
@@ -1724,20 +1735,43 @@ $ curl -s -u root:<password> -X POST 'https://art.example.com/api/v1/approvals/1
   the admin role ([api.md](api.md#approvals)), and `lajstrom admin approval list` on the command
   line. No webhook event is sent for a request: tell the second admin through your own channel.
 - **The command line**, `lajstrom admin binding create`, `user create --admin` and
-  `token create --mask`, makes the change at once whatever the setting: it is the operator's,
-  the break-glass path, and the way to the second admin of a server that has one.
-- **A token of a service account** does not wait, whatever its bindings, so that rotating one
-  takes one admin.
+  `token create --mask`, makes the change at once whatever the setting, and `user set-password`
+  sets an admin's password: it is the operator's, the break-glass path, and the way to the
+  second admin of a server that has one.
+- **Creating a token for a service account**, or for another user, does not wait, whatever its
+  bindings, so that rotating one takes one admin; such a token makes no request (above).
 - **A user made an admin**: `POST /api/v1/users` with `admin: true` is `400`, naming the
   setting, and makes no user: make the user without `admin`, then request its `admin` binding
   with `POST /api/v1/bindings`, which waits (#1376). `lajstrom admin user create --admin` still
   makes both at once.
+- **Another admin's password** (#1393): an admin's new password,
+  `POST /api/v1/users/<name>/password` without `currentPassword`, is `400`, naming the setting,
+  for a user who holds `admin`, by an `admin` binding of its own or of a group whose membership
+  has not lapsed, enabled or disabled, whatever the admin mode, and whoever asks, the user itself
+  included; it writes no row. An admin who knew another's password would sign in as it and
+  approve its own requests. A person who holds
+  `admin` changes its own password with `currentPassword`
+  ([Your own password](#password-rules-your-own-password-change-at-first-use)), and
+  `lajstrom admin user set-password` is the break-glass path; an admin who forgot its password
+  may also have its `admin` binding deleted, its password set, and the binding requested again,
+  which a second admin approves. A user without `admin` gets a new password as before.
+- **What stays as it was**: enabling a disabled admin, a service account included, an unlock,
+  `mustChange`, a rename and a change of owner are one admin's changes, made at once: under the
+  two rules above, none gives an admin a credential of another that requests or approves. A
+  password that an admin set while its user held no `admin` (a create, a new password) is still
+  known to that admin once a second admin approves the user's `admin` binding: that approver
+  decides, and the `user.create` or `user.password` row by another principal shows who set it.
 
 With `second-admin`, `serve` warns at start when fewer than two enabled users have an `admin`
 binding that counts (under the admin mode, OIDC users only): no request could be approved.
-Turning the setting on leaves the bindings and tokens made before as they are; turning it to
-`none` makes every change at once again, and the requests made before stay, to be approved,
-rejected or to expire. `GET /api/v1/info` answers `approval`, so that a UI expects the `202`.
+Turning the setting on leaves the bindings, the tokens and the passwords set before as they are:
+an admin's password that another admin set stays known to that admin, so have each admin change
+its own once the setting is on. Turning it to `none` makes every change at once again, with any
+credential, and an admin sets any user's password as before; the requests made before stay, to
+be approved, rejected or to expire. `GET /api/v1/info` answers `approval`, so that a UI expects
+the `202`. The rules of #1393 take no setting and no migration: during a rolling update, a
+replica of the release before still takes a token's request and sets an admin's password, so
+reject the requests made during the update and read its `user.password` rows if that matters.
 The approval of a CI trust policy that writes is `auth.ci.apiWriteApproval`, apart
 ([Token exchange for CI](#token-exchange-for-ci)).
 
@@ -1746,11 +1780,14 @@ The approval of a CI trust policy that writes is `auth.ci.apiWriteApproval`, apa
 A request is `approval.request`, by the requester, subject `approval:<id>`, with its `kind`, its
 `change` (a deploy token's without its hash) and `expiresAt`. Its approval is
 `approval.approve`, by the approver, with the request's `kind`, `change` and `requestedBy` and the
-approver's `changeReason`; the change writes its own `binding.create` or `token.create` beside it,
-by the approver, with `approval` `{id, requestedBy, requestedAt}`, the request's `changeReason`
-and, for a token, the request's `createdBy`. A rejection is `approval.reject`, an expiry
-`approval.expire` by `anonymous` with `source: expiry`. Each has `signIn` when it was made with a
-web UI's sign-in. Requests are kept, decided or not, and are not in a snapshot.
+approver's `changeReason`. Each has `credential`, `password` or the sign-in's `token:<id>`, as a
+token's creation has `createdBy`: the proof that each side was a person's (#1393); a request made
+on a release before has none, and a request or a password refused writes no row. The change
+writes its own `binding.create` or `token.create` beside it, by the approver, with `approval`
+`{id, requestedBy, requestedAt}`, the request's `changeReason` and, for a token, the request's
+`createdBy`. A rejection is `approval.reject`, an expiry `approval.expire` by `anonymous` with
+`source: expiry`. Each has `signIn` when it was made with a web UI's sign-in. Requests are kept,
+decided or not, and are not in a snapshot.
 
 ## The access report and its review
 
