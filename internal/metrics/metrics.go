@@ -168,6 +168,14 @@ var (
 	SpoolRefusals = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "lajstrom_spool_refusals_total", Help: "Chunks of unknown length refused with 503 because they would pass server.spoolBudget.",
 	})
+	// OIDCRefreshes counts this replica's refreshes of OIDC logins (docs/spec/rbac.md §8, Asking
+	// the IdP again, #1282), by outcome: ok (the IdP confirmed the login), refused (it answered
+	// invalid_grant, and the login's token is revoked), error (anything else, which ends nothing
+	// and is tried again) and dropped (a row whose token is revoked, expired or never minted,
+	// deleted without a call).
+	OIDCRefreshes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_oidc_refreshes_total", Help: "Refreshes of OIDC logins at the IdP by this replica, by outcome.",
+	}, []string{"outcome"})
 	// buildInfo is 1 with the build in its labels.
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_build_info", Help: "Always 1; the labels say which build runs.",
@@ -179,7 +187,7 @@ func init() {
 		DBDuration, Ingest,
 		AttachmentsIndexed, AttachmentIndexFailures,
 		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, ProxyRateLimit, ProxyRateRemaining, ProxyRateWindow, Throttled,
-		UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, SpoolBytes, SpoolRefusals, buildInfo,
+		UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, SpoolBytes, SpoolRefusals, OIDCRefreshes, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
