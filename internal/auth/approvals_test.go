@@ -75,8 +75,9 @@ func (f *approvalsFixture) detailsOf(t *testing.T, action string) (map[string]an
 
 // TestApprovalRequestBinding: a binding of the role admin, or on */*, is requested in place of
 // being made, pending for ApprovalLifetime, its principal as it would be bound, with its
-// approval.request row, and grants nothing. The same change twice and a binding that exists are
-// ErrConflict, a user that does not exist ErrInvalid, a request by anonymous ErrScope.
+// approval.request row, which has its credential, and grants nothing. The same change twice and a
+// binding that exists are ErrConflict, a user that does not exist ErrInvalid, a request by
+// anonymous ErrScope.
 func TestApprovalRequestBinding(t *testing.T) {
 	f := newApprovals(t)
 	ctx := f.as(t, "admin", Credential{Kind: CredPassword})
@@ -94,7 +95,7 @@ func TestApprovalRequestBinding(t *testing.T) {
 		t.Errorf("a request made the binding: %+v", bs)
 	}
 	d, by := f.detailsOf(t, ActionApprovalRequest)
-	if by != admin || d["kind"] != "binding" || d["changeReason"] != "CHG-1" || d["expiresAt"] == nil {
+	if by != admin || d["kind"] != "binding" || d["changeReason"] != "CHG-1" || d["expiresAt"] == nil || d["credential"] != "password" {
 		t.Errorf("approval.request by %s: %v", by, d)
 	}
 	_, err = f.s.RequestBinding(ctx, "user:alice", RoleAdmin, MaskAll, cli)

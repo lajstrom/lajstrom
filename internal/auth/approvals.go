@@ -116,10 +116,24 @@ type Approvals struct {
 	Log *slog.Logger
 }
 
+// MayRequest returns nil when the credential of ctx may make a request for a second admin
+// (docs/spec/rbac.md §13, Who requests; ADR 0035, #1393): what its approval takes (MayApprove),
+// the admin's password, or a web UI's fresh sign-in through OIDC in its place, never a token,
+// whoever made it, nor none: an error wrapping ErrScope naming the rule, or a *StepUpError for a
+// sign-in that is not fresh. A service account, which has neither a password nor a sign-in, so
+// requests nothing, and a token that one admin made for another gives that admin no second
+// voice. The API asks it once the body shows that a binding waits; a deploy token over a mask
+// takes the same credential already (Tokens.MayCreateMaskDeploy).
+func (s *Approvals) MayRequest(ctx context.Context) error {
+	return s.personal(ctx, "a request for a second admin is made with the admin's password or a web UI's fresh sign-in through OIDC, "+
+		"not with a token")
+}
+
 // RequestBinding checks the binding (principal, role, mask) as Bindings.Create does, that it does
 // not exist, and makes the request of it in its place, pending, with its approval.request row,
 // by the user of ctx. principal is kept as it would be bound, user:<uid> for a user. The same
-// binding pending already is index.ErrConflict.
+// binding pending already is index.ErrConflict. The caller checks the credential first
+// (MayRequest).
 func (s *Approvals) RequestBinding(ctx context.Context, principal, role, mask string, o Origin) (*Approval, error) {
 	p, err := s.Bindings.check(principal, role, mask)
 	if err != nil {
@@ -198,7 +212,8 @@ func (s *Approvals) RequestMaskDeploy(ctx context.Context, mask, name string, sc
 
 // request makes, in one transaction, the request of kind by the user by with the origin o: read
 // checks the change on w and returns its subject, what the request keeps of it and what its
-// approval.request row says of it. The same subject pending is index.ErrConflict.
+// approval.request row says of it, which has the request's credential too. The same subject
+// pending is index.ErrConflict.
 func (s *Approvals) request(ctx context.Context, kind string, o Origin, by string,
 	read func(index.Writer) (subject string, kept, shown any, err error)) (*Approval, error) {
 	now := s.now()
@@ -224,8 +239,8 @@ func (s *Approvals) request(ctx context.Context, kind string, o Origin, by strin
 			}
 			return err
 		}
-		ev, err = s.record(ctx, w, ActionApprovalRequest, &row, o, map[string]any{"kind": kind, "change": shown,
-			"expiresAt": row.ExpiresAt})
+		ev, err = s.record(ctx, w, ActionApprovalRequest, &row, o, addCredential(ctx, map[string]any{"kind": kind, "change": shown,
+			"expiresAt": row.ExpiresAt}))
 		return err
 	})
 	if err != nil {
@@ -276,6 +291,16 @@ func requester(ctx context.Context) (string, error) {
 		return "", &authError{msg: "a request for a second admin is a user's, an admin's: " + p.String() + " is not one", err: ErrScope}
 	}
 	return p.String(), nil
+}
+
+// addCredential sets credential in the details d of a request or an approval (docs/spec/rbac.md
+// §5, #1393): the credential of ctx as a token's createdBy names it, password or the sign-in's
+// token:<id>, the proof that the side was a person's. It returns d, unchanged for none.
+func addCredential(ctx context.Context, d map[string]any) map[string]any {
+	if c := createdBy(CredentialFrom(ctx)); c != "" {
+		d["credential"] = c
+	}
+	return d
 }
 
 // record builds the audit event of action about the request a, its subject approval:<id>, and

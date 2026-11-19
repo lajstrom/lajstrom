@@ -37,9 +37,15 @@ const ApprovalExpiryInterval = time.Minute
 // none: an error wrapping ErrScope, or a *StepUpError for a sign-in that is not fresh. The API
 // asks it before it looks the request up.
 func (s *Approvals) MayApprove(ctx context.Context) error {
-	const rule = "a request is approved with the admin's password or a web UI's fresh sign-in through OIDC, not with a token"
+	return s.personal(ctx, "a request is approved with the admin's password or a web UI's fresh sign-in through OIDC, not with a token")
+}
+
+// personal is the rule of MayApprove and MayRequest, refused with rule: the credential of ctx is
+// a person's, the admin's password or a web UI's fresh sign-in (Tokens.passwordOrSignIn), and
+// never none.
+func (s *Approvals) personal(ctx context.Context, rule string) error {
 	if CredentialFrom(ctx).Kind == "" {
-		return &authError{msg: rule, err: ErrScope} // none: the command line approves nothing
+		return &authError{msg: rule, err: ErrScope} // none: the command line requests and approves nothing
 	}
 	return s.Tokens.passwordOrSignIn(ctx, rule)
 }
@@ -47,11 +53,12 @@ func (s *Approvals) MayApprove(ctx context.Context) error {
 // Approve approves the request id by the user of ctx, who is not its requester (ErrScope), with
 // the origin o, whose reason is the decision's. In one transaction, while the request is pending
 // and has not expired (else index.ErrConflict): it checks again what the request checked, and
-// that its requester is a live, enabled user with the admin role by its bindings (else
-// index.ErrConflict naming what fails, and the request stays pending), makes the change with its
-// binding.create or token.create row, which has approval and the request's changeReason, marks the
-// request approved while it is pending, and writes its approval.approve row. The caller checks
-// the role and the credential first (MayApprove).
+// that its requester is a live, enabled user, not a service account, with the admin role by its
+// bindings (else index.ErrConflict naming what fails, and the request stays pending), makes the
+// change with its binding.create or token.create row, which has approval and the request's
+// changeReason, marks the request approved while it is pending, and writes its approval.approve
+// row, with the approver's credential. The caller checks the role and the credential first
+// (MayApprove).
 func (s *Approvals) Approve(ctx context.Context, id int64, o Origin) (*Approval, error) {
 	by, err := requester(ctx)
 	if err != nil {
@@ -83,7 +90,7 @@ func (s *Approvals) Approve(ctx context.Context, id int64, o Origin) (*Approval,
 		if err := s.decide(ctx, w, &row); err != nil {
 			return err
 		}
-		done, err := s.record(ctx, w, ActionApprovalApprove, &row, o, decisionDetails(&row))
+		done, err := s.record(ctx, w, ActionApprovalApprove, &row, o, addCredential(ctx, decisionDetails(&row)))
 		evs = []index.AuditEvent{ev, done}
 		return err
 	})
@@ -205,8 +212,10 @@ func (s *Approvals) decide(ctx context.Context, w index.Writer, row *index.Appro
 
 // requesterHolds checks on w that the requester of a is still what made it (docs/spec/rbac.md
 // §13): a live, enabled user with the admin role by its bindings, its own or a group's whose
-// membership has not lapsed at now, whatever the admin mode, which is the credential's.
-// Otherwise index.ErrConflict naming it: a request does not outlast its requester's revocation.
+// membership has not lapsed at now, whatever the admin mode, which is the credential's. A service
+// account requests nothing (§13, Who requests; #1393): its request, one made on a release before,
+// is refused. Otherwise index.ErrConflict naming it: a request does not outlast its requester's
+// revocation.
 func (s *Approvals) requesterHolds(ctx context.Context, w index.Writer, a *index.Approval, now time.Time) error {
 	p, err := ParsePrincipal(a.RequestedBy)
 	if err != nil {
@@ -218,6 +227,9 @@ func (s *Approvals) requesterHolds(ctx context.Context, w index.Writer, a *index
 		return conflictf("request %d: its requester %s no longer exists", a.ID, a.RequestedBy)
 	case err != nil:
 		return err
+	case u.Kind == KindService:
+		return conflictf("request %d: its requester %s is a service account, which requests nothing: a person requests the change, "+
+			"or the command line makes it", a.ID, u.Name)
 	case u.Disabled:
 		return conflictf("request %d: its requester %s is disabled", a.ID, u.Name)
 	}

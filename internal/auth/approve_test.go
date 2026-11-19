@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +15,8 @@ import (
 
 // TestApproveBinding: the requester does not approve its request (ErrScope); another admin does,
 // which makes the binding with its binding.create row, the request's reason and the approval in
-// its details, and the approval.approve row with the approver's reason. A request is decided
-// once; no request is ErrNotFound.
+// its details, and the approval.approve row with the approver's reason and credential. A request
+// is decided once; no request is ErrNotFound.
 func TestApproveBinding(t *testing.T) {
 	f := newApprovals(t)
 	ctx, rootCtx := f.as(t, "admin", password), f.as(t, "root", password)
@@ -43,7 +44,8 @@ func TestApproveBinding(t *testing.T) {
 	if by != root || d["changeReason"] != "CHG-1" || approval["id"] != float64(a.ID) || approval["requestedBy"] != admin {
 		t.Errorf("binding.create by %s: %v", by, d)
 	}
-	if d, by = f.detailsOf(t, ActionApprovalApprove); by != root || d["changeReason"] != "CHG-1 approved" || d["requestedBy"] != admin {
+	if d, by = f.detailsOf(t, ActionApprovalApprove); by != root || d["changeReason"] != "CHG-1 approved" || d["requestedBy"] != admin ||
+		d["credential"] != "password" {
 		t.Errorf("approval.approve by %s: %v", by, d)
 	}
 	_, err = f.s.Approve(rootCtx, a.ID, cli)
@@ -231,30 +233,63 @@ func TestApprovalRace(t *testing.T) {
 	}
 }
 
-// TestMayApprove: an approval takes the admin's password, or a web UI's fresh sign-in through
-// OIDC; a sign-in that is not fresh is asked for more, any other token and none are ErrScope.
+// TestMayApprove: an approval, and a request (#1393), take the admin's password, or a web UI's
+// fresh sign-in through OIDC; a sign-in that is not fresh is asked for more, any other token and
+// none are ErrScope naming the rule.
 func TestMayApprove(t *testing.T) {
 	f := newApprovals(t)
 	fresh := Credential{Kind: CredPAT, TokenID: 4, SignIn: &SignIn{At: usersNow.Add(-time.Minute), AMR: []string{"pwd"}}}
 	stale := Credential{Kind: CredPAT, TokenID: 5, SignIn: &SignIn{At: usersNow.Add(-time.Hour), AMR: []string{"pwd", "otp"}}}
-	for _, tt := range []struct {
-		name   string
-		c      Credential
-		stepUp bool
-		ok     bool
+	for _, may := range []struct {
+		name string
+		fn   func(context.Context) error
+		rule string
 	}{
-		{"a password", password, false, true},
-		{"a fresh sign-in", fresh, false, true},
-		{"a stale sign-in", stale, true, false},
-		{"a personal access token", Credential{Kind: CredPAT, TokenID: 6}, false, false},
-		{"a deploy token", Credential{Kind: CredDeploy, TokenID: 7}, false, false},
-		{"none", Credential{}, false, false},
+		{"MayApprove", f.s.MayApprove, "a request is approved with"},
+		{"MayRequest", f.s.MayRequest, "a request for a second admin is made with"},
 	} {
-		err := f.s.MayApprove(f.as(t, "root", tt.c))
-		var stepUp *StepUpError
-		if (err == nil) != tt.ok || errors.As(err, &stepUp) != tt.stepUp || (!tt.ok && !errors.Is(err, ErrScope)) {
-			t.Errorf("%s: %v", tt.name, err)
+		for _, tt := range []struct {
+			name   string
+			c      Credential
+			stepUp bool
+			ok     bool
+		}{
+			{"a password", password, false, true},
+			{"a fresh sign-in", fresh, false, true},
+			{"a stale sign-in", stale, true, false},
+			{"a personal access token", Credential{Kind: CredPAT, TokenID: 6}, false, false},
+			{"a deploy token", Credential{Kind: CredDeploy, TokenID: 7}, false, false},
+			{"an OIDC login of the command line", Credential{Kind: CredOIDC}, false, false},
+			{"none", Credential{}, false, false},
+		} {
+			err := may.fn(f.as(t, "root", tt.c))
+			var stepUp *StepUpError
+			if (err == nil) != tt.ok || errors.As(err, &stepUp) != tt.stepUp || (!tt.ok && !tt.stepUp && (!errors.Is(err, ErrScope) ||
+				!strings.Contains(err.Error(), may.rule))) {
+				t.Errorf("%s, %s: %v", may.name, tt.name, err)
+			}
 		}
+	}
+}
+
+// TestApprovalServiceRequester: a service account requests nothing (#1393), so the approval of a
+// request whose requester is one, made on a release before, is ErrConflict naming it, and the
+// request stays pending, whatever the account's bindings.
+func TestApprovalServiceRequester(t *testing.T) {
+	f := newApprovals(t)
+	ctx := context.Background()
+	robot := index.User{Name: "robot", Kind: KindService, Owner: f.uid(t, "root")}
+	must(t, f.st.CreateUser(ctx, &robot))
+	must(t, f.st.CreateBinding(ctx, &index.Binding{Principal: UserPrincipal(&robot).String(), Role: RoleAdmin, RepoMask: MaskAll}))
+	a, err := f.s.RequestBinding(f.as(t, "robot", Credential{Kind: CredPAT, TokenID: 8}), "user:alice", RoleAdmin, MaskAll, cli)
+	must(t, err)
+	_, err = f.s.Approve(f.as(t, "admin", password), a.ID, cli)
+	wantErr(t, "the approval of a service account's request", err, index.ErrConflict, "its requester robot is a service account")
+	if got, err := f.s.Get(ctx, a.ID); err != nil || got.State != index.ApprovalPending {
+		t.Errorf("the request after the refusal: %+v, %v; want it pending", got, err)
+	}
+	if bs, _ := f.st.ListBindings(ctx, f.uid(t, "alice")); len(bs) != 0 {
+		t.Errorf("alice's bindings after the refusal: %+v", bs)
 	}
 }
 
