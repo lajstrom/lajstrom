@@ -191,7 +191,7 @@ func (h *Handoffs) Redeem(ctx context.Context, code, verifier, jkt string, o aut
 	case u.Disabled || u.DeletedAt != nil:
 		return nil, "", &refusal{msg: "the user " + u.Name + " is disabled", err: auth.ErrBadCredentials}
 	}
-	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), o)
+	return h.Tokens.BoundLoginToken(ctx, u, h.TokenLifetime, jkt, signInOf(row), auth.LoginRefresh{}, o)
 }
 
 // signInOf is the sign-in at the IdP that the login row kept from its ID token, each of
