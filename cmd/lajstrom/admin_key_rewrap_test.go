@@ -205,7 +205,7 @@ func TestKeyRewrapDryRun(t *testing.T) {
 		r.Sealing.Source, len(r.Held), strings.HasPrefix(r.Held[0].Source, e.dir), r.Replicas[0].Host, len(r.Replicas[0].MasterKeys),
 		r.Values, len(r.Lost), r.Sessions[e.f.a].Open, r.Sessions[noKey].Open, len(r.Refusals))
 	want := fmt.Sprintf("true %s start held=2/true replicas=pod-1:2 values=%v lost=1 sessions=2/1 refusals=0", e.f.a,
-		map[string]keyCounts{e.f.a: {Keys: 3, Webhooks: 2}, e.f.b: {Keys: 1, Webhooks: 1}})
+		map[string]keyCounts{e.f.a: {Keys: 3, Webhooks: 2, Refresh: 1}, e.f.b: {Keys: 1, Webhooks: 1, Refresh: 1}})
 	if got != want {
 		t.Errorf("the dry run: %s\n got %s\nwant %s", out, got, want)
 	}
@@ -228,7 +228,7 @@ func TestKeyRewrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := e.report(out)
-	if got := rewrapSummary(r); got != "state=ok switched=true resealed={Keys:3 Webhooks:2} left=map[] lost=1 refusals=0" {
+	if got := rewrapSummary(r); got != "state=ok switched=true resealed={Keys:3 Webhooks:2 Refresh:1} left=map[] lost=1 refusals=0" {
 		t.Errorf("the rewrap: %s", got)
 	}
 	k, err := e.st.GetSealingKey(t.Context())
@@ -239,15 +239,15 @@ func TestKeyRewrap(t *testing.T) {
 	if got := fmt.Sprint(len(evs), evs[0].State, evs[0].Subject, evs[0].Principal); got != fmt.Sprint(1, "ok", "master:"+e.f.b, "anonymous") {
 		t.Fatalf("the rows key.rewrap: %+v", evs)
 	}
-	sameDetails(t, evs[0], `{"actor":"alice@example.com","changeReason":"CHG-1288","from":"`+e.f.a+`","lost":{"keys":1,"webhooks":0},`+
-		`"resealed":{"keys":3,"webhooks":2},"sessions":{"`+e.f.a+`":2,"none":1},"source":"cli","to":"`+e.f.b+`",`+
-		`"under":{"`+e.f.a+`":{"keys":3,"webhooks":2}}}`)
+	sameDetails(t, evs[0], `{"actor":"alice@example.com","changeReason":"CHG-1288","from":"`+e.f.a+`",`+
+		`"lost":{"keys":1,"refresh":0,"webhooks":0},"resealed":{"keys":3,"refresh":1,"webhooks":2},"sessions":{"`+e.f.a+`":2,"none":1},`+
+		`"source":"cli","to":"`+e.f.b+`","under":{"`+e.f.a+`":{"keys":3,"refresh":1,"webhooks":2}}}`)
 
 	out, err = e.rewrap("--to", e.f.b, "--allow-lost")
-	if got := rewrapSummary(e.report(out)); err != nil || got != "state=ok switched=false resealed={Keys:0 Webhooks:0} left=map[] lost=1 refusals=0" {
+	if got := rewrapSummary(e.report(out)); err != nil || got != "state=ok switched=false resealed={Keys:0 Webhooks:0 Refresh:0} left=map[] lost=1 refusals=0" {
 		t.Errorf("a run again: %s, %v; want ok with zeros", got, err)
 	}
-	if evs := e.rewraps(); len(evs) != 2 || !strings.Contains(string(evs[0].Details), `"resealed":{"keys":0,"webhooks":0}`) {
+	if evs := e.rewraps(); len(evs) != 2 || !strings.Contains(string(evs[0].Details), `"resealed":{"keys":0,"webhooks":0,"refresh":0}`) {
 		t.Errorf("the row of a run again: %+v", evs[0])
 	}
 
@@ -260,7 +260,7 @@ func TestKeyRewrap(t *testing.T) {
 	}
 	only.SealWith(e.f.b)
 	c, err := countSealed(t.Context(), e.st, only)
-	if err != nil || fmt.Sprint(c.Under, len(c.Lost)) != fmt.Sprint(map[string]keyCounts{e.f.b: {Keys: 4, Webhooks: 3}}, 1) {
+	if err != nil || fmt.Sprint(c.Under, len(c.Lost)) != fmt.Sprint(map[string]keyCounts{e.f.b: {Keys: 4, Webhooks: 3, Refresh: 2}}, 1) {
 		t.Errorf("with the new key alone: %+v, %v; want every value under it but the lost one", c, err)
 	}
 }
@@ -348,15 +348,15 @@ func TestKeyRewrapLeft(t *testing.T) {
 	}
 	r, err := run()
 	wantFail(t, "a run with a value sealed late", err, "values are left under another master key ("+f.a+")", 1)
-	if got, want := rewrapSummary(r), "state=failed switched=true resealed={Keys:3 Webhooks:2} left=map["+f.a+":{1 0}] lost=1 refusals=0"; got != want {
+	if got, want := rewrapSummary(r), "state=failed switched=true resealed={Keys:3 Webhooks:2 Refresh:1} left=map["+f.a+":{1 0 0}] lost=1 refusals=0"; got != want {
 		t.Errorf("a run with a value sealed late: %s, want %s", got, want)
 	}
 	evs, err := f.st.ListAudit(ctx, index.AuditFilter{Action: actionKeyRewrap})
-	if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"left":{"`+f.a+`":{"keys":1,"webhooks":0}}`) {
+	if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"left":{"`+f.a+`":{"keys":1,"webhooks":0,"refresh":0}}`) {
 		t.Errorf("the row of the failed run: %+v, %v", evs, err)
 	}
 	r, err = run()
-	if got := rewrapSummary(r); err != nil || got != "state=ok switched=false resealed={Keys:1 Webhooks:0} left=map[] lost=1 refusals=0" {
+	if got := rewrapSummary(r); err != nil || got != "state=ok switched=false resealed={Keys:1 Webhooks:0 Refresh:0} left=map[] lost=1 refusals=0" {
 		t.Errorf("a run again: %s, %v; want ok, the late key sealed again", got, err)
 	}
 }

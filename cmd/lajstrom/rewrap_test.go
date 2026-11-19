@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
 )
@@ -29,16 +30,17 @@ func sealedUnder(t *testing.T, hex, aad, plain string) []byte {
 // rewrapFixture is a database whose sealed values are under three keys: the old one (A,
 // testMasterKey), the new one (B, otherMasterKey) and a lost one (C, thirdMasterKey).
 type rewrapFixture struct {
-	st                 store
-	a, b, c            string // the ids
-	keyIDs, webhookIDs []int64
-	plain              map[string]string // aad to its plaintext
+	st                             store
+	a, b, c                        string // the ids
+	keyIDs, webhookIDs, refreshIDs []int64
+	plain                          map[string]string // aad to its plaintext
 }
 
 // newRewrapFixture fills a SQLite file: an apt repo's active and retired keys and the server's
 // bearer-token key under A, a policy key under B, and a repo's key under C; two webhooks under A,
-// one under B; an open upload of an encrypted repo under A, one under C, one of a repo that does
-// not encrypt, and a committed one under A.
+// one under B; an OIDC login's refresh token under A, one under B (#1282); an open upload of an
+// encrypted repo under A, one under C, one of a repo that does not encrypt, and a committed one
+// under A.
 func newRewrapFixture(t *testing.T) *rewrapFixture {
 	t.Helper()
 	return fillRewrapFixture(t, newSealingStore(t))
@@ -86,6 +88,7 @@ func fillRewrapFixture(t *testing.T, st store) *rewrapFixture {
 		}
 		f.webhookIDs = append(f.webhookIDs, h.ID)
 	}
+	f.refreshIDs = fillRefreshTokens(t, st, f.plain, testMasterKey, otherMasterKey)
 	for i, u := range []struct {
 		hex, state string
 		expires    time.Duration
@@ -106,7 +109,37 @@ func fillRewrapFixture(t *testing.T, st store) *rewrapFixture {
 	return f
 }
 
-// TestCountSealed: the values of keys and webhooks are counted under the key that opens each,
+// fillRefreshTokens adds to st an OIDC login's refresh token sealed under each key of hexes, its
+// plaintext in plain by its additional data, and returns the ids of their rows of oidc_refresh.
+func fillRefreshTokens(t *testing.T, st store, plain map[string]string, hexes ...string) []int64 {
+	t.Helper()
+	ctx := t.Context()
+	u := index.User{Name: fmt.Sprintf("oidc-%d", len(plain)), Kind: "oidc"}
+	if err := st.CreateUser(ctx, &u); err != nil {
+		t.Fatal(err)
+	}
+	ident := index.Identity{UserID: u.ID, Issuer: "https://idp.example", Subject: u.Name}
+	if err := st.CreateIdentity(ctx, &ident); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for i, hex := range hexes {
+		row := index.OIDCRefresh{LoginID: ptrTo(int64(1000 + i)), IdentityID: ident.ID, Sealed: []byte{0}, NextAt: time.Now()}
+		if err := st.CreateOIDCRefresh(ctx, &row); err != nil {
+			t.Fatal(err)
+		}
+		aad := auth.RefreshAAD(row.ID)
+		plain[aad] = fmt.Sprintf("rt-refresh-token-%d", i)
+		if ok, err := st.Reseal(ctx, index.SealedRefresh, row.ID, []byte{0}, sealedUnder(t, hex, aad, plain[aad])); err != nil || !ok {
+			t.Fatalf("the refresh token %d: %v, %v", i, ok, err)
+		}
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+// TestCountSealed: the values of keys, webhooks and refresh tokens are counted under the key that
+// opens each,
 // retired keys included; those under no key held are named by their rows, a key with its kind and
 // fingerprint; the open uploads that hold a data key are counted under theirs, with the time the
 // last of them expires, those under no key held under "none", and neither an upload that does
@@ -118,7 +151,7 @@ func TestCountSealed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]keyCounts{f.a: {Keys: 3, Webhooks: 2}, f.b: {Keys: 1, Webhooks: 1}}
+	want := map[string]keyCounts{f.a: {Keys: 3, Webhooks: 2, Refresh: 1}, f.b: {Keys: 1, Webhooks: 1, Refresh: 1}}
 	if fmt.Sprint(c.Under) != fmt.Sprint(want) {
 		t.Errorf("Under = %v, want %v", c.Under, want)
 	}
@@ -185,11 +218,12 @@ func TestReseal(t *testing.T) {
 	m := heldOf(t, testMasterKey, otherMasterKey)
 	m.SealWith(f.b)
 	done, err := reseal(ctx, f.st, m, f.b)
-	if err != nil || done != (keyCounts{Keys: 3, Webhooks: 2}) {
-		t.Fatalf("reseal = %+v, %v; want 3 keys and 2 webhooks", done, err)
+	if err != nil || done != (keyCounts{Keys: 3, Webhooks: 2, Refresh: 1}) {
+		t.Fatalf("reseal = %+v, %v; want 3 keys, 2 webhooks and a refresh token", done, err)
 	}
 	after := sealedValues(t, f.st)
-	for _, id := range []string{fmt.Sprint("keys ", f.keyIDs[3]), fmt.Sprint("keys ", f.keyIDs[4]), fmt.Sprint("webhooks ", f.webhookIDs[2])} {
+	for _, id := range []string{fmt.Sprint("keys ", f.keyIDs[3]), fmt.Sprint("keys ", f.keyIDs[4]), fmt.Sprint("webhooks ", f.webhookIDs[2]),
+		fmt.Sprint("oidc_refresh ", f.refreshIDs[1])} {
 		if !bytes.Equal(before[id].Value, after[id].Value) {
 			t.Errorf("%s changed: it was under the new key, or under none", id)
 		}
@@ -274,8 +308,8 @@ func TestResealChanged(t *testing.T) {
 	m.SealWith(f.b)
 	st := &changing{store: f.st, hex: testMasterKey}
 	done, err := reseal(ctx, st, m, f.b)
-	if err != nil || done != (keyCounts{Keys: 3, Webhooks: 2}) {
-		t.Fatalf("reseal = %+v, %v; want 3 keys and 2 webhooks, the rotated one among them", done, err)
+	if err != nil || done != (keyCounts{Keys: 3, Webhooks: 2, Refresh: 1}) {
+		t.Fatalf("reseal = %+v, %v; want 3 keys, 2 webhooks and a refresh token, the rotated one among them", done, err)
 	}
 	h, err := f.st.GetWebhook(ctx, f.webhookIDs[0])
 	if err != nil {
@@ -302,7 +336,8 @@ func TestResealTwice(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if errs[0] != nil || errs[1] != nil || dones[0].Keys+dones[1].Keys != 3 || dones[0].Webhooks+dones[1].Webhooks != 2 {
-		t.Errorf("two runs: %+v, %v; want 3 keys and 2 webhooks in all", dones, errs)
+	if errs[0] != nil || errs[1] != nil || dones[0].Keys+dones[1].Keys != 3 || dones[0].Webhooks+dones[1].Webhooks != 2 ||
+		dones[0].Refresh+dones[1].Refresh != 1 {
+		t.Errorf("two runs: %+v, %v; want 3 keys, 2 webhooks and a refresh token in all", dones, errs)
 	}
 }
