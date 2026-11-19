@@ -98,8 +98,8 @@ run: another database than Postgres, the master key as a file, a passwordEnv no 
 {{- if dig "keys" "masterKeyFile" "" $config -}}
 {{- fail "config.keys.masterKeyFile: the chart passes the master key as the variable LAJSTROM_MASTER_KEY from masterKey.existingSecret, and more keys as files of masterKey.dir; remove the file" -}}
 {{- end -}}
-{{- if not (or .Values.masterKey.env .Values.masterKey.dir.volume) -}}
-{{- fail "masterKey.env is false and masterKey.dir.volume is empty: the replicas would hold no master key" -}}
+{{- if not (or .Values.masterKey.env .Values.masterKey.dir.volume .Values.masterKey.kms) -}}
+{{- fail "masterKey.env is false, masterKey.dir.volume and masterKey.kms are empty: the replicas would hold no master key" -}}
 {{- end -}}
 {{- $set := dict -}}
 {{- range .Values.registryPasswords -}}
@@ -117,6 +117,9 @@ run: another database than Postgres, the master key as a file, a passwordEnv no 
 {{- $keys := dict "masterKeyEnv" (ternary "LAJSTROM_MASTER_KEY" "" (.Values.masterKey.env | default false)) -}}
 {{- with include "lajstrom.masterKeyDir" . -}}
 {{- $_ := set $keys "masterKeyDir" . -}}
+{{- end -}}
+{{- with .Values.masterKey.kms -}}
+{{- $_ := set $keys "masterKeyKMS" . -}}
 {{- end -}}
 {{- $wired := dict "server" (dict "listen" ":8080") "database" (dict "driver" "postgres") "keys" $keys -}}
 {{- if .Values.metrics.enabled -}}

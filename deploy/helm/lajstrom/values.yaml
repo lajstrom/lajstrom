@@ -17,8 +17,8 @@ fullnameOverride: ""
 # lajstrom.yaml, mounted at /etc/lajstrom/lajstrom.yaml (docs/configuration.md). The chart sets
 # these keys itself, over whatever this map says: server.listen (":8080"), server.metricsListen
 # (with metrics.enabled), database.driver (postgres), keys.masterKeyEnv (LAJSTROM_MASTER_KEY, ""
-# without masterKey.env), keys.masterKeyDir (masterKey.dir.path with a volume) and
-# auth.bootstrap.tokenFile (with bootstrap.enabled). Helm merges maps and replaces lists: a list
+# without masterKey.env), keys.masterKeyDir (masterKey.dir.path with a volume), keys.masterKeyKMS
+# (masterKey.kms, when it has entries) and auth.bootstrap.tokenFile (with bootstrap.enabled). Helm merges maps and replaces lists: a list
 # of your values replaces the one below, and null removes a key of the defaults.
 config:
   server:
@@ -64,6 +64,14 @@ masterKey:
   dir:
     path: /run/secrets/lajstrom-master-keys
     volume: {}
+  # keys.masterKeyKMS: master keys that are data keys of a symmetric key of AWS KMS or GCP Cloud
+  # KMS, each {id, kms} as lajstrom admin key wrap printed it (docs/operations.md, The master key
+  # in a KMS), e.g.
+  #   [{id: 0123456789abcdef, kms: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/<key id>"}]
+  # The replicas need kms:Decrypt on the key (GCP roles/cloudkms.cryptoKeyDecrypter), and get it
+  # through the service account's annotation (serviceAccount.annotations). With env false and no
+  # dir, the data keys alone: no Secret holds a master key.
+  kms: []
 
 # The Postgres DSN, as LAJSTROM_DATABASE_DSN. The chart runs Postgres only: every replica
 # shares it. CloudNativePG's Secret <cluster>-app holds one under the key uri.
@@ -172,9 +180,10 @@ serviceAccount:
   create: true
   # Empty: the full name with create, the namespace's default without.
   name: ""
-  # IRSA or EKS Pod Identity for a registry of type ecr or an upstream with auth.ecr:
-  # eks.amazonaws.com/role-arn. GKE Workload Identity for an upstream with auth.gcp, when it acts
-  # as a Google service account: iam.gke.io/gcp-service-account.
+  # IRSA or EKS Pod Identity for a registry of type ecr, an upstream with auth.ecr, or a key of
+  # AWS KMS (keys.kms, masterKey.kms): eks.amazonaws.com/role-arn. GKE Workload Identity for an
+  # upstream with auth.gcp, or a key of Cloud KMS, when it acts as a Google service account:
+  # iam.gke.io/gcp-service-account.
   annotations: {}
 # Lajstrom never talks to the Kubernetes API.
 automountServiceAccountToken: false
