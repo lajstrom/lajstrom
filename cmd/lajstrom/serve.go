@@ -398,8 +398,9 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 }
 
 // ready is the readiness check of serve (docs/spec/http-routing.md §5): the index database
-// answers, no other replica serves on it when it is SQLite, this replica's clock is within
-// clockFail of the database's, and every registry answered GET /v2/ within the last minute; one
+// answers, no other replica serves on it when it is SQLite, this replica holds the master key the
+// index names to seal, this replica's clock is within clockFail of the database's, and every
+// registry answered GET /v2/ within the last minute; one
 // that refused the credentials is answered as such. A failure is logged with its cause and
 // answered without it: /-/readyz is public, and a driver error can name hosts and users; the
 // registry probe and the heartbeat of the replica log their own failures.

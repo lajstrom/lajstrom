@@ -151,10 +151,42 @@ func (r *replica) Run(ctx context.Context) {
 	}
 }
 
-// beat sets the heartbeat of the row, then compares the clocks.
+// beat sets the heartbeat of the row, then compares the clocks, then reads the sealing key again.
 func (r *replica) beat(ctx context.Context) {
 	r.heartbeat(ctx)
 	r.clock(ctx)
+	r.sealing(ctx)
+}
+
+// sealing reads the row of sealing_key again, at each beat (docs/spec/index-schema.md, The master
+// key and its replacement, #1288). A new id of a key this replica holds seals from then on,
+// logged at info. An id of a key it does not hold fails closed from this beat on: it seals
+// nothing, the key it sealed with before included, Err says so (/-/readyz answers 503), and every
+// beat logs an error that names the id, until a beat reads the id of a key it holds. It does not
+// exit: its keys change only at a start. A row that cannot be read, or none, leaves the sealing
+// key as it is: the database's own failure is readiness's to report.
+func (r *replica) sealing(ctx context.Context) {
+	if r.master == nil {
+		return
+	}
+	row, err := r.st.GetSealingKey(ctx)
+	if err != nil {
+		if !errors.Is(err, index.ErrNotFound) && ctx.Err() == nil {
+			r.log.WarnContext(ctx, "the sealing key of the index not read", "error", err.Error())
+		}
+		return
+	}
+	was, held := r.master.Sealing()
+	switch {
+	case row.KeyID == was && held:
+	case r.master.SealWith(row.KeyID):
+		r.log.InfoContext(ctx, "the index seals with another master key, which this replica holds", "sealing", row.KeyID,
+			"before", was)
+	default:
+		r.log.ErrorContext(ctx, "not ready: the index seals with a master key this replica does not hold, and the replica "+
+			"seals nothing until it does: add the key to its sources and start it again, or name a key it holds with "+
+			"lajstrom admin key rewrap --to <id>", "sealing", row.KeyID, "held", r.master.IDs())
+	}
 }
 
 // heartbeat sets the heartbeat of the row. A row that is gone, deleted by a start elsewhere that
@@ -237,9 +269,16 @@ func (r *replica) clock(ctx context.Context) {
 	}
 }
 
-// Err is the error of readiness while another replica serves on the database, or while the last
-// comparison of the clocks found them more than clockFail apart; nil otherwise.
+// Err is the error of readiness while another replica serves on the database, while the index
+// seals with a master key this replica does not hold (it names the id, which shows nothing of the
+// key), or while the last comparison of the clocks found them more than clockFail apart; nil
+// otherwise.
 func (r *replica) Err() error {
+	if r.master != nil {
+		if id, held := r.master.Sealing(); !held && id != "" {
+			return errors.New("this replica does not hold the master key that seals: " + id)
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.lost != nil {

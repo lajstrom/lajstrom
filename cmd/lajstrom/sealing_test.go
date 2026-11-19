@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -268,5 +271,77 @@ func TestPreferSealing(t *testing.T) {
 	}
 	if id, held := m.Sealing(); id != b || !held {
 		t.Errorf("Sealing = %s, %t after a restore on a row of a key it holds; want %s, true", id, held, b)
+	}
+}
+
+// TestReplicaSealing: at each beat a replica reads the sealing key again. A switch to another key
+// it holds seals with that key from then on, logged at info, and the replica stays ready. A switch
+// to a key it does not hold fails closed from that beat on: it seals nothing, the key it sealed
+// with before included, and is not ready, naming the id, while it opens all the while; every beat
+// logs an error naming the id. A switch back to a key it holds ends it. No line shows a key.
+func TestReplicaSealing(t *testing.T) {
+	ctx := t.Context()
+	st := openIndex(t, t.TempDir())
+	a, b, c := masterID(t, testMasterKey), masterID(t, otherMasterKey), masterID(t, thirdMasterKey)
+	if err := st.PutSealingKey(ctx, &index.SealingKey{KeyID: a, Source: index.SealingStart, Host: "h"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := heldOf(t, testMasterKey, otherMasterKey)
+	if err := sealingAtStart(ctx, st, m, "h"); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), time.Now, "", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := oneReplica(t, st); len(row.MasterKeys) != 2 {
+		t.Errorf("the replicas row holds %v, want the two ids", row.MasterKeys)
+	}
+	sealedA, err := m.Seal("aad", []byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tt := range []struct {
+		to       string
+		level    string // of the line of the beat, "" for none
+		readyErr string
+	}{
+		{a, "", ""},
+		{b, "INFO", ""},
+		{c, "ERROR", "this replica does not hold the master key that seals: " + c},
+		{c, "ERROR", "this replica does not hold the master key that seals: " + c},
+		{a, "INFO", ""},
+	} {
+		if row, err := st.GetSealingKey(ctx); err != nil || row.KeyID != tt.to {
+			if err := st.PutSealingKey(ctx, &index.SealingKey{KeyID: tt.to, Source: index.SealingRewrap, Host: "h"}, row.KeyID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		logs.Reset()
+		r.sealing(ctx)
+		if level := logLevel(logs.String()); level != tt.level || (tt.level != "" && !strings.Contains(logs.String(), tt.to)) {
+			t.Errorf("beat %d to %s: logged %q, want a line of level %q naming the id:\n%s", i, tt.to, level, tt.level, logs.String())
+		}
+		checkBeat(t, fmt.Sprintf("beat %d to %s", i, tt.to), st, r, sealedA, tt.readyErr)
+		noKeyIn(t, errors.New(logs.String()))
+	}
+}
+
+// checkBeat checks the replica r after a beat: readiness answers readyErr, or nil for "", and its
+// keys seal while it is ready and seal nothing otherwise, and open sealed, a value under a key it
+// holds, either way.
+func checkBeat(t *testing.T, what string, st store, r *replica, sealed []byte, readyErr string) {
+	t.Helper()
+	switch err := ready(slog.New(slog.DiscardHandler), "sqlite", st, newRegistryHealth(nil, slog.New(slog.DiscardHandler)), r)(t.Context()); {
+	case readyErr == "" && err != nil, readyErr != "" && (err == nil || err.Error() != readyErr):
+		t.Errorf("%s: readiness = %v, want %q", what, err, readyErr)
+	}
+	m := r.master
+	if _, err := m.Seal("aad", []byte("secret")); (err == nil) != (readyErr == "") {
+		t.Errorf("%s: Seal = %v, want a seal: %t", what, err, readyErr == "")
+	}
+	if got, err := m.Open("aad", sealed); err != nil || string(got) != "secret" {
+		t.Errorf("%s: Open = %q, %v; want the secret, whatever seals", what, got, err)
 	}
 }
