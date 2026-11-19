@@ -137,9 +137,11 @@ func (s *Approvals) Reject(ctx context.Context, id int64, o Origin) (*Approval, 
 }
 
 // Expire marks expired the requests still pending at their expiry, in one transaction with an
-// approval.expire row each by the principal of ctx (anonymous for a replica's own pass), and
-// returns how many it marked. Of the replicas that find a request expired at once, one marks it
-// (index.Writer.ExpireApprovals), so that its row is written once.
+// approval.expire row and its webhook event each, by the principal of ctx (anonymous for a
+// replica's own pass), and returns how many it marked. Of the replicas that find a request
+// expired at once, one marks it (index.Writer.ExpireApprovals, an UPDATE of the pending rows
+// that returns those it changed), so that its row and its event are written once: by the
+// replica whose mark wins, in that transaction.
 func (s *Approvals) Expire(ctx context.Context, o Origin) (int, error) {
 	var evs []index.AuditEvent
 	err := s.Index.Tx(ctx, func(w index.Writer) error {

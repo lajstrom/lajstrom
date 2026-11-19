@@ -273,8 +273,9 @@ func newServeCmd(a *app) *cobra.Command {
 			startDenylist(ctx, c, st, providers, pkey, locateIn(lookupIn(plugins)), &runs.wg, a.log)
 			runs.wg.Go(func() { ciPolicies.RunExpiry(ctx, a.log) }) // the expiry of the CI trust policies of the API, on each replica
 			// the expiry of the requests for a second admin, on each replica, whatever auth.approval says: the requests made
-			// under second-admin still expire under none (docs/spec/rbac.md §13)
-			runs.wg.Go(func() { (&auth.Approvals{Index: st, Log: a.log}).RunExpiry(ctx, a.log) })
+			// under second-admin still expire under none (docs/spec/rbac.md §13), each with its approval.expired event,
+			// written by the replica whose mark wins (#1336)
+			runs.wg.Go(func() { (&auth.Approvals{Index: st, Webhooks: newOutbox(c), Log: a.log}).RunExpiry(ctx, a.log) })
 			srv, err = server.New(server.Options{
 				Listen:           c.Server.Listen,
 				ExternalURL:      c.Server.ExternalURL,
