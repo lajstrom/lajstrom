@@ -413,7 +413,8 @@ index; a process that holds several keys on a database that names none refuses t
 not hold the key the index names never seals: `serve` refuses to start and a command exits `1`,
 with `the index seals with master key <id>, which this process does not hold` and the ids it holds;
 a running replica that reads such an id at a beat stops sealing, answers `503` to what would seal
-(a repo's first signing key, a webhook made, an upload to an encrypted repo) and is not ready
+(a repo's first signing key, a webhook made, an upload to an encrypted repo, the callback of an
+OIDC login that keeps a refresh token), refreshes no OIDC login, and is not ready
 ([Readiness](#readiness)), and serves reads all the while. Add the key to its sources and start it
 again, or name a key it holds.
 
@@ -481,15 +482,15 @@ command, in this order, and a process that starts at any step, for any reason, i
    hold the new key's id.
 2. **`lajstrom admin key rewrap --to <new id>`**. It refuses while a live replica does not hold the
    key, makes it the key that seals, waits a minute for every replica to read it, seals every
-   private key of the index and every webhook secret again under it, and counts again. It prints
-   one line of JSON and ends `ok`, or `failed` with what is `left` under the old key, which a run
-   again seals.
+   private key of the index, every webhook secret and every OIDC login's refresh token again under
+   it, and counts again. It prints one line of JSON and ends `ok`, or `failed` with what is `left`
+   under the old key, which a run again seals.
 3. **Remove the old key** from the sources once a rewrap run again with the same `--to`, after every
    command started before the switch has ended, ends `ok` with nothing sealed again
-   (`"resealed":{"keys":0,"webhooks":0}`), and `--dry-run` shows no open upload session under the
-   old key (they end an hour after their last request). Nothing needs to restart: a process that
-   still holds the old key holds a key no value is under. Archive the old key
-   ([below](#archiving-the-old-key)).
+   (`"resealed":{"keys":0,"webhooks":0,"refresh":0}`), and `--dry-run` shows no open upload
+   session under the old key (they end an hour after their last request). Nothing needs to
+   restart: a process that still holds the old key holds a key no value is under. Archive the old
+   key ([below](#archiving-the-old-key)).
 
 The ids come from `--dry-run`, which writes nothing: the sealing key (`sealing`), the keys of the
 command with their sources (`held`), each live replica with the ids it holds (`replicas`), the
@@ -1946,7 +1947,20 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_upload_sessions_refused_total` | `limit` | new `/v2` upload sessions answered `429` at a bound of `server.uploadSessions` on this replica ([Requests from clients](#requests-from-clients)): `repo` (`perRepo`), `principal` (`perPrincipal`) |
 | `lajstrom_upload_sessions_live` | | the live `/v2` upload sessions this replica counts toward `server.uploadSessions`, of all principals, at the scrape: a session counts while a request on it runs and for 5 minutes after the last one. Always `0` while both bounds are `0`, which count nothing |
 | `lajstrom_download_digest_mismatches_total` | `registry` | downloads aborted because the bytes the registry sent do not have their digest ([guarantees.md](spec/guarantees.md), INV-40): a blob streamed to a frontend's or `/v2`'s client, a manifest of `/v2`; the log line `response aborted` names it. Anything but 0 is a registry that serves other bytes than it stored |
+| `lajstrom_oidc_refreshes_total` | `outcome` | this replica's refreshes of OIDC logins at the IdP with `auth.oidc.refresh.interval` ([auth.md](auth.md#asking-the-idp-again), #1282): `ok` (the IdP confirmed the login), `refused` (it answered `invalid_grant`, and the login's token is revoked), `error` (any other answer, or none: nothing ends, and the login is asked again after a backoff) and `dropped` (a login whose token was revoked, expired or never minted, forgotten without a call) |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
+
+**What to watch of the refresh of OIDC logins.** `refused` is people the IdP no longer lets in,
+one per login, each with its `token.revoke` row (`source: refresh`); a burst of them after a
+change at the IdP (a new client secret, a policy that shortens sessions) is the IdP ending logins
+it should not, and those people log in again. `error` that rises and stays is the IdP down or the
+client misconfigured (`invalid_client`): the warn lines `a login's refresh failed` name the kind,
+and while it lasts no login is confirmed, so a removal at the IdP ends nothing until it answers
+again, and the window falls back to `auth.oidc.tokenLifetime`. `ok` is about the live logins
+divided by the interval, summed over the replicas, which is the load on the IdP's token endpoint.
+The callback's warn line `the IdP issued no refresh token` and `user.login` rows with
+`refresh: false` are logins the refresh does not reach: add `offline_access` to `auth.oidc.scopes`
+where the IdP needs it.
 
 ```yaml
 # prometheus.yml
@@ -1991,7 +2005,8 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `user.unlock` | `POST /api/v1/users/<name>/unlock`, `lajstrom admin user unlock`, and an admin's new password, beside its `user.password`: the end of a lock of the lockout that was in force, with its `lockedUntil` ([auth.md](auth.md#the-lockout)) |
 | `user.password` by the user, `user.mustchange` | a user's own change of its password, `POST /api/v1/users/<name>/password` with `currentPassword` or `lajstrom change-password`, the row's principal its subject; an admin's `PATCH` of `mustChange`, with the new value as `mustChange` in its details. A `user.password` or `user.create` that left the password to be changed has `mustChange: true` ([auth.md](auth.md#password-rules-your-own-password-change-at-first-use)) |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
-| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle` |
+| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout`; the token of a web UI's sign-in revoked by the server as idle (`auth.login.idleTimeout`), by `anonymous` with `source` and `reason` `idle`; the token of an OIDC login whose refresh the IdP refused (`auth.oidc.refresh.interval`), by `anonymous` with `source: refresh`, `reason: refused` and `refreshedAt` ([auth.md](auth.md#asking-the-idp-again)) |
+| `user.groups` | `serve`, by `anonymous` with `source: refresh`: a refresh of an OIDC login whose ID token changed the identity's groups, with `issuer`, `subject`, `groups`, `previous` and `token`, the login's token |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
 | `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
