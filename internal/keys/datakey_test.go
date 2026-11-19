@@ -1,11 +1,14 @@
 package keys_test
 
 import (
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/keys/keystest"
 )
@@ -229,4 +233,59 @@ func TestHoldMasterKeysPending(t *testing.T) {
 	if err != nil || len(m.Pending()) != 1 || m.Pending()[0] != "0123456789abcdef" {
 		t.Errorf("a data key whose id a file holds: %v, %v; want it held, the other pending", m.Pending(), err)
 	}
+}
+
+// TestPolicyKeyPending: the policy key of a row under a data key not yet unwrapped is had all the
+// same, its public key known, and signs nothing, as an unavailable KMS, until the unwrap; then it
+// signs, and its signature verifies.
+func TestPolicyKeyPending(t *testing.T) {
+	ctx := t.Context()
+	kms := keystest.NewWrapKMS()
+	d := newDataKey(t, kms)
+	st, err := sqlite.Open(ctx, "file:"+filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	under, err := keys.ParseMaster(d.hex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := mustService(t, st, under).PolicyKey(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := keys.HoldMasterKeys(nil, []string{d.id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SealWith(d.id)
+	k, err := mustService(t, st, m).PolicyKey(ctx, "")
+	if err != nil || k.Fingerprint() != made.Fingerprint() {
+		t.Fatalf("the policy key while its master key is pending: %v, %v; want the row's", k, err)
+	}
+	if _, err := k.Sign(ctx, []byte("verdict")); !errors.Is(err, keys.ErrKMSUnavailable) {
+		t.Errorf("a signature before the unwrap: %v, want the KMS unavailable", err)
+	}
+	if err := m.Unwrap(ctx, kms, kmsKey(t, kms), d.row); err != nil {
+		t.Fatal(err)
+	}
+	sig, err := k.Sign(ctx, []byte("verdict"))
+	digest := sha256.Sum256([]byte("verdict"))
+	if pub, ok := k.Public.(*ecdsa.PublicKey); err != nil || !ok || !ecdsa.VerifyASN1(pub, digest[:], sig) {
+		t.Errorf("a signature after the unwrap: %v, or it does not verify", err)
+	}
+}
+
+// mustService returns the keys service of st under m.
+func mustService(t *testing.T, st index.Store, m *keys.Master) *keys.Service {
+	t.Helper()
+	svc, err := keys.New(keys.Options{Index: st, Master: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
