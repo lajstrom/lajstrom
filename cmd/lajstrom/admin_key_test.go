@@ -219,8 +219,8 @@ func TestNewSigner(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var logged bytes.Buffer
 			c.Keys.MasterKeyEnv = tt.envName
-			signer, err := newSigner(ctx, c, func(k string) (string, bool) { v, ok := tt.env[k]; return v, ok }, st,
-				slog.New(slog.NewTextHandler(&logged, nil)))
+			env := func(k string) (string, bool) { v, ok := tt.env[k]; return v, ok }
+			signer, err := newSigner(ctx, c, testMasters(t, c, env, st), env, st, slog.New(slog.NewTextHandler(&logged, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,8 +362,9 @@ func TestAdminKeyTokenErrors(t *testing.T) {
 	}
 }
 
-// TestServeTokenKey checks that serve stops before it listens when the active token key does
-// not decrypt (the database made under another master key), naming the key and admin key drop
+// TestServeTokenKey checks that serve stops before it listens when the index seals with a master
+// key it does not hold, and, once the index names its key, when the active token key does not
+// decrypt (the database made under another master key), naming the key and admin key drop
 // --token; after the drop, newTokenKeys makes a new key under the new master key. A file that
 // still sets auth.tokenSigningKeyFile stops serve at Load.
 func TestServeTokenKey(t *testing.T) {
@@ -375,6 +376,10 @@ func TestServeTokenKey(t *testing.T) {
 	})
 	fp := pemFingerprint(t, outs[1])
 	env := map[string]string{"LAJSTROM_MASTER_KEY": other}
+	runEnv(t, cfg, env, []step{{args: []string{"serve"}, wantErr: "the index seals with master key " + masterID(t, testMasterKey) +
+		", which this process does not hold"}})
+	// what lajstrom admin key rewrap --to <other> --allow-lost leaves of the sealing row when the old key is lost
+	switchSealing(t, dsn, masterID(t, testMasterKey), masterID(t, other))
 	runEnv(t, cfg, env, []step{{args: []string{"serve"}, wantErr: "the bearer-token key: keys: the private key of " + fp +
 		" does not decrypt with the master key: another master key, or the row was changed; start with the master key " +
 		"that made it, or retire it with lajstrom admin key drop --token, and a new key is made"}})
@@ -387,8 +392,8 @@ func TestServeTokenKey(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	c := config.Default()
 	c.Keys.MasterKeyEnv = "LAJSTROM_MASTER_KEY"
-	tokens, err := newTokenKeys(t.Context(), c, func(k string) (string, bool) { v, ok := env[k]; return v, ok }, st,
-		slog.New(slog.DiscardHandler))
+	tokens, err := newTokenKeys(t.Context(), c, testMasters(t, c, func(k string) (string, bool) { v, ok := env[k]; return v, ok }, st),
+		st, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +431,7 @@ func TestNewTokenKeys(t *testing.T) {
 	var fps []string
 	for range 2 {
 		var logged bytes.Buffer
-		tokens, err := newTokenKeys(ctx, c, withKey, st, slog.New(slog.NewTextHandler(&logged, nil)))
+		tokens, err := newTokenKeys(ctx, c, testMasters(t, c, withKey, st), st, slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -448,7 +453,7 @@ func TestNewTokenKeys(t *testing.T) {
 	}
 
 	var logged bytes.Buffer
-	tokens, err := newTokenKeys(ctx, c, lookup(nil), st, slog.New(slog.NewTextHandler(&logged, nil)))
+	tokens, err := newTokenKeys(ctx, c, testMasters(t, c, lookup(nil), st), st, slog.New(slog.NewTextHandler(&logged, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +464,7 @@ func TestNewTokenKeys(t *testing.T) {
 		"and are not shared between replicas; set keys.masterKeyEnv or keys.masterKeyFile\"") {
 		t.Errorf("no warning:\n%s", logged.String())
 	}
-	if _, err := newTokenKeys(ctx, c, lookup(map[string]string{"LAJSTROM_MASTER_KEY": "xyz"}), st, slog.New(slog.DiscardHandler)); err == nil {
+	if _, err := loadMasters(c.Keys, lookup(map[string]string{"LAJSTROM_MASTER_KEY": "xyz"}), nil); err == nil {
 		t.Error("a malformed master key: no error")
 	}
 }

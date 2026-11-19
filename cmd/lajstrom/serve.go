@@ -44,9 +44,10 @@ var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // newServeCmd returns serve: load and validate the configuration (in the root's
 // PersistentPreRunE), warn of plain HTTP beyond loopback (warnPlainHTTP), read the credential
 // files of the upstreams (loadUpstreams), open the index database and apply its pending
-// migrations, write this process's row of replicas and beat
-// it (startReplica: on SQLite a live row of another replica stops serve here), create the
-// repos of the configuration that the control plane does not have, load the master key, build
+// migrations, load the master keys and read the one the index names to seal (holdMasters: one
+// that the process does not hold stops serve here), write this process's row of replicas, with
+// the ids of its keys, and beat it (startReplica: on SQLite a live row of another replica stops
+// serve here), create the repos of the configuration that the control plane does not have, build
 // a provider for every registry and probe its capabilities, build the server and run it until
 // SIGINT, SIGTERM or SIGHUP (the terminal closed) and the drain that follows (server.Run; a
 // second signal stops the process at once), then stop the background work, delete the row and
@@ -128,13 +129,13 @@ func newServeCmd(a *app) *cobra.Command {
 			if err := serveMigrations(ctx, st, c.Database, a.log); err != nil {
 				return err
 			}
-			rep, err := startReplica(ctx, st, a.log, time.Now, c.Database.File())
+			ms, rep, err := a.serveKeys(ctx, st, c.Database.File())
 			if err != nil {
 				return err
 			}
 			// After the background work has ended, before the index closes.
 			defer rep.Stop(context.WithoutCancel(ctx))
-			encryption, err := bootstrapRepos(ctx, a, c, st)
+			encryption, err := bootstrapRepos(ctx, a, c, st, ms.m)
 			if err != nil {
 				return err
 			}
@@ -147,11 +148,11 @@ func newServeCmd(a *app) *cobra.Command {
 			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
 				return err
 			}
-			signer, err := newSigner(ctx, c, a.lookupEnv, st, a.log)
+			signer, err := newSigner(ctx, c, ms, a.lookupEnv, st, a.log)
 			if err != nil {
 				return err
 			}
-			tokens, err := newTokenKeys(ctx, c, a.lookupEnv, st, a.log)
+			tokens, err := newTokenKeys(ctx, c, ms, st, a.log)
 			if err != nil {
 				return err
 			}
@@ -191,8 +192,7 @@ func newServeCmd(a *app) *cobra.Command {
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			runs.wg.Go(func() { fillSummaries(ctx, st, a.log, summaryBatch) })
 			runs.wg.Go(func() { rep.Run(ctx) })
-			hooksMaster := webhookMaster(c, a.lookupEnv, a.log)
-			startWebhooks(ctx, c, hooksMaster, st, rep.row.ID, &runs.wg, a.log)
+			startWebhooks(ctx, c, ms.m, st, rep.row.ID, &runs.wg, a.log)
 			if err := checkProxyRepos(ctx, st, upstreams, ociUpstreams, a.log); err != nil {
 				return err
 			}
@@ -249,7 +249,7 @@ func newServeCmd(a *app) *cobra.Command {
 			var srv *server.Server
 			authenticate := func(w http.ResponseWriter, r *http.Request) (*http.Request, bool) { return srv.Authenticate(w, r) }
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
-				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log),
+				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, ms.m, rep.row.ID, a.log),
 				ServiceTokenMaxLifetime: c.Auth.ServiceAccounts.MaxTokenTTL, DeployTokenMaxLifetime: c.Auth.DeployTokens.MaxTTL,
 				ServiceDisableWithOwner: c.Auth.ServiceAccounts.OnOwnerDisabled == config.OwnerDisable,
 				InactiveUsersAfter:      c.Auth.DisableInactiveUsersAfter,
@@ -308,14 +308,29 @@ func newServeCmd(a *app) *cobra.Command {
 	}
 }
 
-// bootstrapRepos makes the keys of encrypted repos (nil without a master key) and creates the
-// repos of the configuration that the index does not have, which may be encrypted only with them.
+// serveKeys reads the master keys of serve and the one the index names to seal (holdMasters),
+// before the replicas row, a seal or the listener (docs/spec/index-schema.md, The master key and
+// its replacement), logs them, then writes the row of this process with their ids (startReplica;
+// file is the SQLite file, "" for none).
+func (a *app) serveKeys(ctx context.Context, st store, file string) (masters, *replica, error) {
+	ms, err := a.holdMasters(ctx, st, a.log)
+	if err != nil {
+		return masters{}, nil, err
+	}
+	logMasters(a.log, ms.m)
+	rep, err := startReplica(ctx, st, a.log, time.Now, file, ms.m)
+	return ms, rep, err
+}
+
+// bootstrapRepos makes the keys of encrypted repos under the master keys m (nil without a master
+// key) and creates the repos of the configuration that the index does not have, which may be
+// encrypted only with them.
 // The repos are not checked against their registry's capabilities: the provider set is not built
 // yet, and the probe logs a registry that takes no name of Lajstrom's at error. The API checks
 // (#663). Then it records the configuration, config.change when it is not the one last recorded
 // (configRecorder, docs/spec/rbac.md §5).
-func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Store) (*keys.Encryption, error) {
-	encryption, err := newEncryption(c, a.lookupEnv, st, a.log)
+func bootstrapRepos(ctx context.Context, a *app, c *config.Config, st index.Store, m *keys.Master) (*keys.Encryption, error) {
+	encryption, err := newEncryption(m, a.lookupEnv, st, a.log)
 	if err != nil {
 		return nil, err
 	}

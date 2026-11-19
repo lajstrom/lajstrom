@@ -308,10 +308,11 @@ func (a *app) withTokenKeys(ctx context.Context, fn func(context.Context, *keys.
 	})
 }
 
-// withMaster loads the master key, opens the index database and runs fn with both, then
-// closes the database. hint follows the error of a missing master key.
+// withMaster loads the master keys, opens the index database, reads the key the index names to
+// seal (sealingAtStart: a command that does not hold it exits 1 before it writes) and runs fn
+// with both, then closes the database. hint follows the error of a missing master key.
 func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Context, *keys.Master, store) error) (err error) {
-	m, err := loadMaster(a.cfg.Keys, a.lookupEnv, a.log)
+	m, err := loadMasters(a.cfg.Keys, a.lookupEnv, a.log)
 	if errors.Is(err, keys.ErrNoMasterKey) {
 		return fmt.Errorf("admin key needs the master key: %w%s", err, hint)
 	}
@@ -323,6 +324,9 @@ func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Conte
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
+	if err := sealingAtStart(ctx, st, m, hostName()); err != nil {
+		return err
+	}
 	return fn(ctx, m, st)
 }
 
@@ -346,19 +350,25 @@ func kmsClients(lookupEnv func(string) (string, bool), log *slog.Logger) map[str
 	}
 }
 
-// newEncryption returns the keys of encrypted repos over st (ADR 0009), with the KMS clients of
-// decryptClients; nil without a master key, when no repo can be encrypted (api.Repos.Encryption
-// refuses at-rest). signingOff has already refused a start without the master key whose index
-// holds encryption keys.
-func newEncryption(c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (*keys.Encryption, error) {
-	m, err := loadMaster(c.Keys, lookupEnv, nil)
-	if errors.Is(err, keys.ErrNoMasterKey) {
+// newEncryption returns the keys of encrypted repos over st (ADR 0009) under the master keys m,
+// with the KMS clients of decryptClients; nil without a master key, when no repo can be encrypted
+// (api.Repos.Encryption refuses at-rest). signingOff has already refused a start without the
+// master key whose index holds encryption keys.
+func newEncryption(m *keys.Master, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (*keys.Encryption, error) {
+	if m == nil {
 		return nil, nil
 	}
+	return keys.NewEncryption(keys.EncryptionOptions{Index: st, Master: m, KMS: decryptClients(lookupEnv, log), Log: log})
+}
+
+// encryptionOf is newEncryption under the master keys of the configuration, with the key the
+// index names to seal (holdMasters), for a command: nil without a master key.
+func (a *app) encryptionOf(ctx context.Context, st store) (*keys.Encryption, error) {
+	ms, err := a.holdMasters(ctx, st, a.log)
 	if err != nil {
 		return nil, err
 	}
-	return keys.NewEncryption(keys.EncryptionOptions{Index: st, Master: m, KMS: decryptClients(lookupEnv, log), Log: log})
+	return newEncryption(ms.m, a.lookupEnv, st, a.log)
 }
 
 // decryptClients returns the KMS clients that hold the decryption keys of encrypted repos, by
@@ -373,10 +383,10 @@ func decryptClients(lookupEnv func(string) (string, bool), log *slog.Logger) map
 	return out
 }
 
-// masterConfigured reports whether the configuration names a master key that loads, for
+// masterConfigured reports whether the configuration names master keys that load, for
 // api.Repos.Encryption.
 func masterConfigured(c *config.Config, lookupEnv func(string) (string, bool)) bool {
-	_, err := loadMaster(c.Keys, lookupEnv, nil)
+	_, err := loadMasters(c.Keys, lookupEnv, nil)
 	return err == nil
 }
 
@@ -386,24 +396,19 @@ func newTokens(c *config.Config, st index.Store, m *keys.Master, log *slog.Logge
 }
 
 // newTokenKeys returns the bearer-token keys of serve, loaded or made now, before the server
-// listens: the key of the index under the master key (loadMaster), made when there is none,
-// with one line at info that names its fingerprint and algorithm. An active key that does not
-// decrypt stops serve with an error that names it and admin key drop --token. Without a
-// master key (neither keys.masterKeyFile nor keys.masterKeyEnv set, or the variable not set)
-// the keys are an ephemeral key in memory, with a warning; a variable or a file that is empty
-// or malformed is an error. serve calls newSigner first, which warns about the file's mode.
-func newTokenKeys(ctx context.Context, c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (token.Keys, error) {
-	m, err := loadMaster(c.Keys, lookupEnv, nil)
-	if errors.Is(err, keys.ErrNoMasterKey) {
+// listens: the key of the index under the master keys of ms, made when there is none, with one
+// line at info that names its fingerprint and algorithm. An active key that does not decrypt
+// stops serve with an error that names it and admin key drop --token. Without a master key
+// (none configured, or the variable not set) the keys are an ephemeral key in memory, with a
+// warning that says why.
+func newTokenKeys(ctx context.Context, c *config.Config, ms masters, st index.Store, log *slog.Logger) (token.Keys, error) {
+	if ms.m == nil {
 		e := keys.NewEphemeralTokens()
 		k, _ := e.TokenSigner(ctx) // the ephemeral key: never an error
-		log.WarnContext(ctx, ephemeralTokens, "fingerprint", k.ID(), "algorithm", k.Algorithm, "reason", err.Error())
+		log.WarnContext(ctx, ephemeralTokens, "fingerprint", k.ID(), "algorithm", k.Algorithm, "reason", ms.none.Error())
 		return e, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	t, err := newTokens(c, st, m, log)
+	t, err := newTokens(c, st, ms.m, log)
 	if err != nil {
 		return nil, err
 	}
@@ -411,33 +416,27 @@ func newTokenKeys(ctx context.Context, c *config.Config, lookupEnv func(string) 
 	if err != nil {
 		return nil, fmt.Errorf("the bearer-token key: %w", err)
 	}
-	src, name := masterSource(c.Keys)
-	log.InfoContext(ctx, "bearer tokens are signed with the key in the database", "fingerprint", k.ID(),
-		"algorithm", k.Algorithm, src, name)
+	log.InfoContext(ctx, "bearer tokens are signed with the key in the database",
+		append([]any{"fingerprint", k.ID(), "algorithm", k.Algorithm}, masterSources(c.Keys)...)...)
 	return t, nil
 }
 
-// newSigner returns the Signer of serve: the keys service over st with the master key
-// (loadMaster), or nil when signing is off. Signing is off when neither keys.masterKeyFile nor
-// keys.masterKeyEnv is set, or the variable is not set, and the index holds no signing key:
-// every apt repo is unsigned then, and each gets a warning. A variable or a file that is empty
-// or malformed is an error, and so is a missing master key while the index holds signing keys:
-// only that key decrypts them, and their repos' clients pinned them.
-func newSigner(ctx context.Context, c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (format.Signer, error) {
-	m, err := loadMaster(c.Keys, lookupEnv, log)
-	if errors.Is(err, keys.ErrNoMasterKey) {
-		return nil, signingOff(ctx, st, err, log)
+// newSigner returns the Signer of serve: the keys service over st with the master keys of ms, or
+// nil when signing is off. Signing is off when no master key is configured, or the variable is not
+// set, and the index holds no signing key: every apt repo is unsigned then, and each gets a
+// warning. A missing master key while the index holds signing keys is an error: only that key
+// decrypts them, and their repos' clients pinned them.
+func newSigner(ctx context.Context, c *config.Config, ms masters, lookupEnv func(string) (string, bool), st index.Store,
+	log *slog.Logger) (format.Signer, error) {
+	if ms.m == nil {
+		return nil, signingOff(ctx, st, ms.none, log)
 	}
+	svc, err := newKeys(c, lookupEnv, st, ms.m, log)
 	if err != nil {
 		return nil, err
 	}
-	svc, err := newKeys(c, lookupEnv, st, m, log)
-	if err != nil {
-		return nil, err
-	}
-	src, name := masterSource(c.Keys)
-	log.Info("apt repos are signed with keys under the master key", src, name,
-		"keys.algorithm", c.Keys.Algorithm, "keys.retireGrace", c.Keys.RetireGrace.String(), "keys.kms", c.Keys.KMS)
+	log.Info("apt repos are signed with keys under the master key", append(masterSources(c.Keys),
+		"keys.algorithm", c.Keys.Algorithm, "keys.retireGrace", c.Keys.RetireGrace.String(), "keys.kms", c.Keys.KMS)...)
 	return svc, nil
 }
 

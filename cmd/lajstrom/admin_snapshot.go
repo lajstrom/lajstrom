@@ -94,6 +94,11 @@ func newSnapshotCreateCmd(a *app) *cobra.Command {
 				return err
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
+			if reg.Master != nil { // sealed with the key the index names, and no other
+				if err := sealingAtStart(ctx, st, reg.Master, hostName()); err != nil {
+					return err
+				}
+			}
 			cp, err := st.ExportControlPlane(ctx, opts)
 			if err != nil {
 				return err
@@ -226,7 +231,7 @@ func (a *app) snapshotRegistry(name string, need masterNeed) (snapshot.Registry,
 	if need == masterNone {
 		return reg, name, nil
 	}
-	m, err := loadMaster(a.cfg.Keys, a.lookupEnv, a.log)
+	m, err := loadMasters(a.cfg.Keys, a.lookupEnv, a.log)
 	switch {
 	case errors.Is(err, keys.ErrNoMasterKey) && need == masterIfSet:
 		return reg, name, nil
@@ -305,6 +310,9 @@ func newSnapshotRestoreCmd(a *app) *cobra.Command {
 			if err := noReplicaServes(ctx, st); err != nil {
 				return err
 			}
+			if err := preferSealing(ctx, st, reg.Master); err != nil {
+				return err
+			}
 			cp, info, err := reg.Read(ctx, args[0])
 			if errors.Is(err, snapshot.ErrNoMasterKey) {
 				return fmt.Errorf("%w: set keys.masterKeyEnv or keys.masterKeyFile to the master key it was written under", err)
@@ -330,6 +338,27 @@ func newSnapshotRestoreCmd(a *app) *cobra.Command {
 	registryFlag(cmd, &registry)
 	cmd.Flags().BoolVar(&force, "force", false, "empty the database first: its control plane, derived tables and sessions")
 	return cmd
+}
+
+// preferSealing makes the key that the database's sealing row names the first that m, the master
+// keys of a restore, tries a sealed snapshot with, when m holds it (manifest-profile.md §9). A
+// restore neither stops on that row nor inserts one: the snapshot brings its own
+// (docs/spec/index-schema.md, The master key and its replacement). m nil is no master key.
+func preferSealing(ctx context.Context, st store, m *keys.Master) error {
+	if m == nil {
+		return nil
+	}
+	row, err := st.GetSealingKey(ctx)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("the sealing key of the index: %w", err)
+	}
+	if m.Holds(row.KeyID) {
+		m.SealWith(row.KeyID)
+	}
+	return nil
 }
 
 // noReplicaServes fails when a replica's row has a heartbeat younger than replicaStaleAfter: a
