@@ -37,6 +37,7 @@ var auditedCommands = map[string]bool{
 	"admin repo delete":        true,
 	"admin key rotate":         true,
 	"admin key drop":           true,
+	"admin key rewrap":         true,
 	"admin user create":        true,
 	"admin user set-owner":     true,
 	"admin user disable":       true,
@@ -62,10 +63,11 @@ var auditedCommands = map[string]bool{
 	"admin audit prune":        true,
 }
 
-// reasonGroups are the groups of auditedCommands whose commands change the control plane, and
-// admin audit prune: with auth.requireReason each needs a reason (docs/spec/rbac.md §5, §6, §13).
+// reasonGroups are the groups of auditedCommands whose commands change the control plane, admin
+// audit prune and admin key rewrap: with auth.requireReason each needs a reason (docs/spec/rbac.md
+// §5, §6, §13).
 var reasonGroups = []string{"admin user ", "admin binding ", "admin token ", "admin repo ", "admin webhook ", "admin ci-policy ",
-	"admin policy rule ", "admin audit prune"}
+	"admin policy rule ", "admin audit prune", "admin key rewrap"}
 
 // needsReason reports whether the command of auditedCommands at path needs a reason under
 // auth.requireReason.

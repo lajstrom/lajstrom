@@ -38,9 +38,9 @@ const ephemeralTokens = "bearer tokens are signed with an ephemeral key: they do
 func newAdminKeyCmd(a *app) *cobra.Command {
 	key := &cobra.Command{
 		Use:   "key",
-		Short: "Export, rotate and drop the signing keys of apt and rpm repos and of bearer tokens",
+		Short: "Export, rotate and drop the signing keys of apt and rpm repos and of bearer tokens; rewrap under a new master key",
 	}
-	key.AddCommand(newKeyExportCmd(a), newKeyRotateCmd(a), newKeyDropCmd(a))
+	key.AddCommand(newKeyExportCmd(a), newKeyRotateCmd(a), newKeyDropCmd(a), newKeyRewrapCmd(a))
 	return key
 }
 

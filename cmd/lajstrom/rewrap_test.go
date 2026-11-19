@@ -41,8 +41,14 @@ type rewrapFixture struct {
 // not encrypt, and a committed one under A.
 func newRewrapFixture(t *testing.T) *rewrapFixture {
 	t.Helper()
+	return fillRewrapFixture(t, newSealingStore(t))
+}
+
+// fillRewrapFixture fills st as newRewrapFixture does.
+func fillRewrapFixture(t *testing.T, st store) *rewrapFixture {
+	t.Helper()
 	ctx := t.Context()
-	f := &rewrapFixture{st: newSealingStore(t), a: masterID(t, testMasterKey), b: masterID(t, otherMasterKey),
+	f := &rewrapFixture{st: st, a: masterID(t, testMasterKey), b: masterID(t, otherMasterKey),
 		c: masterID(t, thirdMasterKey), plain: map[string]string{}}
 	repo := index.Repo{Format: "apt", Name: "debs", Registry: "local", Prefix: "apt/debs", Kind: index.KindHosted}
 	if err := f.st.CreateRepo(ctx, &repo); err != nil {
