@@ -1528,7 +1528,12 @@ credential until the request is approved. The same change pending twice is `409`
 `POST /api/v1/users` with `admin: true` is `400` instead, naming the setting
 ([Create](#create-post-apiv1users)). A request is made, as it is approved, with the admin's
 password or a web UI's fresh sign-in, never a token: a token that one admin made for another
-admin or for a service account neither requests nor approves (#1393).
+admin or for a service account neither requests nor approves (#1393). Each request, approval,
+rejection and expiry is a webhook event of the admin's webhooks, `approval.requested`,
+`.approved`, `.rejected` and `.expired`, whose `data.approval` is the resource below, and
+`GET /api/v1/info` answers an admin `pendingApprovals`
+([Server information](#server-information-get-apiv1info);
+[auth.md](auth.md#telling-the-second-admin), #1336).
 
 ### The resource
 
@@ -2094,7 +2099,7 @@ rotation, the one time it is shown.
 | `id` | set by the server |
 | `mask` | a repo mask, as a binding's: `raw/assets`, `raw/*`, `*/payments`, `*/*`. Under a repo it is the repo, and the body may leave it out; it never changes |
 | `url` | `http` or `https`, with a host, no user information, no fragment, at most 2048 bytes; `https` and a public address unless `webhooks.allowedHosts` lists its host ([configuration.md](configuration.md#webhooks)) |
-| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`, `policy.rule.created`, `policy.rule.deleted`, `policy.verdict.created`, `policy.verdict.deleted`, `ci.policy.created`, `ci.policy.updated`, `ci.policy.renewed`, `ci.policy.approved`, `ci.policy.expired`, `ci.policy.deleted` (the last six to a webhook of a mask with `*` only); `[]`, every type |
+| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`, `policy.rule.created`, `policy.rule.deleted`, `policy.verdict.created`, `policy.verdict.deleted`, `ci.policy.created`, `ci.policy.updated`, `ci.policy.renewed`, `ci.policy.approved`, `ci.policy.expired`, `ci.policy.deleted`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.expired` (the last ten to a webhook of a mask with `*` only, that covers the mask of the policy or of the request's change; [auth.md](auth.md#telling-the-second-admin)); `[]`, every type |
 | `active` | `true` by default; an inactive webhook gets no new event |
 | `description` | at most 256 bytes |
 | `createdBy`, `createdAt`, `updatedAt` | set by the server |
@@ -2249,6 +2254,9 @@ curl -s "$LAJSTROM/api/v1/info"
 }
 ```
 
+An admin's answer has `pendingApprovals` too, `"pendingApprovals": 2`, after its `caller`
+`{"principal": "user:01a0…", …, "admin": true}`.
+
 | Field | What |
 | --- | --- |
 | `version`, `commit`, `date` | the build, as `GET /-/version` and `lajstrom version` report it |
@@ -2261,6 +2269,7 @@ curl -s "$LAJSTROM/api/v1/info"
 | `requireReason` | `auth.requireReason`: `true` when a change of the control plane without `changeReason` is `400` ([Conventions](#conventions), #1285). A server before it answers none, which is `false` |
 | `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it and asks for a password or a fresh sign-in for such a request; `admin: true` in `POST /api/v1/users` is `400`, and so is an admin's new password for a user who holds `admin` (#1393). A server before it answers none, which is `none` |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not, nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second factor. Without credentials it is `anonymous`, with the name `anonymous` |
+| `pendingApprovals` | while `caller.admin` is `true`, the number of requests for a second admin that are pending, not expired, and not made by the caller: those it could approve ([Approvals](#approvals), #1336), whatever `auth.approval` says. Left out for every other caller, an admin's scoped token included, so that nobody without the role learns that a request waits; a server before it answers none |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
 
