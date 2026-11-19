@@ -54,6 +54,33 @@ type DecryptKMS interface {
 	Decrypt(ctx context.Context, name string, ciphertext []byte) ([]byte, error)
 }
 
+// MasterKMS is a key management service whose symmetric keys wrap the data keys of the master
+// key (#1388, ADR 0036): internal/keys/awskms and internal/keys/gcpkms. A data key's 32 bytes go
+// to it to be wrapped and come back unwrapped, each call bound to additional data, so that a
+// ciphertext opens with the data it was made with only. Errors wrap ErrKMSUnavailable when asking
+// again later may succeed, and ErrKMSKeyCannotWrap for a key that cannot wrap.
+type MasterKMS interface {
+	// SymmetricKey describes the key of name, a config.KMSKey's Name: its canonical name, which
+	// Encrypt and DecryptSymmetric get from then on (an AWS alias or key id resolved to the key's
+	// ARN; a GCP key, without a version, as it is). An error wrapping ErrKMSKeyCannotWrap names
+	// the spec and the state of a key that is not an enabled symmetric key for encryption: AWS
+	// SYMMETRIC_DEFAULT for ENCRYPT_DECRYPT, GCP ENCRYPT_DECRYPT of GOOGLE_SYMMETRIC_ENCRYPTION.
+	SymmetricKey(ctx context.Context, name string) (string, error)
+	// Encrypt returns the KMS's ciphertext of plain under the key of the canonical name, bound to
+	// ad.
+	Encrypt(ctx context.Context, name string, plain []byte, ad AdditionalData) ([]byte, error)
+	// DecryptSymmetric returns the plaintext of ciphertext, decrypted by the key of the
+	// canonical name with ad; a ciphertext made with other data does not open.
+	DecryptSymmetric(ctx context.Context, name string, ciphertext []byte, ad AdditionalData) ([]byte, error)
+}
+
+// AdditionalData binds a symmetric Encrypt and Decrypt of a KMS to what they wrap: AWS KMS's
+// encryption context {Key: Value}, GCP Cloud KMS's additional authenticated data String().
+type AdditionalData struct{ Key, Value string }
+
+// String is the additional data as bytes take it: "<Key> <Value>".
+func (a AdditionalData) String() string { return a.Key + " " + a.Value }
+
 // KMSKey describes a key of a KMS.
 type KMSKey struct {
 	// Name is the canonical name of the key in the KMS: an AWS key ARN, a GCP key version.
@@ -73,6 +100,9 @@ var (
 	// algorithm OpenPGP clients do not verify or this package does not sign with, a key that is
 	// not enabled.
 	ErrKMSKeyUnsupported = errors.New("keys: the KMS key cannot sign apt and rpm indexes")
+	// ErrKMSKeyCannotWrap means the KMS key cannot wrap a data key of the master key: not a
+	// symmetric key for encryption, or not enabled (#1388).
+	ErrKMSKeyCannotWrap = errors.New("keys: the KMS key cannot wrap a master key")
 )
 
 // KMSRetryAfter is the Retry-After of a signed route while the KMS is unavailable.
