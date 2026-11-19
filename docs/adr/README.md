@@ -83,3 +83,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0034](0034-replacing-the-master-key.md) | Replacing the master key: the keys a process holds, the one the index names to seal | proposed |
 | [0035](0035-second-admin-is-another-person.md) | A second admin is another person: no token requests, no admin's password set by another | proposed |
 | [0036](0036-the-master-key-in-a-kms.md) | The master key in a KMS: a data key wrapped by a symmetric KMS key, named by its id | proposed |
+| [0037](0037-asking-the-idp-again-about-each-login.md) | Asking the IdP again: each login's sealed refresh token, a refusal ends the login | proposed |
