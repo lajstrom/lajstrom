@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -261,4 +262,37 @@ func serveOn(t *testing.T, cfg string) (string, string) {
 	body := strings.Replace(string(b), `listen: "127.0.0.1:0"`, `listen: "`+addr+`"`+"\n  metricsListen: \"\"\n  shutdownDelay: 0s", 1)
 	must(t, os.WriteFile(cfg, []byte(body), 0o600)) //nolint:gosec // the test's own file
 	return cfg, addr
+}
+
+// TestSnapshotKey: the restore of a snapshot sealed under a data key that the database has no row
+// of unwraps it from the snapshot's annotation when keys.masterKeyKMS names its id and its KMS key,
+// and holds it; one the configuration does not name, or names under another KMS key, is refused
+// and the KMS asked nothing.
+func TestSnapshotKey(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	openIndex(t, dir)
+	kms := keystest.NewWrapKMS()
+	k := plantDataKey(t, "file:"+dir+"/lajstrom.db", kms, kms.ARN, kms.URI())
+	wrapped, err := base64.StdEncoding.DecodeString(k.wrapped)
+	must(t, err)
+	row := index.WrappedMasterKey{KeyID: k.id, KMS: kms.URI(), Wrapped: wrapped}
+	a := kmsApp(kms, io.Discard, k)
+	m, err := keys.HoldMasterKeys(nil, []string{k.id})
+	must(t, err)
+	for _, tt := range []struct {
+		row  index.WrappedMasterKey
+		want string
+	}{
+		{index.WrappedMasterKey{KeyID: "fedcba9876543210", KMS: kms.URI(), Wrapped: wrapped}, "does not name master key fedcba9876543210"},
+		{index.WrappedMasterKey{KeyID: k.id, KMS: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/other", Wrapped: wrapped},
+			"the snapshot under awskms:///arn:aws:kms:eu-west-1:111122223333:key/other"},
+	} {
+		if err := a.snapshotKey(m)(ctx, tt.row); err == nil || !strings.Contains(err.Error(), tt.want) || kms.Decrypts() != 0 {
+			t.Errorf("the key %+v: %v, %d unwraps; want %q and none", tt.row, err, kms.Decrypts(), tt.want)
+		}
+	}
+	if err := a.snapshotKey(m)(ctx, row); err != nil || !m.Holds(k.id) {
+		t.Errorf("the key of the annotation: %v, held %t", err, m.Holds(k.id))
+	}
 }

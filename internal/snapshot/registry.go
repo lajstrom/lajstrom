@@ -40,6 +40,10 @@ type Registry struct {
 	// Master seals the snapshots Write seals and opens the sealed ones Read reads; nil writes
 	// unsealed snapshots only, and opens none.
 	Master *keys.Master
+	// UnwrapKey, when set, is asked by Read to have Master hold the data key of a sealed
+	// snapshot's lajstrom.snapshot.wrappedKey that Master does not hold, before the layer opens: a
+	// restore into a database without that key's row (#1388).
+	UnwrapKey func(ctx context.Context, row index.WrappedMasterKey) error
 	// ReadBack bounds the read-back of a written tag; zero is DefaultReadBack.
 	ReadBack time.Duration
 }
@@ -110,6 +114,9 @@ func (r Registry) build(cp *index.ControlPlane, sealed bool, binary string) (*bu
 	}
 	s := profile.Snapshot{Version: Version, Schema: cp.Schema, Binary: binary, Created: cp.ReadAt, Sealed: sealed,
 		Layer: ocispec.Descriptor{Digest: digest.FromBytes(layer), Size: int64(len(layer))}}
+	if sealed {
+		s.WrappedKey = r.wrappedKeyOf(cp)
+	}
 	m, err := profile.BuildSnapshot(s)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: %w", err)
@@ -120,6 +127,18 @@ func (r Registry) build(cp *index.ControlPlane, sealed bool, binary string) (*bu
 	}
 	s.Layer, s.Created = m.Layers[0], s.Created.UTC().Truncate(time.Second)
 	return &built{layer: layer, manifest: m, raw: raw, info: infoOf(profile.SnapshotTag(s.Created, d), d, s)}, nil
+}
+
+// wrappedKeyOf returns the row of cp's wrapped master keys of the key Master seals with, as the
+// manifest's lajstrom.snapshot.wrappedKey takes it; nil when that key is no data key of a KMS.
+func (r Registry) wrappedKeyOf(cp *index.ControlPlane) *profile.SnapshotWrappedKey {
+	id, _ := r.Master.Sealing()
+	for _, k := range cp.WrappedMasterKeys {
+		if k.KeyID == id {
+			return &profile.SnapshotWrappedKey{KeyID: k.KeyID, KMS: k.KMS, Wrapped: k.Wrapped}
+		}
+	}
+	return nil
 }
 
 // push pushes the snapshot into rr: the empty blob and the layer where rr lacks them, then the

@@ -1,10 +1,12 @@
 package profile
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -32,7 +34,23 @@ const (
 	AnnotationSnapshotSchema = "lajstrom.snapshot.schema"
 	// AnnotationSnapshotBinary is the version of the lajstrom that wrote it.
 	AnnotationSnapshotBinary = "lajstrom.snapshot.binary"
+	// AnnotationSnapshotWrappedKey is, on a sealed snapshot whose sealing key is a data key of a
+	// KMS, the row of that key in wrapped_master_keys as compact JSON, {"keyId", "kms",
+	// "wrapped"}, wrapped the KMS's ciphertext in base64 (#1388): outside the layer it seals, so
+	// that a restore into an empty database unwraps it before the layer opens.
+	AnnotationSnapshotWrappedKey = "lajstrom.snapshot.wrappedKey"
 )
+
+// SnapshotWrappedKey is the value of AnnotationSnapshotWrappedKey: the data key that sealed the
+// snapshot, by its id and its KMS key, and the KMS's ciphertext of it, never the key in clear.
+type SnapshotWrappedKey struct {
+	KeyID   string `json:"keyId"`
+	KMS     string `json:"kms"`
+	Wrapped []byte `json:"wrapped"`
+}
+
+// snapshotKeyID is the form of the id of a master key: 16 lowercase hexadecimal digits.
+var snapshotKeyID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // The titles of the snapshot's layer, by its media type.
 var snapshotTitles = map[string]string{
@@ -58,6 +76,8 @@ type Snapshot struct {
 	Created time.Time // org.opencontainers.image.created, UTC, whole seconds
 	Sealed  bool      // the layer is MediaTypeSnapshotSealed
 	Layer   ocispec.Descriptor
+	// WrappedKey is lajstrom.snapshot.wrappedKey, nil without it: a sealed snapshot's only.
+	WrappedKey *SnapshotWrappedKey
 }
 
 // SnapshotTag returns the tag of a snapshot made at created whose manifest is d:
@@ -92,6 +112,13 @@ func BuildSnapshot(s Snapshot) (ocispec.Manifest, error) {
 	}
 	if s.Binary != "" {
 		ann[AnnotationSnapshotBinary] = s.Binary
+	}
+	if s.WrappedKey != nil {
+		b, err := json.Marshal(s.WrappedKey) // strings and bytes: never an error
+		if err != nil {
+			return ocispec.Manifest{}, fmt.Errorf("%w: %s: %w", ErrSnapshot, AnnotationSnapshotWrappedKey, err)
+		}
+		ann[AnnotationSnapshotWrappedKey] = string(b)
 	}
 	var m ocispec.Manifest
 	m.SchemaVersion = 2
@@ -129,18 +156,7 @@ func ParseSnapshot(m ocispec.Manifest) (Snapshot, error) {
 		bad("config is not the empty descriptor")
 	}
 	var s Snapshot
-	if len(m.Layers) != 1 {
-		bad("%d layers, want one", len(m.Layers))
-	} else {
-		s.Layer = m.Layers[0]
-		if _, ok := snapshotTitles[s.Layer.MediaType]; !ok {
-			bad("the layer's media type is %q, want %s or %s", s.Layer.MediaType, MediaTypeSnapshotDocument, MediaTypeSnapshotSealed)
-		}
-		if s.Layer.Digest.Validate() != nil || s.Layer.Size < 0 {
-			bad("the layer's descriptor is malformed")
-		}
-		s.Sealed = s.Layer.MediaType == MediaTypeSnapshotSealed
-	}
+	s.Layer, s.Sealed = snapshotLayer(m.Layers, bad)
 	a := m.Annotations
 	if a[AnnotationSchema] != SchemaVersion {
 		bad("%s is %q, want %q", AnnotationSchema, a[AnnotationSchema], SchemaVersion)
@@ -156,10 +172,66 @@ func ParseSnapshot(m ocispec.Manifest) (Snapshot, error) {
 		bad("%s: %v", ocispec.AnnotationCreated, err)
 	}
 	s.Binary = a[AnnotationSnapshotBinary]
+	if s.WrappedKey, err = wrappedKeyOf(a, s.Sealed); err != nil {
+		bad("%v", err)
+	}
 	if err := errors.Join(errs...); err != nil {
 		return Snapshot{}, err
 	}
 	return s, nil
+}
+
+// snapshotLayer returns the one layer of a snapshot of layers and whether it is sealed, and tells
+// bad what is wrong with them.
+func snapshotLayer(layers []ocispec.Descriptor, bad func(string, ...any)) (ocispec.Descriptor, bool) {
+	if len(layers) != 1 {
+		bad("%d layers, want one", len(layers))
+		return ocispec.Descriptor{}, false
+	}
+	l := layers[0]
+	if _, ok := snapshotTitles[l.MediaType]; !ok {
+		bad("the layer's media type is %q, want %s or %s", l.MediaType, MediaTypeSnapshotDocument, MediaTypeSnapshotSealed)
+	}
+	if l.Digest.Validate() != nil || l.Size < 0 {
+		bad("the layer's descriptor is malformed")
+	}
+	return l, l.MediaType == MediaTypeSnapshotSealed
+}
+
+// wrappedKeyOf returns the AnnotationSnapshotWrappedKey of the annotations a of a snapshot, sealed
+// or not, nil without it; on an unsealed snapshot it is an error.
+func wrappedKeyOf(a map[string]string, sealed bool) (*SnapshotWrappedKey, error) {
+	v, ok := a[AnnotationSnapshotWrappedKey]
+	if !ok {
+		return nil, nil
+	}
+	k, err := parseWrappedKey(v)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%s: %w", AnnotationSnapshotWrappedKey, err)
+	case !sealed:
+		return nil, fmt.Errorf("%s on a snapshot that is not sealed", AnnotationSnapshotWrappedKey)
+	}
+	return k, nil
+}
+
+// parseWrappedKey reads the value of AnnotationSnapshotWrappedKey: an object of the three keys, an
+// id of 16 lowercase hexadecimal digits, a KMS key and a ciphertext. Its error never shows the
+// ciphertext.
+func parseWrappedKey(v string) (*SnapshotWrappedKey, error) {
+	var k SnapshotWrappedKey
+	d := json.NewDecoder(strings.NewReader(v))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&k); err != nil || d.More() {
+		return nil, errors.New("not the JSON of {\"keyId\", \"kms\", \"wrapped\"}")
+	}
+	switch {
+	case !snapshotKeyID.MatchString(k.KeyID):
+		return nil, fmt.Errorf("keyId %q is not 16 lowercase hexadecimal digits", k.KeyID)
+	case k.KMS == "" || len(k.Wrapped) == 0:
+		return nil, errors.New("kms and wrapped must be set")
+	}
+	return &k, nil
 }
 
 // positive parses a decimal from 1 without leading zeros.
