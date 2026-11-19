@@ -448,7 +448,25 @@ func (k Keys) validate(p *problems) {
 			p.add("keys.kms", "%v", err)
 		}
 	}
+	seen := map[string]bool{}
+	for i, e := range k.MasterKeyKMS {
+		key := fmt.Sprintf("keys.masterKeyKMS[%d]", i)
+		switch {
+		case !masterKeyID.MatchString(e.ID):
+			p.add(key+".id", "%q is not the id of a master key: 16 lowercase hexadecimal digits, as lajstrom admin key wrap "+
+				"printed it", e.ID)
+		case seen[e.ID]:
+			p.add(key+".id", "%s is named twice", e.ID)
+		}
+		seen[e.ID] = true
+		if _, err := ParseMasterKMSKey(e.KMS); err != nil {
+			p.add(key+".kms", "%v", err)
+		}
+	}
 }
+
+// masterKeyID is the form of the id of a master key: 16 lowercase hexadecimal digits.
+var masterKeyID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 func (r Registry) validate(p *problems, key string) {
 	validName(p, key+".name", r.Name)

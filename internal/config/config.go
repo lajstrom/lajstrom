@@ -850,6 +850,12 @@ type Keys struct {
 	// MasterKeyFile, at most 8 in all; the index names the one that seals. Read at each start of
 	// serve and of the commands that read the master keys, never by Load; no environment variable.
 	MasterKeyDir string `yaml:"masterKeyDir"`
+	// MasterKeyKMS are master keys that are data keys of a KMS (#1388, ADR 0036): 32 bytes that
+	// lajstrom admin key wrap made and the index keeps wrapped by a symmetric key of AWS KMS or
+	// GCP Cloud KMS, each named by its id and that KMS key, as the command printed them. At each
+	// start a process has the KMS unwrap the row of each, and holds a key only when the KMS's
+	// answer has its id. Its keys join those of the other sources, at most 8 in all.
+	MasterKeyKMS []MasterKeyKMS `yaml:"masterKeyKMS"`
 	// Algorithm is the algorithm of the repo keys made from now on: ed25519 (apt 2.0 and later)
 	// or rsa4096 (older apt). Keys made before keep theirs.
 	Algorithm string `yaml:"algorithm"`
@@ -863,6 +869,14 @@ type Keys struct {
 	// KMS is the key URI (ParseKMSKey) of a key in AWS KMS or GCP Cloud KMS that becomes the
 	// signing key of the repos whose key is made from now on, instead of a key Lajstrom makes
 	// (ADR 0020). Empty: Lajstrom makes them. Keys made before keep theirs.
+	KMS string `yaml:"kms"`
+}
+
+// MasterKeyKMS is an entry of keys.masterKeyKMS: a data key of the master key by its id, 16
+// lowercase hexadecimal digits, and the key URI of the symmetric KMS key that wraps it
+// (ParseMasterKMSKey).
+type MasterKeyKMS struct {
+	ID  string `yaml:"id"`
 	KMS string `yaml:"kms"`
 }
 

@@ -30,6 +30,7 @@ func recordedConfig() *Config {
 	c.Auth.ClientCertificates.Bundles = []CertBundle{{Name: "corp", CAFile: "/etc/lajstrom/corp-ca.pem", Identity: "cn"}}
 	c.Keys.MasterKeyFile = "/run/secrets/master"
 	c.Keys.MasterKeyDir = "/run/secrets/master-keys"
+	c.Keys.MasterKeyKMS = []MasterKeyKMS{{ID: "0123456789abcdef", KMS: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/k"}}
 	c.Repos = []Repo{{Name: "scratch", Format: "raw", Registry: "zot"}}
 	return c
 }
@@ -51,7 +52,7 @@ func publicOnly(t *testing.T, files map[string]string) func(string) ([]byte, err
 // TestRecorded is #1284's 3A (rbac.md §5): every key with its value after the defaults, but
 // database, log, server.listen, server.metricsListen and repos; an item of a named list by its
 // name; a secret by its path or variable, never read; a file of public material by its path and
-// the sha256 of its content.
+// the sha256 of its content; keys.masterKeyKMS by its value, the ids and the KMS keys (#1388).
 func TestRecorded(t *testing.T) {
 	ca := "-----BEGIN CERTIFICATE-----\nMIIB…\n-----END CERTIFICATE-----\n"
 	view, fp, err := recordedConfig().Recorded(publicOnly(t, map[string]string{"/etc/lajstrom/corp-ca.pem": ca}))
@@ -66,6 +67,7 @@ func TestRecorded(t *testing.T) {
 		"keys.retireGrace":                               `"720h0m0s"`,
 		"keys.masterKeyFile":                             `"/run/secrets/master"`,
 		"keys.masterKeyDir":                              `"/run/secrets/master-keys"`,
+		"keys.masterKeyKMS":                              `[{"id":"0123456789abcdef","kms":"awskms:///arn:aws:kms:eu-west-1:111122223333:key/k"}]`,
 		"auth.oidc.clientSecretFile":                     `"/run/secrets/oidc"`,
 		"registries[zot].url":                            `"https://zot.example.com"`,
 		"registries[zot].auth.passwordEnv":               `"ZOT_PASSWORD"`,
