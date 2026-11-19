@@ -46,6 +46,16 @@ func (c *conn) ListApprovals(ctx context.Context, state string, before int64, li
 		append(w.args, limit)...)
 }
 
+// CountPendingApprovals counts the pending requests whose expires_at is after at and whose
+// requested_by is not notBy. The state is written in the statement, so that the planner of
+// Postgres reads the partial index approvals_expires whatever the plan.
+func (c *conn) CountPendingApprovals(ctx context.Context, at time.Time, notBy string) (int, error) {
+	var n int
+	err := c.scanRow(ctx, "approvals", "SELECT COUNT(*) FROM approvals WHERE state = 'pending' AND expires_at > ? AND requested_by <> ?",
+		[]any{c.d.EncodeTime(at), notBy}, &n)
+	return n, err
+}
+
 // CreateApproval inserts a pending: RequestedAt now when zero, an empty Change {}. The unique
 // index approvals_pending makes the same change pending twice index.ErrConflict.
 func (c *conn) CreateApproval(ctx context.Context, a *index.Approval) error {

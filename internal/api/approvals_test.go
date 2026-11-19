@@ -432,3 +432,48 @@ func TestApprovalInfo(t *testing.T) {
 		}
 	}
 }
+
+// TestInfoPendingApprovals: GET /api/v1/info answers pendingApprovals to a caller whose
+// credential reaches the admin role: the requests pending, not expired, and not its own, whatever
+// auth.approval says; to no other caller, an admin's scoped token included (docs/spec/rbac.md
+// §13, Telling the second admin; #1336).
+func TestInfoPendingApprovals(t *testing.T) {
+	f := approvalFixture(t)
+	f.requestBinding(t, "admin", "user:alice", auth.RoleAdmin)
+	f.requestBinding(t, "admin", "group:ops", auth.RoleReader)
+	f.requestBinding(t, "root", "group:dev", auth.RoleWriter)
+	rejected := f.requestBinding(t, "root", "group:qa", auth.RoleAdmin)
+	wantStatus(t, f.doAs(http.MethodPost, fmt.Sprintf("/api/v1/approvals/%d/reject", rejected.ID), "", root, pass), http.StatusOK)
+	must(t, f.st.CreateApproval(context.Background(), &index.Approval{Kind: index.ApprovalBinding, Subject: "group:old admin */*",
+		Change: []byte(`{"principal":"group:old","role":"admin","repoMask":"*/*"}`), RequestedBy: "user:" + f.uidOf(t, "admin"),
+		RequestedAt: testNow.Add(-8 * 24 * time.Hour), ExpiresAt: testNow.Add(-time.Hour)})) // expired, not yet marked
+	scoped := auth.Credential{Kind: auth.CredPAT, TokenID: 1, Scopes: []string{"read", "write"}}
+	for _, tt := range []struct {
+		name string
+		p    auth.Principal
+		c    auth.Credential
+		want int // -1: absent
+	}{
+		{"root, of admin's two", root, pass, 2},
+		{"admin, of root's one", admin, pass, 1},
+		{"the admin's scoped token", admin, scoped, -1},
+		{"a user without the role", alice, pass, -1},
+		{"anonymous", auth.Anonymous, auth.Credential{}, -1},
+	} {
+		var got map[string]any
+		decodeJSON(t, f.doAs(http.MethodGet, "/api/v1/info", "", tt.p, tt.c), http.StatusOK, &got)
+		n, ok := got["pendingApprovals"]
+		switch {
+		case tt.want < 0 && ok:
+			t.Errorf("%s: pendingApprovals %v, want none", tt.name, n)
+		case tt.want >= 0 && n != float64(tt.want):
+			t.Errorf("%s: pendingApprovals %v, want %d", tt.name, n, tt.want)
+		}
+	}
+	f.secondAdmin(false)
+	var got Info
+	decodeJSON(t, f.doAs(http.MethodGet, "/api/v1/info", "", root, pass), http.StatusOK, &got)
+	if got.PendingApprovals == nil || *got.PendingApprovals != 2 {
+		t.Errorf("with auth.approval none: pendingApprovals %v, want the 2 still pending", got.PendingApprovals)
+	}
+}
