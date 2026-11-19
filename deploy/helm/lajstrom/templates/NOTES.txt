@@ -7,7 +7,12 @@ behind the Service {{ $full }} (port http {{ .Values.service.port }}), for {{ $u
   kubectl -n {{ $ns }} rollout status deploy/{{ $full }}
 
 The replicas start once these Secrets exist (docs/deploy/helm.md):
+{{- if .Values.masterKey.env }}
   {{ include "lajstrom.secretName" (dict "root" . "ref" .Values.masterKey) }}: {{ .Values.masterKey.key }}, the master key
+{{- end }}
+{{- with .Values.masterKey.dir.volume }}
+  the volume of masterKey.dir, a master key per file, at {{ $.Values.masterKey.dir.path }}
+{{- end }}
   {{ include "lajstrom.secretName" (dict "root" . "ref" .Values.database) }}: {{ .Values.database.key }}, the Postgres DSN
 {{- range .Values.registryPasswords }}
   {{ include "lajstrom.secretName" (dict "root" $ "ref" .) }}: {{ .key }}, {{ .env }}

@@ -1,0 +1,14 @@
+# The master keys from a Secrets Store CSI volume alone (docs/operations.md, Replacing the master
+# key): an object of the store per master key, named in the SecretProviderClass, mounted whole as
+# keys.masterKeyDir; no variable LAJSTROM_MASTER_KEY. make helm-lint renders the chart with this
+# file too.
+masterKey:
+  env: false
+  dir:
+    path: /mnt/lajstrom-master-keys
+    volume:
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: lajstrom-master-keys

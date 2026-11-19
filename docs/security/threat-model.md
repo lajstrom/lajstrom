@@ -18,7 +18,10 @@
   the API that write (a fresh sign-in with a second factor, a second admin, an expiry). The other
   rows were not checked again. Updated on 2026-11-18 for required attachments (#1287,
   [ADR 0033](../adr/0033-required-attachments-of-a-version.md)): the row X-5, from policy.md §11
-  and the code of the #1287 stack.
+  and the code of the #1287 stack. Updated on 2026-11-19 for the replacement of the master key
+  (#1288, [ADR 0034](../adr/0034-replacing-the-master-key.md)): the asset, L-4 and the rows K-1
+  to K-4, from index-schema.md (The master key and its replacement) and the code of the #1288
+  stack.
   Review it again when a surface changes: a new endpoint, a new credential, a proxy of another
   format (pypi #67, maven #68), OIDC.
 - Scope: the server of this repository. This means the OCI facade `/v2` and its token
@@ -53,7 +56,7 @@ A function is named by its package and name: `facade.resolve` is `resolve` in
 | The registry's credentials | `registries[].auth` in the configuration, held by the provider | every repository of the instance prefix, read and write, around RBAC |
 | An upstream's credentials | the files of `upstreams[].auth`, held by the proxy core; on an `oci` upstream with `auth.ecr` or `auth.gcp`, a token of the cloud identity of the replicas, cached in memory | the upstream account, such as a private npm registry's; with `auth.ecr`, every ECR repository of the region that the role may read; with `auth.gcp`, every Google API that the service account may call |
 | The control plane: users (argon2id hashes), tokens (sha256), bindings, audit | the index database | anyone becomes admin; the audit log lies |
-| The master key, and the keys it encrypts (apt GPG keys, the bearer-token key) | `keys.masterKeyEnv` or `keys.masterKeyFile`; `keys` rows | forged `Release` signatures; forged bearer tokens for every repo |
+| The master keys, and the keys and secrets they seal (apt and rpm signing keys, the bearer-token key, the policy key, encrypted repos' keys, webhook secrets) | `keys.masterKeyEnv`, `keys.masterKeyFile` or the files of `keys.masterKeyDir`; `keys` and `webhooks` rows; the row of `sealing_key` names, by id, the key that seals | forged `Release` signatures; forged bearer tokens for every repo; forged webhook deliveries |
 | Availability | every replica | a CI fleet stops |
 
 | Actor | Can | Trust |
@@ -308,7 +311,16 @@ token's claims; the CI token is then a credential on every route, as a deploy to
 | L-1 | **The access log.** | `server.accessLog` writes the method, path, status, principal and addresses: never the query, a header or a body. | mitigated |
 | L-2 | **Credentials and tokens in values that are logged.** | `token.Token`, `keys.TokenKey` and `config.RegistryAuth` print redacted. `Verifier.Verify` logs the `kid` and the reason, never the token. The throttle logs the account's uid, never the typed name. The provider logs paths only (`logTransport`); `withoutURL` strips URLs from errors, and the query of error responses is cleared. `postgres.Open` leaves the DSN out of its errors. `recovery` logs the panic value, the path and the stack. | mitigated |
 | L-3 | **A typed user name that may be a mistyped password**, in the line at info of every refused credential (#1284, rbac.md §1) and at error when the index fails (`Server.authenticate`). The `kid`, which an attacker controls, logged at any length. | `auth.LogRefusal` writes the account, a user by its uid and only a user that exists, else `unknown`, and a reason of fixed text; `Authenticator.refuse` and `refuseToken` pass it nothing else, and `Server.authenticate` logs no user name. `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length. Tests: `TestRefusalsLogNoSecret` (a token and a password typed as the user name, a 4 KiB `kid`), `TestRefusedAtInfo`. | mitigated (#482, #1284) |
-| L-4 | **The master key and the configuration.** | The key is read from `keys.masterKeyEnv` or `keys.masterKeyFile` and never logged; the startup log names the variable, not its value. | mitigated |
+| L-4 | **The master key and the configuration.** | The keys are read from `keys.masterKeyEnv`, `keys.masterKeyFile` or `keys.masterKeyDir` and never logged; the startup log names each by its id and its source, the variable or the file, never its value (K-2). | mitigated |
+
+### The master key ([ADR 0034](../adr/0034-replacing-the-master-key.md))
+
+| ID | Threat | Mitigation | Status |
+| --- | --- | --- | --- |
+| K-1 | **A master key that leaked, or whose custodian left** (PCI DSS 3.7.5, CC6.1). | The new key is added to the sources of every process, `lajstrom admin key rewrap --to <new id>` makes it the key that seals and seals every private key of the index, retired ones included, and every webhook secret again under it, and the old key leaves the sources once a run again finds nothing under it ([operations.md](../operations.md#replacing-the-master-key)). Its `key.rewrap` rows record each run. Tests: `TestKeyRewrap`, `TestKeyRewrapLeft`, `TestReseal`, `TestResealChanged`, `TestResealTwice`, `TestSwitchSealingKey`. | mitigated (#1288); the backups and sealed snapshots of before stay under the old key, which is archived for them |
+| K-2 | **A key in a flag, an argument, standard input, a log line, an error, a row or an output.** | Keys come from the configuration only; everything else names a key by its id, 8 bytes of HKDF-SHA256 that show nothing of it; `keys.Master` prints redacted; an error names the source or the row, never a value. Tests: `TestHeldRedacted`, `TestHoldMasters`, `TestLoadMasterDirErrors`, `TestServeSealingAtStart`, and every run of `TestKeyRewrap*` and `TestSealingAtStart*`, checked for the keys and the sealed plaintexts. | mitigated (#1288) |
+| K-3 | **A process that seals under a key the others do not hold** (a pod started with other files; a replica of the release before 0040 during a rolling update), so that what it seals does not open elsewhere. | The index names the key that seals, and a process seals with it alone: one that does not hold it refuses to start, and a replica whose beat reads such a key seals nothing, answers `503` to what would seal and is not ready, while reads go on. The first start records its one key only once it opened the first key of the index; several keys and no row refuse to start. A rewrap refuses while it or a live replica lacks the key, one of the release before included. Tests: `TestSealFailsClosed`, `TestReplicaSealing`, `TestSealingAtStart`, `TestSealingAtStartFirstKey`, `TestSealingAtStartSeveral`, `TestSealingAtStartRace`, `TestRewrapGuard`, `TestEncryptedFailsClosed`, `TestWebhookFailsClosed`. | mitigated (#1288); a command started before a switch seals under the key before it until it ends, which a rewrap run again seals |
+| K-4 | **A master key that is lost.** | A rewrap stops before it writes, naming the rows under no held key; `--allow-lost` leaves them as they are and names them, and they are made again (`admin key rotate`, `drop --token`, a webhook's secret rotated). Tests: `TestKeyRewrapRefuses`, `TestKeyRewrap`. | accepted: what a lost key sealed is lost (ADR 0034, decision 4) |
 
 ### SSRF through configuration
 
