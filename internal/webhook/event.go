@@ -33,6 +33,11 @@ const (
 	TypeCIPolicyApproved = "ci.policy.approved"
 	TypeCIPolicyExpired  = "ci.policy.expired"
 	TypeCIPolicyDeleted  = "ci.policy.deleted"
+	// The events of a request for a second admin (#1336; docs/spec/rbac.md §13).
+	TypeApprovalRequested = "approval.requested"
+	TypeApprovalApproved  = "approval.approved"
+	TypeApprovalRejected  = "approval.rejected"
+	TypeApprovalExpired   = "approval.expired"
 	// TypePing is sent only by the test of one webhook; no webhook asks for it.
 	TypePing = "webhook.ping"
 )
@@ -40,7 +45,8 @@ const (
 // Types are the types a webhook may ask for, in the order of webhooks.md §1.
 var Types = []string{TypeVersionPublished, TypeVersionDeleted, TypeRepoCreated, TypeRepoDeleted,
 	TypePolicyRuleCreated, TypePolicyRuleDeleted, TypePolicyVerdictCreated, TypePolicyVerdictDeleted,
-	TypeCIPolicyCreated, TypeCIPolicyUpdated, TypeCIPolicyRenewed, TypeCIPolicyApproved, TypeCIPolicyExpired, TypeCIPolicyDeleted}
+	TypeCIPolicyCreated, TypeCIPolicyUpdated, TypeCIPolicyRenewed, TypeCIPolicyApproved, TypeCIPolicyExpired, TypeCIPolicyDeleted,
+	TypeApprovalRequested, TypeApprovalApproved, TypeApprovalRejected, TypeApprovalExpired}
 
 // typePrefix makes a type a CloudEvents type: the reverse domain name of lajstrom.dev.
 const typePrefix = "dev.lajstrom."
@@ -54,14 +60,18 @@ type Event struct {
 	Type    string
 	Repo    index.Repo // Format, Name and Kind are read
 	Subject string     // the audit row's subject; "" for a repo
-	Data    any        // VersionData, RepoData, RuleData, VerdictData, CIPolicyData or PingData, marshalled as it is
+	Data    any        // VersionData, RepoData, RuleData, VerdictData, CIPolicyData, ApprovalData or PingData, marshalled as it is
 	// Mask is the repo mask of a policy rule's event, which goes to the webhooks whose mask
 	// covers it (Covers) instead of those whose mask matches Repo; its source is the rules'.
 	Mask string
-	// Masks are the masks of the grants of a CI trust policy's event, before and after its
-	// change: it goes to the webhooks of the admin, whose mask has a *, that cover one of them
-	// (Covers), instead of those whose mask matches Repo; its source is the policies'.
+	// Masks are the masks of an event of the admin, those of the grants of a CI trust policy
+	// before and after its change, or the mask of a request's change (ApprovalEvent): it goes to
+	// the webhooks of the admin, whose mask has a *, that cover one of them (Covers), instead of
+	// those whose mask matches Repo; its source is the policies', or route.
 	Masks []string
+	// route is the path of the source of an event that is no repo's, rule's or CI trust
+	// policy's: a request's, /api/v1/approvals.
+	route string
 }
 
 // Actor is the principal of a write and a user's name at the time.
@@ -241,9 +251,19 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	if o == nil {
 		return nil
 	}
-	hooks, err := w.ListWebhooks(ctx)
+	matched, err := matching(ctx, w, ev)
+	if err != nil || len(matched) == 0 {
+		return err
+	}
+	return o.write(ctx, w, ev, matched)
+}
+
+// matching returns the active webhooks, read on r, that get ev: whose mask it goes to (goesTo) and
+// whose events include its type.
+func matching(ctx context.Context, r index.Reader, ev Event) ([]index.Webhook, error) {
+	hooks, err := r.ListWebhooks(ctx)
 	if err != nil {
-		return fmt.Errorf("webhook: the webhooks of a %s: %w", ev.Type, err)
+		return nil, fmt.Errorf("webhook: the webhooks of a %s: %w", ev.Type, err)
 	}
 	var matched []index.Webhook
 	for _, h := range hooks {
@@ -251,12 +271,16 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 			matched = append(matched, h)
 		}
 	}
-	if len(matched) == 0 {
-		return nil
-	}
+	return matched, nil
+}
+
+// write writes on w one delivery of ev to each of hooks, each with the same body and event id.
+func (o *Outbox) write(ctx context.Context, w index.Writer, ev Event, hooks []index.Webhook) error {
 	at := o.now()
 	source := o.Source + "/" + ev.Repo.Format + "/" + ev.Repo.Name
 	switch {
+	case ev.route != "":
+		source = o.Source + ev.route
 	case ev.Mask != "":
 		source = o.Source + "/api/v1/policy/rules"
 	case ev.Masks != nil:
@@ -266,8 +290,8 @@ func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error {
 	if err != nil {
 		return err
 	}
-	ds := make([]index.WebhookDelivery, len(matched))
-	for i, h := range matched {
+	ds := make([]index.WebhookDelivery, len(hooks))
+	for i, h := range hooks {
 		ds[i] = index.WebhookDelivery{WebhookID: h.ID, EventID: id, EventType: ev.Type, Payload: body, CreatedAt: at}
 	}
 	if err := w.CreateWebhookDeliveries(ctx, ds); err != nil {
