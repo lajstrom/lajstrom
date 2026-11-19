@@ -52,12 +52,45 @@ The master key reaches the container as the variable `LAJSTROM_MASTER_KEY`, the 
 `registryPasswords` sets. **Keep a copy of the master key outside the cluster**
 ([operations.md](../operations.md#the-master-key)).
 
+A replacement of the master key adds the new key in a directory of keys beside the variable,
+`keys.masterKeyDir` ([operations.md](../operations.md#replacing-the-master-key)): `masterKey.dir`
+mounts a Secret, one data key per master key, or a Secrets Store CSI volume, one object of the
+store per master key, whole at `masterKey.dir.path`, never with `subPath`, and sets
+`keys.masterKeyDir` to it. `masterKey.env: false` drops the variable, for an installation whose
+keys are all in the directory:
+
+```yaml
+masterKey:
+  dir:
+    volume:
+      secret: {secretName: lajstrom-master-keys, defaultMode: 0440}
+podSecurityContext:
+  fsGroup: 65532      # the kubelet's files are root's: group-readable by the image's user
+```
+
+or, with the Secrets Store CSI driver:
+
+```yaml
+masterKey:
+  env: false
+  dir:
+    volume:
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes: {secretProviderClass: lajstrom-master-keys}
+```
+
+A key file that the group or others may read is used with a warning, which a Secret volume with
+`fsGroup` gives. `helm template` refuses `masterKey.env: false` without a volume. The migration and
+the recovery Jobs read no master key.
+
 ## 2. The values
 
 `config` is `lajstrom.yaml` ([configuration.md](../configuration.md)) as a map. The chart sets
-`server.listen`, `server.metricsListen`, `database.driver`, `keys.masterKeyEnv` and
-`auth.bootstrap.tokenFile` over it, whatever the map says. Helm merges maps and replaces lists, so
-`config.registries` of your values replaces the default's whole.
+`server.listen`, `server.metricsListen`, `database.driver`, `keys.masterKeyEnv`,
+`keys.masterKeyDir` and `auth.bootstrap.tokenFile` over it, whatever the map says. Helm merges
+maps and replaces lists, so `config.registries` of your values replaces the default's whole.
 
 ```yaml
 image:
@@ -357,6 +390,8 @@ whoami with the password of the Secret: 200
 | `nameOverride`, `fullnameOverride` | empty | the full name is the release's when it contains `lajstrom`, else `<release>-lajstrom`, at most 50 characters |
 | `config` | `externalURL` `https://art.example.com`, JSON logs, the registry `main` | `lajstrom.yaml`; the chart sets the keys of [2. The values](#2-the-values) |
 | `masterKey.existingSecret`, `.key` | the full name, `LAJSTROM_MASTER_KEY` | the master key, as `LAJSTROM_MASTER_KEY` |
+| `masterKey.env` | `true` | pass `LAJSTROM_MASTER_KEY`; `false`: the keys of `masterKey.dir` alone |
+| `masterKey.dir.path`, `.volume` | `/run/secrets/lajstrom-master-keys`, none | a volume without its name (`secret` or `csi`), mounted whole at the path as `keys.masterKeyDir`, a master key per file ([1. The Secrets](#1-the-secrets)) |
 | `database.existingSecret`, `.key` | the full name, `LAJSTROM_DATABASE_DSN` | the Postgres DSN, as `LAJSTROM_DATABASE_DSN` |
 | `registryPasswords[]` | `{env: LAJSTROM_REGISTRY_PASSWORD, existingSecret: "", key: LAJSTROM_REGISTRY_PASSWORD}` | one per `registries[].auth.passwordEnv`; an empty `existingSecret` is the full name |
 | `bootstrap.enabled` | `true` | mount the bootstrap Secret and set `auth.bootstrap.tokenFile` |

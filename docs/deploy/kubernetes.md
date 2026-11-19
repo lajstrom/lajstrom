@@ -119,7 +119,9 @@ The Secret `lajstrom-bootstrap` holds the one-time token that makes the first ad
 `auth.bootstrap.tokenFile`, and you delete it once the admin exists. The master key stays a
 variable here rather than `keys.masterKeyFile`: a Secret volume's files are root's, `0440` at
 best for the user 65532, which Lajstrom warns about
-([operations.md](../operations.md#the-master-key)). A managed
+([operations.md](../operations.md#the-master-key)); a replacement of the key mounts such a volume
+whole as `keys.masterKeyDir` for its time, warning included
+([operations.md](../operations.md#replacing-the-master-key)). A managed
 Postgres wants `sslmode=require` (or `verify-full` with its CA). **Keep a copy of the master
 key outside the cluster and apart from the database backups**
 ([operations.md](../operations.md#the-master-key)): `kubectl -n lajstrom get secret lajstrom -o
