@@ -1395,6 +1395,14 @@ Either new password follows the rules of `auth.passwords`, else `400` naming the
 `auth.localPasswords` is `false`, no user has a password: either body is `400`, naming the
 setting.
 
+With `auth.approval: second-admin`, an admin's new password for a user who holds `admin`, by an
+`admin` binding of its own or of a group whose membership has not lapsed, enabled or disabled, is
+`400`, naming the setting, whoever asks, the user itself included, and writes no row: such a user
+changes its own password with `currentPassword`, and `lajstrom admin user set-password` sets it
+on the command line
+([Changes that wait for a second admin](auth.md#changes-that-wait-for-a-second-admin), #1393). A
+user without `admin` gets a new password as before.
+
 ### Unlock: `POST /api/v1/users/<user>/unlock`
 
 No body; `204`. The lock of the user's password after wrong passwords ends, and its count of them
@@ -1488,7 +1496,12 @@ The body has `principal`, `role` and `repoMask`. `201` with the resource and `Lo
 token gets its repo and scopes, `anonymous` a repo's `anonymousRead`), a role or a mask that
 breaks its rule are `400`; the same binding again is `409`. The binding counts from the next
 request on, on every replica. With `auth.approval: second-admin`, a binding of the role `admin` or
-on `*/*` is `202` with a request for a second admin in its place ([Approvals](#approvals)).
+on `*/*` is `202` with a request for a second admin in its place ([Approvals](#approvals)). Such a
+request takes the admin's password, or a web UI's sign-in through OIDC in its place when it is
+fresh, as an approval does: one that is not is asked for more (`401`,
+[Asking for more](#asking-for-more)), and any other token, a service account's included, is
+`403`, once the body shows that the binding waits (#1393). A binding that does not wait is made
+with any credential that reaches the admin role.
 
 ### Delete: `DELETE /api/v1/bindings/<id>`
 
@@ -1513,7 +1526,9 @@ binding of the role `admin` or on `*/*`, and `POST /api/v1/deploy-tokens` whose 
 `/api/v1/approvals/<id>`; a deploy token's request has its `secret`, shown once, which is no
 credential until the request is approved. The same change pending twice is `409`.
 `POST /api/v1/users` with `admin: true` is `400` instead, naming the setting
-([Create](#create-post-apiv1users)).
+([Create](#create-post-apiv1users)). A request is made, as it is approved, with the admin's
+password or a web UI's fresh sign-in, never a token: a token that one admin made for another
+admin or for a service account neither requests nor approves (#1393).
 
 ### The resource
 
@@ -1558,9 +1573,10 @@ the admin role (under `auth.admin.requireMFA`, a web UI's sign-in with a second 
 admin's password as the request's credential, or a web UI's sign-in through OIDC in its place
 when it is fresh, its `auth_time` within the last 10 minutes; one that is not is asked for more
 (`401`, [Asking for more](#asking-for-more)), any other token is `403`. Then the requester is
-`403`; a request decided or expired is `409`; a change that no longer holds, or a requester no
-longer an enabled admin, is `409` naming it, and the request stays pending. `200` with the
-request approved and its `result`. `?changeReason=` is the approver's reason.
+`403`; a request decided or expired is `409`; a change that no longer holds, a requester no
+longer an enabled admin, or a requester that is a service account (a request made on a release
+before #1393), is `409` naming it, and the request stays pending. `200` with the request approved
+and its `result`. `?changeReason=` is the approver's reason.
 
 ### Reject: `POST /api/v1/approvals/<id>/reject`
 
@@ -2243,7 +2259,7 @@ curl -s "$LAJSTROM/api/v1/info"
 | `login` | `{"tokenLifetime": 43200, "idleTimeout": 900}`: the server has [`POST /api/v1/login`](#sign-in-post-apiv1login), whose token, bound to a DPoP key, lives `tokenLifetime` seconds (`auth.login.tokenLifetime`) and is refused once unused for more than `idleTimeout` seconds (`auth.login.idleTimeout`, `0` off; #1277), so that the UI warns the person before: the server may refuse up to a minute sooner; with `oidc` in `authModes`, `/-/oidc/login` takes `return_to`, `code_challenge` and `dpop_jkt` for a web UI. A server before it answers no `login`, and one before #1277 no `idleTimeout`, which is off |
 | `adminMFA` | `true` while `auth.admin.requireMFA` is on, left out otherwise: the admin role counts only for a web UI's sign-in through OIDC with a second factor ([auth.md](auth.md#administrative-access-with-a-second-factor), #1276) |
 | `requireReason` | `auth.requireReason`: `true` when a change of the control plane without `changeReason` is `400` ([Conventions](#conventions), #1285). A server before it answers none, which is `false` |
-| `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it, and `admin: true` in `POST /api/v1/users` is `400`. A server before it answers none, which is `none` |
+| `approval` | `auth.approval`, `none` or `second-admin`: with `second-admin`, an `admin` binding, a binding on `*/*` and a deploy token over a mask with `write` are answered `202` with a request for a second admin ([Approvals](#approvals), #1285), so that a UI expects it and asks for a password or a fresh sign-in for such a request; `admin: true` in `POST /api/v1/users` is `400`, and so is an admin's new password for a user who holds `admin` (#1393). A server before it answers none, which is `none` |
 | `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not, nor, under `adminMFA`, any credential but a web UI's sign-in with a second factor); and `adminNeedsMFA: true` when the caller has an `admin` binding that the request's credential does not reach under `adminMFA`, left out otherwise, so that a UI offers a sign-in with a second factor. Without credentials it is `anonymous`, with the name `anonymous` |
 
 Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
