@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -132,20 +133,28 @@ func gunzip(t *testing.T, b []byte) []byte {
 }
 
 // TestDocumentRoundTrip: a control plane encoded and decoded is the same, every row with its id,
-// the sealing key's included (#1288), and a document of a newer version is refused; a database
-// without a sealing key writes no sealingKey.
+// the sealing key's and the wrapped master keys' included (#1288, #1388), and a document of a newer
+// version is refused; a database without them writes no sealingKey and no wrappedMasterKeys.
 func TestDocumentRoundTrip(t *testing.T) {
 	st, m := newStore(t), master(t, testMasterHex)
 	empty, err := st.ExportControlPlane(t.Context(), index.ExportOptions{})
 	must(t, err)
 	gz, err := encode(empty, "")
 	must(t, err)
-	if doc := gunzip(t, gz); bytes.Contains(doc, []byte(`sealingKey`)) {
-		t.Errorf("a snapshot of a database without a sealing key has the key sealingKey: %s", doc)
+	if doc := gunzip(t, gz); bytes.Contains(doc, []byte(`sealingKey`)) || bytes.Contains(doc, []byte(`wrappedMasterKeys`)) {
+		t.Errorf("a snapshot of a database without a sealing key and wrapped master keys has the key sealingKey or "+
+			"wrappedMasterKeys: %s", doc)
 	}
 	filled(t, st, m)
 	must(t, st.PutSealingKey(t.Context(), &index.SealingKey{KeyID: "0123456789abcdef", Source: index.SealingRewrap, Host: "admin-1",
 		AuditID: new(int64(4))}, ""))
+	for _, k := range []index.WrappedMasterKey{
+		{KeyID: "fedcba9876543210", KMS: "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k", Wrapped: []byte("ciphertext b")},
+		{KeyID: "0123456789abcdef", KMS: "awskms:///arn:aws:kms:eu-west-1:111122223333:key/k", Wrapped: []byte("ciphertext a"),
+			AuditID: new(int64(5))},
+	} {
+		must(t, st.PutWrappedMasterKey(t.Context(), &k, nil))
+	}
 	cp, err := st.ExportControlPlane(t.Context(), index.ExportOptions{WithAudit: true, AuditSince: time.Unix(1, 0).UTC()})
 	must(t, err)
 	gz, err = encode(cp, "v9.9.9")
@@ -163,6 +172,12 @@ func TestDocumentRoundTrip(t *testing.T) {
 	sealing := []byte(`"sealingKey":{"keyId":"0123456789abcdef","source":"rewrap","host":"admin-1","auditId":4,"setAt":"`)
 	if doc := gunzip(t, gz); !bytes.Contains(doc, sealing) {
 		t.Errorf("the document has no sealingKey of the row: %s", doc)
+	}
+	wrapped := regexp.MustCompile(`"wrappedMasterKeys":\[\{"keyId":"0123456789abcdef","kms":"awskms:///arn:aws:kms:eu-west-1:` +
+		`111122223333:key/k","wrapped":"Y2lwaGVydGV4dCBh","createdAt":"[^"]+","wrappedAt":"[^"]+","auditId":5\},` +
+		`\{"keyId":"fedcba9876543210",[^]]*"wrapped":"Y2lwaGVydGV4dCBi",[^]]*\}\]`)
+	if doc := gunzip(t, gz); !wrapped.Match(doc) {
+		t.Errorf("the document has no wrappedMasterKeys of the rows, by id, the ciphertexts in base64: %s", doc)
 	}
 
 	none, err := st.ExportControlPlane(t.Context(), index.ExportOptions{})

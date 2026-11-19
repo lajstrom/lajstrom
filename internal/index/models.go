@@ -237,6 +237,23 @@ type SealingKey struct {
 	SetAt time.Time
 }
 
+// WrappedMasterKey is a row of wrapped_master_keys (control plane, #1388): a data key of the
+// master key, keys.masterKeyKMS, as the KMS wrapped it, never in clear.
+type WrappedMasterKey struct {
+	KeyID string // the id of the master key, 16 hexadecimal digits
+	// KMS is the key URI of the symmetric KMS key that wraps it: an AWS key ARN, a GCP key
+	// without a version.
+	KMS string
+	// Wrapped is the KMS's ciphertext of the key's 32 bytes, which only the KMS opens.
+	Wrapped []byte
+	// CreatedAt is when the row was made, WrappedAt when Wrapped was last written: CreatedAt
+	// until a wrap again. Both the database's time, which PutWrappedMasterKey sets.
+	CreatedAt time.Time
+	WrappedAt time.Time
+	// AuditID is the key.wrap row of the last wrap. No reference: a prune may delete that row.
+	AuditID *int64
+}
+
 // The tables of ListSealed and Reseal: the columns that the master keys seal (#1288).
 const (
 	SealedKeys     = "keys"     // keys.private_enc, the fingerprint as its additional data
