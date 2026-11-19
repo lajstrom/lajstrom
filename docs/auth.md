@@ -1827,7 +1827,8 @@ $ curl -s -u root:<password> -X POST 'https://art.example.com/api/v1/approvals/1
   a minute. A request decided or expired is `409` to another decision.
 - **Who sees them**: `GET /api/v1/approvals[?state=pending]` and `GET /api/v1/approvals/<id>`,
   the admin role ([api.md](api.md#approvals)), and `lajstrom admin approval list` on the command
-  line. No webhook event is sent for a request: tell the second admin through your own channel.
+  line. `GET /api/v1/info` answers an admin `pendingApprovals`, the number it could approve
+  ([Telling the second admin](#telling-the-second-admin)).
 - **The command line**, `lajstrom admin binding create`, `user create --admin` and
   `token create --mask`, makes the change at once whatever the setting, and `user set-password`
   sets an admin's password: it is the operator's, the break-glass path, and the way to the
@@ -1869,6 +1870,54 @@ reject the requests made during the update and read its `user.password` rows if 
 The approval of a CI trust policy that writes is `auth.ci.apiWriteApproval`, apart
 ([Token exchange for CI](#token-exchange-for-ci)).
 
+### Telling the second admin
+
+Lajstrom sends no mail and keeps no address of a person (#1336,
+[ADR 0038](adr/0038-telling-the-second-admin.md)). Two things tell an admin that a request waits:
+
+- **Webhook events.** Each step of a request's life is an event of the webhooks
+  ([operations.md](operations.md#webhooks)): `approval.requested` when a request is made,
+  `approval.approved`, `approval.rejected` (a rejection or the requester's withdrawal) and
+  `approval.expired`. Each is written with its audit row, in its transaction: it is sent once its
+  step commits, and never for a step that failed. The expiry's is written by the replica that marks
+  the request expired, so it comes once, whatever the replicas. An event goes only to the
+  webhooks of the admin, a mask with a `*` that covers the change's: a binding of `admin` and a
+  binding on `*/*` to those of `*/*`, a deploy token over `oci/*` to those of `*/*` and `oci/*`; a
+  repo's webhook gets none. It holds the request as `GET /api/v1/approvals/<id>` answers it and
+  the names of its users (the requester, the decider, a binding's principal), never the deploy
+  token's secret or its hash, nor the credential or the sign-in of either side.
+- **A count.** `GET /api/v1/info` answers `pendingApprovals` while `caller.admin` is `true`: the
+  requests pending, not expired, and not the caller's own. Any other caller gets none, so that
+  nobody without the role learns that a request waits. A web UI shows it while the person acts; it
+  asks without its token while the person does nothing, and gets no count then.
+
+Route the events where the admins read them: a webhook of `*/*` with the four types, or the four
+added to one you have, to a chat or a mail gateway that verifies the signature. A webhook whose
+`events` is empty gets them from the upgrade on. Both hold whatever `auth.approval` says, so the
+requests still pending once it is set back to `none` are counted, and their end is sent. During a
+rolling update, a replica of the release before writes no event for what it requests, decides or
+expires, answers no count, and refuses the new types in a webhook's `events` (`400`).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "01a3c136-51a6-7883-a350-b1cf6000a23f",
+  "type": "dev.lajstrom.approval.requested",
+  "source": "https://art.example.com/api/v1/approvals",
+  "subject": "approval:12",
+  "time": "2026-11-17T09:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "schema": 1, "action": "approval.request", "audit": 4310,
+    "actor": {"principal": "user:01a0…", "name": "admin"},
+    "approval": {"id": 12, "kind": "binding", "change": {"principal": "user:01a1…", "role": "admin", "repoMask": "*/*"},
+      "changeReason": "CHG-1050", "state": "pending", "requestedBy": "user:01a0…",
+      "requestedAt": "2026-11-17T09:00:00Z", "expiresAt": "2026-11-24T09:00:00Z"},
+    "names": {"user:01a0…": "admin", "user:01a1…": "carol"}
+  }
+}
+```
+
 ### Audit
 
 A request is `approval.request`, by the requester, subject `approval:<id>`, with its `kind`, its
@@ -1880,8 +1929,10 @@ on a release before has none, and a request or a password refused writes no row.
 writes its own `binding.create` or `token.create` beside it, by the approver, with `approval`
 `{id, requestedBy, requestedAt}`, the request's `changeReason` and, for a token, the request's
 `createdBy`. A rejection is `approval.reject`, an expiry `approval.expire` by `anonymous` with
-`source: expiry`. Each has `signIn` when it was made with a web UI's sign-in. Requests are kept,
-decided or not, and are not in a snapshot.
+`source: expiry`. Each has `signIn` when it was made with a web UI's sign-in. Each of these four
+rows is also the webhook event of its type, written in its transaction (above); the event takes
+`requestId` from the row's details, and nothing else of them. Requests are kept, decided or not,
+and are not in a snapshot.
 
 ## The access report and its review
 
