@@ -25,6 +25,9 @@ type metadata struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+	// GrantTypesSupported are the grant types the IdP lists, nil when it lists none: serve
+	// warns at start when the list lacks refresh_token (docs/spec/rbac.md §8, #1282).
+	GrantTypesSupported []string `json:"grant_types_supported"`
 }
 
 // discovery caches the discovery document.
@@ -125,48 +128,61 @@ func (c *Client) getJSON(ctx context.Context, u string, v any) error {
 }
 
 // tokenAnswer is what Lajstrom reads of the token endpoint's answer (RFC 6749 §5.1 and §5.2;
-// OpenID Connect Core §3.1.3.3): the ID token, or the error code. The access token is not read.
+// OpenID Connect Core §3.1.3.3, §12.2): the ID token, the refresh token, or the error code. The
+// access token is not read.
 type tokenAnswer struct {
-	IDToken string `json:"id_token"`
-	Error   string `json:"error"`
+	IDToken      string `json:"id_token"`
+	RefreshToken string `json:"refresh_token"`
+	Error        string `json:"error"`
 }
 
 // redeem posts the code and the verifier to the token endpoint with the client's credentials
-// (client_secret_basic, RFC 6749 §2.3.1) and returns the raw ID token. A refusal (400 or 401,
-// or an answer without an ID token) wraps ErrRefused with the IdP's error code, never its
-// description; another failure wraps ErrUnavailable.
-func (c *Client) redeem(ctx context.Context, endpoint, code, verifier string) (string, error) {
-	form := url.Values{
+// (client_secret_basic, RFC 6749 §2.3.1) and returns the answer: its raw ID token and its refresh
+// token, if any. A refusal (400 or 401, or an answer without an ID token) wraps ErrRefused with
+// the IdP's error code, never its description; another failure wraps ErrUnavailable.
+func (c *Client) redeem(ctx context.Context, endpoint, code, verifier string) (*tokenAnswer, error) {
+	resp, err := c.postToken(ctx, endpoint, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {c.cfg.RedirectURL},
 		"code_verifier": {verifier},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	})
 	if err != nil {
-		return "", fmt.Errorf("%w: the token endpoint: %w", ErrUnavailable, err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.SetBasicAuth(url.QueryEscape(c.cfg.ClientID), url.QueryEscape(c.cfg.ClientSecret))
-	resp, err := c.cfg.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("%w: the token endpoint: %w", ErrUnavailable, err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var a tokenAnswer
 	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxDocument)).Decode(&a)
 	switch {
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized:
-		return "", fmt.Errorf("%w: the token endpoint answered %s, error %q", ErrRefused, resp.Status, errorCode(a.Error))
+		return nil, fmt.Errorf("%w: the token endpoint answered %s, error %q", ErrRefused, resp.Status, errorCode(a.Error))
 	case resp.StatusCode != http.StatusOK:
-		return "", fmt.Errorf("%w: the token endpoint answered %s", ErrUnavailable, resp.Status)
+		return nil, fmt.Errorf("%w: the token endpoint answered %s", ErrUnavailable, resp.Status)
 	case decodeErr != nil:
-		return "", fmt.Errorf("%w: the token endpoint's answer is not JSON: %w", ErrUnavailable, decodeErr)
+		return nil, fmt.Errorf("%w: the token endpoint's answer is not JSON: %w", ErrUnavailable, decodeErr)
 	case a.IDToken == "":
-		return "", fmt.Errorf("%w: the token endpoint's answer has no id_token (is the scope openid allowed?)", ErrRefused)
+		return nil, fmt.Errorf("%w: the token endpoint's answer has no id_token (is the scope openid allowed?)", ErrRefused)
 	}
-	return a.IDToken, nil
+	return &a, nil
+}
+
+// postToken posts form to the token endpoint with the client's credentials (client_secret_basic,
+// RFC 6749 §2.3.1) and returns the answer, whose body the caller closes. A request that gets no
+// answer wraps ErrUnavailable; its error names the endpoint, never the form, which holds a code
+// or a refresh token.
+func (c *Client) postToken(ctx context.Context, endpoint string, form url.Values) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("%w: the token endpoint: %w", ErrUnavailable, err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(url.QueryEscape(c.cfg.ClientID), url.QueryEscape(c.cfg.ClientSecret))
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the token endpoint: %w", ErrUnavailable, err)
+	}
+	return resp, nil
 }
 
 // errorCode returns an OAuth error code for a log line: the code when it has the characters of
