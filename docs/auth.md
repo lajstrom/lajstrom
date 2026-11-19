@@ -1526,7 +1526,9 @@ again for a new one, and lists and revokes its tokens as any user.
 
 To keep a person out, **disable** their user (`lajstrom admin user disable alice`): their tokens
 stop at the next request, and their logins are refused. Deleting the user lets the identity go,
-and the next login makes a new user.
+and the next login makes a new user. With `auth.oidc.refresh.interval`, a person disabled or
+removed at the IdP loses their logins within the interval without it
+([Asking the IdP again](#asking-the-idp-again)).
 
 ### A web UI
 
@@ -1562,6 +1564,95 @@ not fresh ([api.md](api.md#asking-for-more)). The UI then signs in again with `p
 beside `return_to`: Lajstrom asks the IdP for `prompt=login` and `max_age=600`, so that the
 person authenticates again, with their second factor if the IdP asks for one. Lajstrom sends no
 `acr_values`: the IdP's policy for the client decides how a person authenticates.
+
+### Asking the IdP again
+
+A login asks the IdP once, and its token then lasts `tokenLifetime`: a person disabled or removed
+at the IdP keeps it until it expires, unless an admin disables their user in Lajstrom too
+([Offboarding a person](compliance.md#offboarding-a-person)). With `auth.oidc.refresh.interval`
+([#1282](https://github.com/lajstrom/lajstrom/issues/1282),
+[ADR 0037](adr/0037-asking-the-idp-again-about-each-login.md), [rbac.md](spec/rbac.md) §8),
+`serve` asks the IdP again about each login, every interval, with the refresh token of the
+login's code exchange, and ends the login when the IdP refuses it:
+
+```yaml
+auth:
+  oidc:
+    scopes: [openid, profile, email, groups, offline_access]  # where the IdP needs it
+    refresh:
+      interval: 15m  # 0, the default, is off; 1m to less than tokenLifetime
+keys:
+  masterKeyFile: /run/secrets/lajstrom-master-key  # seals the refresh tokens
+```
+
+- **What is kept.** The callback keeps the login's refresh token in the index, sealed with the
+  [master key](operations.md#the-master-key), one per login: it is never logged, audited, shown or
+  put in a snapshot, a database backup holds it sealed, and `lajstrom admin key rewrap` seals it
+  again. The setting needs a master key: without one `serve` refuses the configuration. While a
+  replica does not hold the key that seals, its callback answers `503` with `Retry-After: 30`
+  before the code exchange. The mint of the login's token, at the callback, at the device's poll
+  or for a web UI, joins it to the token.
+- **Who asks.** Every 30 seconds each replica claims the logins that are due, with a claim per
+  login in the index, so that one replica at a time asks about one login, and calls the IdP's
+  token endpoint at most 4 at once, 10 seconds each at most. A login is due the interval after
+  its mint, then after each answer, less up to a tenth of the interval at random, so that the
+  logins of one morning spread out. There is no leader and no other service: the replicas share
+  the logins through the claims.
+- **The IdP confirms.** The login goes on. A new refresh token, when the IdP rotates them, replaces
+  the old one, and an ID token in the answer, checked as at a login but for the nonce and of the
+  login's identity, replaces the user's groups when they differ, with a `user.groups` row in the
+  audit log. Nothing else moves: the token's expiry, its sign-in, the user's last activity.
+- **The IdP refuses** with `invalid_grant`, and nothing else is a refusal: the person was disabled
+  or removed, signed out, or their session at the IdP ended. That login's token is revoked, with a
+  `token.revoke` row by `anonymous`, `source: refresh` and `reason: refused`. The user stays
+  enabled, and its other tokens are as they were; each login of a person removed at the IdP is
+  refused at its own refresh, all within the interval. The person's next request with that token
+  is `401`, a bearer of `/v2` issued for it before lasts its 20 minutes, and a new login fails at
+  the IdP.
+- **The IdP fails** (down, slow, `429`, `5xx`, `invalid_client`, an answer that does not parse, an
+  ID token that does not verify): nothing ends. The login is asked again after 1, 2, 4 … minutes
+  up to the interval, and the error is logged at warn by its kind. While the IdP does not answer,
+  logins last their lifetime, as without the setting, and new logins fail.
+- **A login without a refresh token** (an IdP that issued none) works as before and lasts its
+  lifetime: the callback logs `the IdP issued no refresh token`, its `user.login` row says
+  `refresh: false`, and `serve` warns at start when the IdP's discovery document lists no
+  `refresh_token` grant. A disabled user's logins are refreshed too, so that enabling the user
+  brings back no login the IdP ended.
+- **Off** (`0`), no login keeps a refresh token, and `serve` deletes the ones it kept at its start.
+
+What it does not end, and the offboarding procedure still does: the personal access tokens a
+person made through a web UI's fresh sign-in, the tokens an admin made for them, the logins whose
+IdP issued no refresh token, and every login while the IdP does not answer. The cost is one
+request to the IdP's token endpoint per live login and interval: 1,000 logins at `15m` are about
+1.2 a second. `lajstrom_oidc_refreshes_total` counts the answers by outcome
+([Metrics](operations.md#metrics)).
+
+Lajstrom adds no scope and no parameter of its own: the IdP must issue refresh tokens to the
+client. Set it up at your IdP as below, then log in once and check that the `user.login` row says
+`refresh: true`, and, after the interval, that the IdP's answer kept the groups (an IdP whose
+refreshed ID token lacks the groups claim drops them at the first refresh):
+
+- **Keycloak.** It issues a refresh token without `offline_access`, bound to the person's browser
+  session: the login then ends with that session (SSO Session Max, 10 hours by default), and
+  Lajstrom's refreshes keep the session from idling out for every client of the realm. Prefer
+  `offline_access` (the client scope of that name, assigned to the client): an offline session of
+  its own (Offline Session Idle, 30 days by default), which a user disabled or removed, or the
+  offline session revoked, ends. The realm's Revoke Refresh Token makes each refresh token single
+  use. The groups mapper must add the groups to the ID token.
+- **Okta.** Allow the Refresh Token grant on the app and add `offline_access` to the scopes. The
+  app's refresh token rotation, with its grace period, and the authorization server's access
+  policy, which sets a refresh token's lifetime, are Okta's; a deactivated user is refused. The
+  refreshes count against the org's rate limit of the token endpoint.
+- **Entra ID.** Add `offline_access`. It answers a new refresh token at each refresh; a disabled or
+  deleted account, and sessions an admin revoked, are refused. The groups claim of the ID token is
+  as the app's token configuration sets it, and a user in more groups than the token holds gets an
+  overage claim, so no groups, as at a login.
+- **Google.** It issues refresh tokens only for its own parameter `access_type=offline`, which
+  Lajstrom does not send: Google's logins are not asked about again, each logs the warning, and
+  they stay bounded by `tokenLifetime`.
+- **Dex.** Add `offline_access`; it rotates refresh tokens at each use. At a refresh it asks its
+  connector again where the connector can (LDAP, OIDC, GitHub among them); a connector that cannot,
+  SAML for one, does not see a removal upstream.
 
 ## Administrative access with a second factor
 
@@ -1612,8 +1703,10 @@ has the steps to turn it on.
 
 Each login replaces the user's groups with those of the claim `groupsClaim`, and they count
 until the token of that login expires. A group removed at the IdP therefore stops granting at
-the person's next login, on every replica, for every token of the user, and at the latest when
-the login's token expires. A name that is not 1 to 256 bytes of printable text is dropped.
+the person's next login, or, with `auth.oidc.refresh.interval`, at the next refresh of one of
+their logins whose answer has an ID token ([Asking the IdP again](#asking-the-idp-again)), on
+every replica, for every token of the user, and at the latest when the login's token expires. A
+name that is not 1 to 256 bytes of printable text is dropped.
 
 A binding names a group as it names a user, and the group need not have members yet:
 
@@ -1637,9 +1730,10 @@ browser by a cookie, so that a link to someone else's callback logs nobody in. T
 be signed with an asymmetric key of the IdP's JWKS, by an algorithm of that key (never `none` or
 an HMAC), be issued by the configured issuer to this client (`iss`, `aud`, `azp`), and be valid
 within 60 s of skew. The keys are cached; a new `kid` reloads them at most every 30 seconds. No
-code, state, ID token or personal access token is logged. Every login writes `user.login` to the
-audit log with the issuer, the subject and the groups, a first login `user.create`, and the token
-`token.create` with `createdBy: oidc`. The [threat model](security/threat-model.md) has the flows.
+code, state, ID token, refresh token or personal access token is logged. Every login writes
+`user.login` to the audit log with the issuer, the subject and the groups (and `refresh` with
+`auth.oidc.refresh.interval`), a first login `user.create`, and the token `token.create` with
+`createdBy: oidc`. The [threat model](security/threat-model.md) has the flows.
 
 Not yet: token exchange for CI (a GitHub Actions or GitLab OIDC token for a short-lived token,
 proposed on #69; meanwhile a pipeline uses a [deploy token](#in-ci)), and joining an existing
