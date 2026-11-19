@@ -1,6 +1,7 @@
 package keys_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -289,3 +290,63 @@ func mustService(t *testing.T, st index.Store, m *keys.Master) *keys.Service {
 	}
 	return svc
 }
+
+// flipKMS is a KMS that unwraps other bytes than it wrapped.
+type flipKMS struct{ *keystest.WrapKMS }
+
+func (f flipKMS) DecryptSymmetric(ctx context.Context, name string, c []byte, ad keys.AdditionalData) ([]byte, error) {
+	p, err := f.WrapKMS.DecryptSymmetric(ctx, name, c, ad)
+	if err == nil {
+		p[0] ^= 1
+	}
+	return p, err
+}
+
+// TestWrapMaster: WrapMaster makes a data key that the KMS key wraps under its id, which Unwrap
+// holds; RewrapMaster wraps it again, another ciphertext of the same key; a KMS that does not
+// unwrap what it wrapped is an error, and nothing is answered; no error shows a key or a
+// ciphertext.
+func TestWrapMaster(t *testing.T) {
+	ctx := t.Context()
+	kms := keystest.NewWrapKMS()
+	key := kmsKey(t, kms)
+	id, wrapped, err := keys.WrapMaster(ctx, kms, key)
+	if err != nil || len(id) != 16 || len(wrapped) == 0 {
+		t.Fatalf("WrapMaster = %q, %d bytes, %v", id, len(wrapped), err)
+	}
+	row := index.WrappedMasterKey{KeyID: id, KMS: kms.URI(), Wrapped: wrapped}
+	again, err := keys.RewrapMaster(ctx, kms, key, row)
+	if err != nil || string(again) == string(wrapped) {
+		t.Fatalf("RewrapMaster = %d bytes, %v; want another ciphertext", len(again), err)
+	}
+	for _, w := range [][]byte{wrapped, again} {
+		m, err := keys.HoldMasterKeys(nil, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Unwrap(ctx, kms, key, index.WrappedMasterKey{KeyID: id, KMS: kms.URI(), Wrapped: w}); err != nil || !m.Holds(id) {
+			t.Errorf("Unwrap of a ciphertext of WrapMaster or RewrapMaster: %v", err)
+		}
+	}
+	other, wrappedOther, err := keys.WrapMaster(ctx, kms, key)
+	if err != nil || other == id {
+		t.Fatalf("a second WrapMaster: %s, %v; want another id", other, err)
+	}
+	moved := index.WrappedMasterKey{KeyID: id, KMS: kms.URI(), Wrapped: wrappedOther}
+	if _, err := keys.RewrapMaster(ctx, kms, key, moved); err == nil {
+		t.Error("RewrapMaster of the ciphertext of another id succeeded")
+	}
+	for what, err := range map[string]error{
+		"WrapMaster":   third(keys.WrapMaster(ctx, flipKMS{kms}, key)),
+		"RewrapMaster": second(keys.RewrapMaster(ctx, flipKMS{kms}, key, row)),
+	} {
+		if err == nil {
+			t.Errorf("%s through a KMS that answers other bytes succeeded", what)
+		}
+		noKeyIn(t, err, string(wrapped), string(again))
+	}
+}
+
+func second[T any](_ T, err error) error { return err }
+
+func third[T, U any](_ T, _ U, err error) error { return err }
