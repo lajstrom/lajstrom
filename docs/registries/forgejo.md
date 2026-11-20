@@ -5,7 +5,8 @@ What the container registry built into Forgejo answered, measured with `curl`, `
 measured on 2026-11-10 beside Gitea (#120), with the same setup. On 2026-11-12 it got a page
 and a column of its own (#816), and the probe and the tests ran against it again. On
 2026-11-15 the probe ran once more, for its rows on consistency
-([The probe again](#the-probe-again-2026-11-15-850)).
+([The probe again](#the-probe-again-2026-11-15-850)), and on 2026-11-20 on GitHub Actions
+runners ([On a runner](#on-a-runner-2026-11-20-850)).
 
 Forgejo is a hard fork of Gitea, made in 2024 (Codeberg e.V., GPLv3+). Both implement the
 distribution API themselves, in their package registry. The registry is `/v2/` on Forgejo's
@@ -32,6 +33,8 @@ The [summary column](README.md#capabilities) is in the README; this page has the
 - On 2026-11-15 the probe ran again on the same index, pulled from `data.forgejo.org` (the pin
   of compose.yaml since #826), at a8762730
   ([The probe again](#the-probe-again-2026-11-15-850)).
+- On 2026-11-20 the probe ran on the pin on GitHub Actions runners, ubuntu-26.04, linux/amd64,
+  Go 1.27.4 ([On a runner](#on-a-runner-2026-11-20-850)).
 
 ## Run it
 
@@ -168,6 +171,38 @@ run, with 85 token requests. These are the probe's own requests. The probe has a
 its own (`newClient`, internal/provider/probe/client.go), not the provider's, so the alias of
 #1042 ([gitea.md](gitea.md#the-probe-again-2026-11-13-850)) is not in it, and this run does not
 measure that fix.
+
+## On a runner, 2026-11-20 (#850)
+
+The probe ran again on Forgejo 17.0.1, the pin, this time on GitHub Actions runners. The
+workflow Probe (`.github/workflows/probe.yml`, #1440) pulls Forgejo from `data.forgejo.org`
+with the four tries of the job `e2e (forgejo)`, brings it up with `gitea.sh up forgejo`, and
+runs the probe as [above](#the-probe-again-2026-11-15-850) (`--registry-prefix lajstrom-it/
+--max-manifest-size 32MiB -v`). Lajstrom was built from main at 7f93d1a3 with Go 1.27.4, on
+ubuntu-26.04, linux/amd64. There were two runs on 2026-11-20,
+[44656305997](https://github.com/lajstrom/lajstrom/actions/runs/44656305997) and
+[44657661519](https://github.com/lajstrom/lajstrom/actions/runs/44657661519). Each job's
+summary has the table, and its artifact `probe-forgejo` has the `-v` output.
+
+The provider's own probe said what it said on 2026-11-15, `vendor=forgejo … consistency=unknown
+maxNameDepth=0 tagsFoldCase=true buildRoutes=false`, with `serve`'s hint about
+`spoolUnknownLength`. Both tables were the same, and nothing was left behind. Every cell was the
+one of 2026-11-15 and, for the rows that run did not list, of the [table of
+2026-11-12](#lajstrom-registry-probe), with the blobs at the default 8 MiB. The consistency
+rows:
+
+| Row | Forgejo 17.0.1, two runs on runners |
+| --- | --- |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+
+So a second machine, a Linux runner with Forgejo on amd64, finds what the Mac found. It is
+still a measurement of three writes and three deletes on one Forgejo, and the vendor table's
+entry stays without a consistency.
+
+The 401 before nearly every request is gone: 85 of the 760 requests of each run were 401s, one
+before each token request. Since #1147 the probe's own auth client adds the alias of #1042
+after a challenge too (`aliasClient`, internal/provider/probe/client.go).
 
 ## What the provider must do differently
 

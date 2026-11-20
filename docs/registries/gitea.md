@@ -27,6 +27,8 @@ owner (a user or an organisation), and every tag is a package version in Gitea's
   00:53 UTC from go-gitea/gitea@45d13431; `gitea version 29.0.0+dev-405-g45d13431a0 built with
   go1.27.4`), with the image changed in a copy of compose.yaml
   ([The name grammar](#the-name-grammar-2026-11-15)).
+- On 2026-11-20 the probe ran on the pin on GitHub Actions runners, ubuntu-26.04, linux/amd64,
+  Go 1.27.4 ([On a runner](#on-a-runner-2026-11-20-850)).
 
 ## Run it
 
@@ -68,7 +70,8 @@ limits and the garbage collector, which still need a person;
 corrections of this page: the mount and the manifest limit ([Blob reads, ranges,
 sizes](#blob-reads-ranges-sizes)), and that a digest delete takes the blobs only that manifest
 used. It ran again on 2026-11-13, with the rows added since, on 1.27.3 and 28.3.0
-([The probe again](#the-probe-again-2026-11-13-850)).
+([The probe again](#the-probe-again-2026-11-13-850)), and on GitHub Actions runners on
+2026-11-20 ([On a runner](#on-a-runner-2026-11-20-850)).
 
 The probe reports `vendor=unknown createOnPush=true referrers=false catalog=true
 deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the test log and the
@@ -164,6 +167,37 @@ costs one more round trip. Nothing fails, and Forgejo's challenge is the same. *
 request does not (`aliasClient`, internal/provider/generic/client.go), so only the first
 request with a given set of scopes meets the 401; `TestTokenAfterChallenge` counts it. Not
 measured with the probe again.
+
+## On a runner, 2026-11-20 (#850)
+
+The probe ran again on Gitea 1.27.3, the pin, this time on GitHub Actions runners. The workflow
+Probe (`.github/workflows/probe.yml`, #1440) brings Gitea up with `gitea.sh up`, as the job
+`e2e (gitea)` does, and runs the probe as [above](#the-probe-again-2026-11-13-850)
+(`--registry-prefix lajstrom-it/ --max-manifest-size 32MiB -v`). Lajstrom was built from main
+at 7f93d1a3 with Go 1.27.4, on ubuntu-26.04, linux/amd64. There were two runs on 2026-11-20,
+[44656305997](https://github.com/lajstrom/lajstrom/actions/runs/44656305997) and
+[44657661519](https://github.com/lajstrom/lajstrom/actions/runs/44657661519). Each job's
+summary has the table, and its artifact `probe-gitea` has the `-v` output.
+
+The provider's own probe said `vendor=gitea createOnPush=true referrers=false
+referrersAlwaysTag=false catalog=true deleteManifest=true immutableTags=false blobRedirect=true
+maxBlobSize=0 consistency=unknown maxNameDepth=0 tagsFoldCase=true buildRoutes=false`, with
+`serve`'s hint about `spoolUnknownLength`. Both tables were the table of 2026-11-13, cell for
+cell, and nothing was left behind. The consistency rows:
+
+| Row | Gitea 1.27.3, two runs on runners |
+| --- | --- |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+
+So a second machine, a Linux runner with Gitea on amd64, finds what the Mac found: no lag,
+and no change undone. It is still a measurement of three writes and three deletes on one
+Gitea, not a promise of Gitea's, and the vendor table's entry stays without a consistency.
+
+One count changed, and the change is ours: 85 of the 760 requests of each run were 401s, one
+before each token request, where 527 of 1,135 were on 2026-11-13. Since #1147 the probe's own
+auth client adds the alias of #1042 after a challenge too (`aliasClient`,
+internal/provider/probe/client.go).
 
 ## The name grammar, 2026-11-15
 

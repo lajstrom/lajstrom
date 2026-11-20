@@ -34,6 +34,10 @@ as type `harbor`, which adds Harbor's REST API ([Type harbor](#type-harbor), #73
 - On 2026-11-14 the probe ran again ([The probe](#the-probe-2026-11-14-850)), on the same
   images: `harbor.sh up` pulled the ten images (prepare included, about 3.4 GB) and was healthy
   in 31 s, emulated as before. The probe took 6 s, and `down` 15 s.
+- On 2026-11-20 the probe ran on a GitHub Actions runner, ubuntu-26.04, linux/amd64, where the
+  images run natively ([On a runner](#on-a-runner-2026-11-20-850)): `sudo harbor.sh up`
+  downloaded the installer and pulled the images, and Harbor was healthy in about 40 s, its
+  project and robot made. The probe took 8 s.
 
 ## Run it
 
@@ -55,7 +59,10 @@ Docker shares), runs `prepare`, which writes `docker-compose.yml` and `common/co
 secrets of its own, publishes the port on 127.0.0.1 instead of every interface, and starts it.
 Not `up --wait`: jobservice exits until core answers and restarts, which `--wait` takes for a
 failure. `LAJSTROM_HARBOR_GC_TIME_WINDOW_HOURS=0` sets core's `GC_TIME_WINDOW_HOURS` for the
-[garbage collection](#garbage-collection) experiment.
+[garbage collection](#garbage-collection) experiment. On a Linux runner `harbor.sh up` needs
+root, as Harbor's installer does: run as the runner's user, `docker compose` could not read
+`common/config/db/env`, which `prepare` writes, and stopped with "permission denied"
+([On a runner](#on-a-runner-2026-11-20-850)). On macOS with OrbStack it runs as the user.
 
 Then a private project and a robot account of it, with the admin user
 ([Commands](#commands)):
@@ -75,7 +82,8 @@ quote it in a shell.
 `lajstrom registry probe` measures every row of this table but the listing API, auth, rate
 limits and the garbage collector, which still need a person;
 [README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how. It ran in full on
-2026-11-14 ([The probe](#the-probe-2026-11-14-850)).
+2026-11-14 ([The probe](#the-probe-2026-11-14-850)), and again on a GitHub Actions runner on
+2026-11-20 ([On a runner](#on-a-runner-2026-11-20-850)).
 
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -181,6 +189,43 @@ What is new against the [column](README.md#capabilities), all of it Harbor's:
 - Every other cell is the column's. Harbor's challenge names no scope, so Gitea's extra 401
   before each request ([gitea.md](gitea.md#the-probe-again-2026-11-13-850)) does not happen
   here: 13 of the 483 requests were 401s.
+
+## On a runner, 2026-11-20 (#850)
+
+The probe ran again on Harbor v2.15.4 (`v2.15.4-d8841742`), this time on a GitHub Actions
+runner, where Harbor's linux/amd64 images run natively. The workflow Probe
+(`.github/workflows/probe.yml`, #1440) brings Harbor up with `sudo harbor.sh up` (see below),
+makes the project `lajstrom-it` and the robot `robot$lajstrom-it+ci` of
+[Commands](#commands), and runs the probe as the robot, as
+[above](#the-probe-2026-11-14-850) (`--registry-prefix lajstrom-it/ --max-manifest-size 32MiB
+-v`). Lajstrom was built from main at 7f93d1a3 with Go 1.27.4, on ubuntu-26.04. The run is
+[44657661519](https://github.com/lajstrom/lajstrom/actions/runs/44657661519) of 2026-11-20.
+Its job summary has the table, and its artifact `probe-harbor` has the `-v` output.
+
+The first run, [44656305997](https://github.com/lajstrom/lajstrom/actions/runs/44656305997),
+did not get to the probe. `harbor.sh up` ran as the runner's user, `prepare` wrote the
+configuration, and `docker compose up` stopped at `open …/common/config/db/env: permission
+denied`. Harbor's documentation runs its installer with `sudo`, and the workflow now runs
+harbor.sh so. On macOS with OrbStack it ran as the user for this page.
+
+The provider's own probe said `vendor=harbor createOnPush=true referrers=true
+referrersAlwaysTag=false catalog=false deleteManifest=true immutableTags=false
+blobRedirect=true maxBlobSize=0 consistency=unknown maxNameDepth=0 tagsFoldCase=false
+buildRoutes=false`. Nothing was left behind. Every cell was the one of the table of 2026-11-14
+but the counts of the routing words, which misroute at random: `x/manifests/y` 14×404,
+`x/manifests` 13×404, `x/referrers/y` 4×404 and `x/tags/list` 15×400 of 20 `HEAD`s, every
+`GET` 200. The plain `x` was 20×200, and so were `x/build` and `x/build/y`, which the row has
+pushed since #662. The consistency rows:
+
+| Row | Harbor v2.15.4, on a runner |
+| --- | --- |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+
+So Harbor on amd64, on a Linux runner, finds what the emulated Harbor on the Mac found: no
+lag, and no change undone. The catalog is still not read (the robot has none). It is a
+measurement of three writes and three deletes on one Harbor, and the vendor table's entry
+stays without a consistency.
 
 ## What the provider must do differently
 
