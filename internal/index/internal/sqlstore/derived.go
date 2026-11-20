@@ -20,10 +20,10 @@ import (
 
 // Derived tables: packages, versions, files, index_cache, oci_repos.
 
-const packageCols = "id, repo_id, name, name_oci, created_at"
+const packageCols = "id, repo_id, name, name_oci, created_at, last_delete_at"
 
 func packageDests(p *index.Package) []any {
-	return []any{&p.ID, &p.RepoID, &p.Name, &p.NameOCI, timeDest{&p.CreatedAt}}
+	return []any{&p.ID, &p.RepoID, &p.Name, &p.NameOCI, timeDest{&p.CreatedAt}, nullTimeDest{&p.LastDeleteAt}}
 }
 
 // GetPackage returns the package with the given name in a repo.
@@ -66,7 +66,8 @@ func (c *conn) GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI st
 		"SELECT "+packageCols+" FROM packages WHERE repo_id = ? AND name_oci = ?", repoID, nameOCI)
 }
 
-// UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row. Of two
+// UpsertPackage inserts p, without LastDeleteAt, or, when (RepoID, Name) exists, fills p from
+// the existing row. Of two
 // writers that insert the same package at once, the second finds the first's row. A NameOCI
 // that another name holds is index.ErrConflict naming both (nameOCIConflict), also when that
 // name was inserted at the same time.
@@ -94,6 +95,9 @@ func (c *conn) UpsertPackage(ctx context.Context, p *index.Package) error {
 					" ON CONFLICT DO NOTHING RETURNING id",
 				[]any{p.RepoID, p.Name, p.NameOCI, c.d.EncodeTime(stamp(&p.CreatedAt, now()))},
 				&p.ID)
+			if inserted {
+				p.LastDeleteAt = nil
+			}
 			if inserted || err != nil {
 				return err
 			}
@@ -380,7 +384,7 @@ func (c *conn) TouchVersions(ctx context.Context, ids []int64, at time.Time) err
 const touchBatch = 500
 
 // DeleteVersion removes the version; the foreign key cascades to its files. The package keeps
-// the earliest CreatedAt of the versions left.
+// the earliest CreatedAt of the versions left, and packageDeleted records the delete.
 func (c *conn) DeleteVersion(ctx context.Context, id int64) error {
 	return c.withTx(ctx, func(c *conn) error {
 		what := fmt.Sprintf("versions id %d", id)
@@ -388,9 +392,32 @@ func (c *conn) DeleteVersion(ctx context.Context, id int64) error {
 			return err
 		}
 		var packageID int64
-		err := c.scanRow(ctx, what, "DELETE FROM versions WHERE id = ? RETURNING package_id", []any{id}, &packageID)
+		var created time.Time
+		err := c.scanRow(ctx, what, "DELETE FROM versions WHERE id = ? RETURNING package_id, created_at", []any{id},
+			&packageID, timeDest{&created})
+		if err == nil {
+			err = c.packageDeleted(ctx, packageID, created)
+		}
 		return c.packageCreated(ctx, packageID, err)
 	})
+}
+
+// packageDeleted sets LastDeleteAt of the package, after the delete of a version created at
+// created, to the later of now and created, unless it holds a later time already (#1419;
+// docs/spec/index-schema.md, The time of a package's last delete). A deleted version is then
+// never created after it: raw's Last-Modified relies on that, and a manifest pushed through
+// /v2 may carry a created ahead of the clock. It never moves back, whatever the clocks of the
+// replicas that delete. The caller holds lockPackage.
+func (c *conn) packageDeleted(ctx context.Context, packageID int64, created time.Time) error {
+	at := now()
+	if created.After(at) {
+		at = Normalize(created)
+	}
+	enc := c.d.EncodeTime(at)
+	_, err := c.exec(ctx, fmt.Sprintf("packages id %d", packageID),
+		"UPDATE packages SET last_delete_at = ? WHERE id = ? AND (last_delete_at IS NULL OR last_delete_at < ?)",
+		enc, packageID, enc)
+	return err
 }
 
 const fileCols = "id, version_id, name, media_type, digest, size, attrs"
