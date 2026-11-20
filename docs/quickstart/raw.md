@@ -93,7 +93,9 @@ The `ETag` is the digest of the file, so `curl -H 'If-None-Match: "sha256:3011â€
 `wget -N` ask by `Last-Modified` instead: `304` while the file they hold is the newest. A path
 whose newest version was created in the same second as another has no `Last-Modified`, so that
 the date of the older one never gets `304`; such a client downloads the file whole each time,
-until a version of a later second. When the registry hands out
+until a version of a later second. After the delete of a version (section 4), `Last-Modified`
+is the second after the delete, so that the date of the deleted file does not get `304` either.
+When the registry hands out
 download URLs (distribution on S3, for example), `GET` answers `307` to the blob instead.
 
 ## 4. Upload it again, then change it (R-02, R-03)
@@ -117,6 +119,11 @@ section 5 then shows one version:
 ```sh
 curl -u "$u" -X DELETE http://localhost:8080/api/v1/repos/raw/scratch/packages/docs%2Ffile.txt/versions/d9a4c6676a62cb3b   # 204
 ```
+
+`hello raw` is the newest again, created before `hello again`, so its `Last-Modified` is now the
+second after the `DELETE`, not its `created`: `wget -N` and `curl -R -z` that hold `hello again`
+get `hello raw`, not `304`. Within the second of the `DELETE` the answer has no `Last-Modified`,
+and neither has a version uploaded in the second after it.
 
 The `DELETE` of section 8 removes every version of the path.
 

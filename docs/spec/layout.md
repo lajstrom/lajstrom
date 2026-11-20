@@ -1339,7 +1339,7 @@ type Writer interface {
     UpsertVersion(ctx context.Context, v *Version) error           // *TagConflictError on a tag with another digest
     TouchVersions(ctx context.Context, ids []int64, at time.Time) error // IndexedAt only: rows reindex saw
     ReplaceFiles(ctx context.Context, versionID int64, files []File) error
-    DeleteVersion(ctx context.Context, id int64) error
+    DeleteVersion(ctx context.Context, id int64) error // and sets packages.last_delete_at (index-schema.md)
     DeletePackage(ctx context.Context, id int64) error
     DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) // packages without versions
     // SetVersionSummaries writes the summary of each id, "" as '', to those of the rows whose
