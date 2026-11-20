@@ -165,7 +165,7 @@ func (e *env) run(t *testing.T, req reindex.Request) *reindex.RepoReport {
 
 // derived is the derived rows of a repo by their natural keys: what reindex must restore.
 type derived struct {
-	Packages map[string]index.Package // by name; ID cleared
+	Packages map[string]index.Package // by name; ID and LastDeleteAt cleared
 	Versions map[string]index.Version // by package and tag; ID, PackageID and IndexedAt cleared
 	Files    map[string][]index.File  // by package and tag; ID and VersionID cleared
 	OCIRepos []string
@@ -191,7 +191,7 @@ func (e *env) derived(t *testing.T) derived {
 			v.ID, v.PackageID, v.IndexedAt = 0, 0, v.CreatedAt
 			d.Versions[key] = v
 		}
-		p.ID = 0
+		p.ID, p.LastDeleteAt = 0, nil // the registry keeps no trace of a delete (#1419)
 		d.Packages[p.Name] = p
 	}
 	repos, err := e.st.ListOCIRepos(ctx, e.repo.ID)
@@ -204,7 +204,8 @@ func (e *env) derived(t *testing.T) derived {
 }
 
 // TestRebuild is I-01: what ingest wrote, dropped and rebuilt by a run from the registry, equal
-// in every column but the ids and indexed_at; the index_cache of the repo is empty after it.
+// in every column but the ids, indexed_at and packages.last_delete_at; the index_cache of the
+// repo is empty after it.
 func TestRebuild(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
@@ -358,6 +359,33 @@ func TestBypassAndDelete(t *testing.T) {
 	}
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, "pushed.txt"); err != nil {
 		t.Errorf("the package pushed past Lajstrom: %v", err)
+	}
+}
+
+// TestSweepLastDelete: the version that the sweep removes, its manifest deleted in the backend,
+// is a delete of the package as one through the API is (#1419): the package that keeps another
+// version records its time, and raw dates the version left by it.
+func TestSweepLastDelete(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	e.publish(t, "file.txt", "one")
+	gone := e.publish(t, "file.txt", "two")
+	rr, err := e.fake.Repository(ctx, gone.RepoPath)
+	must(t, err)
+	desc, err := rr.Resolve(ctx, gone.Tag)
+	must(t, err)
+	must(t, rr.Delete(ctx, desc))
+	e.run(t, reindex.Request{Prune: true}) // the first answer of the registry
+	e.clock.later(2 * time.Hour)
+	before := time.Now().Truncate(time.Microsecond)
+	if r := e.run(t, reindex.Request{Prune: true}); r.Removed != 1 || r.Unchanged != 1 {
+		t.Fatalf("with prune, two hours later: %+v", *r)
+	}
+	after := time.Now()
+	pkg, err := e.st.GetPackage(ctx, e.repo.ID, "file.txt")
+	must(t, err)
+	if pkg.LastDeleteAt == nil || pkg.LastDeleteAt.Before(before) || pkg.LastDeleteAt.After(after) {
+		t.Errorf("LastDeleteAt after the sweep: %v, want within [%v, %v]", pkg.LastDeleteAt, before, after)
 	}
 }
 

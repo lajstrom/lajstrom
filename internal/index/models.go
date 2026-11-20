@@ -619,6 +619,10 @@ type Package struct {
 	Name      string // the format's spelling (lajstrom.name)
 	NameOCI   string // the escaped package path (Plugin.EscapeName)
 	CreatedAt time.Time
+	// LastDeleteAt is when a version of the package was last deleted (Writer.DeleteVersion); nil
+	// when no delete is known. Reindex does not rebuild it (docs/spec/index-schema.md, The time of
+	// a package's last delete).
+	LastDeleteAt *time.Time
 }
 
 // Version is a row of versions (derived): one manifest.

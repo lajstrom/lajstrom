@@ -704,7 +704,8 @@ type Writer interface {
 	// Derived. Every version write and delete keeps packages.created_at the earliest CreatedAt
 	// of the package's versions.
 
-	// UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row.
+	// UpsertPackage inserts p, without LastDeleteAt, or, when (RepoID, Name) exists, fills p from
+	// the existing row.
 	// NameOCI is unique within a repo too: when another name holds it, nothing changes and the
 	// error wraps ErrConflict and names both (two spellings of one raw path, #97).
 	UpsertPackage(ctx context.Context, p *Package) error
@@ -718,7 +719,9 @@ type Writer interface {
 	TouchVersions(ctx context.Context, ids []int64, at time.Time) error
 	// ReplaceFiles replaces the files of a version with files and fills their IDs.
 	ReplaceFiles(ctx context.Context, versionID int64, files []File) error
-	// DeleteVersion removes the version and its files.
+	// DeleteVersion removes the version and its files, and sets LastDeleteAt of its package to
+	// the later of now and the version's CreatedAt, unless the package holds a later time
+	// (docs/spec/index-schema.md, The time of a package's last delete).
 	DeleteVersion(ctx context.Context, id int64) error
 	// DeletePackage removes the package, its versions and their files.
 	DeletePackage(ctx context.Context, id int64) error
