@@ -22,6 +22,9 @@ since #662 Lajstrom refuses such a new package on Quay before it pushes anything
   Redis, `redis:7-alpine` (7.4.12), blobs on local storage in a volume. The Quay container
   used about 6 GiB of memory.
 - On macOS with OrbStack, arm64; the tests with Go 1.27.4 at d44b112e.
+- On 2026-11-20 the probe ran on the pin on GitHub Actions runners, ubuntu-26.04, linux/amd64,
+  Go 1.27.4 ([On a runner](#on-a-runner-2026-11-20-850)). The linux/amd64 image of the index
+  calls itself `Quay v3.18.1-nightly-202610201957`, a minute after the arm64 one.
 
 ## Run it
 
@@ -259,6 +262,80 @@ it, which the vendor table says since [#803](https://github.com/lajstrom/lajstro
 every publish reads its tag, its blobs and, for a referrer, its subject's referrers (the
 tag-schema index, a tag) back, for up to 130 s (260 s for a referrer) where
 `ingest.visibilityTimeout` is shorter.
+
+The probe's rows "Read-after-write lag" and "Monotonic reads" ran on Quay on 2026-11-20 and
+were *not measured*: the probe cannot delete on Quay, and both rows end at their first delete
+([On a runner](#on-a-runner-2026-11-20-850)). Their writes, in the `-v` log, agree with this
+section.
+
+## On a runner, 2026-11-20 (#850)
+
+Item 1 of #850 asks for the probe's rows "Read-after-write lag", with the lists read before
+each write and the deletes (#845), and "Monotonic reads" (#564). The probe of 2026-11-12 had
+neither. It ran on Quay 3.18.2, the pin, on GitHub Actions runners. The workflow Probe
+(`.github/workflows/probe.yml`, #1440) brings Quay up with `quay.sh up` and runs the probe as
+the robot `lajstrom-it+lajstrom` (`--registry-prefix lajstrom-it/ --max-manifest-size 32MiB
+-v`). Lajstrom was built from main at 7f93d1a3 with Go 1.27.4, on ubuntu-26.04, linux/amd64.
+There were two runs on 2026-11-20,
+[44656305997](https://github.com/lajstrom/lajstrom/actions/runs/44656305997) and
+[44657661519](https://github.com/lajstrom/lajstrom/actions/runs/44657661519), each with about
+6 minutes of probe. Each job's summary has the table, and its artifact `probe-quay` has the
+`-v` output. The provider's own probe said `vendor=quay createOnPush=true referrers=false
+referrersAlwaysTag=false catalog=false deleteManifest=true immutableTags=false
+blobRedirect=true maxBlobSize=0 consistency="eventual within 2m10s" maxNameDepth=0
+tagsFoldCase=false buildRoutes=true`, and `registry needs workarounds … pushForDelete=true`.
+
+**The two rows are not measured, because the probe cannot delete on Quay.** Each `DELETE` of the
+probe got Quay's 401. The token request after it asked for
+`repository:<name>:delete,pull,push`, and Quay's token service answered that with 400 "Unable to
+decode repository and actions" ([Tokens and the delete action](#tokens-and-the-delete-action)).
+The provider has asked for `push` in place of `delete` on `vendor=quay` since #801
+(`deleteScopeTransport`, internal/provider/generic/client.go). The probe sends its own requests
+through a client of its own (`newClient`, internal/provider/probe/client.go), and that client
+has no such transport.
+
+So no `DELETE` of the probe goes out with a token, and Quay never answers one. Each row that
+deletes stops at its first delete, and its cell is *not measured* with that error:
+
+- "Read-after-write lag" and "Monotonic reads";
+- "Delete a manifest by digest" and "Delete by tag";
+- of the uploads, everything from the cancel on: the mount, the wrong digest and the session
+  continued by another replica.
+
+The cleanup failed the same way. Each run left its 68 manifests behind below
+`lajstrom-it/lajstrom-probe-<id>/`. It was the same on 2026-11-12 ([The row](#the-row)). The limit
+is the probe's, not Quay's: through Lajstrom, deletes have reached Quay since #801
+([Our tests against it](#our-tests-against-it)).
+
+What the `-v` log shows before the first delete, the same in both runs:
+
+- **The writes of "Read-after-write lag".** In the repository `lag`, after each of the three
+  pushes, the blob and the manifest by digest and by tag answered at the first ask. The tag list,
+  read once before each push, answered without the new tag 67 more times before it named it.
+  At the probe's waits (25 ms, doubling up to 2 s) that is about 2 minutes, and the three
+  writes took about 6 of the probe's 6 minutes. This is the tag list's cache of 120 s
+  ([Tags](#tags)), now with the lists primed by the probe itself. The probe printed no time,
+  because the row ended at the delete. The catalog is not read (`catalog=false`).
+- **The writes of "Monotonic reads".** In `mono`, the blob's `HEAD` and the manifest's `HEAD`
+  by digest and by tag saw each of 3 writes and the tag move at once. Each was read 5 more
+  times over new connections, 60 reads in all, and none of them saw the state before. The row
+  then stopped at its first delete, so it judged nothing.
+
+The lag of a delete, which the survey puts at 60 to 300 s on Quay
+([registry-consistency-2026-11.md](../design/registry-consistency-2026-11.md)), is still not
+measured by the probe. The vendor table's `consistency: eventual` within 130 s stands. A probe
+that asked for `push` where it asks for `delete` on `vendor=quay`, as the provider does, would
+measure it. That is not done here.
+
+Every other cell agreed with [The row](#the-row) of 2026-11-12 and with
+[Measured again](#measured-again-2026-11-14-662), with the blobs at the default 8 MiB:
+
+- The routing words were `ok` on 3.18.2, `x/build` and `x/build/y` too, as on BEFORE.
+- "What the probe finds" was `referrers=false catalog=false`, as since #803.
+- "Overrides needed" was `referrers: true`, where item 3 chose the tag schema, and
+  `buildRoutes: false`, because 3.18.2 has no build rule.
+- "Create on push" was *no* again, for Quay's reasons: the tag list read before the first
+  manifest is cached, and the anonymous catalog is empty ([Catalog](#catalog)).
 
 ## Delete
 
