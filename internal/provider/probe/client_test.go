@@ -277,3 +277,110 @@ func sendWant(t *testing.T, c *client, method, target string, want int) {
 		t.Fatalf("%s %s = %d, want %d", method, target, a.status, want)
 	}
 }
+
+// TestDeleteAsksPushOnQuay is #801 for the probe's own client (#850). Quay's token service knows
+// the actions pull, push and * only and answers a scope with delete 400 "Unable to decode
+// repository and actions", so every DELETE of the probe failed at its token request, and each
+// row that deletes was not measured on Quay. Once the provider's probe has named the registry
+// Quay, the client asks for push where oras-go asks for delete, as the provider does
+// (deleteScopeTransport), and the DELETE goes out with the token. Elsewhere the scope stays as
+// oras-go asks it.
+func TestDeleteAsksPushOnQuay(t *testing.T) {
+	const manifest = "/manifests/sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	for _, tt := range []struct {
+		name    string
+		quay    bool
+		actions string // of the scope of the token request of a DELETE
+	}{
+		{"Quay", true, "pull,push"},
+		{"another registry", false, "delete,pull,push"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &quayRegistry{quay: tt.quay}
+			q.srv = httptest.NewServer(q)
+			defer q.srv.Close()
+			r, err := newRun(config.Registry{Name: "q", URL: q.srv.URL, Auth: config.RegistryAuth{Username: "probe", Password: "s3cret"}},
+				Options{Scratch: "lajstrom-probe-0", Log: quiet()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.WithValue(t.Context(), tapeKey{}, r.tape)
+			if err := r.providerProbe(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]string{true: "quay", false: "unknown"}[tt.quay]; r.report.Vendor != want {
+				t.Fatalf("vendor = %q, want %q", r.report.Vendor, want)
+			}
+			q.take()
+			sendWant(t, r.c, http.MethodDelete, "/v2/lajstrom-probe-0/a"+manifest, http.StatusAccepted)
+			if got, want := q.take(), "repository:lajstrom-probe-0/a:"+tt.actions; !slices.Equal(got, []string{want}) {
+				t.Errorf("token requests of the DELETE: %q, want %q", got, want)
+			}
+			// A client over new connections, as "Monotonic reads" makes them, asks the same; in
+			// another repository, whose token the cache it shares does not hold.
+			f := r.c.fresh(func(string) {})
+			defer f.close()
+			sendWant(t, f, http.MethodDelete, "/v2/lajstrom-probe-0/b"+manifest, http.StatusAccepted)
+			if got, want := q.take(), "repository:lajstrom-probe-0/b:"+tt.actions; !slices.Equal(got, []string{want}) {
+				t.Errorf("token requests of the fresh client's DELETE: %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// quayRegistry is a registry with a bearer challenge and a token endpoint, /v2/auth, which grants
+// a token for the Basic credentials probe:s3cret. With quay set it answers as Quay does: GET /v2/
+// with X-Sparse-Manifest-Support, by which the provider names it, and a token request whose scope
+// has the action delete 400. With the token, /v2/ is 200, a DELETE 202 and anything else 404. It
+// keeps the scope parameters of the token requests.
+type quayRegistry struct {
+	srv    *httptest.Server
+	quay   bool
+	mu     sync.Mutex
+	scopes []string
+}
+
+func (q *quayRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if q.quay {
+		w.Header().Set("X-Sparse-Manifest-Support", "false")
+	}
+	switch {
+	case r.URL.Path == "/v2/auth":
+		scope := strings.Join(r.URL.Query()["scope"], " ")
+		q.mu.Lock()
+		q.scopes = append(q.scopes, scope)
+		q.mu.Unlock()
+		if u, p, ok := r.BasicAuth(); !ok || u != "probe" || p != "s3cret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if q.quay && strings.Contains(scope, "delete") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid_request","error_description":"Unable to decode repository and actions"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"token":"granted"}`)
+	case r.Header.Get("Authorization") != "Bearer granted":
+		challenge := fmt.Sprintf(`Bearer realm="%s/v2/auth",service="fake"`, q.srv.URL)
+		if n := repositoryOf(r.URL.Path); n != "" {
+			challenge += fmt.Sprintf(`,scope="repository:%s:pull,push"`, n)
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
+		w.WriteHeader(http.StatusUnauthorized)
+	case r.URL.Path == "/v2/":
+	case r.Method == http.MethodDelete:
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// take returns the scopes of the token requests since the last take.
+func (q *quayRegistry) take() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	s := q.scopes
+	q.scopes = nil
+	return s
+}

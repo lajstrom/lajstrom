@@ -395,6 +395,15 @@ func (t *deleteScopeTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return t.next.RoundTrip(r)
 }
 
+// PushForDeleteTransport returns next behind the provider's deleteScopeTransport: while on
+// reports true, a token request asks for push where oras-go asks for delete, as the provider's
+// own clients ask on a registry whose quirk it is (Quay, #801). It is for a client of the
+// registry that is not the provider's and answers its challenges with oras-go's auth client:
+// the probe's own (internal/provider/probe, #850).
+func PushForDeleteTransport(next http.RoundTripper, on func() bool) http.RoundTripper {
+	return &deleteScopeTransport{next: next, on: on}
+}
+
 // pushForDelete returns scopes with the action delete of each repository scope replaced by push,
 // merged as oras-go merges scopes (auth.CleanScopes), and whether any had delete.
 func pushForDelete(scopes []string) ([]string, bool) {

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -22,6 +23,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider/generic"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
 
@@ -38,12 +40,17 @@ type client struct {
 	timeout time.Duration
 	// transport is the transport under the record and the guard, closed by close.
 	transport *http.Transport
+	// pushForDelete, once set, makes a token request ask for push where oras-go asks for delete
+	// (generic.PushForDeleteTransport): the provider's probe says the registry needs it, Quay's
+	// token service refusing the action delete (providerLog). Shared with the fresh clients.
+	pushForDelete *atomic.Bool
 }
 
 // newClient builds the client of cfg: the registry's Basic or bearer challenge is answered with
 // cred, else with registries[].auth, a bearer challenge whose token realm is on another host is
-// refused (realmGuard) before anything is sent there, and the token got after a challenge is
-// found by the next request with the same scopes (aliasClient).
+// refused (realmGuard) before anything is sent there, the token got after a challenge is found
+// by the next request with the same scopes (aliasClient), and a token is asked for push where
+// oras-go asks for delete once pushForDelete is set.
 func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -54,7 +61,7 @@ func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *cl
 	if cred == nil && cfg.Auth.Username != "" {
 		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
-	c := &client{base: base, timeout: timeout, transport: t}
+	c := &client{base: base, timeout: timeout, transport: t, pushForDelete: new(atomic.Bool)}
 	c.anon = c.plain()
 	c.auth = &aliasClient{Client: &auth.Client{
 		Client:     c.anon,
@@ -75,11 +82,13 @@ func newTransport(timeout time.Duration) *http.Transport {
 	return t
 }
 
-// plain is the http.Client over c's transport: every round trip recorded, the challenge of a
-// 401 kept for aliasClient, a token realm on another host refused, redirects not followed.
+// plain is the http.Client over c's transport: a token request's delete asked as push while
+// pushForDelete is set, every round trip recorded as sent, the challenge of a 401 kept for
+// aliasClient, a token realm on another host refused, redirects not followed.
 func (c *client) plain() *http.Client {
+	record := &recordTransport{next: &challengeTransport{next: &realmGuard{base: c.base, next: c.transport}}}
 	return &http.Client{
-		Transport:     &recordTransport{next: &challengeTransport{next: &realmGuard{base: c.base, next: c.transport}}},
+		Transport:     generic.PushForDeleteTransport(record, c.pushForDelete.Load),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
@@ -99,7 +108,7 @@ func (c *client) fresh(reached func(addr string)) *client {
 		}
 		return conn, err
 	}
-	f := &client{base: c.base, timeout: c.timeout, transport: t}
+	f := &client{base: c.base, timeout: c.timeout, transport: t, pushForDelete: c.pushForDelete}
 	f.anon = f.plain()
 	a := *c.auth.Client
 	a.Client = f.anon

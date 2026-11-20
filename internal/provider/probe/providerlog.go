@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -20,11 +21,14 @@ func capabilitiesOf(c provider.Capabilities) Capabilities {
 }
 
 // providerLog is the slog handler of the generic provider that the run asks: its request lines
-// become exchanges of the current cell, its capability line names the vendor, and every other
-// record goes to next.
+// become exchanges of the current cell, its capability line names the vendor, its line of
+// workarounds sets pushForDelete when the provider asks Quay's token service for push where
+// oras-go asks for delete (#801), so that the probe's own client asks so too, and every record
+// but the request lines goes to next.
 type providerLog struct {
-	next   slog.Handler
-	vendor *string
+	next          slog.Handler
+	vendor        *string
+	pushForDelete *atomic.Bool
 }
 
 // Enabled implements slog.Handler: every level, so that the provider logs its requests.
@@ -47,6 +51,10 @@ func (h *providerLog) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	case "registry capabilities":
 		*h.vendor = attrs["vendor"]
+	case "registry needs workarounds":
+		if h.pushForDelete != nil && attrs["pushForDelete"] == "true" {
+			h.pushForDelete.Store(true)
+		}
 	}
 	if !h.next.Enabled(ctx, r.Level) {
 		return nil
@@ -56,10 +64,10 @@ func (h *providerLog) Handle(ctx context.Context, r slog.Record) error {
 
 // WithAttrs implements slog.Handler.
 func (h *providerLog) WithAttrs(as []slog.Attr) slog.Handler {
-	return &providerLog{next: h.next.WithAttrs(as), vendor: h.vendor}
+	return &providerLog{next: h.next.WithAttrs(as), vendor: h.vendor, pushForDelete: h.pushForDelete}
 }
 
 // WithGroup implements slog.Handler.
 func (h *providerLog) WithGroup(name string) slog.Handler {
-	return &providerLog{next: h.next.WithGroup(name), vendor: h.vendor}
+	return &providerLog{next: h.next.WithGroup(name), vendor: h.vendor, pushForDelete: h.pushForDelete}
 }
