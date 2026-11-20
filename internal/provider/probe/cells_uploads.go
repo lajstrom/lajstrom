@@ -303,7 +303,7 @@ func (r *run) replica(ctx context.Context) string {
 		return "fails: " + err.Error()
 	}
 	for i := range repos {
-		p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: new(string)}))
+		p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: new(string), pushForDelete: r.c.pushForDelete}))
 		if err != nil {
 			return "fails: " + err.Error()
 		}

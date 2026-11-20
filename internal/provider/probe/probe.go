@@ -246,7 +246,7 @@ func randomHex(n int) string {
 // "What the probe finds".
 func (r *run) providerProbe(ctx context.Context) error {
 	c := r.in(ctx, "probeFinds")
-	p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: &r.report.Vendor}))
+	p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: &r.report.Vendor, pushForDelete: r.c.pushForDelete}))
 	if err != nil {
 		return fmt.Errorf("probe: %w", err)
 	}
