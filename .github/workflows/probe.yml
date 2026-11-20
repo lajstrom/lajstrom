@@ -1,0 +1,183 @@
+name: Probe
+
+# lajstrom registry probe (docs/registries/README.md, "Measuring a registry") against the
+# registries of the matrix that need no account (#850): Harbor, Gitea, Forgejo and Project Quay,
+# each brought up on a runner of its own by its script in deploy/compose, at the pin there. A job
+# builds Lajstrom from the checkout, runs the probe with -v as the registry pages do, and keeps
+# the table in the job summary and the whole output, the requests and the provider's log, as an
+# artifact. Whoever fills a row of the matrix from a run names the run's URL and date. By hand
+# only (gh workflow run probe.yml): it never runs on a pull request or on a push to main. Not a
+# required check.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: probe (${{ matrix.registry }})
+    runs-on: ubuntu-latest
+    # Quay caches a tag list for 120 s, so its row "Read-after-write lag" waits up to that long
+    # for each of 3 writes and 3 deletes, 12 minutes in all; a job of the others took 2 minutes
+    # on 2026-11-20.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The address and the user of each registry's page (Commands); the instance prefix is
+          # lajstrom-it/ on all four. The password file is what its script writes, Harbor's
+          # what the step that sets it up writes.
+          - registry: harbor
+            url: http://localhost:5005
+            username: robot$lajstrom-it+ci
+            password_file: deploy/compose/harbor/.work/robot.secret
+          - registry: gitea
+            url: http://localhost:5009
+            username: lajstrom
+            password_file: deploy/compose/gitea/.work/gitea.token
+          - registry: forgejo
+            url: http://localhost:5014
+            username: lajstrom
+            password_file: deploy/compose/gitea/.work/forgejo.token
+          - registry: quay
+            url: http://localhost:5012
+            username: lajstrom-it+lajstrom
+            password_file: deploy/compose/quay/.work/robot.token
+    env:
+      REGISTRY: ${{ matrix.registry }}
+      OUT: ${{ github.workspace }}/probe-out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Build Lajstrom
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          go build -trimpath -o bin/lajstrom ./cmd/lajstrom
+          mkdir -p "${OUT}"
+
+      - name: Start Harbor, a project and its robot
+        # harbor.sh up (the installer at its sha256, prepare, compose up, /api/v2.0/health), then
+        # the project lajstrom-it and a project robot with harbor.md's permissions, as the
+        # admin of harbor.yml; the robot's secret goes to a file, never to the log. As root, as
+        # Harbor's own installer runs: on the runner, compose run by its user could not read
+        # common/config/db/env, which prepare writes ("permission denied"). harbor.sh ran
+        # unprivileged on macOS (OrbStack) for harbor.md.
+        if: ${{ matrix.registry == 'harbor' }}
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo deploy/compose/harbor/harbor.sh up
+          sudo chown "$(id -u):$(id -g)" deploy/compose/harbor/.work # for robot.secret below
+          h=http://localhost:5005
+          a="admin:$(awk '/^harbor_admin_password:/ {print $2}' deploy/compose/harbor/harbor.yml)"
+          curl -fsS -u "${a}" -H 'Content-Type: application/json' -X POST "${h}/api/v2.0/projects" \
+            -d '{"project_name":"lajstrom-it","metadata":{"public":"false"}}'
+          robot=$(curl -fsS -u "${a}" -H 'Content-Type: application/json' -X POST "${h}/api/v2.0/robots" -d '{
+            "name":"ci","level":"project","duration":-1,
+            "permissions":[{"kind":"project","namespace":"lajstrom-it","access":[
+              {"resource":"repository","action":"pull"},{"resource":"repository","action":"push"},
+              {"resource":"repository","action":"delete"},{"resource":"repository","action":"list"},
+              {"resource":"repository","action":"read"},
+              {"resource":"artifact","action":"delete"},{"resource":"artifact","action":"list"},
+              {"resource":"artifact","action":"read"},
+              {"resource":"tag","action":"list"},{"resource":"tag","action":"create"},{"resource":"tag","action":"delete"},
+              {"resource":"accessory","action":"list"}]}]}')
+          echo "robot: $(jq -r .name <<< "${robot}")"
+          (umask 077 && jq -r .secret <<< "${robot}" > deploy/compose/harbor/.work/robot.secret)
+          curl -fsS -u "${a}" "${h}/api/v2.0/systeminfo" | jq -r .harbor_version > "${OUT}/version"
+
+      - name: Pull Gitea or Forgejo
+        # As the e2e jobs of ci.yml: the image pinned in the compose file; data.forgejo.org
+        # answered a pull 502 once, so four tries.
+        if: ${{ matrix.registry == 'gitea' || matrix.registry == 'forgejo' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          for try in 1 2 3 4; do
+            docker compose -f deploy/compose/gitea/compose.yaml --profile forgejo pull --quiet "${REGISTRY}" && break
+            if [ "${try}" = 4 ]; then exit 1; fi
+            sleep $((try * 15))
+          done
+      - name: Start and set up Gitea or Forgejo
+        # gitea.sh up: a user, the organisation lajstrom-it, a team that may write its packages,
+        # and the user's token with write:package.
+        if: ${{ matrix.registry == 'gitea' || matrix.registry == 'forgejo' }}
+        timeout-minutes: 3
+        env:
+          PORT: ${{ matrix.registry == 'gitea' && '5009' || '5014' }}
+        run: |
+          set -euo pipefail
+          deploy/compose/gitea/gitea.sh up "${REGISTRY}"
+          curl -fsS "http://localhost:${PORT}/api/v1/version" | jq -r .version > "${OUT}/version"
+
+      - name: Start and set up Quay
+        # quay.sh up: compose up --wait (Quay, its Postgres and Redis), the superuser, the
+        # organisation lajstrom-it and its robot in a team with the role admin.
+        if: ${{ matrix.registry == 'quay' }}
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/compose/quay/compose.yaml pull --quiet
+          deploy/compose/quay/quay.sh up
+          curl -fsS http://localhost:5012/config | jq -r .version_number > "${OUT}/version"
+
+      - name: lajstrom registry probe
+        id: probe
+        timeout-minutes: 45
+        env:
+          PROBE_URL: ${{ matrix.url }}
+          PROBE_USERNAME: ${{ matrix.username }}
+          PROBE_PASSWORD_FILE: ${{ matrix.password_file }}
+        run: |
+          set -euo pipefail
+          bin/lajstrom registry probe --url "${PROBE_URL}" --registry-prefix lajstrom-it/ \
+            --username "${PROBE_USERNAME}" --password-file "${PROBE_PASSWORD_FILE}" \
+            --max-manifest-size 32MiB --timeout 40m -v \
+            > "${OUT}/probe.md" 2> >(tee "${OUT}/probe.log" >&2)
+      - name: The table in the summary
+        # The table and the lines after it; the requests of every cell are in the artifact.
+        if: ${{ !cancelled() && steps.probe.outcome != 'skipped' }}
+        run: |
+          {
+            echo "## lajstrom registry probe: ${REGISTRY} $(cat "${OUT}/version" 2> /dev/null || echo '(version unknown)')"
+            echo
+            echo "Lajstrom at \`${GITHUB_SHA}\`, run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}, on ${ImageOS:-} ${ImageVersion:-}, $(date -u +%Y-%m-%d)."
+            echo
+            if [ -s "${OUT}/probe.md" ]; then
+              sed '/^## /,$d' "${OUT}/probe.md"
+            else
+              echo "**No table**: the probe failed before it; its log:"
+              echo
+              echo '```text'
+              tail -n 50 "${OUT}/probe.log" 2> /dev/null || true
+              echo '```'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+          docker ps -a --format '{{.Image}} {{.Status}}' | sort > "${OUT}/images"
+      - name: Keep the output
+        if: ${{ !cancelled() && steps.probe.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: probe-${{ matrix.registry }}
+          path: probe-out/
+          if-no-files-found: ignore
+
+      - name: The registry's log
+        if: ${{ failure() }}
+        run: |
+          case "${REGISTRY}" in
+          harbor) sudo docker compose -p harbor -f deploy/compose/harbor/.work/harbor/docker-compose.yml logs --tail 100 ;;
+          gitea | forgejo) docker compose -f deploy/compose/gitea/compose.yaml --profile forgejo logs --tail 200 "${REGISTRY}" ;;
+          quay) docker compose -f deploy/compose/quay/compose.yaml logs --tail 200 ;;
+          esac
