@@ -119,7 +119,11 @@ The probe's row "Read-after-write lag", from [registries/README.md](../registrie
 | Zot v2.1.23 | 2026-11-11, 2026-11-12 | none seen; on 2026-11-12 the lists read before | none seen (2026-11-12) |
 | GitLab A and B | 2026-11-11 | none seen | not measured |
 | Nexus | 2026-11-11 | none seen | not measured |
-| Project Quay 3.18.2 | 2026-11-12, by hand | manifests and blobs at once; a tag list read before a push stale up to 120 s, a catalog page 60 s | not measured |
+| Project Quay 3.18.2 | 2026-11-12, by hand; the probe on GitHub Actions runners 2026-11-20 (#850) | manifests and blobs at once; a tag list read before a push stale up to 120 s, a catalog page 60 s; on the runners the probe's tag list, read before each push, stale about 2 minutes (its `-v` log; the row ended at the deletes) | not measured: the probe's own client asks the token service for `delete`, which Quay refuses |
 | JFrog JCR 7.161.26 | 2026-11-13 (#947) | none seen, the tag list read before (no catalog); by curl, the referrers list up to 9 ms behind a referrer's push | none seen; by curl, the referrers list about 10 ms behind a referrer's delete |
+| Gitea 1.27.3 | 2026-11-13; on GitHub Actions runners 2026-11-20 (#850) | none seen, the lists read before | none seen |
+| Harbor v2.15.4 | 2026-11-14; on a GitHub Actions runner 2026-11-20 (#850) | none seen, the tag list read before (no catalog for a robot) | none seen |
+| Forgejo 17.0.1 | 2026-11-15; on GitHub Actions runners 2026-11-20 (#850) | none seen, the lists read before | none seen |
 
-Not measured yet: Harbor, Gitea, Forgejo and GHCR with the probe of #845; ECR (#19).
+Not measured yet: GHCR with the probe of #845; ECR (#19); the deletes on Quay, which the probe
+cannot make there (2026-11-20).
