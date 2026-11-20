@@ -172,7 +172,7 @@ func (h *handlers) get(w http.ResponseWriter, r *http.Request) {
 		h.list(w, r, repo, p)
 		return
 	}
-	f, err := resolve(r.Context(), h.deps.Index, repo, p, r.URL.Query().Get("digest"))
+	f, err := resolve(r.Context(), h.deps.Index, repo, p, r.URL.Query().Get("digest"), time.Now())
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -197,15 +197,16 @@ type resolved struct {
 	version     index.Version
 	file        index.File
 	contentType string
-	// lastModified is the Last-Modified of the answer: the version's created, or zero for none
-	// when a date to the second cannot tell the version from another of the path (pickVersion).
+	// lastModified is the Last-Modified of the answer, zero for none: the version's created, or
+	// for the newest the date that tells it from the other files of the path (newestDate).
 	lastModified time.Time
 }
 
 // resolve finds the file at path p: the newest version of the package (by created, then id),
-// or the version whose manifest digest is pin, which must belong to the package. Everything
-// missing is index.ErrNotFound; a pin that is not a digest is format.ErrInvalid.
-func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin string) (*resolved, error) {
+// or the version whose manifest digest is pin, which must belong to the package; now is the
+// time of the answer. Everything missing is index.ErrNotFound; a pin that is not a digest is
+// format.ErrInvalid.
+func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin string, now time.Time) (*resolved, error) {
 	notFound := fmt.Errorf("%w: raw/%s has no file %q", index.ErrNotFound, repo.Name, p)
 	pkg, err := st.GetPackage(ctx, repo.ID, p)
 	if errors.Is(err, index.ErrNotFound) {
@@ -214,7 +215,7 @@ func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin strin
 	if err != nil {
 		return nil, fmt.Errorf("raw: package %q: %w", p, err)
 	}
-	v, dated, err := pickVersion(ctx, st, repo, pkg, pin)
+	v, lastModified, err := pickVersion(ctx, st, repo, pkg, pin, now)
 	if err != nil {
 		return nil, err
 	}
@@ -228,59 +229,81 @@ func resolve(ctx context.Context, st index.Reader, repo index.Repo, p, pin strin
 	case len(files) != 1:
 		return nil, fmt.Errorf("raw: %q %s has %d files in the index, want 1", p, v.Version, len(files))
 	}
-	f := &resolved{pkg: *pkg, version: *v, file: files[0], contentType: contentTypeOf(v.Metadata)}
-	if dated {
-		f.lastModified = v.CreatedAt
-	}
-	return f, nil
+	return &resolved{pkg: *pkg, version: *v, file: files[0], contentType: contentTypeOf(v.Metadata),
+		lastModified: lastModified}, nil
 }
 
 // pickVersion returns the version of pkg that pin names, or the newest without a pin; nil when
-// there is none. dated reports whether its created dates the answer (Last-Modified, to the
-// second): always for a pinned version, which the URL names alone; for the newest only when no
-// other version of the path was created in its second (#1274). A client that revalidates by
-// date alone sends the second of the version it holds, which is not after the newest's; when
-// no other version shares the newest's second, a date not before it is the newest's own. An
-// answer without Last-Modified is never 304 to If-Modified-Since (format.ServeBlob).
-func pickVersion(ctx context.Context, st index.Reader, repo index.Repo, pkg *index.Package, pin string) (v *index.Version, dated bool, err error) {
+// there is none. lastModified dates the answer (Last-Modified, to the second; zero for none):
+// a pinned version's created, for the URL names it alone; the newest's date by newestDate.
+func pickVersion(ctx context.Context, st index.Reader, repo index.Repo, pkg *index.Package, pin string,
+	now time.Time) (v *index.Version, lastModified time.Time, err error) {
 	if pin == "" {
 		versions, err := st.ListVersions(ctx, pkg.ID)
 		if err != nil || len(versions) == 0 {
-			return nil, false, err
+			return nil, time.Time{}, err
 		}
-		newest := &versions[len(versions)-1] // ordered by created, then id
-		second := newest.CreatedAt.Truncate(time.Second)
-		for _, other := range versions[:len(versions)-1] {
-			if other.CreatedAt.Truncate(time.Second).Equal(second) {
-				return newest, false, nil
-			}
-		}
-		return newest, true, nil
+		return &versions[len(versions)-1], newestDate(versions, pkg.LastDeleteAt, now), nil // ordered by created, then id
 	}
 	d, err := digest.Parse(pin)
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: digest %q: %w", format.ErrInvalid, pin, err)
+		return nil, time.Time{}, fmt.Errorf("%w: digest %q: %w", format.ErrInvalid, pin, err)
 	}
 	v, err = st.GetVersionByDigest(ctx, repo.ID, d)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return nil, false, nil
+		return nil, time.Time{}, nil
 	case err != nil:
-		return nil, false, fmt.Errorf("raw: version %s: %w", d, err)
+		return nil, time.Time{}, fmt.Errorf("raw: version %s: %w", d, err)
 	case v.PackageID != pkg.ID:
-		return nil, false, nil
+		return nil, time.Time{}, nil
 	}
-	return v, true, nil
+	return v, v.CreatedAt, nil
+}
+
+// newestDate is the Last-Modified of the newest of versions, the last, or zero for none, given
+// lastDelete, the package's last delete (nil: none known), and now, the time of the answer
+// (docs/spec/http-routing.md §3, raw). A client that revalidates by date alone (wget -N, curl
+// -z) sends the date it got with the file it holds, and must get 304 only when that file is the
+// newest; an answer without Last-Modified is never 304 to If-Modified-Since (format.ServeBlob).
+// With N the newest's created and L the last delete, both to the second:
+//
+//   - L nil, or N later than L + 1 s: N, and none while another version shares N's second
+//     (#1274). Every date that went out with another file is before N, or N's second that the
+//     file shares, or the second after a delete, L + 1 s at most.
+//   - N at L or before: L + 1 s, and none while that is later than now, for Last-Modified is
+//     never after Date (#1419). A delete makes an older version the newest again; every
+//     deleted version was created at or before L, and the dates that went out with it are L or
+//     before.
+//   - N at L + 1 s: none. L + 1 s went out with the file newest after the delete, and N's
+//     version came after it.
+func newestDate(versions []index.Version, lastDelete *time.Time, now time.Time) time.Time {
+	newest := versions[len(versions)-1]
+	second := newest.CreatedAt.Truncate(time.Second)
+	if lastDelete != nil {
+		after := lastDelete.Truncate(time.Second).Add(time.Second)
+		switch {
+		case second.Before(after) && !after.After(now):
+			return after
+		case !second.After(after):
+			return time.Time{}
+		}
+	}
+	for _, other := range versions[:len(versions)-1] {
+		if other.CreatedAt.Truncate(time.Second).Equal(second) {
+			return time.Time{}
+		}
+	}
+	return newest.CreatedAt
 }
 
 // serve answers the file f through format.ServeBlob: Content-Type from the metadata, ETag the
 // blob digest (so If-None-Match works without a request to the backend), Last-Modified the
-// version's created unless another version shares its second (none then, pickVersion),
-// Docker-Content-Digest the manifest digest, and the redirect as the repo
-// policy's blobRedirect allows. HEAD asks the backend for the headers; GET is one request,
-// with the client's Range: a 307 to the backend's storage when the provider gives a URL,
-// otherwise the backend's answer, 200, 206 or 416, streamed. A stream that breaks after the
-// headers is logged.
+// version's created, or the newest's date (newestDate), Docker-Content-Digest the manifest
+// digest, and the redirect as the repo policy's blobRedirect allows. HEAD asks the backend for
+// the headers; GET is one request, with the client's Range: a 307 to the backend's storage
+// when the provider gives a URL, otherwise the backend's answer, 200, 206 or 416, streamed. A
+// stream that breaks after the headers is logged.
 func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo, f *resolved) {
 	ctx := r.Context()
 	prov, err := registryOf(h.deps, repo)
