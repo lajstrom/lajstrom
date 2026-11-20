@@ -61,7 +61,8 @@ type env struct {
 	prov *providertest.Fake
 	repo index.Repo
 	h    http.Handler
-	logs *logBuffer // what the routes logged
+	logs *logBuffer       // what the routes logged
+	pipe *ingest.Pipeline // the write path the routes publish and delete through
 }
 
 // logBuffer collects log output; slog handlers may write from more than one goroutine.
@@ -122,6 +123,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.store != nil {
 		routeIndex = o.store(st)
 	}
+	e.pipe = pipe
 	deps := format.Deps{Index: routeIndex, Ingest: pipe, Providers: providers, Auth: o.authz, Audit: o.audit,
 		Log: slog.New(slog.NewTextHandler(e.logs, nil)), Encryption: enc}
 	mux := http.NewServeMux()
