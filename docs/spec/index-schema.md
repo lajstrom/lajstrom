@@ -7,7 +7,8 @@
   [ADR 0006](../adr/0006-derived-index-and-control-plane.md).
 
 Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry, but
-two that need no rebuild ([Derived](#derived)), and may be dropped at any time. **Control plane**
+two that need no rebuild and a column the registry has no trace of ([Derived](#derived)), and
+may be dropped at any time. **Control plane**
 tables are small, authoritative and backed up, with the database or as a snapshot in the
 registry ([below](#snapshots-of-the-control-plane)). The **coordination** tables, `tag_claims`,
 `reindex_runs`, `fetch_claims`, `replicas` and `oidc_logins`, are neither: their rows live for one
@@ -874,12 +875,13 @@ row only as long as another writer's transaction of the package runs.
 
 ## Derived
 
-Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose rows say why;
-`blob_map` only with the keys of its repo.
+Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose rows say why, and
+`packages.last_delete_at` ([below](#the-time-of-a-packages-last-delete)); `blob_map` only with
+the keys of its repo.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
+| `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions), `last_delete_at` ts null (when a version of it was last deleted, NULL when no delete is known; written by `DeleteVersion`, not rebuilt: [below](#the-time-of-a-packages-last-delete); migration 0043, #1419) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
 | `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `summary` text null (the manifest's summary, manifest-profile.md §2, read from `metadata`: `''` when the manifest has none, NULL when `metadata` is; written by ingest, and by reindex whenever it reads the manifest: a digest it does not know, a degraded row, every manifest with `verify`. Migration 0029 adds it NULL: a version written before, or by the release before during the update, has none until `serve` fills it from `metadata` at its next start, [below](#the-summaries-of-the-rows-before-0029), or, when `metadata` is NULL, until a reindex with `verify` reads it again), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2), `oci_repo` text null (the package path, as `name_oci`, of the OCI repository that holds the manifest when it is not the package's `name_oci`: a split, [below](#invariants-and-rules); NULL otherwise. Written by reindex only: ingest writes to `name_oci`, and NULL) | unique `(package_id, version, variant)`; unique `(package_id, tag)`; index `versions_digest` on `(digest)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | indexes `(version_id, name)` and `files_name` on `(name)`: apt pool, rpm `Packages/` and maven lookups go by `(repo, name)`; `files_digest` on `(digest)`: the search by a digest's prefix (#956) |
 | `index_cache` | `id`, `repo_id`, `scope` text (apt the suite, `jammy`; pypi `simple` or `simple/<project>`, and a proxy's page `<project>`, its key; maven `<groupId>/<artifactId>`, and `<groupId>/<artifactId>/<version>` for the document of a SNAPSHOT version, `com.example/lib-core/1.0-SNAPSHOT`, and the key `<groupId>:<artifactId>` for the documents of a proxy repo and those a group reads of its hosted member, the kinds `maven-metadata` and `maven-metadata:<base>-SNAPSHOT`; npm the package name; raw the directory prefix; rpm `repodata`; terraform the package path of a module, `vpc/aws`), `kind` text (apt the path below `dists/<suite>/`: `Release`, `InRelease`, `Release.gpg`, `main/binary-amd64/Packages.gz`, `main/source/Sources.xz`, `main/Contents-amd64.gz`; pypi `simple.html`, `simple.json`; maven `maven-metadata`, `maven-metadata.sha1`; npm `packument`, `packument-abbreviated`; raw `listing`; terraform `versions`; rpm `repomd.xml`, which holds the checksum-named `primary`, `filelists` and `other` documents with it), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null, `expires_at` ts null (the earliest time a policy decision of the render holds until, [policy.md](policy.md) §6.1; null: none; 0030) | unique `(repo_id, scope, kind)`; invalidated by ingest, delete, reindex, a key rotation and a change of a policy rule or verdict; a row whose `expires_at` has passed is not served and is rendered again; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`, rpm `repomd.xml.asc`) has the `rendered_at` of the document it signs and its own `signed_at` |
@@ -972,6 +974,41 @@ proportion to the repo, or to the repos searched, and no index serves them; the 
 and the page by name do not. On a repo of 10 000 manifests in 1 000 packages, a page of 100
 packages with their facts, a facet, and a search over two such repos each take at most 20 ms on
 SQLite and on Postgres (`storetest.Bench`, `BenchmarkPackageList`).
+
+### The time of a package's last delete
+
+`packages.last_delete_at` (#1419, migration `0043_packages_last_delete.sql`) is when a version
+of the package was last deleted; NULL is no delete known. Raw dates its answers with it
+(http-routing.md §3, raw): a delete makes an older version the newest again, whose `created_at`
+is before the date a client got with the deleted one, and only the time of the delete tells
+the two dates apart.
+
+**Its one writer is `DeleteVersion`**, in its transaction, after the package's lock that every
+version write and delete takes: it sets the later of the delete's time, on the clock that
+dates a raw version (the server's), and the deleted row's `created_at` (a manifest pushed
+through `/v2` may carry a `created` ahead of that clock, acceptance.md E-10), unless the column
+holds a later time already, so that it never moves back between replicas whose clocks differ.
+So it is never before the `created_at` of a version deleted since it was set. Every delete of
+a version row is a `DeleteVersion`: the delete of ingest (the management API's delete of a
+version, a batch delete and `lajstrom admin retention` through it, raw's `DELETE` of a path,
+the `DELETE` of a manifest on `/v2`), and the sweep of reindex, of a version whose manifest is
+gone. The other deletes take the package row with its versions, and the time with it:
+`DeletePackage` (ingest, once the package has no version left), `DeleteEmptyPackages` (the
+sweep), `ResetDerived`, the cascade of `DeleteRepo` and a forced import. `UpsertPackage`
+inserts NULL and leaves the column of a row it finds.
+
+**It is not rebuilt**: the registry keeps no trace of a delete. Reindex leaves the column of
+the rows it keeps; a package it inserts, into an empty database or after the row went, has
+NULL. Where the column misses a delete, raw dates its answers as before #1419, and a client
+that revalidates by date alone may get `304` for a deleted file:
+
+- once the delete of its last version took the package row, the next version of the path has
+  a row of its own, at NULL: a client then gets `304` for the file it holds only when its
+  answer, that delete and the `PUT` of the version fell within one second;
+- migration 0043 adds the column NULL, without a backfill: expand. The release before reads
+  `packages` by named columns and neither reads nor writes it, so a delete on one of its
+  replicas, during a rolling update or after a rollback, sets nothing: the column has only the
+  deletes of the replicas that know 0043.
 
 ### The summaries of the rows before 0029
 
@@ -1291,8 +1328,9 @@ the column `users.last_seen_at`, filled (#1283), `0035_config_state.sql` the tab
 `users.must_change` and `users.password_history` (#1281), `0038_tokens_acr.sql` the columns
 `tokens.acr` and `oidc_logins.acr` (#1276), `0039_approvals.sql` the table `approvals`
 (#1285), `0040_master_keys.sql` the table `sealing_key` and the column `replicas.master_keys`
-(#1288), `0041_wrapped_master_keys.sql` the table `wrapped_master_keys` (#1388), and
-`0042_oidc_refresh.sql` the table `oidc_refresh` (#1282); the others
+(#1288), `0041_wrapped_master_keys.sql` the table `wrapped_master_keys` (#1388),
+`0042_oidc_refresh.sql` the table `oidc_refresh` (#1282), and
+`0043_packages_last_delete.sql` the column `packages.last_delete_at` (#1419); the others
 are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
@@ -1396,7 +1434,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0040, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0043, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
